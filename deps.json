@@ -1,0 +1,22 @@
+{
+  "hysteria": {
+    "version": "app/v2.12.3",
+    "url": "https://github.com/apernet/hysteria/releases/download/app%2Fv2.12.3/hysteria-windows-amd64.exe",
+    "hashesUrl": "https://github.com/apernet/hysteria/releases/download/app%2Fv2.12.3/hashes.txt",
+    "hashesName": "build/hysteria-windows-amd64.exe",
+    "sha256": "31c0fb6a92beac7fc43bef6e8a31ce681eac29d78feef7a5884f2c797bfdba24",
+    "dest": "hysteria.exe"
+  },
+  "windivert": {
+    "version": "2.2.2-A",
+    "url": "https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip",
+    "sha256": "63cb41763bb4b20f600b6de04e991a9c2be73279e317d4d82f237b150c5f3f15",
+    "files": {
+      "WinDivert-2.2.2-A/x64/WinDivert.dll": "c1e060ee19444a259b2162f8af0f3fe8c4428a1c6f694dce20de194ac8d7d9a2",
+      "WinDivert-2.2.2-A/x64/WinDivert64.sys": "8da085332782708d8767bcace5327a6ec7283c17cfb85e40b03cd2323a90ddc2"
+    }
+  },
+  "tools": {
+    "goWinres": "v0.3.3"
+  }
+}

@@ -1,0 +1,19 @@
+server: '[2001:db8::10]:443'
+auth: a
+tls:
+    sni: explicit.example
+obfs:
+    type: gecko
+    gecko:
+        password: g
+        minPacketSize: 100
+        maxPacketSize: 1200
+transport:
+    udp:
+        minHopInterval: 10s
+        maxHopInterval: 60s
+socks5:
+    listen: 127.0.0.1:50001
+    username: u
+    password: p
+    disableUDP: false

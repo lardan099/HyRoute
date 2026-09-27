@@ -1,0 +1,752 @@
+package app
+
+import (
+	"fmt"
+	"net/url"
+	"strings"
+
+	"github.com/lardan099/hyroute/internal/hysteria"
+	"github.com/lardan099/hyroute/internal/rules"
+)
+
+// Rules as text: many rules at once, one per line.
+//
+//	# comment
+//	YouTube: youtube.com googlevideo.com ytimg.com -> 🇳🇱 Нидерланды
+//	discord.exe -> de
+//	*.ru -> напрямую
+//	ads.example.com -> блок | tcp
+//
+//	[chrome.exe]                 rules below apply to Chrome only
+//	instagram.com -> 🇩🇪 DE
+//	=example.org -> vpn          "=" = only this address, no subdomains
+//
+//	[*]                          back to every program
+//	* -> напрямую                everything else
+//
+// Items: an item with ".exe" or a path is a program (a bare word such as
+// "discord" means discord.exe), anything else a site. "example.com" means the site and its subdomains,
+// "=example.com" only that address, "*.example.com" only subdomains,
+// ".lan" a one-label domain and its subdomains; a link gives its site.
+// "=game.exe" is the program without the processes it starts.
+// Typed items are kept as written: geosite:youtube, geoip:ru, 1.2.3.4,
+// 10.0.0.0/8, keyword:torrent, regexp:…, full:…, domain:…. An item with
+// spaces, "|" or an arrow is written in quotes, and so is a name that could
+// be read as something else: "#1 YouTube": youtube.com -> vpn.
+// Targets: vpn / основной (main server), a server name (or a unique part
+// of it, or id:<id>), напрямую / direct, блок / block. Servers after a
+// comma are fallbacks, tried in order when the first one is down:
+// "-> DE, NL".
+// Options after "|": tcp, udp, выкл / off, без дочерних / nochild.
+
+// RuleLine is a problem at a line of rules text.
+type RuleLine struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
+
+type RulesTextResult struct {
+	Rules          []rules.Rule `json:"rules"`
+	HasDefault     bool         `json:"hasDefault"`
+	DefaultAction  rules.Action `json:"defaultAction"`
+	DefaultProfile string       `json:"defaultProfile"`
+	// DefaultFallback: fallback servers of "* ->".
+	DefaultFallback []string   `json:"defaultFallback,omitempty"`
+	Errors          []RuleLine `json:"errors"`
+	Warnings        []RuleLine `json:"warnings"`
+	Summary         string     `json:"summary"`
+}
+
+// ParseRulesText parses rules text against the current servers.
+func (c *Controller) ParseRulesText(text string) RulesTextResult {
+	c.mu.Lock()
+	profiles := append([]hysteria.Profile(nil), c.profiles.List...)
+	c.mu.Unlock()
+	return parseRulesText(text, profiles)
+}
+
+func parseRulesText(text string, profiles []hysteria.Profile) RulesTextResult {
+	res := RulesTextResult{Rules: []rules.Rule{}, Errors: []RuleLine{}, Warnings: []RuleLine{}}
+	var section []rules.AppMatch // current [program] block; nil = every program
+	fail := func(n int, f string, a ...any) { res.Errors = append(res.Errors, RuleLine{n, fmt.Sprintf(f, a...)}) }
+
+	for i, raw := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		n := i + 1
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = nil
+			inner := strings.TrimSpace(line[1 : len(line)-1])
+			if inner == "" || inner == "*" || strings.EqualFold(inner, "все") || strings.EqualFold(inner, "all") {
+				continue
+			}
+			for _, it := range splitItems(inner) {
+				a, warn, ok := sectionApp(it)
+				if !ok {
+					fail(n, "в [ ] пишутся программы (discord, chrome.exe, путь или маска папки), а «%s» — не программа", it)
+					continue
+				}
+				if warn != "" {
+					res.Warnings = append(res.Warnings, RuleLine{n, warn})
+				}
+				section = append(section, a)
+			}
+			continue
+		}
+
+		body, opts := line, ""
+		if i := indexOutside(line, "|"); i >= 0 {
+			body, opts = line[:i], line[i+1:]
+		}
+		lhs, target, ok := cutArrow(body)
+		if !ok {
+			if _, _, later := cutArrow(line); later {
+				fail(n, "«|» стоит раньше «->»: опции пишутся в конце строки, а элемент с «|» (например, regexp:) возьмите в кавычки")
+			} else {
+				fail(n, "нет стрелки «->»: пишите «что -> куда»")
+			}
+			continue
+		}
+		act, profile, fallback, err := parseTargets(strings.TrimSpace(target), profiles)
+		if err != nil {
+			fail(n, "%v", err)
+			continue
+		}
+		lhs = strings.TrimSpace(lhs)
+		if lhs == "*" {
+			if section != nil {
+				fail(n, "«* -> …» (всё остальное) пишется вне блока программы, после [*]")
+				continue
+			}
+			if strings.Trim(opts, " \t|") != "" {
+				fail(n, "у «* -> …» (всё остальное) нет опций: tcp, udp, выкл и без дочерних пишутся у отдельных правил")
+				continue
+			}
+			res.HasDefault, res.DefaultAction, res.DefaultProfile, res.DefaultFallback = true, act, profile, fallback
+			continue
+		}
+		r := rules.Rule{Action: act, Profile: profile, Fallback: fallback}
+		if name, rest, ok := quotedName(lhs); ok {
+			r.Name, lhs = name, rest
+		} else if i := indexOutside(lhs, ": "); i >= 0 && !strings.ContainsAny(lhs[:i], `.\/*`) {
+			// Outside quotes: in `"regexp:a: b" x.com` there is no name.
+			r.Name, lhs = strings.TrimSpace(lhs[:i]), lhs[i+2:]
+		}
+		inherit := true
+		for _, o := range strings.Split(opts, "|") {
+			switch strings.ToLower(strings.TrimSpace(o)) {
+			case "":
+			case "tcp":
+				r.Protocol = "tcp"
+			case "udp":
+				r.Protocol = "udp"
+			case "выкл", "off", "disabled":
+				off := false
+				r.Enabled = &off
+			case "без дочерних", "nochild", "nochildren":
+				inherit = false
+			default:
+				fail(n, "непонятная опция %q (есть: tcp, udp, выкл, без дочерних)", strings.TrimSpace(o))
+			}
+		}
+		for _, a := range section {
+			a.InheritChildren = a.InheritChildren && inherit
+			r.Apps = append(r.Apps, a)
+		}
+		for _, it := range splitItems(lhs) {
+			if a, ok := lineApp(it); ok {
+				a.InheritChildren = a.InheritChildren && inherit
+				r.Apps = append(r.Apps, a)
+				continue
+			}
+			if rules.IsSpecialItem(it) {
+				r.Domains = append(r.Domains, typedItem(it))
+				continue
+			}
+			if host, ok := linkHost(it); ok {
+				switch {
+				case host == "":
+					fail(n, "в ссылке «%s» нет имени сайта", it)
+				case rules.IsAddressItem(host):
+					r.Domains = append(r.Domains, host)
+				default:
+					r.Domains = append(r.Domains, "."+strings.ToLower(host))
+				}
+				continue
+			}
+			d := strings.ToLower(it)
+			switch {
+			case strings.HasPrefix(d, "="):
+				d = d[1:]
+			case strings.HasPrefix(d, "*.") || strings.HasPrefix(d, "."):
+			default:
+				d = "." + d
+			}
+			r.Domains = append(r.Domains, d)
+		}
+		if len(r.Apps) == 0 && len(r.Domains) == 0 {
+			fail(n, "не указано, что направлять")
+			continue
+		}
+		// Messages start with the rule name, cut below; a quoted name may
+		// have ": " in it.
+		rc := r
+		rc.Name = "-"
+		set, err := rules.Compile(rules.Config{Rules: []rules.Rule{rc}})
+		if err != nil {
+			msg := err.Error()
+			if _, after, ok := strings.Cut(msg, ": "); ok {
+				msg = after
+			}
+			fail(n, "%s", msg)
+			continue
+		}
+		for _, w := range set.Warnings {
+			if _, after, ok := strings.Cut(w, ": "); ok {
+				w = after
+			}
+			res.Warnings = append(res.Warnings, RuleLine{n, w})
+		}
+		res.Rules = append(res.Rules, r)
+	}
+	res.Summary = fmt.Sprintf("Правил: %d", len(res.Rules))
+	if res.HasDefault {
+		res.Summary += ", всё остальное — " + targetWords(res.DefaultAction, res.DefaultProfile, res.DefaultFallback, profiles)
+	}
+	return res
+}
+
+// cutArrow cuts at the first arrow of any kind outside quotes: in
+// "a.com → DE -> NL" the rule is a.com and the rest is the server chain.
+func cutArrow(s string) (string, string, bool) {
+	at, size := -1, 0
+	for _, a := range []string{"->", "→", "=>"} {
+		if i := indexOutside(s, a); i >= 0 && (at < 0 || i < at) {
+			at, size = i, len(a)
+		}
+	}
+	if at < 0 {
+		return "", "", false
+	}
+	return s[:at], s[at+size:], true
+}
+
+// indexOutside is strings.Index that skips "quoted" parts, so that a
+// quoted name or item may hold "|" and arrows. A quote without a pair is
+// an ordinary character.
+func indexOutside(s, sep string) int {
+	for i := 0; i < len(s); {
+		if s[i] == '"' {
+			if end := strings.IndexByte(s[i+1:], '"'); end >= 0 {
+				i += end + 2
+				continue
+			}
+		}
+		if strings.HasPrefix(s[i:], sep) {
+			return i
+		}
+		i++
+	}
+	return -1
+}
+
+// quotedName reads a rule name in quotes ("" inside is a quote) at the
+// start of s: `"#1 YouTube": youtube.com` gives "#1 YouTube".
+func quotedName(s string) (name, rest string, ok bool) {
+	if !strings.HasPrefix(s, `"`) {
+		return "", "", false
+	}
+	var b strings.Builder
+	for i := 1; i < len(s); i++ {
+		switch {
+		case s[i] != '"':
+			b.WriteByte(s[i])
+		case strings.HasPrefix(s[i+1:], `"`):
+			b.WriteByte('"')
+			i++
+		default:
+			// The name ends with `":`; a quoted item is followed by a space.
+			rest, ok = strings.CutPrefix(s[i+1:], ":")
+			if ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t') {
+				return b.String(), rest, true
+			}
+			return "", "", false
+		}
+	}
+	return "", "", false
+}
+
+// splitItems splits by spaces and commas, keeping quoted paths with spaces
+// ("C:\Program Files\X\x.exe"); "" inside quotes is a quote.
+func splitItems(s string) []string {
+	var out []string
+	for len(s) > 0 {
+		s = strings.TrimLeft(s, " \t,;")
+		if s == "" {
+			break
+		}
+		if s[0] == '"' {
+			if it, rest, ok := quotedItem(s); ok {
+				out = append(out, it)
+				s = rest
+				continue
+			}
+		}
+		end := strings.IndexAny(s, " \t,;")
+		if end < 0 {
+			end = len(s)
+		}
+		out = append(out, s[:end])
+		s = s[end:]
+	}
+	return out
+}
+
+// quotedItem reads the quoted item at the start of s.
+func quotedItem(s string) (it, rest string, ok bool) {
+	var b strings.Builder
+	for i := 1; i < len(s); i++ {
+		switch {
+		case s[i] != '"':
+			b.WriteByte(s[i])
+		case strings.HasPrefix(s[i+1:], `"`):
+			b.WriteByte('"')
+			i++
+		default:
+			return b.String(), s[i+1:], true
+		}
+	}
+	return "", "", false
+}
+
+// typedItem lower-cases the type prefix: GeoSite:YouTube -> geosite:YouTube.
+func typedItem(it string) string {
+	if p, rest, ok := strings.Cut(it, ":"); ok {
+		switch l := strings.ToLower(p); l {
+		case "geosite", "geoip", "keyword", "regexp", "full", "domain":
+			return l + ":" + rest
+		}
+	}
+	return it
+}
+
+func isProgram(it string) bool {
+	l := strings.ToLower(it)
+	return strings.HasSuffix(l, ".exe") || strings.ContainsAny(l, `\/`)
+}
+
+// isAppPattern: a program name or path, or a mask such as "*chrome*" (a
+// site has "*" only in front of a dot: *.example.com).
+func isAppPattern(it string) bool {
+	return isProgram(it) || strings.ContainsAny(it, "*?") && !strings.HasPrefix(it, "*.")
+}
+
+// appItem reads a program item: a name with ".exe", a path or a mask (a
+// bare word such as "discord" is discord.exe). "=" in front, as for sites,
+// means only this program, without the processes it starts. "app:" keeps
+// any name as a program as written: "app:my.app" (a site otherwise),
+// "app:vmmem" (vmmem.exe otherwise).
+func appItem(it string) (rules.AppMatch, bool) {
+	if a, ok := prefixedApp(it); ok {
+		return a, true
+	}
+	if !strings.ContainsAny(it, `.\/*?=`) {
+		it += ".exe" // "discord" is a program: a site needs a dot
+	}
+	only := false
+	if p, ok := strings.CutPrefix(it, "="); ok && isAppPattern(p) {
+		it, only = p, true
+	}
+	if !isAppPattern(it) {
+		return rules.AppMatch{}, false
+	}
+	return rules.AppMatch{Pattern: it, InheritChildren: !only}, true
+}
+
+// prefixedApp reads "app:name" and "=app:name".
+func prefixedApp(it string) (rules.AppMatch, bool) {
+	p, only := strings.CutPrefix(it, "=")
+	if len(p) <= len("app:") || !strings.EqualFold(p[:len("app:")], "app:") {
+		return rules.AppMatch{}, false
+	}
+	return rules.AppMatch{Pattern: p[len("app:"):], InheritChildren: !only}, true
+}
+
+// lineApp reads an item of a rule line as a program, in the order the
+// parser tries: "app:", then lists, addresses and links (not programs),
+// then appItem.
+func lineApp(it string) (rules.AppMatch, bool) {
+	if a, ok := prefixedApp(it); ok {
+		return a, true
+	}
+	if _, link := linkHost(it); link || rules.IsSpecialItem(it) {
+		return rules.AppMatch{}, false
+	}
+	return appItem(it)
+}
+
+// sectionApp reads an item of a [program] line as appItem does. A name
+// that a rule line reads as a site ("my.app", "*.scr") can only be a
+// program here: it is kept as written, with a warning. Links, lists,
+// addresses, ".x" and "=" in front of anything but a program are refused.
+func sectionApp(it string) (a rules.AppMatch, warn string, ok bool) {
+	if a, ok := prefixedApp(it); ok {
+		return a, "", true
+	}
+	if _, link := linkHost(it); link || rules.IsSpecialItem(it) {
+		return a, "", false
+	}
+	if a, ok := appItem(it); ok {
+		return a, "", true
+	}
+	if strings.HasPrefix(it, ".") || strings.HasPrefix(it, "=") {
+		return a, "", false
+	}
+	return rules.AppMatch{Pattern: it, InheritChildren: true},
+		fmt.Sprintf("«%s» в [ ] — программа с таким именем файла, а не сайт: сайты пишутся в строках под [ ]", it), true
+}
+
+// linkHost is the site of a pasted link: "https://example.com/page" and
+// "example.com/page" give example.com (rules match sites, not pages).
+// ok is false for other items; host is "" for a link without a site.
+func linkHost(it string) (host string, ok bool) {
+	s := it
+	if !strings.Contains(s, "://") {
+		h, _, found := strings.Cut(s, "/")
+		if !found || !strings.Contains(h, ".") || strings.ContainsAny(h, `\*?="`) || isProgram(h) || rules.IsAddressItem(h) ||
+			strings.HasSuffix(strings.ToLower(s), ".exe") {
+			return "", false // a path ("Steam.old/steam.exe"), a mask or a network
+		}
+		s = "//" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", true
+	}
+	return u.Hostname(), true
+}
+
+// parseTargets reads "куда": one target, or a chain of servers separated
+// by "->" or commas (the first one, then fallbacks). A trailing "блок" is
+// allowed: when every server is down the connection is refused anyway.
+func parseTargets(t string, profiles []hysteria.Profile) (rules.Action, string, []string, error) {
+	parts := splitChain(t)
+	if len(parts) > 1 {
+		// A server named with a comma or an arrow, written in full.
+		for _, p := range profiles {
+			if strings.EqualFold(strings.TrimSpace(p.Name), strings.TrimSpace(t)) {
+				return rules.Tunnel, p.ID, nil, nil
+			}
+		}
+	}
+	act, profile, err := parseTarget(parts[0], profiles)
+	if err != nil || len(parts) == 1 {
+		return act, profile, nil, err
+	}
+	if act != rules.Tunnel {
+		return 0, "", nil, fmt.Errorf("запасные серверы бывают только у «через VPN»: «%s -> …» не работает", parts[0])
+	}
+	var fallback []string
+	for i, p := range parts[1:] {
+		if p == "" {
+			return 0, "", nil, fmt.Errorf("после «%s ->» допишите запасной сервер (или уберите стрелку)", parts[i])
+		}
+		a, id, err := parseTarget(p, profiles)
+		if err != nil {
+			return 0, "", nil, fmt.Errorf("запасной сервер: %v", err)
+		}
+		switch {
+		case a == rules.Block && i == len(parts)-2:
+			continue // the end of every chain
+		case a == rules.Direct:
+			return 0, "", nil, fmt.Errorf("запасным может быть только сервер: когда недоступны все, соединение блокируется, а не идёт напрямую")
+		case a != rules.Tunnel:
+			return 0, "", nil, fmt.Errorf("«блок» может стоять только последним")
+		}
+		fallback = append(fallback, id)
+	}
+	return act, profile, fallback, nil
+}
+
+// splitChain splits "DE -> NL, US" into trimmed parts.
+func splitChain(t string) []string {
+	for _, a := range []string{"→", "=>", ","} {
+		t = strings.ReplaceAll(t, a, "->")
+	}
+	parts := strings.Split(t, "->")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
+
+func parseTarget(t string, profiles []hysteria.Profile) (rules.Action, string, error) {
+	switch strings.ToLower(t) {
+	case "":
+		return 0, "", fmt.Errorf("после «->» укажите, куда: vpn, имя сервера, напрямую или блок")
+	case "direct", "напрямую", "прямо":
+		return rules.Direct, "", nil
+	case "block", "блок", "заблокировать", "блокировать":
+		return rules.Block, "", nil
+	case "vpn", "tunnel", "туннель", "впн", "основной", "main":
+		return rules.Tunnel, "", nil
+	}
+	if id, ok := strings.CutPrefix(t, "id:"); ok {
+		for _, p := range profiles {
+			if p.ID == id {
+				return rules.Tunnel, id, nil
+			}
+		}
+		return 0, "", fmt.Errorf("сервера с id %s нет", id)
+	}
+	low := strings.ToLower(t)
+	var exact, part []hysteria.Profile
+	for _, p := range profiles {
+		// The text is trimmed, so is the name: " FI " is written as "FI".
+		n := strings.ToLower(strings.TrimSpace(p.Name))
+		switch {
+		case n == low:
+			exact = append(exact, p)
+		case strings.Contains(n, low):
+			part = append(part, p)
+		}
+	}
+	pick := exact
+	if len(pick) == 0 {
+		pick = part
+	}
+	switch len(pick) {
+	case 1:
+		return rules.Tunnel, pick[0].ID, nil
+	case 0:
+		return 0, "", fmt.Errorf("сервер «%s» не найден (или напишите vpn, напрямую, блок)", t)
+	}
+	var names []string
+	for _, p := range pick {
+		names = append(names, "«"+p.Name+"»")
+	}
+	return 0, "", fmt.Errorf("«%s» подходит к нескольким серверам: %s — уточните", t, strings.Join(names, ", "))
+}
+
+// targetWords is targetWord plus ", fallback" for each fallback server.
+func targetWords(a rules.Action, profile string, fallback []string, profiles []hysteria.Profile) string {
+	w := targetWord(a, profile, profiles)
+	if a == rules.Tunnel {
+		for _, id := range fallback {
+			w += " -> " + targetWord(rules.Tunnel, id, profiles)
+		}
+	}
+	return w
+}
+
+func targetWord(a rules.Action, profile string, profiles []hysteria.Profile) string {
+	switch a {
+	case rules.Direct:
+		return "напрямую"
+	case rules.Block:
+		return "блок"
+	}
+	if profile == "" {
+		return "vpn"
+	}
+	var found *hysteria.Profile
+	same := 0
+	for i := range profiles {
+		if profiles[i].ID == profile {
+			found = &profiles[i]
+		}
+	}
+	if found == nil {
+		return "id:" + profile
+	}
+	for _, p := range profiles {
+		if strings.EqualFold(p.Name, found.Name) {
+			same++
+		}
+	}
+	if same > 1 || found.Name == "" || strings.ContainsAny(found.Name, "|#,→\"") ||
+		strings.Contains(found.Name, "->") || strings.Contains(found.Name, "=>") {
+		return "id:" + profile
+	}
+	// A name that reads back as something else: "Direct", "VPN", "Блок",
+	// "id:x", or a part of another server's name.
+	name := strings.TrimSpace(found.Name)
+	if a, id, fb, err := parseTargets(name, profiles); err != nil || a != rules.Tunnel || id != profile || len(fb) > 0 {
+		return "id:" + profile
+	}
+	return name
+}
+
+// RulesText renders the saved rules in the text format. Rules that share
+// exactly one program and have sites are grouped under [program].
+func (c *Controller) RulesText() string {
+	c.mu.Lock()
+	cfg := c.settings.Config
+	profiles := append([]hysteria.Profile(nil), c.profiles.List...)
+	c.mu.Unlock()
+	return formatRulesText(cfg, profiles)
+}
+
+func formatRulesText(cfg rules.Config, profiles []hysteria.Profile) string {
+	var b strings.Builder
+	b.WriteString("# Одна строка — одно правило: что -> куда. Проверяются сверху вниз.\n")
+	b.WriteString("# Куда: vpn (основной сервер), имя сервера, напрямую, блок. Опции после |: tcp, udp, выкл.\n\n")
+	section := ""
+	for _, r := range cfg.Rules {
+		apps, doms := r.AllApps(), r.AllDomains()
+		sec, lineApps := "", apps
+		if len(apps) == 1 && len(doms) > 0 && apps[0].InheritChildren && inSection(apps[0].Pattern) {
+			sec, lineApps = apps[0].Pattern, nil
+		}
+		if sec != section {
+			if sec == "" {
+				b.WriteString("\n[*]\n")
+			} else {
+				b.WriteString("\n[" + quoteItem(sec) + "]\n")
+			}
+			section = sec
+		}
+		var items []string
+		// "| без дочерних" when no program has children; when only some
+		// have, "=" marks the others (the option is for the whole line).
+		inherit := 0
+		for _, a := range lineApps {
+			if a.InheritChildren {
+				inherit++
+			}
+		}
+		nochild := len(lineApps) > 0 && inherit == 0
+		for _, a := range lineApps {
+			items = append(items, appText(a.Pattern, !a.InheritChildren && inherit > 0))
+		}
+		for _, d := range doms {
+			items = append(items, siteText(d))
+		}
+		line := strings.Join(items, " ")
+		name := nameText(r.Name)
+		if name == "" && line == "*" {
+			line = "app:*" // "* ->" alone is everything else
+		}
+		if name != "" {
+			line = name + ": " + line
+		}
+		line += " -> " + targetWords(r.Action, r.Profile, r.Fallback, profiles)
+		var opts []string
+		if r.Protocol != "" && r.Protocol != "any" {
+			opts = append(opts, strings.ToLower(r.Protocol))
+		}
+		if r.Enabled != nil && !*r.Enabled {
+			opts = append(opts, "выкл")
+		}
+		if nochild {
+			opts = append(opts, "без дочерних")
+		}
+		if len(opts) > 0 {
+			line += " | " + strings.Join(opts, " | ")
+		}
+		b.WriteString(line + "\n")
+	}
+	if section != "" {
+		b.WriteString("\n[*]\n")
+	}
+	b.WriteString("\n# Всё остальное\n* -> " + targetWords(cfg.DefaultAction, cfg.DefaultProfile, cfg.DefaultFallback, profiles) + "\n")
+	return b.String()
+}
+
+// inSection reports whether [p] reads back as exactly this program (with
+// the processes it starts): "vmmem" would become vmmem.exe, ".x" a site,
+// and [*] means every program.
+func inSection(p string) bool {
+	a, _, ok := sectionApp(p)
+	return ok && a.Pattern == p && a.InheritChildren && p != "*"
+}
+
+// appText writes program p so that a rule line reads it back as p: as is,
+// or with "app:" when it would read as something else ("my.app" a site,
+// "vmmem" vmmem.exe). only puts "=" in front (without the processes it
+// starts).
+func appText(p string, only bool) string {
+	w := p
+	if a, ok := lineApp(p); !ok || a.Pattern != p || !a.InheritChildren {
+		w = "app:" + p
+	}
+	if only {
+		w = "=" + w
+	}
+	return quoteItem(w)
+}
+
+// quoteItem puts an item in quotes ("" for a quote inside) when it has
+// spaces, separators or quotes, or could be read as options, an arrow or
+// a comment: regexp:^(ads|track)\.
+func quoteItem(s string) string {
+	if strings.ContainsAny(s, " \t,;|→\"") || strings.Contains(s, "->") || strings.Contains(s, "=>") ||
+		strings.HasPrefix(s, "#") || strings.HasPrefix(s, "//") || strings.HasPrefix(s, "[") {
+		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+	}
+	return s
+}
+
+// siteText writes a site so that parseRulesText reads it back as the same
+// site, not as a program: ".lan" keeps its dot ("lan" is lan.exe).
+func siteText(d string) string {
+	switch {
+	case rules.IsSpecialItem(d):
+		return quoteItem(d)
+	case strings.HasPrefix(d, "*."):
+		// "*.setup.exe" reads back as a program mask: there is no typed
+		// "subdomains only" to write it with, and no .exe zone either.
+		return d
+	case strings.HasPrefix(d, "."):
+		switch s := d[1:]; {
+		case isProgram(s):
+			return "domain:" + s
+		case !strings.Contains(s, "."):
+			return d
+		default:
+			return s
+		}
+	case isProgram(d):
+		return "full:" + d
+	}
+	return "=" + d
+}
+
+// nameText writes a rule name for the start of a line: as is, or in quotes
+// ("" for a quote inside) when it could be read as something else: "#1"
+// is a comment, "RU -> NL" has an arrow, "т.д." looks like a site.
+func nameText(n string) string {
+	n = strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ").Replace(n))
+	if strings.ContainsAny(n, `.\/*:|"→`) || strings.Contains(n, "->") || strings.Contains(n, "=>") ||
+		strings.HasPrefix(n, "#") || strings.HasPrefix(n, "[") {
+		return `"` + strings.ReplaceAll(n, `"`, `""`) + `"`
+	}
+	return n
+}
+
+// ApplyRulesText saves parsed text: replace=true makes it the whole rule
+// list (and "* ->" the default route); otherwise the rules are appended
+// and "* ->" is refused: adding rules must not change the default route.
+// Nothing is saved when any line has an error.
+func (c *Controller) ApplyRulesText(text string, replace bool) (SaveResult, RulesTextResult, error) {
+	res := c.ParseRulesText(text)
+	if len(res.Errors) > 0 {
+		return SaveResult{}, res, fmt.Errorf("в тексте ошибки (%d): ничего не сохранено", len(res.Errors))
+	}
+	if res.HasDefault && !replace {
+		return SaveResult{}, res, fmt.Errorf("строка «* -> …» меняет «Всё остальное», а «Добавить пачкой» только добавляет правила: уберите её или измените «Всё остальное» в режиме «Все правила»")
+	}
+	next := c.Settings()
+	if replace {
+		next.Rules = res.Rules
+	} else {
+		next.Rules = append(append([]rules.Rule(nil), next.Rules...), res.Rules...)
+	}
+	if res.HasDefault {
+		next.DefaultAction, next.DefaultProfile, next.DefaultFallback = res.DefaultAction, res.DefaultProfile, res.DefaultFallback
+	}
+	sr, err := c.SaveSettings(next)
+	return sr, res, err
+}

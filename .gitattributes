@@ -1,0 +1,2 @@
+# Golden test files are compared byte for byte.
+**/testdata/** text eol=lf

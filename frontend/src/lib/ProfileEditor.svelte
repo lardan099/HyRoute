@@ -1,0 +1,104 @@
+<script lang="ts">
+  import { api, errText, type Profile } from '../api';
+
+  let { profile, onclose, onsaved }: { profile: Profile; onclose: () => void; onsaved: () => void } = $props();
+
+  // Edit a deep copy of the initial value; untouched advanced fields
+  // (quic, congestion, ...) are kept.
+  // svelte-ignore state_referenced_locally
+  let p = $state<Profile>(JSON.parse(JSON.stringify(profile)));
+  let showSecrets = $state(false);
+  let error = $state('');
+  let saving = $state(false);
+
+  async function save() {
+    saving = true;
+    error = '';
+    try {
+      if (!p.obfs.type) p.obfs = {};
+      await api.SaveProfile(p);
+      onsaved();
+    } catch (e) {
+      error = errText(e);
+    }
+    saving = false;
+  }
+</script>
+
+<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+  <div class="dialog" role="dialog" aria-modal="true">
+    <h2>{p.id ? 'Сервер' : 'Новый сервер'}</h2>
+    <div class="grid">
+      <label for="pe-name">Название</label>
+      <input id="pe-name" bind:value={p.name} placeholder="например, 🇳🇱 Нидерланды" />
+
+      <label for="pe-host">Адрес и порт</label>
+      <div class="row">
+        <input id="pe-host" class="grow" bind:value={p.host} placeholder="example.com или IP" />
+        <input bind:value={p.ports} style="width: 170px" placeholder="443 или 443,20000-50000" title="Порт или диапазоны для port hopping" />
+      </div>
+
+      <label for="pe-auth">Пароль</label>
+      <div class="row">
+        <input id="pe-auth" class="grow" type={showSecrets ? 'text' : 'password'} bind:value={p.auth} />
+        <label class="check"><input type="checkbox" bind:checked={showSecrets} /> показать</label>
+      </div>
+
+      <label for="pe-obfs">Обфускация</label>
+      <div class="row">
+        <select id="pe-obfs" bind:value={p.obfs.type}>
+          <option value={undefined}>нет</option>
+          <option value="salamander">salamander</option>
+          <option value="gecko">gecko</option>
+        </select>
+        {#if p.obfs.type}
+          <input class="grow" type={showSecrets ? 'text' : 'password'} bind:value={p.obfs.password} placeholder="пароль obfs" />
+        {/if}
+      </div>
+    </div>
+
+    <details class="adv">
+      <summary>Дополнительно: TLS, скорость, port hopping</summary>
+      <div class="grid">
+        <label for="pe-sni">SNI</label>
+        <input id="pe-sni" bind:value={p.tls.sni} placeholder="по умолчанию — адрес сервера" />
+
+        <label for="pe-pin">Отпечаток (pinSHA256)</label>
+        <input id="pe-pin" bind:value={p.tls.pinSHA256} class="mono" placeholder="если задан, сертификат проверяется только по нему" />
+
+        <span></span>
+        <label class="check"><input type="checkbox" bind:checked={p.tls.insecure} /> Не проверять сертификат (insecure)</label>
+
+        <label for="pe-up">Скорость</label>
+        <div class="row">
+          <input id="pe-up" bind:value={p.bandwidth.up} placeholder="up, напр. 50 mbps" style="width: 170px" />
+          <input bind:value={p.bandwidth.down} placeholder="down, напр. 200 mbps" style="width: 170px" />
+          <span class="muted small">пусто — BBR</span>
+        </div>
+
+        <label for="pe-hop">Port hopping</label>
+        <input id="pe-hop" bind:value={p.hop.interval} placeholder="интервал, напр. 30s" style="width: 170px" />
+
+        <span></span>
+        <label class="check" title="HyRoute сам резолвит адрес и передаёт Hysteria IP: исключение из перехвата совпадает точно">
+          <input type="checkbox" bind:checked={p.pinServerIP} /> Резолвить адрес в HyRoute и передавать IP
+        </label>
+      </div>
+    </details>
+    {#if error}<div class="note error">{error}</div>{/if}
+    <p class="muted small">Если сервер сейчас используется, он переподключится с новыми настройками.</p>
+    <div class="actions">
+      <button onclick={onclose}>Отмена</button>
+      <button class="primary" onclick={save} disabled={saving || !p.host.trim()}>Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .dialog { width: min(720px, 94vw); }
+  .grid { display: grid; grid-template-columns: 150px 1fr; gap: 10px 14px; align-items: center; }
+  .grid > label:not(.check) { color: var(--muted); }
+  .adv { margin-top: 14px; }
+  .adv summary { cursor: pointer; color: var(--muted); margin-bottom: 10px; }
+  p.small { margin: 12px 0 0; }
+</style>

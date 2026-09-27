@@ -1,0 +1,30 @@
+server: 203.0.113.10:443,20000-50000
+auth: user:pass
+tls:
+    sni: example.com
+    insecure: true
+    pinSHA256: ba:88
+    ca: C:\certs\ca.pem
+obfs:
+    type: salamander
+    salamander:
+        password: 'obfs: #pw'
+transport:
+    udp:
+        hopInterval: 30s
+quic:
+    initStreamReceiveWindow: 8388608
+    maxIdleTimeout: 30s
+    disablePathMTUDiscovery: true
+congestion:
+    type: bbr
+    bbrProfile: standard
+bandwidth:
+    up: 50 mbps
+    down: 200 mbps
+fastOpen: true
+socks5:
+    listen: 127.0.0.1:50001
+    username: u
+    password: p
+    disableUDP: false
