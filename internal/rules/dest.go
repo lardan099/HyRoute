@@ -96,6 +96,9 @@ type ipPat struct {
 	pfx netip.Prefix // valid for a literal address or network
 	geo IPMatcher    // geoip:; nil when missing
 	src string
+	// pending: a geoip: category unusable only because the database is
+	// not downloaded yet (conn-rules: it may match once it is).
+	pending bool
 }
 
 func (p *ipPat) match(ip netip.Addr) bool {
@@ -138,10 +141,12 @@ func parseIPPattern(s string, g Geo) (p ipPat, warn string, err error) {
 		}
 		p.src = "geoip:" + name
 		if g == nil {
+			p.pending = true
 			return p, geoWarn(p.src, ErrGeoNoData), nil
 		}
 		m, gerr := g.IP(name)
 		if gerr != nil {
+			p.pending = errors.Is(gerr, ErrGeoNoData)
 			return p, geoWarn(p.src, gerr), nil
 		}
 		p.geo = m
@@ -187,10 +192,12 @@ func parseTypedDomain(s string, g Geo) (d domPat, warn string, ok bool, err erro
 			return d, "", true, errors.New("после geosite: укажите категорию, например geosite:youtube")
 		}
 		if g == nil {
+			d.pending = true
 			return d, geoWarn(d.src, ErrGeoNoData), true, nil
 		}
 		m, gerr := g.Site(name)
 		if gerr != nil {
+			d.pending = errors.Is(gerr, ErrGeoNoData)
 			return d, geoWarn(d.src, gerr), true, nil
 		}
 		d.geo = m

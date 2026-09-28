@@ -229,37 +229,6 @@ func (c *Controller) Inspect(query string) (InspectResult, error) {
 	return res, nil
 }
 
-// SiteLists lists the geosite lists that hold a site, the most specific
-// first, without the DNS lookups of Inspect: for a rule made from a
-// connection. Nothing when the database is not downloaded.
-func (c *Controller) SiteLists(domain string) []InspectHit {
-	out := []InspectHit{}
-	host := rules.NormalizeDomain(domain)
-	if host == "" {
-		return out
-	}
-	c.initGeo()
-	hits, err := c.geo.db.FindSite(host)
-	if err != nil {
-		return out
-	}
-	c.mu.Lock()
-	use := usage(c.settings.Config, c.profileName)
-	c.mu.Unlock()
-	for _, h := range hits {
-		tag := "geosite:" + h.Category
-		p, broad := tagPriority(tag)
-		used := use[tag]
-		if used == nil {
-			used = []string{}
-		}
-		out = append(out, InspectHit{Tag: tag, Title: popularTitle("site", h.Category), Entry: h.Entry, Attrs: h.Attrs,
-			Size: h.Size, Priority: p, Broad: broad, UsedBy: used})
-	}
-	sortHits(out)
-	return out
-}
-
 func geoErr(err error) error {
 	if errors.Is(err, geodata.ErrNoData) {
 		return errors.New("база правил ещё не скачана: «Настройки → Базы правил» → «Скачать»")

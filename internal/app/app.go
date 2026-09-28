@@ -54,6 +54,10 @@ type Session interface {
 	SetDNS(*dnspolicy.Policy) error
 	DNSHealth() []dnsproxy.Health
 	PauseDNS(until time.Time)
+	// conn-rules
+	// ECHPublicName reports whether name is an ECH public name as the
+	// engine knows it (dnscache.Cache.PublicName).
+	ECHPublicName(name string) bool
 }
 
 type Starter func(session.Config) (Session, error)
@@ -186,6 +190,8 @@ type Controller struct {
 	netmodesState // netmodes: «Сети», guarded by netMu (netmodes.go)
 	proxyUDPState // socks-udp (proxies.go)
 	cliState      // cli: prefsMu, the exit guard (cliapi.go)
+	// conn-rules: undo entries under their own leaf lock (connrules.go)
+	connRulesState
 }
 
 // New builds a controller with journals and a logger.

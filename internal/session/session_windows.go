@@ -237,6 +237,13 @@ func (s *Session) Endpoint(profile string) *tunnels.Endpoint { return s.mgr.Get(
 // ServerIPRoom is how many more server IPs the exclusions can take.
 func (s *Session) ServerIPRoom() int { return s.eng.ServerIPRoom() }
 
+// conn-rules
+
+// ECHPublicName reports whether name is an ECH public name as the engine
+// knows it (dnscache.Cache.PublicName: the built-in list plus the names
+// learned from HTTPS/SVCB answers).
+func (s *Session) ECHPublicName(name string) bool { return s.eng.DNS.PublicName(name) }
+
 func (s *Session) Stats() Stats {
 	e, r := s.eng, s.rel
 	return Stats{

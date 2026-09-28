@@ -73,6 +73,9 @@ func TestSniffTLSTunnelRemoteDNS(t *testing.T) {
 	if a := <-f.seen; a.Host != "sni.example.com" {
 		t.Fatalf("socks target %+v", a)
 	}
+	if v := rec.View(time.Now()); v.ECH || v.DomainSrc != "sni" { // conn-rules: no ECH extension
+		t.Fatalf("%+v", v)
+	}
 }
 
 func TestSniffHTTPDirectForwardsBufferUnchanged(t *testing.T) {
@@ -230,7 +233,8 @@ func TestSniffECHOuterName(t *testing.T) {
 			}
 			return r
 		}
-		c := f.dialEntry(t, &nat.Entry{Mode: nat.Sniff})
+		rec := &flows.Record{}
+		c := f.dialEntry(t, &nat.Entry{Mode: nat.Sniff, Rec: rec})
 		c.Write(echHello("localhost"))
 		if d := <-ch; d.domain != "localhost" || d.src != rules.SrcECH {
 			t.Fatalf("%v: decision input %+v", decided, d)
@@ -241,6 +245,11 @@ func TestSniffECHOuterName(t *testing.T) {
 		}
 		if decided != rules.SrcSNI && a != socks5.AddrFromAddrPort(f.echo.Addr().(*net.TCPAddr).AddrPort()) {
 			t.Fatalf("%v: socks target %+v, want the address", decided, a)
+		}
+		// conn-rules: the record carries the ECH marker whatever the
+		// decider made of the outer name.
+		if v := rec.View(time.Now()); !v.ECH {
+			t.Fatalf("%v: ECH marker missing: %+v", decided, v)
 		}
 		c.Close()
 	}

@@ -830,6 +830,7 @@ func (c *Core) decide(p *packet.Packet, addr *divert.Address, proto uint8, key n
 	rec := &flows.Record{PID: pid, Proto: proto, Src: key.Src, Dst: key.Dst}
 	if proc != nil {
 		rec.Process, rec.Path = proc.Name, proc.Path
+		rec.Parents = parentChain(proc) // conn-rules
 	}
 	sub := rules.Subject{Proc: proc, Proto: proto, Dst: key.Dst}
 	set := c.Rules.Load()
@@ -837,12 +838,16 @@ func (c *Core) decide(p *packet.Packet, addr *divert.Address, proto uint8, key n
 		return // dns: a DNS-mode connection (or a private server's, as before)
 	}
 	res, excluded := c.exclusion(pid, known, proc, proto, key.Dst)
+	// conn-rules: the cache is read once; the record keeps the sites as the
+	// engine saw them (a rule made from this row is placed by them).
+	sites := c.DNS.Sites(key.Dst.Addr())
+	rec.Sites, rec.SitesPartial = flows.CapSites(sites)
 	var pk groups.Pick
 	if excluded == "" && c.dohBlocked(proc, proto, key.Dst, "") { // dns
 		res = rules.Result{Action: rules.Block, Rule: dnspolicy.RuleBrowserDoH}
 		c.DNSDoH.Add(1)
 	} else if excluded == "" {
-		res = set.EvaluateSites(sub, c.packetSites(set, proto, key.Dst))
+		res = set.EvaluateSites(sub, c.packetSitesOf(set, proto, key.Dst, sites))
 		res, pk = c.pick(res, proto == packet.ProtoUDP, c.hint(res, proc, "", key.Dst.Addr()))
 	}
 	// Our own sockets (the relay's Direct dials, Hysteria's control
@@ -863,7 +868,7 @@ func (c *Core) decide(p *packet.Packet, addr *divert.Address, proto uint8, key n
 	if res.Domain == "" && !res.NeedsDomain {
 		// The route did not depend on the domain; show the cached name
 		// anyway so the connection is recognizable.
-		if names := c.DNS.Names(key.Dst.Addr()); len(names) > 0 {
+		if names := flatNames(sites); len(names) > 0 {
 			rec.Set(func(f *flows.Fields) { f.Domain, f.DomainSrc = strings.Join(names, ","), rules.SrcDNS.String() })
 		}
 	}
@@ -1125,15 +1130,59 @@ func (c *Core) mayTunnel(sub rules.Subject, set *rules.Set) bool {
 // with an unknown domain is dropped so the browser falls back to TCP. The
 // cache stays the relay's fallback.
 func (c *Core) packetSites(set *rules.Set, proto uint8, dst netip.AddrPort) [][]string {
-	if set.ExactWeb {
-		if proto == packet.ProtoTCP && rules.WebPort(dst.Port()) {
-			return nil
-		}
-		if rules.NamelessUDP(set.ExactWeb, c.Opt.BlockQUIC, proto, dst.Port()) {
-			return nil
-		}
+	if c.webNameless(set, proto, dst) {
+		return nil
 	}
 	return c.DNS.Sites(dst.Addr())
+}
+
+// webNameless reports whether packetSites gives a flow no names.
+func (c *Core) webNameless(set *rules.Set, proto uint8, dst netip.AddrPort) bool {
+	if set.ExactWeb {
+		if proto == packet.ProtoTCP && rules.WebPort(dst.Port()) {
+			return true
+		}
+		if rules.NamelessUDP(set.ExactWeb, c.Opt.BlockQUIC, proto, dst.Port()) {
+			return true
+		}
+	}
+	return false
+}
+
+// packetSitesOf is packetSites with the cache already read (sites =
+// c.DNS.Sites(dst.Addr())): decide reads it once for the decision, the
+// record and the display fallback (conn-rules).
+func (c *Core) packetSitesOf(set *rules.Set, proto uint8, dst netip.AddrPort, sites [][]string) [][]string {
+	if c.webNameless(set, proto, dst) {
+		return nil
+	}
+	return sites
+}
+
+// flatNames are the names of sites, sorted and without repeats
+// (dnscache.Cache.Names from an already read Sites).
+func flatNames(sites [][]string) []string {
+	var out []string
+	for _, site := range sites {
+		out = append(out, site...)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// parentChain is the owner's ancestry as the rules see it (conn-rules):
+// nearest first, the full path or the name when the path is unknown, at
+// most procinfo.MaxDepth.
+func parentChain(proc *procinfo.Info) []string {
+	var out []string
+	for p := proc.Parent; p != nil && len(out) < procinfo.MaxDepth; p = p.Parent {
+		if p.Path != "" {
+			out = append(out, p.Path)
+		} else if p.Name != "" {
+			out = append(out, p.Name)
+		}
+	}
+	return out
 }
 
 // RelayDecide is the relay's Decide callback for SNIFF entries.

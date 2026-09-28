@@ -45,3 +45,9 @@ func (NopSession) ServerIPRoom() int { return 0 }
 func (NopSession) SetDNS(*dnspolicy.Policy) error { return nil }
 func (NopSession) DNSHealth() []dnsproxy.Health   { return nil }
 func (NopSession) PauseDNS(time.Time)             {}
+
+// conn-rules
+
+// ECHPublicName knows no public name (callers fall back to the built-in
+// list, dnscache.KnownPublicName).
+func (NopSession) ECHPublicName(string) bool { return false }

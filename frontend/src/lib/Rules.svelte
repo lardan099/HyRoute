@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, errText, toLists, cleanSettings, cleanFallback, isGroupId, portsText, isEditToken, plural, tokenStale, editGone, type Settings, type Rule, type LintIssue, type RulesetsView } from '../api';
+  import { api, errText, toLists, cleanSettings, cleanFallback, isGroupId, portsText, isEditToken, plural, tokenStale, editGone, newRuleID, type Settings, type Rule, type LintIssue, type RulesetsView } from '../api';
   import { ui, hide, profileName, mainTarget, mainText } from '../state.svelte';
   import Icon from './Icon.svelte';
   import TargetOptions from './TargetOptions.svelte';
@@ -14,14 +14,18 @@
   import RulesetDialog from './RulesetDialog.svelte';
   import { templates, ruleFromTemplate, schemes, applyScheme, schemeTemplates, type Scheme } from './templates';
   import { itemLabel, loadGeo, geo } from '../geo.svelte';
-  import { ruleTitle as title, appLabel, siteLabel } from '../ruletitle';
+  import { ruleTitle as title, appLabel, siteLabel, locateRule, sameRule } from '../ruletitle';
   import { toast } from '../toast.svelte';
 
   let s = $state<Settings | null>(null);
   let error = $state('');
   let lint = $state<LintIssue[]>([]);
   // token: the rules the editor was opened for; it never follows a reload.
-  let editing = $state<{ index: number; rule: Rule; title: string; token: string } | null>(null);
+  // orig (conn-rules): the rule as it was when the editor opened (null for a
+  // new one): a save finds it again by it (locateRule), wherever the rule
+  // is now; lost: it was changed or removed elsewhere, «Сохранить» adds the
+  // draft as a new rule.
+  let editing = $state<{ index: number; rule: Rule; title: string; token: string; orig: Rule | null; lost?: boolean } | null>(null);
   // rulesets: edit mode (an inactive profile opened without switching to
   // it), the profile list from the bar, and a note after edit mode ended.
   let editId = $state<string | null>(null);
@@ -36,6 +40,8 @@
   let wizard = $state(false);
   let dragFrom = $state<number | null>(null);
   let dragOver = $state<number | null>(null);
+  // The list a drag started on: a drop on a reloaded list is cancelled.
+  let dragList: Settings | null = null;
 
   // Every change bumps edits; a load started before a newer change would
   // bring back the list without it.
@@ -224,18 +230,57 @@
   }
 
   // saveRule saves with the token the editor was opened with: after a
-  // switch it is refused, never written into another profile.
-  async function saveRule(index: number, r: Rule, token: string) {
+  // switch it is refused, never written into another profile. It never
+  // trusts the index alone: the rule is found again by what it was when
+  // the editor opened (the list may have changed: a rule from
+  // «Соединения», an undo, a reload after a refused save).
+  async function saveRule(r: Rule) {
+    const ed = editing!;
     const next = clone();
-    next.ruleset = token;
-    if (index < 0) next.rules.push(r);
-    else next.rules[index] = r;
+    next.ruleset = ed.token;
+    if (ed.orig && !ed.lost) {
+      const cur = next.rules[ed.index];
+      const at = cur && sameRule(cur, ed.orig) ? ed.index : locateRule(next.rules, { id: ed.orig.id ?? '', index: ed.index, rule: ed.orig });
+      if (at < 0) {
+        ed.index = -1;
+        ed.lost = true;
+        return; // the editor stays open with the draft and says why
+      }
+      ed.index = at;
+    }
+    if (ed.orig && !ed.lost) next.rules[ed.index] = r;
+    else next.rules.push({ ...r, id: r.id || newRuleID() });
     await persist(next);
     editing = null;
   }
 
   function openEditor(index: number, rule: Rule, t: string) {
-    editing = { index, rule, title: t, token: s?.ruleset ?? '' };
+    editing = { index, rule, title: t, token: s?.ruleset ?? '', orig: index >= 0 ? JSON.parse(JSON.stringify(rule)) : null };
+  }
+
+  // conn-rules: «Открыть правило» of a toast. Runs once the list is loaded,
+  // and when set while the page is already shown.
+  $effect(() => {
+    if (s && ui.focusRule) openFocused();
+  });
+
+  function openFocused() {
+    if (editId) {
+      setEdit(null); // the rule is in the active rules
+      return;
+    }
+    const want = ui.focusRule!;
+    ui.focusRule = null;
+    const i = locateRule(s!.rules, want);
+    if (i < 0) {
+      toast({ tone: 'info', text: () => 'Правило не найдено: список правил изменился.' });
+      return;
+    }
+    if (editing) {
+      toast({ tone: 'info', text: () => 'Закройте редактор правила, чтобы открыть другое.' });
+      return;
+    }
+    openEditor(i, JSON.parse(JSON.stringify(s!.rules[i])), 'Правило');
   }
 
   function move(from: number, to: number) {
@@ -275,7 +320,7 @@
   }
 
   function newRule(): Rule {
-    return { name: '', apps: [], domains: [], action: 'tunnel', profile: '', protocol: '' };
+    return { id: newRuleID(), name: '', apps: [], domains: [], action: 'tunnel', profile: '', protocol: '' };
   }
 
   function routeLabel(r: { action: string; profile?: string; fallback?: string[] }): string {
@@ -389,8 +434,9 @@
           }}
           ondrop={(e) => {
             e.preventDefault();
-            if (dragFrom != null) move(dragFrom, i);
+            if (dragFrom != null && s === dragList) move(dragFrom, i);
             dragFrom = dragOver = null;
+            dragList = null;
           }}
         >
           <span
@@ -401,6 +447,7 @@
             title="Перетащите, чтобы изменить порядок"
             ondragstart={(e) => {
               dragFrom = i;
+              dragList = s;
               e.dataTransfer?.setData('text/plain', String(i));
             }}
             ondragend={() => (dragFrom = dragOver = null)}><Icon name="grip" size={16} /></span
@@ -487,7 +534,8 @@
     rule={editing.rule}
     title={editing.title}
     stale={staleFor(editing.token)}
-    onsave={(r) => saveRule(editing!.index, r, editing!.token)}
+    note={editing.lost ? 'Это правило изменили или удалили в другом месте. «Сохранить» добавит черновик как новое правило в конец списка.' : ''}
+    onsave={saveRule}
     onclose={() => (editing = null)}
   />
 {/if}

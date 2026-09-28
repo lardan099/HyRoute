@@ -42,6 +42,13 @@ func (c *Cache) PublicName(name string) bool {
 	return ok && now.Before(exp)
 }
 
+// KnownPublicName reports whether name is on the built-in list of ECH
+// public names (knownPublicNames), without the names a cache learned:
+// what HyRoute knows without a running session (conn-rules).
+func KnownPublicName(name string) bool {
+	return knownPublicNames[rules.NormalizeDomain(name)]
+}
+
 // addPublicLocked remembers a public name learned from an answer.
 func (c *Cache) addPublicLocked(name string, exp time.Time) {
 	if name == "" || knownPublicNames[name] {

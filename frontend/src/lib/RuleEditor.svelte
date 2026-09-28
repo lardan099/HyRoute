@@ -12,14 +12,16 @@
 
   // stale (rulesets): the rules this editor was opened for are no longer the
   // page's (the rule profile changed meanwhile): the text says so and
-  // «Сохранить» is off.
+  // «Сохранить» is off. note (conn-rules): a warning that leaves «Сохранить»
+  // on (stale wins when both are set).
   let {
     rule,
     title,
     stale = '',
+    note = '',
     onsave,
     onclose,
-  }: { rule: Rule; title: string; stale?: string; onsave: (r: Rule) => Promise<void>; onclose: () => void } = $props();
+  }: { rule: Rule; title: string; stale?: string; note?: string; onsave: (r: Rule) => Promise<void>; onclose: () => void } = $props();
 
   // svelte-ignore state_referenced_locally
   let r = $state<Rule>(JSON.parse(JSON.stringify(rule)));
@@ -545,7 +547,7 @@
     {/if}
     {#if error}<div class="note error">{hide(error)}</div>{/if}
     {#if widened}<div class="note warn small">Правило теперь для всех программ и сайтов на этих портах.</div>{/if}
-    {#if stale}<div class="note warn">{stale}</div>{/if}
+    {#if stale}<div class="note warn">{stale}</div>{:else if note}<div class="note warn">{note}</div>{/if}
 
     <div class="actions">
       <button onclick={onclose}>Отмена</button>

@@ -469,7 +469,6 @@ func (g *GUI) SetGeoPrefs(source, siteURL, ipURL string, auto bool, hours int) e
 
 // List inspector: which geosite/geoip lists contain a site or IP.
 func (g *GUI) Inspect(query string) (app.InspectResult, error) { return g.ctl.Inspect(query) }
-func (g *GUI) SiteLists(domain string) []app.InspectHit        { return g.ctl.SiteLists(domain) }
 func (g *GUI) GeoList(kind, name, filter string, offset, limit int) (geodata.Listing, error) {
 	return g.ctl.GeoList(kind, name, filter, offset, limit)
 }

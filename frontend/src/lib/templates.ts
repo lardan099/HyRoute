@@ -5,7 +5,7 @@
 // rule with both matches only when those programs open those sites, and a
 // program such as Discord (voice by IP) or Telegram needs all its traffic
 // through the VPN.
-import { cleanSettings, type Action, type Rule, type RulesConfig, type Settings } from '../api';
+import { cleanSettings, newRuleID, type Action, type Rule, type RulesConfig, type Settings } from '../api';
 
 export interface Template {
   id: string;
@@ -68,6 +68,7 @@ export const templates: Template[] = [
 
 export function ruleFromTemplate(t: Template): Rule {
   return {
+    id: newRuleID(), // conn-rules: rules made in the UI get an ID
     name: t.name,
     apps: (t.apps ?? []).map((a) => ({ pattern: a, inheritChildren: true })),
     domains: [...t.domains],

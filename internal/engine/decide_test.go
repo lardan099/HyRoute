@@ -227,3 +227,72 @@ func TestExclusionKinds(t *testing.T) {
 		t.Fatalf("%+v", v)
 	}
 }
+
+// conn-rules: decide keeps the owner's ancestry and the DNS sites it
+// decided by on the record (a rule made from the row is placed by them),
+// from its single cache read; the display fallback still shows the sorted
+// flat names.
+func TestRecordParentsAndSites(t *testing.T) {
+	h := newHarness(t, appRules, Options{})
+	paths := map[uint32]string{
+		1:   `C:\Windows\explorer.exe`,
+		600: `C:\Steam\steam.exe`,
+		700: `C:\Games\game.exe`,
+	}
+	h.c.Procs = procinfo.NewCacheWith(procinfo.System{
+		Query: func(pid uint32) (string, int64, bool) {
+			p, ok := paths[pid]
+			return p, 1, ok
+		},
+		Snapshot: func() []procinfo.ProcEntry {
+			return []procinfo.ProcEntry{{PID: 1}, {PID: 600, PPID: 1}, {PID: 700, PPID: 600}}
+		},
+	})
+	h.c.DNS.AddResponse(cnameResponse(t, "game.example.com.", "xyz.elb.amazonaws.com.", "198.51.100.60"))
+	h.own(17, L, "198.51.100.60:27015", 700)
+	h.sendUDP(L, "198.51.100.60:27015", []byte("hi"))
+	v := lastRecord(t, h.c)
+	if len(v.Parents) != 2 || v.Parents[0] != `C:\Steam\steam.exe` || v.Parents[1] != `C:\Windows\explorer.exe` {
+		t.Fatalf("parents %q", v.Parents)
+	}
+	if len(v.Sites) != 1 || len(v.Sites[0]) != 2 || v.Sites[0][0] != "game.example.com" || v.Sites[0][1] != "xyz.elb.amazonaws.com" || v.SitesPartial {
+		t.Fatalf("sites %q %v", v.Sites, v.SitesPartial)
+	}
+	if v.Domain != "game.example.com,xyz.elb.amazonaws.com" || v.DomainSrc != "dns" {
+		t.Fatalf("display %q %q", v.Domain, v.DomainSrc)
+	}
+
+	// With ExactWeb a web flow is decided without the cache, but the
+	// record still carries its sites.
+	set := *h.c.Rules.Load()
+	set.ExactWeb = true
+	h.c.Rules.Swap(&set)
+	h.own(6, "192.168.1.5:40300", "198.51.100.60:443", 700)
+	h.sendTCP("192.168.1.5:40300", "198.51.100.60:443", packet.FlagSYN, "")
+	h.next(t)
+	if v := lastRecord(t, h.c); len(v.Sites) != 1 || v.Sites[0][0] != "game.example.com" {
+		t.Fatalf("exact web: %+v", v)
+	}
+}
+
+// parentChain: nearest first, the path or else the name, capped.
+func TestParentChain(t *testing.T) {
+	p := &procinfo.Info{Name: "a.exe"}
+	cur := p
+	for i := 0; i < procinfo.MaxDepth+3; i++ {
+		cur.Parent = &procinfo.Info{Name: "p.exe"}
+		cur = cur.Parent
+	}
+	p.Parent.Path = `C:\X\p.exe`
+	p.Parent.Parent.Name = ""
+	got := parentChain(p)
+	if len(got) != procinfo.MaxDepth-1 && len(got) != procinfo.MaxDepth {
+		t.Fatalf("%d", len(got))
+	}
+	if got[0] != `C:\X\p.exe` || got[1] != "p.exe" {
+		t.Fatalf("%q", got)
+	}
+	if parentChain(&procinfo.Info{Name: "x.exe"}) != nil {
+		t.Fatal("no parents")
+	}
+}

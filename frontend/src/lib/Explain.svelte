@@ -1,17 +1,37 @@
 <script lang="ts">
   // "Проверить адрес": which rule would take a site or program and where it
   // would go. Useful when a site goes the wrong way.
+  import { onMount } from 'svelte';
   import { api, errText, dnsRuleLabel, type DNSExplain, type Explanation, type Settings } from '../api';
-  import { profileName, hide } from '../state.svelte';
+  import { ui, profileName, hide } from '../state.svelte';
   import Icon from './Icon.svelte';
 
-  let { current }: { current: () => Settings | null } = $props();
+  // initial (conn-rules): prefilled from a connection and run at once, with
+  // a note above the answer; onclose: a close button (in a dialog).
+  let {
+    current,
+    initial,
+    onclose,
+  }: {
+    current: () => Settings | null;
+    initial?: { app: string; target: string; proto: string; port?: number; note: string };
+    onclose?: () => void;
+  } = $props();
 
-  let app = $state('');
-  let target = $state('');
+  // svelte-ignore state_referenced_locally
+  const init = initial;
+  let app = $state(init?.app ?? '');
+  let target = $state(init?.target ?? '');
   // ports: one destination port (a connection has one) and the protocol.
-  let port = $state('');
-  let proto = $state<'tcp' | 'udp'>('tcp');
+  let port = $state(init?.port ? String(init.port) : '');
+  let proto = $state<'tcp' | 'udp'>(init?.proto === 'udp' ? 'udp' : 'tcp');
+  // A prefilled address stays masked in Privacy mode until the field is
+  // focused (then it is the user's to see and edit).
+  let revealed = $state(!init);
+
+  onMount(() => {
+    if (init) run();
+  });
   // The answer with the query it is for: the fields may have changed since.
   let ex = $state<(Explanation & { q: { app: string; target: string; proto: string } }) | null>(null);
   let error = $state('');
@@ -49,7 +69,7 @@
   // dns: how the name resolves with the DNS settings. With a program and a
   // different answer through the Windows DNS client, both (p: the lead).
   function dnsText(d: DNSExplain, p = 'DNS'): string {
-    const rule = (r?: string) => (!r || r === 'default' ? 'Всё остальное' : (dnsRuleLabel[r] ?? r));
+    const rule = (r?: string) => (!r || r === 'default' ? 'Всё остальное' : (dnsRuleLabel[r] ?? hide(r)));
     let cond = '';
     if (d.cond === 'app') cond = ` Так решает правило «${rule(d.rule)}» для программы: спрашивает служба DNS Windows, и программа неизвестна.`;
     else if (d.cond === 'proto') cond = ` Так решает правило «${rule(d.rule)}» для ${d.proto || 'некоторых портов'}.`;
@@ -81,14 +101,28 @@
   }
 </script>
 
-<details class="card check">
-  <summary><Icon name="search" size={16} /> Проверить адрес <span class="muted small">— куда пойдёт сайт или программа и почему</span></summary>
+<details class="card check" open={!!init}>
+  <summary
+    ><Icon name="search" size={16} /> Проверить адрес <span class="muted small grow">— куда пойдёт сайт или программа и почему</span>{#if onclose}<button
+        class="icon"
+        aria-label="Закрыть"
+        title="Закрыть"
+        onclick={(e) => {
+          e.preventDefault();
+          onclose();
+        }}><Icon name="x" size={16} /></button
+      >{/if}</summary
+  >
   <p class="muted small">
     Сайт идёт не туда? Введите его адрес (и, если нужно, программу) — HyRoute покажет, какое правило сработает. Можно указать порт и
     протокол.
   </p>
   <div class="row">
-    <input class="grow site" placeholder="Сайт или IP: youtube.com, ссылка, 1.2.3.4" bind:value={target} onkeydown={(e) => e.key === 'Enter' && run()} />
+    {#if ui.privacy && !revealed}
+      <input class="grow site" readonly value={hide(target)} aria-label="Сайт или IP" onfocus={() => (revealed = true)} />
+    {:else}
+      <input class="grow site" placeholder="Сайт или IP: youtube.com, ссылка, 1.2.3.4" bind:value={target} onkeydown={(e) => e.key === 'Enter' && run()} />
+    {/if}
     <input class="grow prog" placeholder="Программа (необязательно): chrome" bind:value={app} onkeydown={(e) => e.key === 'Enter' && run()} />
     <input class="port" placeholder="Порт" inputmode="numeric" aria-label="Порт (необязательно)" bind:value={port} onkeydown={(e) => e.key === 'Enter' && run()} />
     <div class="seg" role="group" aria-label="Протокол">
@@ -97,13 +131,14 @@
     </div>
     <button class="primary" onclick={run} disabled={!target.trim() && !app.trim() && !port.trim()}>Проверить</button>
   </div>
-  {#if error}<div class="note error">{error}</div>{/if}
+  {#if error}<div class="note error">{hide(error)}</div>{/if}
+  {#if init?.note}<div class="note info small">{init.note}</div>{/if}
   {#if ex}
     <div class="result route-{ex.winner.action}">
       {queryText(ex)} → {routeText(ex.winner.action, ex.winner.profile, ex.group, ex.via)}
     </div>
     <div class="muted small">
-      {#if ex.winner.index === -2}QUIC с неизвестным сайтом блокируется («Блокировать QUIC с неизвестным сайтом»).{:else if ex.winner.index < 0}Ни одно правило не подошло, сработало «Всё остальное».{:else}Сработало правило «{ex.winner.name}»: {hide(ex.winner.reason)}.{/if}
+      {#if ex.winner.index === -2}QUIC с неизвестным сайтом блокируется («Блокировать QUIC с неизвестным сайтом»).{:else if ex.winner.index < 0}Ни одно правило не подошло, сработало «Всё остальное».{:else}Сработало правило «{hide(ex.winner.name)}»: {hide(ex.winner.reason)}.{/if}
     </div>
     {#if ex.dns}
       {#if ex.dns.system}
@@ -120,7 +155,7 @@
         {#each ex.steps as st}
           <li class:win={st.winner}>
             <span class="mark">{st.winner ? '★' : st.matched ? '✓' : '·'}</span>
-            <b>{st.index === -2 ? 'Блокировка QUIC' : st.index < 0 ? 'Всё остальное' : st.name}</b> <span class="muted">— {hide(st.reason)}</span>
+            <b>{st.index === -2 ? 'Блокировка QUIC' : st.index < 0 ? 'Всё остальное' : hide(st.name)}</b> <span class="muted">— {hide(st.reason)}</span>
           </li>
         {/each}
       </ol>

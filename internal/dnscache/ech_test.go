@@ -82,3 +82,13 @@ func TestPublicName(t *testing.T) {
 		t.Fatal("learned public name kept for over an hour")
 	}
 }
+
+// KnownPublicName reads only the built-in list.
+func TestKnownPublicName(t *testing.T) {
+	if !KnownPublicName("cloudflare-ech.com") || !KnownPublicName("Cloudflare-ECH.com.") {
+		t.Fatal("built-in name")
+	}
+	if KnownPublicName("pub.example") || KnownPublicName("") {
+		t.Fatal("not on the list")
+	}
+}

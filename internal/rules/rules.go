@@ -207,6 +207,9 @@ type domPat struct {
 	// uni: keyword:/regexp: written with non-ASCII letters ("банк"), also
 	// tried on the Unicode form of punycode names (see alt).
 	uni bool
+	// pending: a geosite: category unusable only because the database is
+	// not downloaded yet (conn-rules: it may match once it is).
+	pending bool
 }
 
 // alt is the Unicode form of a punycode name (xn--…) for a uni pattern:
@@ -697,17 +700,44 @@ func (s *Set) firstMatch(sub Subject, domain string) *compiled {
 // firstMatchAny is firstMatch for a site known by several names: a domain
 // rule matches when any of them does.
 func (s *Set) firstMatchAny(sub Subject, names []string) *compiled {
-	for i := range s.rules {
-		r := &s.rules[i]
+	if i := siteWinner(s.rules, sub, names); i >= 0 {
+		return &s.rules[i]
+	}
+	return nil
+}
+
+// siteWinner is the index in rules of the first rule that decides sub for
+// a site known by names (-1 = none): the per-site step of EvaluateSites,
+// shared with Winner (conn-rules) so the two cannot drift.
+func siteWinner(rules []compiled, sub Subject, names []string) int {
+	for i := range rules {
+		r := &rules[i]
 		if !r.base(sub) {
 			continue
 		}
 		if r.hasDest() && !r.matchIP(sub.Dst.Addr()) && !slices.ContainsFunc(names, r.matchDomain) {
 			continue
 		}
-		return r
+		return i
 	}
-	return nil
+	return -1
+}
+
+// siteNames normalizes the names of one site and drops repeats.
+func siteNames(site []string) []string {
+	names := make([]string, 0, len(site))
+	for _, n := range site {
+		if n = NormalizeDomain(n); n != "" && !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	return names
+}
+
+// sameRoute is EvaluateSites' agreement test: the same action, profile
+// and fallbacks (not the same rule).
+func sameRoute(a, b Result) bool {
+	return a.Action == b.Action && a.Profile == b.Profile && slices.Equal(a.Fallback, b.Fallback)
 }
 
 // EvaluateDomain decides with an exact domain (SNI, Host, or a single name).
@@ -746,16 +776,11 @@ func (s *Set) EvaluateSites(sub Subject, sites [][]string) Result {
 		var all []string
 		agree := true
 		for i, site := range sites {
-			names := make([]string, 0, len(site))
-			for _, n := range site {
-				if n = NormalizeDomain(n); n != "" && !slices.Contains(names, n) {
-					names = append(names, n)
-				}
-			}
+			names := siteNames(site)
 			r := s.result(s.firstMatchAny(sub, names))
 			if i == 0 {
 				first = r
-			} else if r.Action != first.Action || r.Profile != first.Profile || !slices.Equal(r.Fallback, first.Fallback) {
+			} else if !sameRoute(r, first) {
 				agree = false
 				break
 			}

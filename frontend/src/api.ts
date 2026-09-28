@@ -345,6 +345,8 @@ export interface Flow {
   tooBig?: number;
   // dns: a DNS row (stage 'dns', domainSrc 'query'): the queries it counts
   count?: number;
+  // conn-rules: the hello carried ECH (flows.Fields.ECH)
+  ech?: boolean;
 }
 
 export interface Connections {
@@ -582,8 +584,6 @@ interface GUI {
   SetGeoPrefs(source: string, siteURL: string, ipURL: string, auto: boolean, hours: number): Promise<void>;
   GeoCategories(kind: 'site' | 'ip', query: string): Promise<string[]>;
   Inspect(query: string): Promise<InspectResult>;
-  // The geosite lists that hold a site (no DNS lookups), most specific first.
-  SiteLists(domain: string): Promise<InspectHit[]>;
   // Backup: full (servers, subscriptions, rules, proxies, preferences;
   // encrypted with the password) or rules only. Returns the path ('' =
   // cancelled). Restore: ChooseBackup reads a file, RestoreBackup applies it.
@@ -1497,4 +1497,124 @@ interface GUI {
   RulesJSON(ruleset: string): Promise<string>;
   // The «Правила текстом» preview: replace = mode «Все правила».
   ParseRulesTextFor(text: string, replace: boolean): Promise<RulesTextResult>;
+}
+
+// ==== conn-rules ====
+
+// A Connections row as Go needs it to find the flow's record (app.ConnFacts).
+export interface ConnFacts {
+  id: number;
+  process: string;
+  path: string;
+  pid: number;
+  proto: string;
+  dst: string;
+  domain: string;
+  domainSrc: string;
+  ech: boolean;
+  excluded: string;
+  attrib: string;
+  stage: string;
+}
+
+export interface ConnScope {
+  pattern: string;
+  kind: 'site' | 'host' | 'ip' | 'alias';
+  label: string; // Unicode for IDN
+  ascii: string; // punycode: shown in Privacy mode
+}
+
+export interface ConnRoute {
+  index: number; // -1 = «Всё остальное»
+  rule: Rule | null;
+  action: Action;
+  profile: string;
+  ambiguous: boolean;
+}
+
+export interface ConnRuleInfo {
+  excluded: string;
+  blocked: string;
+  app: string;
+  appSystem: boolean;
+  appLauncher: boolean;
+  hasParents: boolean;
+  scopes: ConnScope[] | null;
+  dnsName: boolean;
+  sites: number;
+  sharedIP: boolean;
+  addrSites: number;
+  ech: '' | 'public' | 'hidden';
+  echName: string;
+  dnsQuery: boolean;
+  appNote: string;
+  explainTarget: string;
+  current: ConnRoute;
+  ruleset: string;
+  rulesetName: string;
+}
+
+export interface ConnRuleRef {
+  index: number;
+  rule: Rule;
+}
+
+export interface ConnRuleResult {
+  kind: 'added' | 'changed' | 'same';
+  index: number;
+  ruleId: string;
+  rule: Rule;
+  aboveIndex: number; // -1 = at the end
+  matches: boolean;
+  placedByRule: boolean;
+  notEffective: boolean;
+  unchanged: boolean;
+  overriddenBy: number[] | null;
+  shadowed: number[] | null;
+  narrowed: number[] | null;
+  refs: ConnRuleRef[] | null;
+  undo: string;
+  seq: number;
+  ruleset: string;
+  rulesetName: string;
+  rev: number;
+}
+
+export interface ConnRuleRequest {
+  facts: ConnFacts;
+  rule: Rule;
+  source: 'quick' | 'editor';
+  ruleset: string;
+}
+
+interface GUI {
+  ConnRuleInfo(f: ConnFacts): Promise<ConnRuleInfo>;
+  AddConnRule(r: ConnRuleRequest): Promise<ConnRuleResult>;
+  UndoConnRule(token: string): Promise<void>;
+}
+
+// connFacts copies the fields Go needs from a row.
+export function connFacts(f: Flow): ConnFacts {
+  return {
+    id: f.id,
+    process: f.process,
+    path: f.path,
+    pid: f.pid,
+    proto: f.proto,
+    dst: f.dst,
+    domain: f.domain,
+    domainSrc: f.domainSrc,
+    ech: f.ech ?? false,
+    excluded: f.excluded ?? '',
+    attrib: f.attrib,
+    stage: f.stage,
+  };
+}
+
+// newRuleID is a rule ID as Go makes them (12 hex): rules made in the UI
+// get one, so an editor finds its rule again after the list changed.
+export function newRuleID(): string {
+  const b = new Uint8Array(6);
+  crypto.getRandomValues(b);
+  return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
 }

@@ -417,6 +417,7 @@ func (s *Server) handle(c net.Conn) {
 			e.Rec.Set(func(f *flows.Fields) {
 				f.Rule, f.Route, f.Profile, f.Stage = d.Rule, d.Action.String(), d.Profile, res.Stage
 				f.Group, f.Failover = d.Group, d.Failover
+				f.ECH = src == rules.SrcECH // conn-rules: as sniffed, whatever the decider made of it
 				if d.Domain != "" {
 					f.Domain, f.DomainSrc = d.Domain, d.DomainSrc.String()
 				}

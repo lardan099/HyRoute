@@ -31,6 +31,18 @@ type Record struct {
 	// bigudp
 	// TooBig: UDP datagrams dropped as larger than Hysteria carries.
 	TooBig atomic.Int64
+	// conn-rules
+	// Parents are the owner's ancestors, nearest first, as the rules saw
+	// them: the full path, or the lower-case name when the path is
+	// unknown. At most procinfo.MaxDepth. Never mutated after Open.
+	Parents []string
+	// Sites are the DNS cache names of Dst grouped by site
+	// (dnscache.Cache.Sites: the queried name first, then the CNAMEs that
+	// led to Dst), as the engine saw them when it decided. At most
+	// MaxSites sites of at most MaxSiteNames names; SitesPartial when cut.
+	// Nil for flows not decided from a packet. Never mutated after Open.
+	Sites        [][]string
+	SitesPartial bool
 
 	mu     sync.Mutex
 	f      Fields
@@ -71,6 +83,12 @@ type Fields struct {
 	// dns
 	// Count: the queries aggregated into a DNS row (Stage StageDNS).
 	Count int `json:"count,omitempty"`
+	// conn-rules
+	// ECH: the ClientHello carried the encrypted_client_hello extension
+	// (rules.SrcECH reached the decider), whatever the decider made of the
+	// outer name. Domain/DomainSrc still say what decided ("sni" when the
+	// outer name was taken for the site).
+	ECH bool `json:"ech,omitempty"`
 }
 
 // StageDNS marks a DNS row: queries HyRoute answered itself, aggregated
@@ -103,6 +121,11 @@ type View struct {
 	Closed   bool          `json:"closed"`
 	// bigudp
 	TooBig int64 `json:"tooBig,omitempty"` // UDP datagrams dropped as larger than Hysteria carries
+	// conn-rules: kept in the closed ring for Lookup, not sent to the UI
+	// (up to 8 paths and 16 sites per row; the page polls every second).
+	Parents      []string   `json:"-"`
+	Sites        [][]string `json:"-"`
+	SitesPartial bool       `json:"-"`
 }
 
 // OutcomeTooBig is the outcome a view shows for a tunneled UDP flow of
@@ -129,6 +152,7 @@ func (r *Record) View(now time.Time) View {
 		Duration: end.Sub(r.Start), Closed: r.closed,
 	}
 	v.TooBig = r.TooBig.Load()
+	v.Parents, v.Sites, v.SitesPartial = r.Parents, r.Sites, r.SitesPartial
 	if v.TooBig > 0 && v.Sent == 0 && v.Outcome == "tunneled" {
 		v.Outcome = OutcomeTooBig
 	}
@@ -284,4 +308,57 @@ func (v View) Settled() bool {
 func (v View) Failed() bool {
 	return (v.Route == "tunnel" || v.Route == "direct") &&
 		(strings.HasPrefix(v.Outcome, "rst: ") || strings.HasPrefix(v.Outcome, "dropped: "))
+}
+
+// conn-rules
+
+// MaxSites and MaxSiteNames bound Record.Sites (CapSites).
+const (
+	MaxSites     = 16
+	MaxSiteNames = 8
+)
+
+// CapSites cuts sites to MaxSites sites of at most MaxSiteNames names;
+// partial reports a cut. The slices are resliced, not copied: callers pass
+// fresh slices nobody mutates (dnscache.Cache.Sites).
+func CapSites(sites [][]string) (out [][]string, partial bool) {
+	if len(sites) > MaxSites {
+		sites, partial = sites[:MaxSites], true
+	}
+	copied := false
+	for i, s := range sites {
+		if len(s) > MaxSiteNames {
+			if !copied { // the caller's outer slice stays intact
+				sites, copied = append([][]string(nil), sites...), true
+			}
+			sites[i], partial = s[:MaxSiteNames], true
+		}
+	}
+	return sites, partial
+}
+
+// Lookup returns the flow with this ID: a live one, else the newest
+// retained closed one. IDs restart with every session (a new Registry), so
+// callers check the identity fields.
+func (g *Registry) Lookup(id uint64, now time.Time) (View, bool) {
+	if id == 0 {
+		return View{}, false
+	}
+	g.mu.Lock()
+	r := g.active[id]
+	g.mu.Unlock()
+	if r != nil {
+		return r.View(now), true
+	}
+	// Both closed rings: connections, then DNS rows (dns), so DNS-query
+	// rows can be right-clicked as well.
+	for _, ring := range []*logx.Ring[View]{g.closed, g.dnsClosed.Load()} {
+		closed := ring.Snapshot()
+		for i := len(closed) - 1; i >= 0; i-- {
+			if closed[i].ID == id {
+				return closed[i], true
+			}
+		}
+	}
+	return View{}, false
 }

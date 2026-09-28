@@ -1,6 +1,6 @@
 // Shared UI state: status, profiles, Privacy mode, theme.
 import { maskDomains, maskHosts, maskIPs, maskURLs } from './privacy';
-import { isGroupId, type GroupView, type ProfileSummary, type Status, type SubAlert } from './api';
+import { isGroupId, type GroupView, type ProfileSummary, type Rule, type Status, type SubAlert } from './api';
 import { netUnknownName, type NetState } from './api'; // netmodes
 
 function get(k: string): string | null {
@@ -42,6 +42,9 @@ export const ui = $state({
   subAck: loadSubAcks(),
   // dns: an element id a page scrolls to once it is shown (Home → «Настройки DNS»)
   scrollTo: '',
+  // conn-rules: a rule «Правила» opens in its editor when shown (a toast's
+  // «Открыть правило»); located by locateRule.
+  focusRule: null as { id: string; index: number; rule: Rule; rev?: number } | null,
 });
 
 export function setExpert(on: boolean) {

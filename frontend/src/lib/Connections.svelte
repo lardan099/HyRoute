@@ -1,9 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, errText, fmtBytes, fmtDuration, fmtTime, actionLabel, strategyLabel, dnsRuleLabel, type Flow } from '../api';
-  import { ui, hide, profileName } from '../state.svelte';
-  import RuleFromFlow from './RuleFromFlow.svelte';
+  import { api, errText, fmtBytes, fmtDuration, fmtTime, actionLabel, strategyLabel, cleanRule, dnsRuleLabel, type Flow, type Rule, type ConnFacts } from '../api';
+  import { ui, hide, profileName, mainTarget } from '../state.svelte';
   import Icon from './Icon.svelte';
+  import ConnMenu, { showConnResult, setConnNav } from './ConnMenu.svelte';
+  import RuleEditor from './RuleEditor.svelte';
+  import Explain from './Explain.svelte';
+  import { ruleTitle } from '../ruletitle';
+
+  let { go }: { go: (id: string) => void } = $props();
+  // svelte-ignore state_referenced_locally
+  setConnNav(go);
 
   // «Туннель → DE1 · Авто»: the server, then the group it was chosen by.
   function routeText(f: Flow): string {
@@ -25,16 +32,16 @@
   let paused = $state(false);
   let error = $state('');
   let selected = $state<Flow | null>(null);
-  // The connection a rule is being made from (a snapshot: the row may go).
-  let ruleFrom = $state<Flow | null>(null);
-  // Right-click on a row: the same, at once.
-  let menu = $state<{ f: Flow; x: number; y: number } | null>(null);
-
-  // Mandatory exclusions (HyRoute, Hysteria, the system DNS) take no rules.
-  // dns: nor do DNS rows here: the process of most is the Windows DNS
-  // client and the address a DNS server (a rule from a query's name comes
-  // with the connection menu).
-  const canRule = (f: Flow) => !f.excluded && !f.rule.startsWith('exclusion') && f.stage !== 'dns';
+  // conn-rules: the menu of a row works on a snapshot of it (the table may
+  // refresh or drop the row meanwhile); the rule editor and «Проверить
+  // адрес» open from it as dialogs.
+  let menu = $state<{ flow: Flow; anchor: { x: number; y: number }; el: HTMLElement | null } | null>(null);
+  let draft = $state<{ rule: Rule; facts: ConnFacts; ruleset: string; udp: boolean } | null>(null);
+  let explainQ = $state<{ app: string; target: string; proto: string; port: number; note: string } | null>(null);
+  // Roving tabindex: one tab stop for the table (the selected row, else the
+  // first); the arrows move between rows.
+  let tbody = $state<HTMLElement>();
+  let focusIndex = $state(0);
 
   // dns: DNS rows (queries HyRoute answered) are hidden unless «DNS-запросы»
   // is on (kept per viewer).
@@ -54,9 +61,10 @@
   }
   const dnsRows = $derived((showClosed ? [...active, ...closed] : active).filter((f) => f.stage === 'dns').length);
 
-  // The rule cell: HyRoute's own DNS answers have their own texts.
+  // The rule cell: HyRoute's own DNS answers have their own texts; a rule
+  // name may carry a site (Privacy mode).
   function ruleText(rule: string): string {
-    return dnsRuleLabel[rule] ?? (!rule || rule === 'default' ? 'Всё остальное' : rule);
+    return dnsRuleLabel[rule] ?? (!rule || rule === 'default' ? 'Всё остальное' : hide(rule));
   }
 
   async function load() {
@@ -102,16 +110,127 @@
       .slice(0, 1500);
   });
 
+  // The row that holds the table's tab stop.
+  const tabRow = $derived.by(() => {
+    const i = selected ? rows.findIndex((x) => x.id === selected!.id) : -1;
+    return i >= 0 ? i : Math.min(focusIndex, Math.max(rows.length - 1, 0));
+  });
+
+  // keyMenuAt: when the keyboard opened the menu. WebView2 also fires a
+  // contextmenu event for the ContextMenu key and Shift+F10, which must not
+  // open it a second time.
+  let keyMenuAt = 0;
+  // explainRet: the element that gets the focus back when «Проверить адрес»
+  // closes.
+  let explainRet: HTMLElement | null = null;
+  let explainEl = $state<HTMLElement>();
+
+  $effect(() => {
+    if (explainQ && explainEl) explainEl.focus();
+  });
+
+  function closeExplain() {
+    explainQ = null;
+    if (explainRet?.isConnected) explainRet.focus();
+    explainRet = null;
+  }
+
+  function openMenu(f: Flow, anchor: { x: number; y: number }, el: HTMLElement | null) {
+    selected = f;
+    menu = { flow: JSON.parse(JSON.stringify(f)), anchor, el };
+  }
+
+  function openAtRow(f: Flow, el: HTMLElement) {
+    const r = el.getBoundingClientRect();
+    openMenu(f, { x: r.left + 8, y: r.bottom }, el);
+  }
+
+  function rowEls(): HTMLElement[] {
+    return [...(tbody?.querySelectorAll<HTMLElement>('tr') ?? [])];
+  }
+
+  function focusRow(i: number) {
+    const list = rowEls();
+    if (!list.length) return;
+    focusIndex = Math.max(0, Math.min(i, list.length - 1));
+    list[focusIndex].focus();
+  }
+
+  function rowKey(e: KeyboardEvent) {
+    const list = rowEls();
+    const at = list.indexOf(document.activeElement as HTMLElement);
+    if (at < 0) return;
+    switch (e.key) {
+      case 'ArrowDown':
+        focusRow(at + 1);
+        break;
+      case 'ArrowUp':
+        focusRow(at - 1);
+        break;
+      case 'Home':
+        focusRow(0);
+        break;
+      case 'End':
+        focusRow(list.length - 1);
+        break;
+      case 'PageDown':
+        focusRow(at + 10);
+        break;
+      case 'PageUp':
+        focusRow(at - 10);
+        break;
+      case 'Enter':
+      case ' ':
+        selected = rows[at];
+        break;
+      case 'ContextMenu':
+        keyMenuAt = performance.now();
+        openAtRow(rows[at], list[at]);
+        break;
+      case 'F10':
+        if (!e.shiftKey) return;
+        keyMenuAt = performance.now();
+        openAtRow(rows[at], list[at]);
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+  }
+
+  // The focused row left the table on a refresh: the focus goes to the row
+  // now at its place, else to the table.
+  let hadFocus = false;
+  $effect.pre(() => {
+    void rows;
+    hadFocus = !!tbody && tbody.contains(document.activeElement);
+  });
+  $effect(() => {
+    void rows;
+    if (!hadFocus || !tbody || tbody.contains(document.activeElement)) return;
+    const list = rowEls();
+    if (list.length) list[Math.min(focusIndex, list.length - 1)].focus();
+    else tbody.closest<HTMLElement>('.table')?.focus();
+  });
+
+  async function saveDraft(r: Rule) {
+    const d = draft!;
+    const res = await api.AddConnRule({ facts: d.facts, rule: cleanRule(r, mainTarget()?.id), source: 'editor', ruleset: d.ruleset });
+    draft = null;
+    const saved = res.rule;
+    showConnResult(res, () => hide(ruleTitle(saved)), d.udp);
+  }
+
   const srcName: Record<string, string> = { sni: 'по SNI (имя сайта в HTTPS)', host: 'по заголовку Host (HTTP)', dns: 'по кэшу DNS', query: 'из DNS-запроса', unknown: '' };
 
   function whyText(f: Flow): string {
     if (f.stage === 'dns') {
       // dns: a query HyRoute answered itself.
-      const r = dnsRuleLabel[f.rule] ?? (!f.rule || f.rule === 'default' ? 'сработало «Всё остальное»' : `сработало правило «${f.rule}»`);
+      const r = dnsRuleLabel[f.rule] ?? (!f.rule || f.rule === 'default' ? 'сработало «Всё остальное»' : `сработало правило «${hide(f.rule)}»`);
       return `DNS-запрос имени ${hide(f.domain)}: ${r}.${(f.count ?? 0) > 1 ? ` Запросов: ${f.count}.` : ''}`;
     }
     if (dnsRuleLabel[f.rule]) return `${dnsRuleLabel[f.rule]}.`; // dns: a browser's DoH connection
-    const rule = !f.rule || f.rule === 'default' ? 'сработало «Всё остальное»' : f.rule.startsWith('exclusion') ? 'служебное исключение HyRoute' : `сработало правило «${f.rule}»`;
+    const rule = f.excluded || f.rule.startsWith('exclusion') ? 'служебное исключение HyRoute' : !f.rule || f.rule === 'default' ? 'сработало «Всё остальное»' : `сработало правило «${hide(f.rule)}»`;
     const dom = f.domain ? `, сайт определён ${srcName[f.domainSrc] ?? f.domainSrc}` : ', сайт не определён';
     return rule[0].toUpperCase() + rule.slice(1) + dom + '.';
   }
@@ -125,8 +244,8 @@
   <header>
     <h1>Соединения</h1>
     <p class="muted sub">
-      Что сейчас открывают программы и куда это ушло. Нажмите на строку, чтобы увидеть, почему; правой кнопкой — создать правило для этой программы или
-      сайта.
+      Что сейчас открывают программы и куда это ушло. Нажмите на строку, чтобы увидеть, почему; правой кнопкой или кнопкой «…» — создать правило для этой
+      программы или сайта.
     </p>
   </header>
   <div class="row toolbar">
@@ -149,36 +268,53 @@
   </div>
   {#if error}<div class="note error">{error}</div>{/if}
 
-  <div class="table panel" data-selectall>
+  <div class="table panel" data-selectall tabindex="-1">
     <table>
       <thead>
         <tr>
           <th>Время</th><th>Процесс</th><th>Назначение</th><th>Домен</th><th>Правило</th><th>Маршрут</th><th>Исход</th>
-          <th class="num">↑</th><th class="num">↓</th><th class="num">Длит.</th>
+          <th class="num">↑</th><th class="num">↓</th><th class="num">Длит.</th><th class="act" title="Действия"></th>
         </tr>
       </thead>
-      <tbody>
-        {#each rows as f (f.id)}
+      <tbody bind:this={tbody}>
+        {#each rows as f, i (f.id)}
           <tr
             class:closed={f.closed}
             class:sel={selected?.id === f.id}
+            tabindex={i === tabRow ? 0 : -1}
+            onfocus={() => (focusIndex = i)}
+            onkeydown={rowKey}
             onclick={() => (selected = f)}
             oncontextmenu={(e) => {
               e.preventDefault();
-              selected = f;
-              menu = canRule(f) ? { f: JSON.parse(JSON.stringify(f)), x: e.clientX, y: e.clientY } : null;
+              if (performance.now() - keyMenuAt < 500) return; // the key already opened it
+              openMenu(f, { x: e.clientX, y: e.clientY }, e.currentTarget as HTMLElement);
             }}
           >
             <td class="mono">{fmtTime(f.start)}</td>
             <td title={f.path}>{f.process || `PID ${f.pid}`}</td>
             <td class="mono">{f.proto} {hide(f.dst)}</td>
             <td title={hide(f.domain)}>{hide(f.domain)}{#if (f.count ?? 0) > 1}<span class="muted"> ×{f.count}</span>{/if}{#if srcLabel[f.domainSrc]}<span class="src">{srcLabel[f.domainSrc]}</span>{/if}</td>
-            <td title={ruleText(f.rule)}>{ruleText(f.rule)}</td>
+            <td title={ruleText(f.rule)}>{ruleText(f.rule)}{#if f.excluded}<span class="src">служебное</span>{/if}</td>
             <td class="route-{f.route}" title={routeText(f)}>{routeText(f)}</td>
             <td title={f.outcome}>{f.outcome}</td>
             <td class="num">{fmtBytes(f.sent)}</td>
             <td class="num">{fmtBytes(f.recv)}</td>
             <td class="num">{fmtDuration(f.duration)}</td>
+            <td class="act">
+              <button
+                class="icon more"
+                tabindex="-1"
+                title="Действия"
+                aria-label="Действия с соединением"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  const b = e.currentTarget as HTMLElement;
+                  const r = b.getBoundingClientRect();
+                  openMenu(f, { x: r.left, y: r.bottom }, b.closest('tr'));
+                }}><Icon name="more" size={15} /></button
+              >
+            </td>
           </tr>
         {/each}
       </tbody>
@@ -188,8 +324,18 @@
 
   {#if selected}
     <div class="card details">
-      <button class="icon close" onclick={() => (selected = null)}>×</button>
+      <div class="head">
       <div class="why route-{selected.route}"><b>{selected.process || `PID ${selected.pid}`}</b> → {hide(selected.domain) || hide(selected.dst)}: {routeText(selected)}</div>
+      <div class="dbtns">
+        <button
+          onclick={(e) => {
+            const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            openMenu(selected!, { x: r.left, y: r.bottom }, e.currentTarget as HTMLElement);
+          }}><Icon name="wand" size={15} />Создать правило…</button
+        >
+        <button class="icon" aria-label="Закрыть" onclick={() => (selected = null)}>×</button>
+      </div>
+      </div>
       <div class="muted">{whyText(selected)}</div>
       <div class="mono small facts">
         <span>{hide(selected.path || selected.process)} (PID {selected.pid})</span>
@@ -200,36 +346,47 @@
           <span>датаграмм больше предела Hysteria (около 4 КБ) отброшено: {selected.tooBig}</span>
         {/if}
       </div>
-      {#if canRule(selected)}
-        <div class="row">
-          <button onclick={() => (ruleFrom = JSON.parse(JSON.stringify(selected)))}><Icon name="plus" size={15} />Создать правило…</button>
-          <span class="muted small">например, пустить эту программу или сайт через другой сервер или напрямую</span>
-        </div>
-      {/if}
     </div>
   {/if}
 </div>
 
 {#if menu}
-  <div class="menu-shade" role="presentation" onclick={() => (menu = null)} oncontextmenu={(e) => (e.preventDefault(), (menu = null))}></div>
-  <div class="menu" style="left: {Math.min(menu.x, window.innerWidth - 220)}px; top: {Math.min(menu.y, window.innerHeight - 60)}px">
-    <button
-      onclick={() => {
-        ruleFrom = menu!.f;
-        menu = null;
-      }}><Icon name="plus" size={15} />Создать правило…</button
-    >
-  </div>
+  {#key menu}
+    <ConnMenu
+      flow={menu.flow}
+      anchor={menu.anchor}
+      returnFocus={menu.el}
+      onclose={() => (menu = null)}
+      onedit={(rule, facts, ruleset) => (draft = { rule, facts, ruleset, udp: facts.proto.toLowerCase() === 'udp' })}
+      onexplain={(q) => {
+        explainRet = menu?.el ?? null;
+        explainQ = q;
+      }}
+    />
+  {/key}
 {/if}
 
-{#if ruleFrom}
-  <RuleFromFlow flow={ruleFrom} onclose={() => (ruleFrom = null)} />
+{#if draft}
+  <RuleEditor rule={draft.rule} title="Новое правило из соединения" onsave={saveDraft} onclose={() => (draft = null)} />
+{/if}
+
+{#if explainQ}
+  <div
+    class="backdrop"
+    role="presentation"
+    onclick={(e) => e.target === e.currentTarget && closeExplain()}
+    onkeydown={(e) => e.key === 'Escape' && closeExplain()}
+  >
+    <div class="dialog explain" role="dialog" aria-label="Проверить адрес" tabindex="-1" bind:this={explainEl}>
+      <Explain initial={explainQ} current={() => null} onclose={closeExplain} />
+    </div>
+  </div>
 {/if}
 
 <style>
   .wrap { display: flex; flex-direction: column; height: 100%; gap: 10px; }
   .toolbar input { max-width: 420px; }
-  .table { flex: 1; min-height: 0; overflow: auto; padding: 0; border-radius: var(--radius); }
+  .table { flex: 1; min-height: 0; overflow: auto; padding: 0; border-radius: var(--radius); outline: none; }
   table { font-size: 12.5px; }
   th {
     position: sticky;
@@ -249,20 +406,22 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  tr { cursor: default; }
+  tr { cursor: default; outline: none; }
   tr.closed td { opacity: 0.6; }
   tr.sel td { background: var(--panel-2); }
+  tr:focus-visible td { background: var(--accent-soft); }
   .num { text-align: right; }
   .src { font-size: 10px; margin-left: 5px; padding: 0 4px; border-radius: 4px; background: var(--panel-2); color: var(--muted); }
   .empty { padding: 16px; }
   .details { position: relative; user-select: text; display: grid; gap: 4px; padding: 14px 16px; }
-  .why { font-weight: 600; }
+  .head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 6px 12px; }
+  .why { font-weight: 600; flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; }
   .facts { display: grid; gap: 2px; color: var(--muted); margin-top: 4px; }
   .sub { margin: 4px 0 0; }
-  .close { position: absolute; right: 8px; top: 8px; }
-  .details .row { margin-top: 6px; }
-  .menu-shade { position: fixed; inset: 0; z-index: 40; }
-  .menu { position: fixed; z-index: 41; display: grid; padding: 4px; min-width: 200px; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--border); box-shadow: 0 8px 24px rgb(0 0 0 / 0.28); }
-  .menu button { justify-content: flex-start; background: none; }
-  .menu button:hover { background: var(--accent-soft); }
+  .dbtns { display: flex; gap: 6px; align-items: center; margin: -6px -8px 0 auto; }
+  .act { width: 30px; padding: 0 4px; text-align: center; }
+  .more { width: 24px; height: 22px; padding: 0; opacity: 0.55; }
+  tr:hover .more,
+  tr.sel .more { opacity: 1; }
+  .explain { width: min(820px, 94vw); padding: 0; }
 </style>
