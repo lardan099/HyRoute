@@ -173,7 +173,7 @@
             <td title={f.path}>{f.process || `PID ${f.pid}`}</td>
             <td class="mono">{f.proto} {hide(f.dst)}</td>
             <td title={hide(f.domain)}>{hide(f.domain)}{#if (f.count ?? 0) > 1}<span class="muted"> ×{f.count}</span>{/if}{#if srcLabel[f.domainSrc]}<span class="src">{srcLabel[f.domainSrc]}</span>{/if}</td>
-            <td title={f.rule}>{ruleText(f.rule)}</td>
+            <td title={ruleText(f.rule)}>{ruleText(f.rule)}</td>
             <td class="route-{f.route}" title={routeText(f)}>{routeText(f)}</td>
             <td title={f.outcome}>{f.outcome}</td>
             <td class="num">{fmtBytes(f.sent)}</td>

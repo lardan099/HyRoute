@@ -28,17 +28,22 @@ import (
 // a repeated import adds only what is still missing, also into a day file
 // this version wrote meanwhile.
 //
-// 1.2.0 promised to keep no sites: an upgraded user (traffic.json there,
-// no mode.json yet) starts with «Без сайтов», a new one with «Всё».
+// 1.2.0 promised to keep no sites: an upgraded user (no mode.json yet, and
+// the data folder held files of an earlier version: traffic.json, or the
+// servers, rules, preferences or proxies; 1.2.0 wrote traffic.json only
+// after VPN traffic and «Очистить» deleted it) starts with «Без сайтов», a
+// new one with «Всё». The default goes into mode.json with the first write
+// into the folder, so a later start does not decide again.
 
 // Legacy is where the 1.2.0 statistics come from (internal/store).
 type Legacy interface {
 	// ReadLegacy reads traffic.json: fs.ErrNotExist when absent,
 	// ErrCorrupt for a link or an oversize file.
 	ReadLegacy() ([]byte, error)
-	// HasLegacy reports that something is at the place of traffic.json
-	// (without reading it).
-	HasLegacy() bool
+	// Upgraded reports that the data folder holds files of an earlier
+	// version: something at the place of traffic.json, or the servers,
+	// rules, preferences or proxies (without reading them).
+	Upgraded() bool
 }
 
 // Retries of an import that failed for a transient reason.

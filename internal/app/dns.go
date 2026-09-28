@@ -42,6 +42,9 @@ type dnsState struct {
 	dns       dnspolicy.Config
 	dnsBroken error
 	dnsPause  time.Time
+	// dnsFailed: the running session did not take the current settings
+	// (SetDNS failed); Status.DNS says so instead of claiming them.
+	dnsFailed bool
 
 	// dnsSess is the running session and whether it ever had a policy
 	// (lock-free: OwnDial, the status callback and the disconnect flush
@@ -194,6 +197,7 @@ func (c *Controller) dnsPolicyLocked() *dnspolicy.Policy {
 // dnsSession gives a starting session its policy and resolver log names.
 func (c *Controller) dnsSessionLocked(cfg *session.Config) {
 	cfg.DNS = c.dnsPolicyLocked()
+	c.dnsFailed = false // a session that fails to start its policy does not start
 	cfg.ProfileName = c.profileName
 	cfg.OwnName = c.ownNames.Has
 }
@@ -231,9 +235,11 @@ func (c *Controller) applyDNSLocked() {
 	}
 	pol := c.dnsPolicyLocked()
 	if err := c.sess.SetDNS(pol); err != nil {
+		c.dnsFailed = true
 		c.Log.Warn("DNS settings not applied to the running session", "err", err)
 		return
 	}
+	c.dnsFailed = false
 	if pol != nil {
 		c.dnsSess.Store(&dnsSessRef{sess: c.sess, dns: true})
 	}
@@ -423,12 +429,15 @@ func (c *Controller) dnsInstallLocked(cfg dnspolicy.Config) error {
 		c.dnsPause = time.Time{}
 	}
 	if c.sess == nil {
+		c.dnsFailed = false
 		return nil
 	}
 	pol := c.dnsPolicyLocked()
 	if err := c.sess.SetDNS(pol); err != nil {
+		c.dnsFailed = true
 		return err
 	}
+	c.dnsFailed = false
 	if pol != nil {
 		c.dnsSess.Store(&dnsSessRef{sess: c.sess, dns: true})
 	}
@@ -482,6 +491,9 @@ type DNSStatus struct {
 	Direct    bool        `json:"direct"`
 	Health    []DNSHealth `json:"health,omitempty"`    // down upstream clients
 	PauseLeft int         `json:"pauseLeft,omitempty"` // captive-portal pause, seconds left
+	// NotApplied: the running session did not take the saved settings
+	// (names resolve as without them); nothing else is set then.
+	NotApplied bool `json:"notApplied,omitempty"`
 }
 
 // DNSHealth is an upstream server that does not answer.
@@ -498,6 +510,9 @@ type DNSHealth struct {
 func (c *Controller) dnsStatusLocked(s Session) *DNSStatus {
 	if s == nil || c.dnsBroken != nil || !c.dns.Active() {
 		return nil
+	}
+	if c.dnsFailed {
+		return &DNSStatus{NotApplied: true}
 	}
 	st := &DNSStatus{ByRules: c.dns.ByRules, Direct: c.dns.Direct.Preset != ""}
 	now := time.Now()
@@ -527,11 +542,16 @@ type DNSExplain struct {
 	Cond     string `json:"cond,omitempty"`     // tunnel/block from a conditional rule: "app" | "proto"
 	Proto    string `json:"proto,omitempty"`    // cond "proto": "tcp" | "udp"
 	NoIPv6   bool   `json:"noIPv6,omitempty"`
+	// System: with a program given, the line above assumes the program
+	// asks DNS itself; most ask through the Windows DNS client, where
+	// program rules count only conditionally. Set when that differs.
+	System *DNSExplain `json:"system,omitempty"`
 }
 
 // explainDNS says how the name domain would resolve with the DNS settings
 // and the rules cfg (the editor's unsaved ones when given). app "" is the
-// Windows DNS client.
+// Windows DNS client; with app, the program asking itself, and System the
+// Windows DNS client when it resolves otherwise.
 func (c *Controller) explainDNS(domain, app string, cfg rules.Config, main string, ipv6Blocked bool) *DNSExplain {
 	if domain == "" {
 		return nil
@@ -553,15 +573,24 @@ func (c *Controller) explainDNS(domain, app string, cfg rules.Config, main strin
 		info := suffixInfo(c.LocalSuffixes())
 		env.Local = info.Local
 	}
-	req := dnspolicy.Requester{System: true}
-	if app = strings.TrimSpace(app); app != "" {
-		name := strings.ToLower(filepath.Base(strings.ReplaceAll(app, `\`, "/")))
-		if !strings.Contains(name, ".") {
-			name += ".exe"
-		}
-		req = dnspolicy.Requester{Proc: &procinfo.Info{Name: name, Path: app}}
-	}
 	name := rules.NormalizeDomain(domain)
+	sys := explainDNSAs(pol, env, cfg, name, dnspolicy.Requester{System: true})
+	if app = strings.TrimSpace(app); app == "" {
+		return sys
+	}
+	exe := strings.ToLower(filepath.Base(strings.ReplaceAll(app, `\`, "/")))
+	if !strings.Contains(exe, ".") {
+		exe += ".exe"
+	}
+	ex := explainDNSAs(pol, env, cfg, name, dnspolicy.Requester{Proc: &procinfo.Info{Name: exe, Path: app}})
+	if *ex != *sys {
+		ex.System = sys
+	}
+	return ex
+}
+
+// explainDNSAs classifies the name for one requester.
+func explainDNSAs(pol *dnspolicy.Policy, env dnspolicy.Env, cfg rules.Config, name string, req dnspolicy.Requester) *DNSExplain {
 	d := pol.Classify(dnspolicy.Question{Name: name, Type: dnsmessage.TypeA}, req, env)
 	ex := &DNSExplain{Rule: d.Rule}
 	switch {

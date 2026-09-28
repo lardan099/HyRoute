@@ -226,11 +226,20 @@ func (f *StatsFiles) SweepTemp(before time.Time) (int, error) {
 	return n, nil
 }
 
-// HasLegacy reports that something is at the place of traffic.json (an
-// error other than «not found» counts as there).
-func (f *StatsFiles) HasLegacy() bool {
-	_, err := os.Lstat(f.s.path("traffic.json"))
-	return !errors.Is(err, fs.ErrNotExist)
+// earlierFiles are the files whose presence before the statistics' mode
+// was decided marks an upgrade (stats.Legacy.Upgraded).
+var earlierFiles = []string{"traffic.json", "profiles.json", "settings.json", "prefs.json", "proxies.json", "subscriptions.json"}
+
+// Upgraded reports that the data folder holds files of an earlier version:
+// traffic.json (HyRoute 1.2.0's statistics), or the servers, rules,
+// preferences or proxies. An error other than «not found» counts as there.
+func (f *StatsFiles) Upgraded() bool {
+	for _, n := range earlierFiles {
+		if _, err := os.Lstat(f.s.path(n)); !errors.Is(err, fs.ErrNotExist) {
+			return true
+		}
+	}
+	return false
 }
 
 // ReadLegacy reads the statistics of HyRoute 1.2.0 (traffic.json) by

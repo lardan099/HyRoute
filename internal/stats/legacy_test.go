@@ -425,6 +425,65 @@ func TestLegacyNoSitesDefault(t *testing.T) {
 	}
 }
 
+// An upgrade without traffic.json (1.2.0 wrote it only after VPN traffic,
+// and «Очистить» deleted it; or 1.0/1.1) also starts with «Без сайтов».
+// The default is written with the first statistics file, so a later start
+// does not decide again.
+func TestUpgradedNoSitesDefault(t *testing.T) {
+	traffic := func(r *rig) {
+		rec := r.open(`C:\a.exe`, tunnel("de", "ok"))
+		rec.Sent.Add(10)
+		r.close(rec)
+		if err := r.c.Flush(r.clk.now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := newRig(t)
+	r.files.earlier = true
+	r.reopen()
+	if r.c.Mode() != ModeNoSites {
+		t.Fatalf("upgraded user: %v", r.c.Mode())
+	}
+	if r.files.has("mode") {
+		t.Fatal("mode.json written before any statistics")
+	}
+	traffic(r)
+	if b := r.files.get("mode"); !bytes.Contains(b, []byte(`"no-sites"`)) {
+		t.Fatalf("mode.json: %s", b)
+	}
+	// A new user: «Всё», kept after the servers and settings appear.
+	r2 := newRig(t)
+	if r2.c.Mode() != ModeAll {
+		t.Fatalf("new user: %v", r2.c.Mode())
+	}
+	traffic(r2)
+	if b := r2.files.get("mode"); b == nil || bytes.Contains(b, []byte(`"no-sites"`)) {
+		t.Fatalf("mode.json: %s", b)
+	}
+	r2.files.earlier = true
+	r2.reopen()
+	if r2.c.Mode() != ModeAll {
+		t.Fatalf("decided again: %v", r2.c.Mode())
+	}
+	// A failed mode write is retried with the next file.
+	r3 := newRig(t)
+	r3.files.onWrite = func(name string) error {
+		if name == "mode" {
+			return errors.New("access denied")
+		}
+		return nil
+	}
+	traffic(r3)
+	if r3.files.has("mode") {
+		t.Fatal("mode.json written")
+	}
+	r3.files.onWrite = nil
+	traffic(r3)
+	if !r3.files.has("mode") {
+		t.Fatal("mode.json not retried")
+	}
+}
+
 // The conversion is linear in the size of traffic.json (it is written by
 // the user's programs), and a file over the bounds is not imported and
 // not retried.

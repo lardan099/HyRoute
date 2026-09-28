@@ -29,6 +29,11 @@
     return online(st) && (st?.dns?.health ?? []).some((h) => h.via === 'direct');
   }
 
+  // The running session did not take the saved settings.
+  function notApplied(st: Status | null): boolean {
+    return online(st) && !!st?.dns?.notApplied;
+  }
+
   function pauseLeft(st: Status | null): number {
     return online(st) ? (st?.dns?.pauseLeft ?? 0) : 0;
   }
@@ -40,7 +45,7 @@
 
   // dnsNotesShown: Home shows «Требует внимания» for these notes too.
   export function dnsNotesShown(st: Status | null): boolean {
-    return tunnelHealth(st).length > 0 || directDown(st) || pauseLeft(st) > 0 || canPause(st);
+    return tunnelHealth(st).length > 0 || directDown(st) || pauseLeft(st) > 0 || canPause(st) || notApplied(st);
   }
 </script>
 
@@ -58,6 +63,7 @@
   const direct = $derived(directDown(st));
   const left = $derived(pauseLeft(st));
   const pausable = $derived(canPause(st));
+  const failed = $derived(notApplied(st));
 
   function openDNS(e: Event) {
     e.preventDefault();
@@ -79,6 +85,7 @@
 </script>
 
 {#if error}<div class="note error">{hide(error)}</div>{/if}
+{#if failed}<div class="note warn">Настройки DNS не применены к подключению: имена сайтов спрашиваются у DNS-сервера сети, как без них. Переподключитесь.</div>{/if}
 {#each health as h}
   <div class="note warn">
     DNS-сервер для VPN ({h.upstream}) не отвечает через {profileName(h.profile ?? '')}: сайты через VPN не открываются.

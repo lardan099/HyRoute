@@ -275,6 +275,50 @@ func TestStatusDNS(t *testing.T) {
 	}
 }
 
+// A session that did not take the settings (a failed filter swap) is not
+// reported as resolving by them; the next successful apply or a reconnect
+// ends that.
+func TestStatusDNSNotApplied(t *testing.T) {
+	d := newDNSCtl(t, nil)
+	if err := d.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	d.sess().mu.Lock()
+	d.sess().setErr = errors.New("filter swap failed")
+	d.sess().mu.Unlock()
+	cfg := dnspolicy.Config{ByRules: true, Tunnel: dnspolicy.Upstream{Preset: "cloudflare"}}
+	if err := d.SaveDNS(cfg); err == nil || !strings.Contains(err.Error(), "сохранены, но не применены") {
+		t.Fatal(err)
+	}
+	if s := d.Status().DNS; s == nil || !s.NotApplied || s.ByRules || s.PauseLeft != 0 || len(s.Health) != 0 {
+		t.Fatalf("%+v", s)
+	}
+	d.sess().mu.Lock()
+	d.sess().setErr = nil
+	d.sess().mu.Unlock()
+	if err := d.SaveDNS(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if s := d.Status().DNS; s == nil || s.NotApplied || !s.ByRules {
+		t.Fatalf("%+v", s)
+	}
+	// A reconnect starts with the policy: the failure does not carry over.
+	d.sess().mu.Lock()
+	d.sess().setErr = errors.New("filter swap failed")
+	d.sess().mu.Unlock()
+	d.SaveDNS(dnspolicy.Config{ByRules: true, Tunnel: dnspolicy.Upstream{Preset: "quad9"}})
+	if s := d.Status().DNS; s == nil || !s.NotApplied {
+		t.Fatalf("%+v", s)
+	}
+	d.Disconnect()
+	if err := d.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	if s := d.Status().DNS; s == nil || s.NotApplied || !s.ByRules {
+		t.Fatalf("after reconnect: %+v", s)
+	}
+}
+
 func TestPauseDNSTunnel(t *testing.T) {
 	d := newDNSCtl(t, nil)
 	if err := d.PauseDNSTunnel(); err == nil || err.Error() != "HyRoute не подключён" {
@@ -393,8 +437,11 @@ func TestExplainDNS(t *testing.T) {
 	}
 	check := func(label string, got *DNSExplain, want DNSExplain) {
 		t.Helper()
-		if got == nil || *got != want {
-			t.Fatalf("%s: %+v, want %+v", label, got, want)
+		if got == nil {
+			t.Fatalf("%s: nil, want %+v", label, want)
+		}
+		if !sameDNSExplain(got, &want) {
+			t.Fatalf("%s: %+v (system %+v), want %+v (system %+v)", label, got, got.System, want, want.System)
 		}
 	}
 	check("addr", ex("example.org", ""), DNSExplain{Route: "addr", Rule: "addr"})
@@ -404,7 +451,10 @@ func TestExplainDNS(t *testing.T) {
 	check("service", ex("www.msftconnecttest.com", ""), DNSExplain{Route: "service"})
 	check("direct", ex("x.direct.example", ""), DNSExplain{Route: "direct"})
 	check("app cond", ex("app.example", ""), DNSExplain{Route: "addr", Rule: "addr"})
-	check("app known", ex("app.example", "chrome"), DNSExplain{Route: "direct"})
+	// A program: as it asks itself, and through the Windows DNS client
+	// (most programs) where its rule counts only conditionally.
+	check("app known", ex("app.example", "chrome"), DNSExplain{Route: "direct", System: &DNSExplain{Route: "addr", Rule: "addr"}})
+	check("app, same both ways", ex("x.direct.example", "chrome"), DNSExplain{Route: "direct"})
 	check("proto", ex("proto.example", ""), DNSExplain{Route: "addr", Rule: "addr"})
 	// Without the address check: the tunnel, conditions shown.
 	if err := d.SaveDNS(dnspolicy.Config{ByRules: true, IgnoreAddrRules: true}); err != nil {
@@ -418,6 +468,8 @@ func TestExplainDNS(t *testing.T) {
 	st.Config.Rules[2].Protocol, st.Config.Rules[2].Ports = "any", rules.PortList{"443"}
 	check("ports cond", ex("proto.example", ""), DNSExplain{Route: "tunnel", Profile: main, Upstream: "Cloudflare", Rule: "tcp site", Cond: "proto", NoIPv6: true})
 	st.Config.Rules[2].Protocol, st.Config.Rules[2].Ports = "tcp", nil
+	check("app direct, system tunnel", ex("app.example", "chrome.exe"), DNSExplain{Route: "direct",
+		System: &DNSExplain{Route: "tunnel", Profile: main, Upstream: "Cloudflare", Rule: "default", NoIPv6: true}})
 	st.Config.Rules[1].Action = rules.Tunnel
 	check("app cond tunnel", ex("app.example", ""), DNSExplain{Route: "tunnel", Profile: main, Upstream: "Cloudflare", Rule: "chrome site", Cond: "app", NoIPv6: true})
 	// The direct upstream.
@@ -430,6 +482,16 @@ func TestExplainDNS(t *testing.T) {
 		t.Fatalf("an IP has no DNS line: %+v", got)
 	}
 	_ = settings.Settings{}
+}
+
+// sameDNSExplain compares two Explain lines and their System lines.
+func sameDNSExplain(a, b *DNSExplain) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	x, y := *a, *b
+	x.System, y.System = nil, nil
+	return x == y && sameDNSExplain(a.System, b.System)
 }
 
 // Shutdown: the process ends right after it, so the flush of the session

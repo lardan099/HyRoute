@@ -193,7 +193,7 @@
               <p class="muted small">tcp:// не шифруется: запрос защищён только на пути до сервера VPN, а дальше его видно.</p>
             {/if}
           {/if}
-          <p class="muted small">Запрос уходит через VPN к этому серверу по DoH. Если VPN недоступен, имя не разрешается: напрямую запрос не уходит.</p>
+          <p class="muted small">Запрос уходит через VPN к этому серверу (у своего сервера — по протоколу из адреса). Если VPN недоступен, имя не разрешается: напрямую запрос не уходит.</p>
           <label class="check">
             <input type="checkbox" checked={!cfg.ignoreAddrRules} disabled={off}
               onchange={(e) => settle(e, (el) => save({ ignoreAddrRules: !el.checked }), () => !(cfg?.ignoreAddrRules ?? false))} />
@@ -271,6 +271,7 @@
     </div>
 
     {#if counters}<p class="small">{counters}</p>{/if}
+    {#if online && st?.dns?.notApplied}<div class="note warn">⚠ Настройки DNS не применены к подключению: имена сайтов спрашиваются у DNS-сервера сети, как без них. Переподключитесь.</div>{/if}
     {#each health as h}
       {#if h.via === 'tunnel'}
         <div class="note warn">

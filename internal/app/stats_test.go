@@ -540,14 +540,18 @@ func TestRunStatsCompaction(t *testing.T) {
 	}
 }
 
-// failFiles are statistics files whose writes and listings fail, counted.
+// failFiles are statistics files whose writes and listings fail, counted
+// (writes of statistics files: the default mode's mode.json, tried before
+// each, is not counted).
 type failFiles struct {
 	*store.StatsFiles
 	writes, lists atomic.Int32
 }
 
-func (f *failFiles) Write(string, []byte) error {
-	f.writes.Add(1)
+func (f *failFiles) Write(name string, _ []byte) error {
+	if name != "mode" {
+		f.writes.Add(1)
+	}
 	return &fs.PathError{Op: "write", Path: "x", Err: errors.New("disk full")}
 }
 
@@ -608,6 +612,35 @@ func TestStatsCreateNothing(t *testing.T) {
 	c.Shutdown()
 	if _, err := os.Lstat(filepath.Join(c.Store.Dir, "stats")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("stats folder: %v", err)
+	}
+}
+
+// A folder of v1.2.0 without traffic.json (no VPN traffic yet, or
+// «Очистить» deleted it) still starts collecting without sites; a new
+// install collects everything.
+func TestStatsUpgradeDefault(t *testing.T) {
+	c, _ := newCtl(t)
+	if c.stats.Mode() != stats.ModeAll {
+		t.Fatalf("new install: %v", c.stats.Mode())
+	}
+	if _, err := c.ImportURIs("hysteria2://a@hy1.example:443#one"); err != nil {
+		t.Fatal(err)
+	}
+	c.Shutdown()
+	// settings.json as v1.2.0 wrote it (ports as a string).
+	v120 := []byte(`{"defaultAction":"direct","rules":[{"name":"Игра","apps":[{"pattern":"game.exe"}],"protocol":"udp","ports":"27000-27200","action":"tunnel"}]}`)
+	if err := os.WriteFile(filepath.Join(c.Store.Dir, "settings.json"), v120, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(c.Store.Dir, "traffic.json")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal(err)
+	}
+	c2, _ := newCtlAt(t, c.Store)
+	if c2.stats.Mode() != stats.ModeNoSites {
+		t.Fatalf("upgrade without traffic.json: %v", c2.stats.Mode())
+	}
+	if rep := today(t, c2); rep.Mode != string(stats.ModeNoSites) {
+		t.Fatal(rep.Mode)
 	}
 }
 

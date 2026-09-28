@@ -46,7 +46,10 @@ func (s *Session) startDNS(cfg Config) error {
 }
 
 // socksDialer dials through a profile's Hysteria: a host name goes to the
-// server as a name (the server resolves it).
+// server as a name (the server resolves it). The dials are quiet: the
+// resolver keeps its own server health, and a lookup must not count for or
+// against a server group member (a failed bootstrap tries several
+// addresses and would add one error for each).
 func socksDialer(e *tunnels.Endpoint) dnsproxy.Dialer {
 	return func(ctx context.Context, host string, port uint16) (net.Conn, error) {
 		dst := socks5.Addr{Port: port}
@@ -55,7 +58,7 @@ func socksDialer(e *tunnels.Endpoint) dnsproxy.Dialer {
 		} else {
 			dst.Host = host
 		}
-		return e.Dial(ctx, dst)
+		return e.Dial(tunnels.Quiet(ctx), dst)
 	}
 }
 

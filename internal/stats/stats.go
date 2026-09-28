@@ -107,6 +107,7 @@ type Collector struct {
 	imported    bool
 	legacyRetry time.Time
 	legacyWait  time.Duration
+	modeUnsaved bool // mode.json was absent: the default mode goes in with the first write into the folder
 
 	mode atomic.Value // Mode; read lock-free by the sampler and the close hook
 

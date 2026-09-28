@@ -224,8 +224,14 @@ func (c *Collector) markBad(name, why string) {
 	c.mu.Unlock()
 }
 
-// write stores a file and remembers it parsed (ioMu held).
+// write stores a file and remembers it parsed (ioMu held). The first one
+// writes the default mode first (a failure is retried with the next).
 func (c *Collector) write(name string, f *File, now time.Time) error {
+	if c.modeUnsaved {
+		if err := c.writeMode(c.Mode()); err != nil {
+			c.Log.Warn("stats: collection mode not saved", "err", shortErr(err))
+		}
+	}
 	b, err := f.marshal()
 	if err == nil {
 		err = c.files.Write(name, b)
@@ -281,17 +287,18 @@ func dirErr(err error) error { return fmt.Errorf("папка stats: %s", shortEr
 
 // Configure attaches the files (once, from the controller's Load) and
 // reads the collection mode (mode.json): absent = «Всё» («Без сайтов» for
-// a user of 1.2.0, see legacy.go); unreadable, corrupt or unknown = off
-// until the user picks a mode.
+// an upgraded user, see legacy.go), written with the first statistics
+// file; unreadable, corrupt or unknown = off until the user picks a mode.
 func (c *Collector) Configure(files Files) {
 	c.ioMu.Lock()
 	defer c.ioMu.Unlock()
 	c.files = files
 	c.legacy, _ = files.(Legacy)
 	mode, imported, absent, err := c.readMode()
-	if absent && c.legacy != nil && c.legacy.HasLegacy() {
+	if absent && c.legacy != nil && c.legacy.Upgraded() {
 		mode = ModeNoSites
 	}
+	c.modeUnsaved = absent
 	c.mode.Store(mode)
 	// Unreadable mode.json: only this version writes it, so the import
 	// is taken as done (the next writeMode keeps the mark).
@@ -347,7 +354,11 @@ func (c *Collector) readMode() (mode Mode, imported, absent bool, err error) {
 // writeMode writes mode.json with the import mark (ioMu held).
 func (c *Collector) writeMode(m Mode) error {
 	b, _ := json.Marshal(modeFile{V: 1, Mode: string(m), Imported: c.imported})
-	return c.files.Write("mode", b)
+	err := c.files.Write("mode", b)
+	if err == nil {
+		c.modeUnsaved = false
+	}
+	return err
 }
 
 // settleLegacy ends the import of v1.2.0's statistics for good: the user

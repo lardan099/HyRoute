@@ -1180,6 +1180,7 @@ export interface DNSStatus {
   direct: boolean;
   health?: DNSHealth[];
   pauseLeft?: number; // captive-portal pause, seconds left
+  notApplied?: boolean; // the running session did not take the settings
 }
 
 export interface DNSView {
@@ -1196,6 +1197,7 @@ export interface DNSExplain {
   cond?: 'app' | 'proto';
   proto?: 'tcp' | 'udp' | '';
   noIPv6?: boolean;
+  system?: DNSExplain | null; // with a program: the Windows DNS client, when it resolves otherwise
 }
 
 interface GUI {

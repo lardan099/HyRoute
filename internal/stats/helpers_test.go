@@ -27,6 +27,7 @@ type memFiles struct {
 	legacyErr error
 	writes    int
 	removes   int
+	earlier   bool // the data folder holds other files of an earlier version
 }
 
 func newFiles() *memFiles {
@@ -113,10 +114,10 @@ func (f *memFiles) SweepTemp(before time.Time) (int, error) {
 	return n, nil
 }
 
-func (f *memFiles) HasLegacy() bool {
+func (f *memFiles) Upgraded() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.legacy != nil || f.legacyErr != nil && !errors.Is(f.legacyErr, fs.ErrNotExist)
+	return f.earlier || f.legacy != nil || f.legacyErr != nil && !errors.Is(f.legacyErr, fs.ErrNotExist)
 }
 
 func (f *memFiles) ReadLegacy() ([]byte, error) {

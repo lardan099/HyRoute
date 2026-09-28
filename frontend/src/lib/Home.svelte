@@ -146,8 +146,9 @@
     if (st.state === 'connected') {
       return everything ? 'Весь трафик идёт через VPN, кроме исключений в правилах.' : 'Через VPN идут только программы и сайты из правил.';
     }
-    // dns: names through VPN do not resolve either (DNS by the rules).
-    return st.dns?.byRules && allTunnelsDown(st) ? `${st.message}. Имена сайтов через VPN не разрешаются.` : st.message;
+    // dns: names through VPN do not resolve either (DNS by the rules; not
+    // during the captive-portal pause, when they resolve directly).
+    return st.dns?.byRules && !st.dns.pauseLeft && allTunnelsDown(st) ? `${st.message}. Имена сайтов через VPN не разрешаются.` : st.message;
   });
 
   async function toggle() {

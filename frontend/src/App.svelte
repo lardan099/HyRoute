@@ -32,7 +32,7 @@
     { id: 'networks', label: 'Сети', icon: 'wifi', expert: true }, // netmodes
     { id: 'lists', label: 'Списки', icon: 'database', expert: true },
     { id: 'connections', label: 'Соединения', icon: 'activity', expert: true },
-    { id: 'stats', label: 'Статистика', icon: 'chart', expert: true },
+    { id: 'stats', label: 'Статистика', icon: 'chart' }, // stats: collected in both modes, so shown in both
     { id: 'logs', label: 'Журнал', icon: 'log', expert: true },
     { id: 'settings', label: 'Настройки', icon: 'settings' },
   ];
