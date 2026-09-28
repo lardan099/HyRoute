@@ -327,7 +327,15 @@ func TestUDPEndToEnd(t *testing.T) {
 		if shared && (len(bnd) != 2 || bnd[0] != tcpPort) {
 			t.Fatalf("shared: %v, tcp %d", bnd, tcpPort)
 		}
-		if opened.Load() != 2 || s.UDPActive.Load() != 2 || s.UDPTotal.Load() != 2 || s.Sent.Load() != 12 || s.Recv.Load() != 32 {
+		// Sent grows after the forward returns, which can be after the echo
+		// already reached the client: wait for the counters to settle.
+		settled := func() bool {
+			return opened.Load() == 2 && s.UDPActive.Load() == 2 && s.UDPTotal.Load() == 2 && s.Sent.Load() == 12 && s.Recv.Load() == 32
+		}
+		for deadline := time.Now().Add(5 * time.Second); !settled() && time.Now().Before(deadline); {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if !settled() {
 			t.Fatalf("opened %d active %d total %d sent %d recv %d", opened.Load(), s.UDPActive.Load(), s.UDPTotal.Load(), s.Sent.Load(), s.Recv.Load())
 		}
 	}

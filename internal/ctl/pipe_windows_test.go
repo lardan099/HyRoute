@@ -278,7 +278,13 @@ func TestSecurityDescriptor(t *testing.T) {
 	if !strings.Contains(s, "(A;;RC;;;OW)") || !strings.Contains(s, "S:(ML;;NW;;;ME)") {
 		t.Fatal(s)
 	}
-	if !strings.Contains(s, "(A;;0x12019b;;;"+me.String()+")") || userRW&0x4 != 0 {
+	// The ACE as SDDL writes it: well-known accounts get an alias (the
+	// built-in Administrator of a CI runner is LA, not its SID).
+	ace, err := windows.SecurityDescriptorFromString("D:(A;;0x12019b;;;" + me.String() + ")")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(s, strings.TrimPrefix(ace.String(), "D:")) || userRW&0x4 != 0 {
 		t.Fatal("the user ACE may create instances:", s)
 	}
 }
