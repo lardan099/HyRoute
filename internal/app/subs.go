@@ -552,7 +552,7 @@ func (c *Controller) applyFetched(id string, res FetchResult, rollback bool) (Me
 		c.mu.Unlock()
 		return MergeStats{}, errors.New("подписка не найдена")
 	}
-	list, st := mergeSubscription(c.profiles.List, source, l.Profiles, c.profileUsedLocked, newID)
+	list, st := c.mergeKeepingGroupsLocked(source, l.Profiles)
 	next := &store.Profiles{Active: c.profiles.Active, List: list}
 	if next.Find(next.Active) == nil {
 		next.Active = ""
@@ -609,10 +609,13 @@ func (c *Controller) applyFetched(id string, res FetchResult, rollback bool) (Me
 // profileUsedLocked reports whether profile id must outlive its
 // subscription dropping it: it is the main one, or a rule or a local proxy
 // names it (its ID would be lost, and they would refuse their traffic).
-// While settings.json or proxies.json is not loaded their references are
-// unknown, and every profile counts as used.
+// While settings.json, proxies.json or groups.json is not loaded their
+// references are unknown, and every profile counts as used. (A group's
+// members are kept only so that a used group is never emptied:
+// groupPinsLocked.)
 func (c *Controller) profileUsedLocked(id string) bool {
-	return id == c.profiles.Active || c.refsUnknownLocked() != nil || len(c.explicitRefsLocked(id)) > 0 || len(c.proxyRefsLocked(id)) > 0
+	return id == c.profiles.Active || c.refsUnknownLocked() != nil || c.groupsBroken != nil ||
+		len(c.explicitRefsLocked(id)) > 0 || len(c.proxyRefsLocked(id)) > 0
 }
 
 // proxyRefsLocked lists local proxies that name profile id explicitly.
@@ -641,12 +644,13 @@ func (c *Controller) DeleteSubscription(id string) error {
 		return err
 	}
 	var list []hysteria.Profile
+	pins := c.subDeletePinsLocked(source)
 	for _, p := range c.profiles.List {
 		if p.Source != source {
 			list = append(list, p)
 			continue
 		}
-		if c.profileUsedLocked(p.ID) {
+		if c.profileUsedLocked(p.ID) || pins[p.ID] {
 			p.Source, p.Missing = "", false
 			list = append(list, p)
 		}

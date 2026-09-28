@@ -38,7 +38,7 @@ func (c *Controller) startLocked(recovering bool) error {
 		return fmt.Errorf("settings.json не загружен: с правилами по умолчанию весь трафик пошёл бы напрямую. Исправьте или удалите файл и перезапустите HyRoute. Ошибка: %v", err)
 	}
 	cfg := c.Base
-	set, want := c.routingLocked()
+	set, want, _ := c.routingLocked()
 	st := *c.settings
 	cfg.Settings, cfg.Rules, cfg.Profiles = &st, set, want
 	// SaveSettings compares engine options with what is starting.
@@ -74,6 +74,7 @@ func (c *Controller) startLocked(recovering bool) error {
 		c.Log.Info("hysteria status", "profile", c.profileName(id), "state", s.State.String(), "msg", s.Message, "udp", s.UDPEnabled, "socks", s.SOCKS, "serverIPs", s.ServerIPs)
 		c.changed()
 	}
+	c.groupsSession(&cfg)
 	names := make([]string, len(want))
 	for i, p := range want {
 		names[i] = p.Name
@@ -100,6 +101,7 @@ func (c *Controller) startLocked(recovering bool) error {
 	c.applyRoutingLocked()
 	c.mu.Unlock()
 	c.Log.Info("connected: filters active")
+	c.startProber()
 	c.armKillSwitch(sess)
 	c.syncProxies()
 	c.changed()
@@ -153,6 +155,7 @@ func (c *Controller) disconnectLocked(release bool) {
 	}
 	c.routingStopped(release)
 	c.stopProxies()
+	c.stopProber()
 	if s != nil {
 		s.Stop()
 		c.Log.Info("disconnected: filters removed")
@@ -199,6 +202,14 @@ type Status struct {
 	// SettingsRev is the settings revision (Controller.SettingsRev): a page
 	// that missed the "settings" event still sees the rules changed.
 	SettingsRev uint64 `json:"settingsRev"`
+	// groups
+	// MainGroup: the main target is this loaded group (Main/MainID name it).
+	MainGroup *GroupBrief `json:"mainGroup,omitempty"`
+	// MainUnloaded: the main target is a group groups.json could not load
+	// (its "via VPN" connections are refused).
+	MainUnloaded bool `json:"mainUnloaded,omitempty"`
+	// GroupsNote: groups.json is broken, what that means now.
+	GroupsNote string `json:"groupsNote,omitempty"`
 }
 
 // down reports a profile that cannot carry traffic now: failed, or
@@ -221,6 +232,7 @@ func (c *Controller) Status() Status {
 	if p := c.profiles.Find(c.profiles.Active); p != nil {
 		st.Main, st.MainID = p.Name, p.ID
 	}
+	gst := c.groupStatusLocked(&st)
 	if s != nil {
 		st.Since = c.since
 	}
@@ -231,6 +243,7 @@ func (c *Controller) Status() Status {
 		st.State, st.Message = "error", c.startErr
 	}
 	c.mu.Unlock()
+	st.MainGroup = c.mainGroupBrief(gst, s)
 	st.KillSwitch, st.KillSwitchError = c.killSwitchStatus()
 	if s == nil {
 		if st.State == "error" {
@@ -253,6 +266,9 @@ func (c *Controller) Status() Status {
 	var downMsgs []string
 	for _, t := range st.Tunnels {
 		switch {
+		case gst.viaGroup[t.ID] && down(t):
+			// A group-only member down (failed or reconnecting) changes
+			// nothing: groupsDown judges its group.
 		case down(t):
 			st.State = "tunnel-down"
 			m := fmt.Sprintf("%s недоступен, %d соединений отклонено", t.Name, t.Rejected)
@@ -264,6 +280,7 @@ func (c *Controller) Status() Status {
 			st.State = "connecting"
 		}
 	}
+	c.groupsDownStatus(&st, gst, s, &downMsgs)
 	if len(downMsgs) > 0 {
 		st.Message = strings.Join(downMsgs, "; ")
 	} else if len(st.Tunnels) == 0 && len(st.Warnings) == 0 {

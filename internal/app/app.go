@@ -42,6 +42,9 @@ type Session interface {
 	Stats() session.Stats
 	// Endpoint is a running profile's tunnel (nil when not running).
 	Endpoint(profile string) *tunnels.Endpoint
+	// groups
+	// ServerIPRoom is how many more server IPs the exclusions can take.
+	ServerIPRoom() int
 }
 
 type Starter func(session.Config) (Session, error)
@@ -158,6 +161,7 @@ type Controller struct {
 
 	// Feature state (one line per feature, landing order).
 	traffic trafficState // VPN traffic statistics (traffic.go)
+	groupsState
 }
 
 // New builds a controller with journals and a logger.
@@ -174,6 +178,7 @@ func New(st *store.Store, start Starter, base session.Config, level slog.Leveler
 		recoverDelay: engineRecoverDelay,
 	}
 	c.Log = slog.New(logx.NewHandler(c.EngineLog, c.Redactor, level, nil))
+	c.initGroups()
 	return c
 }
 
@@ -215,6 +220,7 @@ func (c *Controller) Load() error {
 		c.Redactor.SetGroup("proxy:"+p.ID, p.Password)
 	}
 	c.initGeo() // categories resolve while the settings compile
+	groupsFile, groupsErr := c.loadGroups(&errs, p)
 	st, set, err2 := c.Store.LoadSettings()
 	if err2 != nil {
 		errs = append(errs, err2.Error())
@@ -226,6 +232,7 @@ func (c *Controller) Load() error {
 	c.profiles, c.settings, c.set, c.subs, c.prefs, c.proxies = p, st, set, subs, prefs, proxies
 	c.settingsBroken, c.proxiesBroken, c.prefsBroken = err2, err5, err4
 	c.rulesAt = c.settingsRev.Add(1)
+	c.loadedGroupsLocked(groupsFile, groupsErr)
 	c.updateNamesLocked()
 	c.loadErr = strings.Join(errs, "; ")
 	c.mu.Unlock()
@@ -247,17 +254,19 @@ func (c *Controller) updateNamesLocked() {
 	for _, p := range c.profiles.List {
 		m[p.ID] = p.Name
 	}
+	c.groupNamesLocked(m)
 	c.names.Store(&m)
 }
 
 // stubProfile stands for every profile in stub mode.
 const stubProfile = "stub"
 
-// routingLocked returns the rule set with the main profile filled in and
-// the profiles it sends traffic to. c.mu must be held.
-func (c *Controller) routingLocked() (*rules.Set, []hysteria.Profile) {
+// routingLocked returns the rule set with the main target filled in, the
+// profiles it sends traffic to and the groups it uses (their members run).
+// c.mu must be held.
+func (c *Controller) routingLocked() (*rules.Set, []hysteria.Profile, []string) {
 	set := *c.set
-	set.Main = c.profiles.Active
+	set.Main = c.mainTargetLocked()
 	if c.Base.Stub && set.Main == "" {
 		set.Main = stubProfile
 	}
@@ -270,6 +279,7 @@ func (c *Controller) routingLocked() (*rules.Set, []hysteria.Profile) {
 			used[c.proxyProfileLocked(p)] = true
 		}
 	}
+	usedGroups := c.expandGroupsLocked(used)
 	var want []hysteria.Profile // in list order
 	for _, p := range c.profiles.List {
 		if used[p.ID] {
@@ -279,7 +289,7 @@ func (c *Controller) routingLocked() (*rules.Set, []hysteria.Profile) {
 	if c.Base.Stub && used[stubProfile] {
 		want = append(want, hysteria.Profile{ID: stubProfile, Name: "stub"})
 	}
-	return &set, want
+	return &set, want, usedGroups
 }
 
 // applyRoutingLocked pushes the current rules and profiles to the running
@@ -288,6 +298,6 @@ func (c *Controller) applyRoutingLocked() {
 	if c.sess == nil {
 		return
 	}
-	set, want := c.routingLocked()
+	set, want, _ := c.routingLocked()
 	c.sess.SetRules(set, want)
 }

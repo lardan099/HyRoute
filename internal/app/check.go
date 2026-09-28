@@ -72,7 +72,9 @@ func (c *Controller) CheckProfile(id string) (CheckResult, error) {
 
 	// 2. TCP: a CONNECT through the tunnel (latency) and HTTPS for the
 	// external IP.
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// Check dials are Quiet: a check destination that fails must not count
+	// against the server in its groups (a routing endpoint is reused).
+	ctx, cancel := context.WithTimeout(tunnels.Quiet(context.Background()), 15*time.Second)
 	t0 := time.Now()
 	conn, err := ep.Dial(ctx, latencyTarget)
 	cancel()
@@ -173,7 +175,7 @@ func externalIP(ep *tunnels.Endpoint) (string, error) {
 			}
 			var pn uint16
 			fmt.Sscan(port, &pn)
-			return ep.Dial(ctx, socks5.Addr{Host: host, Port: pn})
+			return ep.Dial(tunnels.Quiet(ctx), socks5.Addr{Host: host, Port: pn})
 		},
 		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
 		TLSHandshakeTimeout: 10 * time.Second,
@@ -199,7 +201,7 @@ func externalIP(ep *tunnels.Endpoint) (string, error) {
 }
 
 func udpProbe(ep *tunnels.Endpoint) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(tunnels.Quiet(context.Background()), 8*time.Second)
 	defer cancel()
 	a, err := ep.UDPAssociate(ctx)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/localproxy"
 	"github.com/lardan099/hyroute/internal/relay"
 	"github.com/lardan099/hyroute/internal/socks5"
@@ -41,10 +42,10 @@ type proxyRun struct {
 	err string
 }
 
-// proxyProfileLocked resolves "" to the main server.
+// proxyProfileLocked resolves "" to the main target (a server or a group).
 func (c *Controller) proxyProfileLocked(p store.LocalProxy) string {
 	if p.Profile == "" {
-		return c.profiles.Active
+		return c.mainTargetLocked()
 	}
 	return p.Profile
 }
@@ -55,9 +56,8 @@ func (c *Controller) Proxies() []ProxyView {
 	connected := c.sess != nil
 	names := map[string]string{}
 	for _, p := range list {
-		id := c.proxyProfileLocked(p)
-		if pr := c.profiles.Find(id); pr != nil {
-			names[p.ID] = pr.Name
+		if n := c.targetNameLocked(c.proxyProfileLocked(p)); n != "" {
+			names[p.ID] = n
 		}
 	}
 	c.mu.Unlock()
@@ -162,7 +162,7 @@ func (c *Controller) SaveProxy(in ProxyInput) (ProxyView, error) {
 	p.Name = strings.TrimSpace(p.Name)
 	p.Username = strings.TrimSpace(p.Username)
 	c.mu.Lock()
-	if p.Profile != "" && c.profiles.Find(p.Profile) == nil {
+	if p.Profile != "" && !c.targetExistsLocked(p.Profile) {
 		c.mu.Unlock()
 		return ProxyView{}, errors.New("сервер не найден")
 	}
@@ -357,6 +357,9 @@ func (c *Controller) proxyDialer(p store.LocalProxy) localproxy.Dialer {
 		if s == nil {
 			return nil, errors.New("HyRoute не подключён")
 		}
+		if groups.IsGroupID(id) {
+			return c.proxyGroupDial(ctx, s, p, id, dst)
+		}
 		ep := s.Endpoint(id)
 		if ep == nil {
 			return nil, errors.New("сервер прокси не запущен")
@@ -384,6 +387,9 @@ func (c *Controller) proxyAssociator(p store.LocalProxy) localproxy.Associator {
 		c.mu.Unlock()
 		if s == nil {
 			return nil, errors.New("HyRoute не подключён")
+		}
+		if groups.IsGroupID(id) {
+			return c.proxyGroupAssociate(ctx, s, p, id)
 		}
 		ep := s.Endpoint(id)
 		if ep == nil {

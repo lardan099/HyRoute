@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/geodata"
+	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/rules"
 	"github.com/lardan099/hyroute/internal/socks5"
 )
@@ -564,15 +565,19 @@ func doGet(ctx context.Context, cl *http.Client, rawURL string) (*http.Response,
 	return cl.Do(req)
 }
 
-// mainEndpoint is the running main profile's tunnel, or nil.
+// mainEndpoint is the running main target's tunnel, or nil. A group main
+// commits a member only when the download dials (mainGroupEndpoint).
 func (c *Controller) mainEndpoint() interface {
 	Dial(context.Context, socks5.Addr) (net.Conn, error)
 } {
 	c.mu.Lock()
-	sess, main := c.sess, c.profiles.Active
+	sess, main := c.sess, c.mainTargetLocked()
 	c.mu.Unlock()
 	if sess == nil || main == "" {
 		return nil
+	}
+	if groups.IsGroupID(main) {
+		return c.mainGroupEndpoint(sess, main)
 	}
 	ep := sess.Endpoint(main)
 	if ep == nil || !ep.Available() {

@@ -20,6 +20,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/attrib"
 	"github.com/lardan099/hyroute/internal/divert"
+	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/packet"
 	"github.com/lardan099/hyroute/internal/procinfo"
 )
@@ -33,6 +34,9 @@ type Config struct {
 	// OnFail is called once when the engine removes its filters after an
 	// error (the kill switch closes the internet then).
 	OnFail func()
+	// groups
+	// Groups resolves server group targets (Core.Groups).
+	Groups *groups.Runtime
 }
 
 // Engine wires the platform-independent Core to the WinDivert handles:
@@ -231,7 +235,16 @@ func New(cfg Config) *Engine {
 		return attrib.LookupUDPOwner(local)
 	}
 	e.Core.TCPTable = attrib.ReadTCPTable
+	e.Core.Groups = cfg.Groups
 	return e
+}
+
+// ServerIPRoom is how many more server IPs the exclusion filter can take
+// (a group check's temporary Hysteria adds its servers to the union).
+func (e *Engine) ServerIPRoom() int {
+	e.mainMu.Lock()
+	defer e.mainMu.Unlock()
+	return maxServerIPs - len(e.serverIPs)
 }
 
 // DriverVersion is the loaded WinDivert driver version ("2.2").

@@ -5,13 +5,14 @@
   // steps only put it into rules in a working order.
   import { onMount } from 'svelte';
   import { api, errText, plural, cleanSettings, cleanFallback, cleanRule, type Action, type Rule, type Settings, type RunningApp } from '../api';
-  import { ui, hide, mainProfile, profileName } from '../state.svelte';
+  import { ui, hide, mainTarget, mainText, profileName } from '../state.svelte';
   import { templates, ruleFromTemplate, type Template } from './templates';
   import { itemLabel, isSpecial, isAddress, shortLabel, loadGeo } from '../geo.svelte';
   import { appLabel } from '../ruletitle';
   import Icon from './Icon.svelte';
   import AppPicker from './AppPicker.svelte';
   import GeoPicker from './GeoPicker.svelte';
+  import TargetOptions from './TargetOptions.svelte';
 
   // onkeep: the setup's way past this step that leaves the rules as they are.
   let { onback, ondone, onkeep }: { onback: () => void; ondone: (summary: string) => void; onkeep?: () => void } = $props();
@@ -46,12 +47,12 @@
         // «Весь остальной интернет» starts on the server it has now, and
         // the reserve as it is set for it (off when it has none).
         if (s.defaultAction === 'tunnel') {
-          const known = (id: string) => ui.profiles.some((p) => p.id === id);
+          const known = (id: string) => ui.profiles.some((p) => p.id === id) || ui.groups.some((g) => g.id === id);
           if (s.defaultProfile && known(s.defaultProfile)) server.rest ??= s.defaultProfile;
           const fb = (s.defaultFallback ?? []).filter(known);
           reserve = fb.length > 0;
           // [main] is the reserve of a route on the spare itself.
-          const mainId = mainProfile()?.id;
+          const mainId = mainTarget()?.id;
           const first = fb.find((id) => id !== mainId) ?? (s.defaultProfile && s.defaultProfile !== mainId && known(s.defaultProfile) ? s.defaultProfile : '');
           if (first) spare = first;
         }
@@ -60,7 +61,8 @@
   });
 
   const hasRules = $derived((settings?.rules?.length ?? 0) > 0);
-  const main = $derived(mainProfile());
+  // The main server or group (★).
+  const main = $derived(mainTarget());
   const way: Way = $derived(base === 'all' ? 'direct' : 'tunnel');
 
   // ---- services and lists ----
@@ -219,9 +221,10 @@
     ...(base === 'all' ? [{ key: 'rest', title: 'Весь остальной интернет', rules: [] }] : []),
   ]);
 
-  // The spare: the one chosen, else the first server but the main one.
-  const others = $derived(ui.profiles.filter((p) => p.id !== main?.id));
-  const spareId = $derived(others.some((p) => p.id === spare) ? spare : (others[0]?.id ?? ''));
+  // The spare: the one chosen, else the first server but the main one. A
+  // server group can be the spare too (groups).
+  const others = $derived([...ui.profiles.map((p) => p.id), ...ui.groups.map((g) => g.id)].filter((id) => id !== main?.id));
+  const spareId = $derived(others.includes(spare) ? spare : (others[0] ?? ''));
 
   // A route on the spare itself falls back to the main server.
   function reserveOf(profile: string): string[] {
@@ -242,7 +245,7 @@
   const restAction: Action = $derived(base === 'all' ? 'tunnel' : 'direct');
 
   function serverName(id: string): string {
-    return id ? profileName(id) : main ? hide(main.name) : 'основной сервер';
+    return id ? profileName(id) : main ? mainText(main) : 'основной сервер';
   }
 
   // What a rule takes, in words: a template's hint, else its items.
@@ -260,7 +263,7 @@
     { id: 'apps', label: 'Программы' },
     { id: 'sites', label: 'Сайты' },
     { id: 'block', label: 'Блокировка' },
-    ...(ui.profiles.length > 1 ? [{ id: 'servers', label: 'Серверы' }] : []),
+    ...(ui.profiles.length > 1 || ui.groups.length > 0 ? [{ id: 'servers', label: 'Серверы' }] : []),
     { id: 'sum', label: 'Итог' },
   ]);
   let step = $state('intro');
@@ -508,8 +511,8 @@
             <div class="item">
               <span class="grow ellipsis"><b>{g.title}</b></span>
               <select value={server[g.key] ?? ''} onchange={(e) => (server[g.key] = (e.currentTarget as HTMLSelectElement).value)}>
-                <option value="">Основной{main ? ` — ${hide(main.name)}` : ''}</option>
-                {#each ui.profiles as p (p.id)}<option value={p.id}>{hide(p.name)}</option>{/each}
+                <option value="">Основной{main ? ` — ${mainText(main)}` : ''}</option>
+                <TargetOptions current={server[g.key] ?? ''} />
               </select>
             </div>
           {/each}
@@ -530,7 +533,7 @@
         <div class="item">
           <span class="grow ellipsis"><b>Запасной сервер</b></span>
           <select value={spareId} onchange={(e) => (spare = (e.currentTarget as HTMLSelectElement).value)}>
-            {#each others as p (p.id)}<option value={p.id}>{hide(p.name)}</option>{/each}
+            <TargetOptions exclude={(id) => id === main?.id} />
           </select>
         </div>
         <p class="muted small">Для пунктов, которые сами идут через запасной сервер, подстраховкой будет основной.</p>

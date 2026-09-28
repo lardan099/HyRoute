@@ -1,6 +1,6 @@
 // Shared UI state: status, profiles, Privacy mode, theme.
 import { maskDomains, maskHosts, maskIPs, maskURLs } from './privacy';
-import type { ProfileSummary, Status } from './api';
+import { isGroupId, type GroupView, type ProfileSummary, type Status } from './api';
 
 function get(k: string): string | null {
   try {
@@ -34,6 +34,8 @@ export const ui = $state({
   // copy that already has servers from before the mode existed opens in
   // the full one (App.svelte).
   expert: (get('expert') === null ? null : get('expert') === '1') as boolean | null,
+  // groups: the server groups (App reloads them with the servers)
+  groups: [] as GroupView[],
 });
 
 export function setExpert(on: boolean) {
@@ -116,14 +118,40 @@ export function hide(s: string | undefined | null): string {
   return maskIPs(maskDomains(maskURLs(maskHosts(s, hosts))));
 }
 
-// profileName is a server's name for display, masked in Privacy mode.
+// profileName is a server's or a group's name for display, masked in
+// Privacy mode.
 export function profileName(id: string): string {
   if (!id) return '';
+  if (isGroupId(id)) return hide(ui.groups.find((g) => g.id === id)?.name ?? 'удалённая группа');
   return hide(ui.profiles.find((p) => p.id === id)?.name ?? 'удалённый сервер');
 }
 
 export function mainProfile(): ProfileSummary | undefined {
   return ui.profiles.find((p) => p.main);
+}
+
+// MainTarget is the main server or group (★): what rules without an
+// explicit server use.
+export interface MainTarget {
+  id: string;
+  name: string; // for display (masked)
+  group: boolean;
+  unloaded: boolean; // a group groups.json could not load
+}
+
+// mainTarget comes from Go (Status.mainId), not from ui.groups: while
+// groups.json is broken the main may be a group nobody can list, and its
+// ID must still count as the main one.
+export function mainTarget(): MainTarget | undefined {
+  const id = ui.status?.mainId;
+  if (!id) return undefined;
+  const unloaded = !!ui.status?.mainUnloaded;
+  return { id, group: isGroupId(id), unloaded, name: unloaded ? 'основная группа не загружена' : profileName(id) };
+}
+
+// targetText names a server as is and a group as «группа «X»».
+export function targetText(id: string): string {
+  return isGroupId(id) ? `группа «${profileName(id)}»` : profileName(id);
 }
 
 // settle runs the save behind a checkbox, radio, select or number field and
@@ -138,4 +166,11 @@ export async function settle(e: Event, save: (el: HTMLInputElement) => Promise<u
   if (el.type === 'checkbox') el.checked = v === true;
   else if (el.type === 'radio') for (const r of document.getElementsByName(el.name) as NodeListOf<HTMLInputElement>) r.checked = r.value === v;
   else el.value = String(v);
+}
+
+// mainText is the main target for display: a server's name, «группа «X»»,
+// or the note that the main group did not load.
+export function mainText(m = mainTarget()): string {
+  if (!m) return '';
+  return m.unloaded ? m.name : targetText(m.id);
 }

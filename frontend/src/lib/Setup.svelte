@@ -17,7 +17,7 @@
   // Setup reads and writes the same settings as the pages, each save built
   // on a fresh copy (its revision), so it never undoes a change made
   // elsewhere meanwhile.
-  import { ui, hide, mainProfile, setupStep, setSetupStep, finishSetup } from '../state.svelte';
+  import { ui, hide, mainProfile, mainText, setupStep, setSetupStep, finishSetup } from '../state.svelte';
   import Icon from './Icon.svelte';
   import RouteWizard from './RouteWizard.svelte';
 
@@ -475,7 +475,7 @@
     {:else if step === 'done'}
       <h1>Всё готово!</h1>
       <div class="summary">
-        <div><span class="muted">Сервер</span><b>{main ? hide(main.name) : 'не добавлен'}</b></div>
+        <div><span class="muted">Сервер</span><b>{main ? hide(main.name) : mainText() || 'не добавлен'}</b></div>
         <div><span class="muted">Через VPN</span><b>{modeTitle}</b></div>
         {#if auto}<div><span class="muted">Запуск с Windows</span><b>{wantAutostart && auto.allowed ? 'да' : 'нет'}</b></div>{/if}
       </div>

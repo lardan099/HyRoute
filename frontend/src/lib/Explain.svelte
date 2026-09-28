@@ -28,9 +28,11 @@
     }
   }
 
-  function routeText(a: string, profile: string): string {
+  function routeText(a: string, profile: string, group?: boolean, via?: string): string {
     if (a === 'direct') return 'напрямую';
     if (a === 'block') return 'будет заблокировано';
+    // A group: its member of the moment (connected failover and latency).
+    if (group) return `через группу «${profileName(profile)}»${via ? ` — сейчас через «${hide(via)}»` : ''}`;
     return profile ? `через ${profileName(profile)}` : 'через основной сервер (не выбран — соединение отклонится)';
   }
 </script>
@@ -53,7 +55,7 @@
   {#if error}<div class="note error">{error}</div>{/if}
   {#if ex}
     <div class="result route-{ex.winner.action}">
-      {hide(ex.q.target) || ex.q.app} → {routeText(ex.winner.action, ex.winner.profile)}
+      {hide(ex.q.target) || ex.q.app} → {routeText(ex.winner.action, ex.winner.profile, ex.group, ex.via)}
     </div>
     <div class="muted small">
       {#if ex.winner.index < 0}Ни одно правило не подошло, сработало «Всё остальное».{:else}Сработало правило «{ex.winner.name}»: {hide(ex.winner.reason)}.{/if}

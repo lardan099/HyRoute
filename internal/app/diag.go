@@ -79,6 +79,9 @@ func (c *Controller) Diagnostics(system []string, privacy bool) string {
 		}
 		w("   %q %s sni=%s [%s] %s", p.Name, p.Server, orDash(p.SNI), strings.Join(flags, ", "), used)
 	}
+	for _, l := range c.groupDiagLines() {
+		w("%s", l)
+	}
 
 	subs := c.Subscriptions()
 	if len(subs) > 0 {

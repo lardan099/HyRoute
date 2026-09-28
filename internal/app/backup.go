@@ -310,6 +310,7 @@ func (c *Controller) restore(f backupFile, p backupPayload, st *settings.Setting
 	for _, pr := range list {
 		known[pr.ID] = true
 	}
+	c.noteGroupsLocked(known) // groups
 	oldSubs := slices.Clone(c.subs)
 	oldGeo := c.prefs.GeoSource + "\n" + c.prefs.GeoSiteURL + "\n" + c.prefs.GeoIPURL
 	skip := c.prefs.SkipVersion

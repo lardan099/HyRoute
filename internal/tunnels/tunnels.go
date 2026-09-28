@@ -5,6 +5,7 @@ package tunnels
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -62,15 +63,24 @@ type Endpoint struct {
 	// endpoint, not per profile: an endpoint that is still stopping must
 	// not remove the exclusion of the one that already replaced it.
 	ipKey string
+	// groups: onDial is Manager.OnDial for a routing endpoint, nil for a
+	// temporary one.
+	onDial func(id, dst string, err error)
 }
 
 func (e *Endpoint) Available() bool    { return e.r.Available() }
 func (e *Endpoint) UDPAvailable() bool { return e.r.UDPAvailable() }
 func (e *Endpoint) Dial(ctx context.Context, dst socks5.Addr) (net.Conn, error) {
-	return e.r.Dial(ctx, dst)
+	c, err := e.r.Dial(ctx, dst)
+	e.noteDial(ctx, dst.String(), err)
+	return c, err
 }
 func (e *Endpoint) UDPAssociate(ctx context.Context) (*socks5.UDPAssoc, error) {
-	return e.r.UDPAssociate(ctx)
+	a, err := e.r.UDPAssociate(ctx)
+	// One destination for every associate: repeated failures are one
+	// symptom.
+	e.noteDial(ctx, "udp", err)
+	return a, err
 }
 func (e *Endpoint) SOCKS() socks5.Client    { return e.r.SOCKS() }
 func (e *Endpoint) Status() hysteria.Status { return e.r.Status() }
@@ -107,6 +117,14 @@ type Manager struct {
 	OnStatus func(id string, st hysteria.Status)
 	LogLine  func(id string, l hysteria.LogLine)
 	Log      *slog.Logger
+	// groups
+	// OnHealth is OnStatus for routing endpoints only: temporary endpoints
+	// (checks) must not touch a server group's view of a member.
+	OnHealth func(id string, st hysteria.Status)
+	// OnDial reports every dial and UDP associate of a routing endpoint
+	// (error streaks of server groups), except canceled ones and those
+	// with a Quiet context. Called without the manager's locks.
+	OnDial func(id, dst string, err error)
 
 	mu     sync.Mutex
 	ipMu   sync.Mutex
@@ -191,11 +209,17 @@ func (m *Manager) start(key string, p hysteria.Profile, test bool) *Endpoint {
 func (m *Manager) newEndpoint(key string, p hysteria.Profile, test bool) *Endpoint {
 	e := &Endpoint{ID: p.ID, Profile: p, Test: test, Started: time.Now(), started: make(chan struct{})}
 	e.ipKey = fmt.Sprintf("%s#%d", key, m.seq.Add(1))
+	if !test {
+		e.onDial = m.OnDial
+	}
 	e.r = m.New(p, Hooks{
 		SetServerIPs: func(ips []netip.Addr) error { return m.setIPs(e.ipKey, ips) },
 		OnStatus: func(st hysteria.Status) {
 			if m.OnStatus != nil {
 				m.OnStatus(p.ID, st)
+			}
+			if !test && m.OnHealth != nil {
+				m.OnHealth(p.ID, st)
 			}
 		},
 		LogLine: func(l hysteria.LogLine) {
@@ -383,4 +407,23 @@ func (e *Endpoint) status() Status {
 		s.ServerIPs = append(s.ServerIPs, ip.String())
 	}
 	return s
+}
+
+// quietKey marks a context whose dials are checks (Quiet).
+type quietKey struct{}
+
+// Quiet marks ctx as check traffic: dials with it (a server check through a
+// routing endpoint) are not reported to OnDial, so a check destination that
+// fails never counts against a server group member.
+func Quiet(ctx context.Context) context.Context { return context.WithValue(ctx, quietKey{}, true) }
+
+func quiet(ctx context.Context) bool { q, _ := ctx.Value(quietKey{}).(bool); return q }
+
+// noteDial reports a dial of a routing endpoint (see Manager.OnDial). A
+// deadline counts: the server did not answer in time.
+func (e *Endpoint) noteDial(ctx context.Context, dst string, err error) {
+	if e.onDial == nil || quiet(ctx) || errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		return
+	}
+	e.onDial(e.ID, dst, err)
 }

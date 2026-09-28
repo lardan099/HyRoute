@@ -6,8 +6,28 @@
   import ProfileEditor from './ProfileEditor.svelte';
   import CheckProfile from './CheckProfile.svelte';
   import Help from './Help.svelte';
+  import Groups from './Groups.svelte';
 
   let { onchange }: { onchange: () => void } = $props();
+
+  // groups: the page has two tabs, «Серверы» and «Группы» (remembered).
+  function storedTab(): 'servers' | 'groups' {
+    try {
+      return localStorage.getItem('hyroute.serversTab') === 'groups' ? 'groups' : 'servers';
+    } catch {
+      return 'servers';
+    }
+  }
+  let tab = $state(storedTab());
+  function setTab(t: 'servers' | 'groups') {
+    tab = t;
+    try {
+      localStorage.setItem('hyroute.serversTab', t);
+    } catch {}
+  }
+  // Groups are edited in the full interface; the simple one only picks
+  // them as targets.
+  const view = $derived(ui.expert ? tab : 'servers');
 
   // The list is the shared one: App reloads it on every change the backend
   // reports, a background subscription update included, so the page never
@@ -134,12 +154,24 @@
   <header class="row">
     <div class="grow">
       <h1>Серверы</h1>
-      <p class="muted sub">
-        Серверы Hysteria 2. Работает только тот, который нужен правилам, и несколько могут работать одновременно. ★ — основной сервер.
-      </p>
+      {#if view === 'servers'}
+        <p class="muted sub">
+          Серверы Hysteria 2. Работает только тот, который нужен правилам, и несколько могут работать одновременно. ★ — основной сервер.
+        </p>
+      {/if}
     </div>
-    <button class="primary" onclick={() => (adding = !adding)}><Icon name="plus" size={16} />Добавить сервер</button>
+    {#if view === 'servers'}<button class="primary" onclick={() => (adding = !adding)}><Icon name="plus" size={16} />Добавить сервер</button>{/if}
   </header>
+  {#if ui.expert}
+    <div class="seg tabs" role="tablist">
+      <button role="tab" aria-selected={view === 'servers'} class:on={view === 'servers'} onclick={() => setTab('servers')}>Серверы</button>
+      <button role="tab" aria-selected={view === 'groups'} class:on={view === 'groups'} onclick={() => setTab('groups')}>Группы</button>
+    </div>
+  {/if}
+
+  {#if view === 'groups'}
+    <Groups {onchange} />
+  {:else}
 
   <Help id="servers" title="Что здесь">
     <p>
@@ -218,6 +250,7 @@
       </div>
     {/each}
   </div>
+  {/if}
 </div>
 
 {#if checking}
@@ -238,6 +271,7 @@
 
 <style>
   .page-wrap { display: grid; gap: 16px; max-width: 1000px; }
+  .tabs { justify-self: start; }
   header { align-items: flex-start; }
   .sub { margin: 4px 0 0; }
   textarea { width: 100%; }

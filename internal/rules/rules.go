@@ -68,10 +68,10 @@ type Rule struct {
 	// "27000-27200" ("" = any port).
 	Ports  string `json:"ports,omitempty"`
 	Action Action `json:"action"`
-	// Profile is the profile ID for Tunnel ("" = the main profile).
+	// Profile is the server or group ID for Tunnel ("" = the main target).
 	Profile string `json:"profile,omitempty"`
-	// Fallback lists profile IDs ("" = the main profile) tried in order
-	// when Profile cannot carry traffic. When every one is down the flow
+	// Fallback lists server or group IDs ("" = the main target) tried in
+	// order when Profile cannot carry traffic. When every one is down the flow
 	// is refused, as without a fallback.
 	Fallback []string `json:"fallback,omitempty"`
 	// FailMode is reserved for the stage-2 kill switch ("open"/"closed").
@@ -95,9 +95,10 @@ type DomainMatch struct {
 // Config is the rules section of the settings.
 type Config struct {
 	DefaultAction Action `json:"defaultAction"`
-	// DefaultProfile is the profile for defaultAction tunnel ("" = main).
+	// DefaultProfile is the server or group for defaultAction tunnel ("" =
+	// main).
 	DefaultProfile string `json:"defaultProfile,omitempty"`
-	// DefaultFallback: fallback profiles of the default route.
+	// DefaultFallback: fallback servers or groups of the default route.
 	DefaultFallback []string `json:"defaultFallback,omitempty"`
 	Rules           []Rule   `json:"rules"`
 }
@@ -149,6 +150,14 @@ type Result struct {
 	RuleID    string
 	Domain    string
 	DomainSrc DomainSource
+	// groups
+	// Group is the server group Profile (a member) was chosen through; set
+	// by the engine only (Core.pick), "" otherwise.
+	Group string
+	// Failover: the flow could not use its preferred server. The chain
+	// moved past its first target, or the group avoided the member it
+	// would otherwise use (groups.Pick.Failover). Set by the engine only.
+	Failover bool
 }
 
 // NormalizeDomain lower-cases, strips the trailing dot and converts IDN to
@@ -237,7 +246,8 @@ type Set struct {
 	def         Action
 	defProfile  string
 	defFallback []string
-	// Main is the profile ID used by Tunnel rules without a profile.
+	// Main is the server or group ID used by Tunnel rules without a
+	// profile (the main target).
 	Main string
 	// Warnings list rule items that match nothing for now (a geosite:
 	// or geoip: category that is missing or not downloaded yet).
@@ -595,8 +605,8 @@ func (s *Set) routeOf(r *compiled) route {
 	return route{res.Action, res.Profile, strings.Join(res.Fallback, ",")}
 }
 
-// Profiles returns the IDs of the profiles that enabled rules and the
-// default route can send traffic to (sorted, unique).
+// Profiles returns the IDs of the servers and groups that enabled rules
+// and the default route can send traffic to (sorted, unique).
 func (s *Set) Profiles() []string {
 	seen := map[string]bool{}
 	var out []string

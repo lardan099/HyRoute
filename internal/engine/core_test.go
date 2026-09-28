@@ -19,6 +19,7 @@ import (
 	"github.com/lardan099/hyroute/internal/divert"
 	"github.com/lardan099/hyroute/internal/engine/nat"
 	"github.com/lardan099/hyroute/internal/flows"
+	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/packet"
 	"github.com/lardan099/hyroute/internal/procinfo"
 	"github.com/lardan099/hyroute/internal/rules"
@@ -107,9 +108,15 @@ func newHarness(t *testing.T, cfg rules.Config, opt Options) *harness {
 		t.Fatal(err)
 	}
 	h.c.Rules.Swap(set)
+	if emptyGroups {
+		h.c.Groups = groups.NewRuntime(nil)
+	}
 	t.Cleanup(h.c.Close)
 	return h
 }
+
+// emptyGroups: harnesses get a runtime without groups (TestNoGroupsUnchanged).
+var emptyGroups bool
 
 func (h *harness) own(proto uint8, src, dst string, pid uint32) {
 	h.c.Conns.Connect(attrib.Key5{Proto: proto, Local: netip.MustParseAddrPort(src), Remote: netip.MustParseAddrPort(dst)}, pid, uint64(pid)<<16|uint64(netip.MustParseAddrPort(src).Port()), time.Now())

@@ -51,6 +51,12 @@ type Result struct {
 	Stage      string // "relay", "sniff", "sniff-timeout"
 	Sent, Recv int64
 	Start, End time.Time
+	// groups
+	// Group is the server group Profile was chosen through; Failover: the
+	// connection could not use its preferred server. Sniffed connections
+	// only (a NoSniff one's record already has both).
+	Group    string
+	Failover bool
 }
 
 // Counters are exposed to the UI.
@@ -368,9 +374,11 @@ func (s *Server) handle(c net.Conn) {
 			remoteName = ""
 		}
 		action, profile, res.Rule, res.Domain, res.DomainSrc = d.Action, d.Profile, d.Rule, d.Domain, d.DomainSrc
+		res.Group, res.Failover = d.Group, d.Failover
 		if e.Rec != nil {
 			e.Rec.Set(func(f *flows.Fields) {
 				f.Rule, f.Route, f.Profile, f.Stage = d.Rule, d.Action.String(), d.Profile, res.Stage
+				f.Group, f.Failover = d.Group, d.Failover
 				if d.Domain != "" {
 					f.Domain, f.DomainSrc = d.Domain, d.DomainSrc.String()
 				}

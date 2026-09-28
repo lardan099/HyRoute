@@ -21,14 +21,15 @@ export interface Rule {
   // Destination ports: "443", "80,443", "27000-27200" ('' = any).
   ports?: string;
   action: Action;
+  // A server or group ID ('' = the main target).
   profile?: string;
-  // Servers tried in order when `profile` is down ('' = main).
+  // Servers or groups tried in order when `profile` is down ('' = main).
   fallback?: string[];
 }
 
 export interface Settings {
   defaultAction: Action;
-  defaultProfile?: string;
+  defaultProfile?: string; // a server or group ID ('' = the main target)
   defaultFallback?: string[];
   rules: Rule[];
   blockQUIC?: boolean;
@@ -75,6 +76,8 @@ export interface ProfileSummary {
   sourceName: string;
   missing: boolean;
   usedBy: string[];
+  // groups: failed connections through it are invisible to error streaks
+  fastOpen: boolean;
 }
 
 export interface ImportResult {
@@ -121,7 +124,7 @@ export interface RuleWarning {
   index: number;
   rule: string;
   profile: string;
-  kind: 'no-main' | 'deleted' | 'missing';
+  kind: 'no-main' | 'deleted' | 'missing' | 'empty';
   text: string;
 }
 
@@ -206,6 +209,10 @@ export interface Explanation {
   winner: ExplainStep;
   notes: string[];
   profileName: string;
+  // groups: the winner is a server group; via is the member a connection
+  // would take now (connected, failover or latency groups).
+  group?: boolean;
+  via?: string;
 }
 
 export type State = 'disconnected' | 'starting' | 'connecting' | 'connected' | 'tunnel-down' | 'error';
@@ -215,7 +222,7 @@ export interface ProxyInput {
   id: string;
   name: string;
   enabled: boolean;
-  profile: string; // '' = main server
+  profile: string; // a server or group ID ('' = the main target)
   port: number;
   lan: boolean;
   username: string;
@@ -259,6 +266,12 @@ export interface Status {
   killSwitchError?: string;
   // foundation: the settings revision (also the payload of the "settings" event)
   settingsRev: number;
+  // groups: mainId is the main target (a server or a group); mainGroup the
+  // loaded main group; mainUnloaded: the main is a group groups.json could
+  // not load; groupsNote: what a broken groups.json means now.
+  mainUnloaded?: boolean;
+  mainGroup?: GroupBrief;
+  groupsNote?: string;
 }
 
 export interface Flow {
@@ -284,6 +297,10 @@ export interface Flow {
   closed: boolean;
   // foundation: the mandatory exclusion the flow fell under (rules do not apply)
   excluded?: string; // hysteria | system-dns
+  // groups: the server group profile was chosen through; failover: the flow
+  // could not use its preferred server
+  group?: string;
+  failover?: boolean;
 }
 
 export interface Connections {
@@ -724,8 +741,8 @@ export function cleanRule(r: Rule, mainId: string | undefined): Rule {
   return out;
 }
 
-// cleanSettings is what SaveSettings gets; mainId is the main server's ID
-// (mainProfile()?.id, undefined when none). The copy's ruleset, rev and
+// cleanSettings is what SaveSettings gets; mainId is the main target's ID
+// (mainTarget()?.id, undefined when none). The copy's ruleset, rev and
 // editRev stay: Go checks the save against them.
 export function cleanSettings(s: Settings, mainId: string | undefined): Settings {
   const c: Settings = JSON.parse(JSON.stringify(s));
@@ -794,4 +811,94 @@ export function isStale(e: unknown): boolean {
 
 interface GUI {
   SaveEngineOptions(o: EngineOptions): Promise<SaveResult>;
+}
+
+// ==== groups ====
+
+export type Strategy = 'failover' | 'latency' | 'roundrobin' | 'random' | 'sticky';
+
+export interface Group {
+  id: string; // 'grp-…'; '' when creating
+  name: string;
+  strategy: Strategy;
+  members: string[]; // server IDs, ordered
+  revert?: boolean; // failover
+  toleranceMs?: number; // latency (0/undefined = 50)
+  switchAfterErrors?: number; // 0/undefined = off, 2..20
+}
+
+export interface GroupMember {
+  id: string;
+  name: string;
+  state: 'stopped' | 'connecting' | 'connected' | 'failed';
+  udp: boolean;
+  fastOpen: boolean;
+  latencyMs: number;
+  lastMs: number;
+  probeAt: number; // Unix ms, 0 = never
+  probeError: string;
+  errors: number;
+  skipped: boolean;
+  reason: '' | 'errors' | 'trial' | 'probe';
+  missing: boolean; // not in the server list («удалён»)
+  notInSub: boolean; // kept although its subscription dropped it («нет в подписке»)
+}
+
+export interface GroupView extends Group {
+  main: boolean;
+  usedBy: string[];
+  active: string;
+  up: number;
+  running: boolean;
+  missing: number;
+  rejected: number;
+  probeBroken: boolean;
+  memberViews: GroupMember[];
+}
+
+export interface ProbeSettings {
+  url?: string;
+  intervalSec?: number;
+}
+
+export interface GroupsInfo {
+  groups: GroupView[];
+  probe: ProbeSettings;
+  defaultProbeURL: string;
+  loadError?: string;
+  serversBroken?: boolean; // profiles.json did not load: groups are not changed
+  activeServer: string; // the main again once a main group is deleted ('' = none)
+}
+
+export interface GroupBrief {
+  id: string;
+  name: string;
+  strategy: Strategy;
+  active: string;
+  activeName: string;
+  up: number;
+  total: number;
+  rejected: number;
+}
+
+// isGroupId: a target ID naming a server group (servers and groups share
+// one namespace; the prefix keeps them apart).
+export function isGroupId(id: string | undefined | null): boolean {
+  return !!id && id.startsWith('grp-');
+}
+
+export const strategyLabel: Record<Strategy, string> = {
+  failover: 'По порядку',
+  latency: 'Самый быстрый',
+  roundrobin: 'По кругу',
+  random: 'Случайно',
+  sticky: 'Закреплять сайт',
+};
+
+interface GUI {
+  Groups(): Promise<GroupsInfo>;
+  SaveGroup(g: Group): Promise<GroupView>;
+  DeleteGroup(id: string): Promise<void>;
+  ProbeGroup(id: string): Promise<GroupView>;
+  SetProbe(p: ProbeSettings): Promise<void>;
 }

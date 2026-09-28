@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/rules"
 	"github.com/lardan099/hyroute/internal/store"
@@ -32,23 +33,28 @@ type ProfileSummary struct {
 	// UsedBy lists the rules that send traffic here ("по умолчанию" for
 	// the default route).
 	UsedBy []string `json:"usedBy"`
+	// groups
+	// FastOpen: failed connections are invisible to server groups' error
+	// streaks (Hysteria answers before the remote connects).
+	FastOpen bool `json:"fastOpen"`
 }
 
 func (c *Controller) summaryLocked(p *hysteria.Profile) ProfileSummary {
 	s := ProfileSummary{ID: p.ID, Name: p.Name, Server: hysteria.ServerString(p.Host, p.Ports), Host: p.Host,
 		Obfs: p.Obfs.Type, SNI: p.TLS.SNI, Insecure: p.TLS.Insecure, Pinned: p.TLS.PinSHA256 != "",
-		Main: p.ID == c.profiles.Active, Source: p.Source, Missing: p.Missing, UsedBy: c.usedByLocked(p.ID)}
+		Main: p.ID == c.mainTargetLocked(), Source: p.Source, Missing: p.Missing, UsedBy: c.usedByLocked(p.ID), FastOpen: p.FastOpen}
 	s.SourceName = c.sourceNameLocked(p.Source)
 	return s
 }
 
 // usedByLocked lists enabled rules (and the default route) that tunnel
-// through profile id, resolving "" to the main profile.
+// through profile id, resolving "" to the main target, and the running
+// groups that hold it.
 func (c *Controller) usedByLocked(id string) []string {
 	out := []string{}
 	resolve := func(p string) string {
 		if p == "" {
-			return c.profiles.Active
+			return c.mainTargetLocked()
 		}
 		return p
 	}
@@ -73,7 +79,7 @@ func (c *Controller) usedByLocked(id string) []string {
 			out = append(out, "по умолчанию (запасной)")
 		}
 	}
-	return out
+	return append(out, c.memberOfLocked(id)...)
 }
 
 func fallbackHas(fb []string, id string, resolve func(string) string) bool {
@@ -119,6 +125,7 @@ func (c *Controller) explicitRefsLocked(id string) []string {
 func (c *Controller) Profiles() []ProfileSummary {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.memoRunningGroupsLocked()()
 	out := []ProfileSummary{}
 	for i := range c.profiles.List {
 		out = append(out, c.summaryLocked(&c.profiles.List[i]))
@@ -183,6 +190,7 @@ func (c *Controller) saveProfilesLocked(next *store.Profiles) error {
 		return err
 	}
 	c.profiles = next
+	c.syncGroupsLocked()
 	c.updateNamesLocked()
 	c.applyRoutingLocked()
 	return nil
@@ -310,6 +318,10 @@ func (c *Controller) DeleteProfile(id string) error {
 		c.mu.Unlock()
 		return err
 	}
+	if err := c.deleteServerCheckLocked(id); err != nil {
+		c.mu.Unlock()
+		return err
+	}
 	if refs := c.explicitRefsLocked(id); len(refs) > 0 {
 		c.mu.Unlock()
 		return fmt.Errorf("профиль используется: %s. Выберите в этих правилах другой профиль", strings.Join(refs, ", "))
@@ -332,22 +344,43 @@ func (c *Controller) DeleteProfile(id string) error {
 		}
 	}
 	err := c.saveProfilesLocked(next)
+	if err == nil {
+		c.pruneServerLocked(id)
+	}
 	c.mu.Unlock()
 	c.changed()
 	return err
 }
 
-// SetMain selects the profile used by Tunnel rules without an explicit
-// profile. It applies at once: new flows of those rules use it.
+// SetMain selects the server or group used by Tunnel rules without an
+// explicit profile. It applies at once: new flows of those rules use it. A
+// group main lives in groups.json only; a server main is profiles.json's
+// active server (written first), and then a group main is cleared.
 func (c *Controller) SetMain(id string) error {
 	c.mu.Lock()
+	if groups.IsGroupID(id) {
+		err := c.setMainGroupLocked(id)
+		c.mu.Unlock()
+		if err == nil {
+			c.Log.Info("main server group set: rules without an explicit profile use it for new connections", "group", c.profileName(id))
+		}
+		c.changed()
+		return err
+	}
 	if c.profiles.Find(id) == nil {
 		c.mu.Unlock()
 		return fmt.Errorf("профиль %s не найден", id)
 	}
+	if err := c.mainGroupBlocksLocked(); err != nil {
+		c.mu.Unlock()
+		return err
+	}
 	next := cloneProfiles(c.profiles)
 	next.Active = id
 	err := c.saveProfilesLocked(next)
+	if err == nil {
+		err = c.clearMainGroupLocked()
+	}
 	c.mu.Unlock()
 	if err == nil {
 		c.Log.Info("main profile changed: rules without an explicit profile use it for new connections")

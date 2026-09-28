@@ -62,14 +62,14 @@ func Start(cfg Config) (_ *Session, err error) {
 		log.Warn("firewall rule not ensured; reflected connections may be blocked", "err", err)
 	}
 
-	s.mgr = &tunnels.Manager{Log: log, OnStatus: cfg.OnStatus, LogLine: cfg.HysteriaLog}
+	s.mgr = &tunnels.Manager{Log: log, OnStatus: cfg.OnStatus, LogLine: cfg.HysteriaLog, OnDial: cfg.OnDial, OnHealth: cfg.OnHealth}
 	if cfg.Stub {
 		s.stub = &socks5.Server{Username: "stub", Password: "stubpass"}
 		if err := s.stub.Listen("127.0.0.1:0"); err != nil {
 			return nil, fmt.Errorf("socks5 stub: %w", err)
 		}
 		c := socks5.Client{Server: s.stub.Addr(), Username: "stub", Password: "stubpass"}
-		s.mgr.New = func(hysteria.Profile, tunnels.Hooks) tunnels.Runner { return &stubRunner{c: c} }
+		s.mgr.New = func(_ hysteria.Profile, h tunnels.Hooks) tunnels.Runner { return &stubRunner{c: c, h: h} }
 		log.Info("SOCKS5 stub listening (connects directly from this process)", "addr", s.stub.Addr())
 	} else {
 		s.mgr.New = RunnerFactory(cfg)
@@ -94,6 +94,10 @@ func Start(cfg Config) (_ *Session, err error) {
 		Tunnel: func(profile string) relay.Tunnel {
 			if e := s.mgr.Get(profile); e != nil {
 				return e
+			}
+			// A group with no usable member: refused, counted for it.
+			if eng := engp.Load(); eng != nil {
+				return eng.GroupMiss(profile)
 			}
 			return nil
 		},
@@ -124,6 +128,7 @@ func Start(cfg Config) (_ *Session, err error) {
 				cfg.OnEngineFail()
 			}
 		},
+		Groups: cfg.Groups,
 		Options: engine.Options{
 			RelayPort:          s.rel.Port(),
 			BlockQUIC:          cfg.Settings.QUICBlocked(),
@@ -210,6 +215,11 @@ func (s *Session) DNSSites(ip netip.Addr) [][]string { return s.eng.DNS.Sites(ip
 // Endpoint is a running profile's tunnel, or nil.
 func (s *Session) Endpoint(profile string) *tunnels.Endpoint { return s.mgr.Get(profile) }
 
+// groups
+
+// ServerIPRoom is how many more server IPs the exclusions can take.
+func (s *Session) ServerIPRoom() int { return s.eng.ServerIPRoom() }
+
 func (s *Session) Stats() Stats {
 	e, r := s.eng, s.rel
 	return Stats{
@@ -233,15 +243,38 @@ func (s *Session) Stats() Stats {
 	}
 }
 
-// stubRunner is a profile served by the in-process SOCKS5 stub.
+// stubRunner is a profile served by the in-process SOCKS5 stub. It reports
+// its status through its hooks like a Hysteria does (server groups follow
+// the members' uptime).
 type stubRunner struct {
 	c  socks5.Client
+	h  tunnels.Hooks
 	mu sync.Mutex
 	up bool
 }
 
-func (r *stubRunner) Start() error { r.mu.Lock(); r.up = true; r.mu.Unlock(); return nil }
-func (r *stubRunner) Stop()        { r.mu.Lock(); r.up = false; r.mu.Unlock() }
+func (r *stubRunner) Start() error {
+	r.mu.Lock()
+	r.up = true
+	r.mu.Unlock()
+	r.status(hysteria.Connected)
+	return nil
+}
+
+func (r *stubRunner) Stop() {
+	r.mu.Lock()
+	r.up = false
+	r.mu.Unlock()
+	r.status(hysteria.Stopped)
+}
+
+// status reports st (no lock held: the hook's consumers are lock-free or
+// innermost).
+func (r *stubRunner) status(st hysteria.State) {
+	if r.h.OnStatus != nil {
+		r.h.OnStatus(hysteria.Status{State: st, UDPEnabled: st == hysteria.Connected})
+	}
+}
 func (r *stubRunner) Status() hysteria.Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -31,3 +31,8 @@ func (NopSession) Acquire(hysteria.Profile) (*tunnels.Endpoint, func()) { return
 func (NopSession) DNSSites(netip.Addr) [][]string                       { return nil }
 func (NopSession) Stats() session.Stats                                 { return session.Stats{} }
 func (NopSession) Endpoint(string) *tunnels.Endpoint                    { return nil }
+
+// groups
+
+// ServerIPRoom has no room: a group check starts no temporary Hysteria.
+func (NopSession) ServerIPRoom() int { return 0 }

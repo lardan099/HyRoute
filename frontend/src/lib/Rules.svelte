@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, errText, toLists, cleanSettings, cleanFallback, type Settings, type Rule, type LintIssue } from '../api';
-  import { ui, hide, profileName, mainProfile } from '../state.svelte';
+  import { api, errText, toLists, cleanSettings, cleanFallback, isGroupId, type Settings, type Rule, type LintIssue } from '../api';
+  import { ui, hide, profileName, mainTarget, mainText } from '../state.svelte';
   import Icon from './Icon.svelte';
+  import TargetOptions from './TargetOptions.svelte';
   import RuleEditor from './RuleEditor.svelte';
   import FallbackPicker from './FallbackPicker.svelte';
   import Explain from './Explain.svelte';
@@ -48,7 +49,7 @@
       s = v;
       rev = v.rev ?? 0;
       editRev = v.editRev ?? 0;
-      const l = await api.LintRules(cleanSettings(v, mainProfile()?.id));
+      const l = await api.LintRules(cleanSettings(v, mainTarget()?.id));
       if (my === edits) lint = l;
     } catch (e) {
       error = errText(e);
@@ -98,7 +99,7 @@
     const my = ++edits;
     pending++;
     const job = saving.then(async () => {
-      const res = await api.SaveSettings({ ...cleanSettings(next, mainProfile()?.id), rev, editRev });
+      const res = await api.SaveSettings({ ...cleanSettings(next, mainTarget()?.id), rev, editRev });
       rev = res.rev;
       editRev = res.editRev ?? 0;
       return res;
@@ -153,7 +154,7 @@
     next.defaultAction = action;
     next.defaultProfile = profile;
     // The route's own server is no fallback for itself.
-    next.defaultFallback = cleanFallback(next.defaultFallback, profile, mainProfile()?.id);
+    next.defaultFallback = cleanFallback(next.defaultFallback, profile, mainTarget()?.id);
     persist(next).catch(() => {});
   }
 
@@ -170,22 +171,29 @@
   function routeLabel(r: { action: string; profile?: string; fallback?: string[] }): string {
     if (r.action === 'direct') return 'Напрямую';
     if (r.action === 'block') return 'Заблокировать';
-    const name = r.profile ? profileName(r.profile) : hide(mainProfile()?.name ?? 'Основной сервер');
+    const name = r.profile ? (isGroupId(r.profile) ? `${profileName(r.profile)} (группа)` : profileName(r.profile)) : mainText() || 'Основной сервер';
     // Fallbacks routing skips (struck through in the editor) do not count.
-    const n = cleanFallback(r.fallback, r.profile, mainProfile()?.id).length;
+    const n = cleanFallback(r.fallback, r.profile, mainTarget()?.id).length;
     return n ? `${name} +${n} запасн.` : name;
   }
 
   function problem(r: Rule): string {
     if (r.action !== 'tunnel' || r.enabled === false) return '';
-    if (!r.profile) return mainProfile() ? '' : 'Основной сервер не выбран: соединения будут отклоняться';
+    if (!r.profile) return mainTarget() ? '' : 'Основной сервер не выбран: соединения будут отклоняться';
+    if (isGroupId(r.profile)) {
+      if (ui.status?.groupsNote) return 'Группы не загружены (groups.json): соединения будут отклоняться';
+      const g = ui.groups.find((x) => x.id === r.profile);
+      if (!g) return 'Группа удалена: соединения будут отклоняться. Выберите другую.';
+      if (g.members.length === g.missing) return `В группе «${hide(g.name)}» нет серверов: соединения будут отклоняться`;
+      return '';
+    }
     const p = ui.profiles.find((x) => x.id === r.profile);
     if (!p) return 'Сервер удалён: соединения будут отклоняться. Выберите другой.';
     if (p.missing) return `Сервер «${hide(p.name)}» пропал из подписки. Выберите замену.`;
     return '';
   }
 
-  const main = $derived(mainProfile());
+  const main = $derived(mainTarget());
 </script>
 
 <div class="page-wrap">
@@ -314,8 +322,8 @@
         </div>
         {#if s.defaultAction === 'tunnel'}
           <select value={s.defaultProfile ?? ''} onchange={(e) => setDefault('tunnel', (e.currentTarget as HTMLSelectElement).value)}>
-            <option value="">Основной{main ? ` — ${hide(main.name)}` : ''}</option>
-            {#each ui.profiles as p (p.id)}<option value={p.id}>{hide(p.name)}</option>{/each}
+            <option value="">Основной{main ? ` — ${mainText(main)}` : ''}</option>
+            <TargetOptions current={s.defaultProfile} />
           </select>
         {/if}
       </div>

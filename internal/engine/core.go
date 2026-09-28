@@ -17,6 +17,7 @@ import (
 	"github.com/lardan099/hyroute/internal/dnscache"
 	"github.com/lardan099/hyroute/internal/engine/nat"
 	"github.com/lardan099/hyroute/internal/flows"
+	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/packet"
 	"github.com/lardan099/hyroute/internal/procinfo"
 	"github.com/lardan099/hyroute/internal/relay"
@@ -133,6 +134,10 @@ type Core struct {
 	Log       *slog.Logger
 	// OnDecision is called once per new flow after the decision.
 	OnDecision func(flows.View)
+	// groups
+	// Groups resolves server group targets (nil: no groups; a group ID is
+	// then refused like a server that does not run).
+	Groups *groups.Runtime
 	Stats
 
 	mu       sync.Mutex
@@ -263,29 +268,20 @@ func (c *Core) Close() {
 	}
 }
 
-// tunnel returns the profile's tunnel or nil.
+// tunnel returns the profile's tunnel or nil. A target that stayed a
+// known group (no member usable) gets a tunnel that refuses and counts for
+// the group (groupMiss).
 func (c *Core) tunnel(profile string) Tunnel {
+	if groups.IsGroupID(profile) {
+		if c.Groups != nil && c.Groups.IsGroup(profile) {
+			return groupMiss{rt: c.Groups, id: profile}
+		}
+		return nil
+	}
 	if c.Tunnels == nil {
 		return nil
 	}
 	return c.Tunnels(profile)
-}
-
-// pick moves a Tunnel decision to the first fallback profile that can
-// carry the flow when its own profile cannot. With every profile down it
-// stays on the primary one, which refuses the flow as before.
-func (c *Core) pick(res rules.Result, udp bool) rules.Result {
-	if res.NeedsDomain || res.Action != rules.Tunnel || len(res.Fallback) == 0 || c.usable(res.Profile, udp) {
-		return res
-	}
-	for _, id := range res.Fallback {
-		if c.usable(id, udp) {
-			res.Profile = id
-			res.Rule += " (fallback)"
-			return res
-		}
-	}
-	return res
 }
 
 func (c *Core) usable(profile string, udp bool) bool {
@@ -629,7 +625,8 @@ func (c *Core) udpRetarget(uf *udpFlow, key nat.FlowKey) bool {
 		}
 		res = set.EvaluateNoDomain(uf.sub)
 	}
-	res = c.pick(res, true)
+	// Only a question: newFlow picks (and commits) when it moves.
+	res = c.peek(res, true, c.hint(res, uf.sub.Proc, "", key.Dst.Addr()))
 	return res.Action != rules.Tunnel || res.Profile != uf.profile
 }
 
@@ -763,8 +760,10 @@ func (c *Core) decide(p *packet.Packet, addr *divert.Address, proto uint8, key n
 	sub := rules.Subject{Proc: proc, Proto: proto, Dst: key.Dst}
 	set := c.Rules.Load()
 	res, excluded := c.exclusion(pid, known, proc, proto, key.Dst)
+	var pk groups.Pick
 	if excluded == "" {
-		res = c.pick(set.EvaluateSites(sub, c.packetSites(set, proto, key.Dst)), proto == packet.ProtoUDP)
+		res = set.EvaluateSites(sub, c.packetSites(set, proto, key.Dst))
+		res, pk = c.pick(res, proto == packet.ProtoUDP, c.hint(res, proc, "", key.Dst.Addr()))
 	}
 	// Our own sockets (the relay's Direct dials, Hysteria's control
 	// traffic) are not shown: the relayed flow already describes them.
@@ -775,6 +774,7 @@ func (c *Core) decide(p *packet.Packet, addr *divert.Address, proto uint8, key n
 	rec.Set(func(f *flows.Fields) {
 		f.Attrib, f.Stage, f.Rule, f.Domain, f.DomainSrc = stage, "packet", res.Rule, res.Domain, res.DomainSrc.String()
 		f.Profile = res.Profile
+		f.Group, f.Failover = res.Group, res.Failover
 		f.Excluded = excluded
 		if res.Domain == "" {
 			f.DomainSrc = rules.SrcNone.String()
@@ -789,7 +789,7 @@ func (c *Core) decide(p *packet.Packet, addr *divert.Address, proto uint8, key n
 	}
 	closed := false
 	if proto == packet.ProtoTCP {
-		closed = c.applyTCP(p, addr, key, pid, proc, sub, set, res, rec)
+		closed = c.applyTCP(p, addr, key, pid, proc, sub, set, res, pk, rec)
 	} else {
 		c.applyUDP(p, addr, key, sub, set, res, rec)
 	}
@@ -841,7 +841,7 @@ func (c *Core) finish(rec *flows.Record, route rules.Action, outcome string) {
 }
 
 func (c *Core) applyTCP(p *packet.Packet, addr *divert.Address, key nat.FlowKey, pid uint32, proc *procinfo.Info,
-	sub rules.Subject, set *rules.Set, res rules.Result, rec *flows.Record) (closed bool) {
+	sub rules.Subject, set *rules.Set, res rules.Result, pk groups.Pick, rec *flows.Record) (closed bool) {
 	now := time.Now()
 	if res.NeedsDomain && p.IPv6 && c.Opt.BlockIPv6Tunnel && c.mayTunnel(sub, set) && (c.IPv4Route == nil || c.IPv4Route()) {
 		// The relay would learn the domain only once the connection is up,
@@ -868,8 +868,12 @@ func (c *Core) applyTCP(p *packet.Packet, addr *divert.Address, key nat.FlowKey,
 			return false
 		}
 		// Cannot reflect this flow: decide without the domain.
-		res = c.pick(set.EvaluateNoDomain(sub), false)
-		rec.Set(func(f *flows.Fields) { f.Rule = res.Rule + " (reflect collision)" })
+		res = set.EvaluateNoDomain(sub)
+		res, pk = c.pick(res, false, c.hint(res, proc, "", key.Dst.Addr()))
+		rec.Set(func(f *flows.Fields) {
+			f.Rule = res.Rule + " (reflect collision)"
+			f.Profile, f.Group, f.Failover = res.Profile, res.Group, res.Failover
+		})
 	}
 	switch res.Action {
 	case rules.Direct:
@@ -889,6 +893,7 @@ func (c *Core) applyTCP(p *packet.Packet, addr *divert.Address, key nat.FlowKey,
 	case rules.Tunnel:
 		switch t := c.tunnel(res.Profile); {
 		case t == nil || !t.Available():
+			c.abandon(pk) // the member went down since the pick
 			noteRejected(t)
 			c.Rejected.Add(1)
 			c.finish(rec, rules.Tunnel, "rst: tunnel unavailable")
@@ -904,6 +909,7 @@ func (c *Core) applyTCP(p *packet.Packet, addr *divert.Address, key nat.FlowKey,
 			if err != nil {
 				// Same (remote IP, local port) already reflected: Tunnel
 				// never falls back to Direct.
+				c.abandon(pk)
 				c.Rejected.Add(1)
 				c.finish(rec, rules.Tunnel, "rst: reflect key collision")
 				c.rejectSYN(p, addr, key, now)
@@ -929,8 +935,12 @@ func (c *Core) applyUDP(p *packet.Packet, addr *divert.Address, key nat.FlowKey,
 			rec.Set(func(f *flows.Fields) { f.Rule = res.Rule })
 			outcome = "dropped: QUIC blocked, domain unknown"
 		} else {
-			res = c.pick(set.EvaluateNoDomain(sub), true)
-			rec.Set(func(f *flows.Fields) { f.Rule, f.Profile = res.Rule+" (domain unknown)", res.Profile })
+			res = set.EvaluateNoDomain(sub)
+			res, _ = c.pick(res, true, c.hint(res, sub.Proc, "", key.Dst.Addr()))
+			rec.Set(func(f *flows.Fields) {
+				f.Rule, f.Profile = res.Rule+" (domain unknown)", res.Profile
+				f.Group, f.Failover = res.Group, res.Failover
+			})
 		}
 	}
 	uf.route, uf.profile = res.Action, res.Profile
@@ -1058,7 +1068,9 @@ func (c *Core) RelayDecide(e *nat.Entry, domain string, src rules.DomainSource) 
 		res = set.EvaluateNoDomain(sub)
 		res.Rule += " (domain unknown)"
 	}
-	res = c.pick(res, false)
+	// The sniffed name keys a sticky group (a real name of this flow);
+	// without one the DNS cache does.
+	res, _ = c.pick(res, false, c.hint(res, proc, domain, e.Flow.Dst.Addr()))
 	if res.Action == rules.Tunnel && e.Flow.Dst.Addr().Is6() && c.Opt.BlockIPv6Tunnel {
 		res.Action, res.Profile, res.Rule = rules.Block, "", res.Rule+" (IPv6 blocked for tunnel)"
 	}

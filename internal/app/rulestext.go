@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/rules"
 )
@@ -34,10 +35,11 @@ import (
 // 10.0.0.0/8, keyword:torrent, regexp:…, full:…, domain:…. An item with
 // spaces, "|" or an arrow is written in quotes, and so is a name that could
 // be read as something else: "#1 YouTube": youtube.com -> vpn.
-// Targets: vpn / основной (main server), a server name (or a unique part
-// of it, or id:<id>), напрямую / direct, блок / block. Servers after a
-// comma are fallbacks, tried in order when the first one is down:
-// "-> DE, NL".
+// Targets: vpn / основной (main server or group), a server name (or a
+// unique part of it, or id:<id>), a server group (группа:Имя or group:Имя,
+// or its bare name when no server reads the same), напрямую / direct,
+// блок / block. Servers after a comma are fallbacks, tried in order when
+// the first one is down: "-> DE, NL", "-> группа:Авто, NL".
 // Options after "|": tcp, udp, выкл / off, без дочерних / nochild; ports
 // of the destination: "порт 443", "порт 80,443", "tcp 22", "udp
 // 27000-27200". "* -> … | порт 53" is a rule for any program and site on
@@ -61,15 +63,41 @@ type RulesTextResult struct {
 	Summary         string     `json:"summary"`
 }
 
-// ParseRulesText parses rules text against the current servers.
+// ParseRulesText parses rules text against the current servers and groups.
 func (c *Controller) ParseRulesText(text string) RulesTextResult {
 	c.mu.Lock()
-	profiles := append([]hysteria.Profile(nil), c.profiles.List...)
+	ts := c.targetsLocked()
 	c.mu.Unlock()
-	return parseRulesText(text, profiles)
+	return parseRulesText(text, ts)
 }
 
-func parseRulesText(text string, profiles []hysteria.Profile) RulesTextResult {
+// target is a server or a server group that rules text can name.
+type target struct {
+	ID, Name string
+	Group    bool
+}
+
+// serverTargets lists servers as targets.
+func serverTargets(ps []hysteria.Profile) []target {
+	out := make([]target, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, target{ID: p.ID, Name: p.Name})
+	}
+	return out
+}
+
+// targetsLocked: the servers, then the loaded groups (c.mu held).
+func (c *Controller) targetsLocked() []target {
+	ts := serverTargets(c.profiles.List)
+	if c.groupsBroken == nil {
+		for _, g := range c.groupsFile.Groups {
+			ts = append(ts, target{ID: g.ID, Name: g.Name, Group: true})
+		}
+	}
+	return ts
+}
+
+func parseRulesText(text string, ts []target) RulesTextResult {
 	res := RulesTextResult{Rules: []rules.Rule{}, Errors: []RuleLine{}, Warnings: []RuleLine{}}
 	var section []rules.AppMatch // current [program] block; nil = every program
 	sectionText, defaultLine := "", 0
@@ -120,7 +148,7 @@ func parseRulesText(text string, profiles []hysteria.Profile) RulesTextResult {
 			}
 			continue
 		}
-		act, profile, fallback, err := parseTargets(strings.TrimSpace(target), profiles)
+		act, profile, fallback, err := parseTargets(strings.TrimSpace(target), ts)
 		if err != nil {
 			fail(n, "%v", err)
 			continue
@@ -288,7 +316,7 @@ func parseRulesText(text string, profiles []hysteria.Profile) RulesTextResult {
 	}
 	res.Summary = fmt.Sprintf("Правил: %d", len(res.Rules))
 	if res.HasDefault {
-		res.Summary += ", всё остальное — " + targetWords(res.DefaultAction, res.DefaultProfile, res.DefaultFallback, profiles)
+		res.Summary += ", всё остальное — " + targetWords(res.DefaultAction, res.DefaultProfile, res.DefaultFallback, ts)
 	}
 	return res
 }
@@ -605,17 +633,17 @@ func linkHost(it string) (host string, ok bool) {
 // parseTargets reads "куда": one target, or a chain of servers separated
 // by "->" or commas (the first one, then fallbacks). A trailing "блок" is
 // allowed: when every server is down the connection is refused anyway.
-func parseTargets(t string, profiles []hysteria.Profile) (rules.Action, string, []string, error) {
+func parseTargets(t string, ts []target) (rules.Action, string, []string, error) {
 	parts := splitChain(t)
 	if len(parts) > 1 {
 		// A server named with a comma or an arrow, written in full.
-		for _, p := range profiles {
+		for _, p := range ts {
 			if strings.EqualFold(strings.TrimSpace(p.Name), strings.TrimSpace(t)) {
 				return rules.Tunnel, p.ID, nil, nil
 			}
 		}
 	}
-	act, profile, err := parseTarget(parts[0], profiles)
+	act, profile, err := parseTarget(parts[0], ts)
 	if err != nil || len(parts) == 1 {
 		return act, profile, nil, err
 	}
@@ -627,7 +655,7 @@ func parseTargets(t string, profiles []hysteria.Profile) (rules.Action, string, 
 		if p == "" {
 			return 0, "", nil, fmt.Errorf("после «%s ->» допишите запасной сервер (или уберите стрелку)", parts[i])
 		}
-		a, id, err := parseTarget(p, profiles)
+		a, id, err := parseTarget(p, ts)
 		if err != nil {
 			return 0, "", nil, fmt.Errorf("запасной сервер: %v", err)
 		}
@@ -656,7 +684,20 @@ func splitChain(t string) []string {
 	return parts
 }
 
-func parseTarget(t string, profiles []hysteria.Profile) (rules.Action, string, error) {
+// groupPrefixes name a group explicitly: группа:Авто.
+var groupPrefixes = []string{"группа:", "group:"}
+
+// reservedTarget: a word parseTarget reads as a route, not a name.
+func reservedTarget(t string) bool {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "", "direct", "напрямую", "прямо", "block", "блок", "заблокировать", "блокировать",
+		"vpn", "tunnel", "туннель", "впн", "основной", "main":
+		return true
+	}
+	return false
+}
+
+func parseTarget(t string, ts []target) (rules.Action, string, error) {
 	switch strings.ToLower(t) {
 	case "":
 		return 0, "", fmt.Errorf("после «->» укажите, куда: vpn, имя сервера, напрямую или блок")
@@ -668,16 +709,29 @@ func parseTarget(t string, profiles []hysteria.Profile) (rules.Action, string, e
 		return rules.Tunnel, "", nil
 	}
 	if id, ok := strings.CutPrefix(t, "id:"); ok {
-		for _, p := range profiles {
+		for _, p := range ts {
 			if p.ID == id {
 				return rules.Tunnel, id, nil
 			}
 		}
+		if groups.IsGroupID(id) {
+			return 0, "", fmt.Errorf("группы с id %s нет", id)
+		}
 		return 0, "", fmt.Errorf("сервера с id %s нет", id)
 	}
+	onlyGroups := false
+	for _, pre := range groupPrefixes {
+		if len(t) > len(pre) && strings.EqualFold(t[:len(pre)], pre) {
+			t, onlyGroups = strings.TrimSpace(t[len(pre):]), true
+			break
+		}
+	}
 	low := strings.ToLower(t)
-	var exact, part []hysteria.Profile
-	for _, p := range profiles {
+	var exact, part []target
+	for _, p := range ts {
+		if onlyGroups && !p.Group {
+			continue
+		}
 		// The text is trimmed, so is the name: " FI " is written as "FI".
 		n := strings.ToLower(strings.TrimSpace(p.Name))
 		switch {
@@ -695,27 +749,44 @@ func parseTarget(t string, profiles []hysteria.Profile) (rules.Action, string, e
 	case 1:
 		return rules.Tunnel, pick[0].ID, nil
 	case 0:
+		if onlyGroups {
+			return 0, "", fmt.Errorf("группа «%s» не найдена", t)
+		}
 		return 0, "", fmt.Errorf("сервер «%s» не найден (или напишите vpn, напрямую, блок)", t)
 	}
 	var names []string
+	group := ""
 	for _, p := range pick {
-		names = append(names, "«"+p.Name+"»")
+		if p.Group {
+			names = append(names, "группа «"+p.Name+"»")
+			if group == "" {
+				group = p.Name
+			}
+		} else {
+			names = append(names, "сервер «"+p.Name+"»")
+		}
 	}
-	return 0, "", fmt.Errorf("«%s» подходит к нескольким серверам: %s — уточните", t, strings.Join(names, ", "))
+	if group == "" {
+		for i, p := range pick {
+			names[i] = "«" + p.Name + "»"
+		}
+		return 0, "", fmt.Errorf("«%s» подходит к нескольким серверам: %s — уточните", t, strings.Join(names, ", "))
+	}
+	return 0, "", fmt.Errorf("«%s» подходит к нескольким: %s — уточните (для группы: группа:%s)", t, strings.Join(names, ", "), group)
 }
 
 // targetWords is targetWord plus ", fallback" for each fallback server.
-func targetWords(a rules.Action, profile string, fallback []string, profiles []hysteria.Profile) string {
-	w := targetWord(a, profile, profiles)
+func targetWords(a rules.Action, profile string, fallback []string, ts []target) string {
+	w := targetWord(a, profile, ts)
 	if a == rules.Tunnel {
 		for _, id := range fallback {
-			w += " -> " + targetWord(rules.Tunnel, id, profiles)
+			w += " -> " + targetWord(rules.Tunnel, id, ts)
 		}
 	}
 	return w
 }
 
-func targetWord(a rules.Action, profile string, profiles []hysteria.Profile) string {
+func targetWord(a rules.Action, profile string, ts []target) string {
 	switch a {
 	case rules.Direct:
 		return "напрямую"
@@ -725,18 +796,18 @@ func targetWord(a rules.Action, profile string, profiles []hysteria.Profile) str
 	if profile == "" {
 		return "vpn"
 	}
-	var found *hysteria.Profile
+	var found *target
 	same := 0
-	for i := range profiles {
-		if profiles[i].ID == profile {
-			found = &profiles[i]
+	for i := range ts {
+		if ts[i].ID == profile {
+			found = &ts[i]
 		}
 	}
 	if found == nil {
 		return "id:" + profile
 	}
-	for _, p := range profiles {
-		if strings.EqualFold(p.Name, found.Name) {
+	for _, p := range ts {
+		if p.Group == found.Group && strings.EqualFold(p.Name, found.Name) {
 			same++
 		}
 	}
@@ -746,9 +817,16 @@ func targetWord(a rules.Action, profile string, profiles []hysteria.Profile) str
 		return "id:" + profile
 	}
 	// A name that reads back as something else: "Direct", "VPN", "Блок",
-	// "id:x", or a part of another server's name.
+	// "id:x", or a part of another server's name. A group is written with
+	// its prefix, and never under a reserved word.
 	name := strings.TrimSpace(found.Name)
-	if a, id, fb, err := parseTargets(name, profiles); err != nil || a != rules.Tunnel || id != profile || len(fb) > 0 {
+	if found.Group {
+		if reservedTarget(name) {
+			return "id:" + profile
+		}
+		name = "группа:" + name
+	}
+	if a, id, fb, err := parseTargets(name, ts); err != nil || a != rules.Tunnel || id != profile || len(fb) > 0 {
 		return "id:" + profile
 	}
 	return name
@@ -765,10 +843,10 @@ func (c *Controller) RulesText() string {
 	return v.Text
 }
 
-func formatRulesText(cfg rules.Config, profiles []hysteria.Profile) string {
+func formatRulesText(cfg rules.Config, ts []target) string {
 	var b strings.Builder
 	b.WriteString("# Одна строка — одно правило: что -> куда. Проверяются сверху вниз.\n")
-	b.WriteString("# Куда: vpn (основной сервер), имя сервера, напрямую, блок. Опции после |: tcp, udp, порт 443, udp 27000-27200, выкл.\n\n")
+	b.WriteString("# Куда: vpn (основной), имя сервера, группа:Имя, напрямую, блок. Опции после |: tcp, udp, порт 443, udp 27000-27200, выкл.\n\n")
 	section := ""
 	for _, r := range cfg.Rules {
 		apps, doms := r.AllApps(), r.AllDomains()
@@ -811,7 +889,7 @@ func formatRulesText(cfg rules.Config, profiles []hysteria.Profile) string {
 		if name != "" {
 			line = name + ": " + line
 		}
-		line += " -> " + targetWords(r.Action, r.Profile, r.Fallback, profiles)
+		line += " -> " + targetWords(r.Action, r.Profile, r.Fallback, ts)
 		var opts []string
 		proto := strings.ToLower(r.Protocol)
 		if proto == "any" {
@@ -839,7 +917,7 @@ func formatRulesText(cfg rules.Config, profiles []hysteria.Profile) string {
 	if section != "" {
 		b.WriteString("\n[*]\n")
 	}
-	b.WriteString("\n# Всё остальное\n* -> " + targetWords(cfg.DefaultAction, cfg.DefaultProfile, cfg.DefaultFallback, profiles) + "\n")
+	b.WriteString("\n# Всё остальное\n* -> " + targetWords(cfg.DefaultAction, cfg.DefaultProfile, cfg.DefaultFallback, ts) + "\n")
 	return b.String()
 }
 
@@ -966,8 +1044,8 @@ func (c *Controller) RulesTextFor(token string) (RulesTextView, error) {
 	}
 	c.mu.Lock()
 	cfg := c.settings.Config
-	profiles := append([]hysteria.Profile(nil), c.profiles.List...)
+	ts := c.targetsLocked()
 	rev := c.settingsRev.Load()
 	c.mu.Unlock()
-	return RulesTextView{Text: formatRulesText(cfg, profiles), Rev: rev}, nil
+	return RulesTextView{Text: formatRulesText(cfg, ts), Rev: rev}, nil
 }

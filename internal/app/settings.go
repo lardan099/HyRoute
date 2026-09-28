@@ -162,7 +162,7 @@ func (c *Controller) commitSettingsLocked(st settings.Settings) (res SaveResult,
 		c.rulesAt = rev
 	}
 	res.Rev = rev
-	_, want := c.routingLocked()
+	_, want, _ := c.routingLocked()
 	// A session still starting gets the rules from Connect once it runs,
 	// but its engine options are those it started with.
 	if c.sess != nil || c.starting {
@@ -311,7 +311,7 @@ type RuleWarning struct {
 	Index   int    `json:"index"` // -1 = default route
 	Rule    string `json:"rule"`
 	Profile string `json:"profile"`
-	Kind    string `json:"kind"` // no-main | deleted | missing
+	Kind    string `json:"kind"` // no-main | deleted | missing | empty (a group)
 	Text    string `json:"text"`
 }
 
@@ -327,8 +327,15 @@ func (c *Controller) ruleWarningsLocked() []RuleWarning {
 	out := []RuleWarning{}
 	check := func(i int, name, profile string) {
 		w := RuleWarning{Index: i, Rule: name, Profile: profile}
+		if kind, text, group := c.groupCheckLocked(profile, false); group {
+			if kind != "" {
+				w.Kind, w.Text = kind, text
+				out = append(out, w)
+			}
+			return
+		}
 		switch p := c.profiles.Find(profile); {
-		case profile == "" && c.profiles.Active == "" && !c.Base.Stub:
+		case profile == "" && c.mainTargetLocked() == "" && !c.Base.Stub:
 			w.Kind, w.Text = "no-main", "нет основного профиля: соединения будут отклоняться"
 		case profile == "":
 			return
@@ -345,6 +352,12 @@ func (c *Controller) ruleWarningsLocked() []RuleWarning {
 	checkFallback := func(i int, name string, fb []string) {
 		for _, id := range fb {
 			if id == "" {
+				continue
+			}
+			if kind, text, group := c.groupCheckLocked(id, true); group {
+				if kind != "" {
+					out = append(out, RuleWarning{Index: i, Rule: name, Profile: id, Kind: kind, Text: text})
+				}
 				continue
 			}
 			switch p := c.profiles.Find(id); {
@@ -391,6 +404,11 @@ type Explanation struct {
 	rules.Explanation
 	// ProfileName resolves Winner.Profile.
 	ProfileName string `json:"profileName"`
+	// groups
+	// Group: the winner is a server group; Via is the member a connection
+	// would take now (connected, failover or latency groups).
+	Group bool   `json:"group,omitempty"`
+	Via   string `json:"via,omitempty"`
 }
 
 // Explain traces a hypothetical connection through the saved rules, or
@@ -401,7 +419,7 @@ func (c *Controller) Explain(q ExplainQuery, st *settings.Settings) Explanation 
 	if st != nil {
 		cfg = st.Config
 	}
-	main := c.profiles.Active
+	main := c.mainTargetLocked()
 	sess := c.sess
 	c.mu.Unlock()
 	rq := rules.Query{App: q.App, Proto: 6}
@@ -444,6 +462,7 @@ func (c *Controller) Explain(q ExplainQuery, st *settings.Settings) Explanation 
 			ex.ProfileName = ""
 			ex.Notes = append(ex.Notes, "Основной профиль не выбран: такое соединение будет отклонено.")
 		}
+		c.explainGroup(&ex, sess)
 	}
 	return ex
 }

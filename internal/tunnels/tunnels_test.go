@@ -2,6 +2,7 @@ package tunnels
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/socks5"
@@ -259,5 +261,81 @@ func TestReleaseWhileNewCheckStarts(t *testing.T) {
 	defer mu.Unlock()
 	if len(ips) != 0 {
 		t.Fatalf("exclusion left after the last check: %v", ips)
+	}
+}
+
+// dialRunner fails its dials with err and reports its status through the
+// hook when it starts.
+type dialRunner struct {
+	fakeRunner
+	err error
+}
+
+func (d *dialRunner) Start() error {
+	d.fakeRunner.Start()
+	d.h.OnStatus(hysteria.Status{State: hysteria.Connected})
+	return nil
+}
+func (d *dialRunner) Dial(ctx context.Context, _ socks5.Addr) (net.Conn, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return nil, d.err
+}
+func (d *dialRunner) UDPAssociate(context.Context) (*socks5.UDPAssoc, error) { return nil, d.err }
+
+type dialNote struct {
+	id, dst string
+	err     error
+}
+
+// Only routing endpoints report their dials and health (server groups):
+// not temporary ones, not canceled dials, not check (Quiet) dials.
+func TestDialAndHealthHooks(t *testing.T) {
+	var mu sync.Mutex
+	var dials []dialNote
+	var health, status []string
+	errUnreach := errors.New("socks5: host unreachable")
+	m := &Manager{
+		New: func(p hysteria.Profile, h Hooks) Runner {
+			return &dialRunner{fakeRunner: fakeRunner{p: p, h: h, starts: new(int)}, err: errUnreach}
+		},
+		SetServerIPs: func([]netip.Addr) error { return nil },
+		OnDial: func(id, dst string, err error) {
+			mu.Lock()
+			dials = append(dials, dialNote{id, dst, err})
+			mu.Unlock()
+		},
+		OnHealth: func(id string, st hysteria.Status) { mu.Lock(); health = append(health, id); mu.Unlock() },
+		OnStatus: func(id string, st hysteria.Status) { mu.Lock(); status = append(status, id); mu.Unlock() },
+		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	de := prof("de", "198.51.100.1")
+	m.Sync([]hysteria.Profile{de})
+	e := m.Get("de")
+	dst := socks5.Addr{Host: "example.com", Port: 443}
+	e.Dial(t.Context(), dst)
+	e.UDPAssociate(t.Context())
+	e.Dial(Quiet(t.Context()), dst)
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	e.Dial(canceled, dst)
+	expired, cancel2 := context.WithTimeout(t.Context(), time.Nanosecond)
+	defer cancel2()
+	<-expired.Done()
+	e.Dial(expired, dst)
+	// A temporary endpoint of another server reports nothing.
+	us := prof("us", "198.51.100.9")
+	te, rel := m.Acquire(us)
+	te.Dial(t.Context(), dst)
+	rel()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dials) != 3 || dials[0] != (dialNote{"de", "example.com:443", errUnreach}) || dials[1].dst != "udp" ||
+		!errors.Is(dials[2].err, context.DeadlineExceeded) {
+		t.Fatalf("%+v", dials)
+	}
+	if !slices.Equal(health, []string{"de"}) || !slices.Contains(status, "us") || !slices.Contains(status, "de") {
+		t.Fatalf("health %v status %v", health, status)
 	}
 }

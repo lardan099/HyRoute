@@ -66,6 +66,13 @@ type Fields struct {
 	// its flows are never recorded); "" = none. The Rule text of such a
 	// flow is for display only.
 	Excluded string `json:"excluded,omitempty"`
+	// groups
+	// Group is the server group Profile (a member) was chosen through
+	// (tunnel only).
+	Group string `json:"group,omitempty"`
+	// Failover: the flow could not use its preferred server
+	// (rules.Result.Failover).
+	Failover bool `json:"failover,omitempty"`
 }
 
 // Set updates fields under the record lock.

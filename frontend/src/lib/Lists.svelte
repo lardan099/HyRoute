@@ -2,7 +2,7 @@
   // Lists: which geosite/geoip lists contain a site or IP, what is inside a
   // list, and Hysteria ACL conversion.
   import { api, errText, cleanSettings, toLists, type InspectResult, type InspectHit, type ConvertResult, type Rule } from '../api';
-  import { hide, profileName, mainProfile } from '../state.svelte';
+  import { hide, profileName, mainTarget } from '../state.svelte';
   import { geo, loadGeo } from '../geo.svelte';
   import Icon from './Icon.svelte';
   import ListViewer from './ListViewer.svelte';
@@ -79,7 +79,7 @@
     s.rules = (s.rules ?? []).map(toLists);
     s.rules.unshift(r);
     // With the revision of the copy just read (only a true race refuses it).
-    await api.SaveSettings({ ...cleanSettings(s, mainProfile()?.id), rev: s.rev ?? 0 });
+    await api.SaveSettings({ ...cleanSettings(s, mainTarget()?.id), rev: s.rev ?? 0 });
     adding = null;
     info = `Правило «${r.name}» добавлено в начало списка правил`;
     if (res) search(res.query);

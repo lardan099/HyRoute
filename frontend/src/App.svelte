@@ -70,12 +70,16 @@
 
   let firstProfiles = true;
   async function refreshProfiles() {
+    let loaded = true;
     try {
       ui.profiles = await api.Profiles();
     } catch {
-      return;
+      loaded = false;
     }
-    if (!firstProfiles) return;
+    try {
+      ui.groups = (await api.Groups()).groups;
+    } catch {}
+    if (!loaded || !firstProfiles) return;
     firstProfiles = false;
     // Settings that did not load (profiles.json of another user or machine)
     // look like a new copy: no servers. Nothing is decided then: the full

@@ -1,9 +1,10 @@
 <script lang="ts">
   // One rule: what (programs and/or sites) -> where (VPN server, direct,
   // block). Saved as soon as the user presses "Сохранить".
-  import { api, errText, cleanFallback, type Rule, type Action, type RunningApp } from '../api';
-  import { ui, hide, mainProfile, profileName } from '../state.svelte';
+  import { api, errText, cleanFallback, isGroupId, strategyLabel, type Rule, type Action, type RunningApp } from '../api';
+  import { ui, hide, mainTarget, mainText, profileName } from '../state.svelte';
   import Icon from './Icon.svelte';
+  import TargetOptions from './TargetOptions.svelte';
   import GeoPicker from './GeoPicker.svelte';
   import AppPicker from './AppPicker.svelte';
   import FallbackPicker from './FallbackPicker.svelte';
@@ -154,7 +155,7 @@
     return /[*?]/.test(p) ? p : (p.split('\\').pop() ?? p);
   }
 
-  const main = $derived(mainProfile());
+  const main = $derived(mainTarget());
   // The fallbacks routing uses: struck-through ones go on save.
   const fallback = $derived(cleanFallback(r.fallback, r.profile, main?.id));
   const empty = $derived(r.apps!.length === 0 && r.domains!.length === 0 && !r.ports!.trim());
@@ -188,13 +189,22 @@
     else return 'Добавьте программу, сайт или порт.';
     const p = r.protocol === 'tcp' ? 'TCP' : r.protocol === 'udp' ? 'UDP' : '';
     const proto = portList.length ? ` (${p ? p + ', ' : ''}порт ${portList.join(', ')})` : p ? ` (только ${p})` : '';
+    // A group: «группу «Авто» (самый быстрый)».
+    const via = (id: string) => {
+      if (!isGroupId(id)) return profileName(id);
+      const g = ui.groups.find((x) => x.id === id);
+      return `группу «${profileName(id)}»${g ? ` (${strategyLabel[g.strategy].toLowerCase()})` : ''}`;
+    };
+    const target = r.profile || main?.id || '';
     const to =
       r.action === 'direct'
         ? 'напрямую, мимо VPN'
         : r.action === 'block'
           ? 'блокируется'
-          : `через ${r.profile ? profileName(r.profile) : main ? `основной сервер (${hide(main.name)})` : 'основной сервер — он не выбран!'}` +
-            (fallback.length ? `, если он недоступен — ${fallback.map((id) => (id ? profileName(id) : 'основной')).join(', затем ')}` : '');
+          : `через ${r.profile ? via(r.profile) : main ? `основной сервер (${mainText(main)})` : 'основной сервер — он не выбран!'}` +
+            (fallback.length
+              ? `, если ${isGroupId(target) ? 'она недоступна' : 'он недоступен'} — ${fallback.map((id) => (id ? (isGroupId(id) ? `группа «${profileName(id)}»` : profileName(id)) : 'основной')).join(', затем ')}`
+              : '');
     return `${who}${proto} → ${to}`;
   });
 
@@ -397,11 +407,8 @@
             r.fallback = cleanFallback(r.fallback, r.profile, main?.id);
           }}
         >
-          <option value="">Основной{main ? ` — ${hide(main.name)}` : ' (не выбран)'}</option>
-          {#each ui.profiles as p (p.id)}
-            <option value={p.id}>{hide(p.name)}{p.sourceName ? ` · ${hide(p.sourceName)}` : ''}{p.missing ? ' — нет в подписке' : ''}</option>
-          {/each}
-          {#if r.profile && !ui.profiles.some((p) => p.id === r.profile)}<option value={r.profile}>удалённый сервер</option>{/if}
+          <option value="">Основной{main ? ` — ${mainText(main)}` : ' (не выбран)'}</option>
+          <TargetOptions current={r.profile} />
         </select>
       </div>
       <div class="server">

@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, errText, fmtBytes, fmtDuration, cleanSettings, type Settings, type SystemInfo, type TunnelStatus } from '../api';
-  import { ui, hide, settle, mainProfile } from '../state.svelte';
+  import { api, errText, fmtBytes, fmtDuration, cleanSettings, strategyLabel, type GroupView, type Settings, type SystemInfo, type TunnelStatus } from '../api';
+  import { ui, hide, settle, mainTarget, profileName } from '../state.svelte';
   import Icon from './Icon.svelte';
   import CheckProfile from './CheckProfile.svelte';
   import Help from './Help.svelte';
+  import TargetOptions from './TargetOptions.svelte';
 
   let { go, onsetup }: { go: (page: string) => void; onsetup: () => void } = $props();
 
@@ -58,7 +59,7 @@
 
   const st = $derived(ui.status);
   const online = $derived(st != null && st.state !== 'disconnected' && !(st.state === 'error' && !st.stats));
-  const main = $derived(mainProfile());
+  const main = $derived(mainTarget());
   const everything = $derived(settings?.defaultAction === 'tunnel');
   const selected = $derived(settings?.defaultAction === 'direct');
   const ruleCount = $derived(settings?.rules?.filter((r) => r.enabled !== false).length ?? 0);
@@ -144,7 +145,7 @@
     try {
       // next carries the revision of the copy: Go refuses it if the rules
       // changed elsewhere since, and the reload shows them.
-      await api.SaveSettings(cleanSettings(next, mainProfile()?.id));
+      await api.SaveSettings(cleanSettings(next, mainTarget()?.id));
     } catch (e) {
       error = errText(e);
     }
@@ -156,9 +157,52 @@
     try {
       await api.SetMain(id);
       ui.profiles = await api.Profiles();
+      ui.status = await api.Status();
     } catch (e) {
       error = errText(e);
     }
+  }
+
+  // groups: the main target may be a group: its strategy and the member a
+  // connection would take now, and «Проверить группу» with the results here.
+  const brief = $derived(ui.status?.mainGroup);
+  const groupLine = $derived.by(() => {
+    const b = brief;
+    if (!b) return '';
+    let s = `Группа: ${strategyLabel[b.strategy].toLowerCase()}.`;
+    if (!online) s += ` Серверов: ${b.total}`;
+    else if (b.strategy === 'failover' || b.strategy === 'latency') {
+      const ms = ui.groups.find((g) => g.id === b.id)?.memberViews.find((m) => m.id === b.active)?.latencyMs;
+      s += b.active ? ` Сейчас: ${profileName(b.active)}${ms ? ` · ${ms} мс` : ''}` : ' Сейчас: нет доступных серверов';
+    } else s += ` Доступно ${b.up} из ${b.total}`;
+    if (b.rejected) s += ` · отклонено: ${b.rejected}`;
+    return s;
+  });
+  // The latencies change without a status event: refreshed while shown.
+  $effect(() => {
+    if (!main?.group || !online) return;
+    const t = setInterval(() => {
+      api
+        .Groups()
+        .then((g) => (ui.groups = g.groups))
+        .catch(() => {});
+    }, 5000);
+    return () => clearInterval(t);
+  });
+  let probing = $state(false);
+  let probeView = $state<GroupView | null>(null);
+  let probeError = $state('');
+  async function probeGroup() {
+    if (!main?.group) return;
+    probing = true;
+    probeError = '';
+    probeView = null;
+    try {
+      probeView = await api.ProbeGroup(main.id);
+    } catch (e) {
+      probeError = errText(e);
+    }
+    probing = false;
   }
 
   function tunnelTone(t: TunnelStatus): string {
@@ -230,6 +274,10 @@
     </section>
   {/if}
 
+  {#if st?.groupsNote}
+    <div class="note warn">{hide(st.groupsNote)}</div>
+  {/if}
+
   {#if ui.profiles.length === 0 && !ui.expert}
     <section class="card start simple">
       <Icon name="sparkles" size={26} />
@@ -275,14 +323,37 @@
 
       <section class="card">
         <h2>Основной сервер</h2>
-        <select class="main-select" value={main?.id ?? ''} onchange={(e) => settle(e, (el) => pickMain(el.value), () => main?.id ?? '')}>
-          {#each ui.profiles as p (p.id)}<option value={p.id}>{hide(p.name)}{p.missing ? ' (нет в подписке)' : ''}</option>{/each}
+        <select class="main-select" value={main?.id ?? ''} onchange={(e) => settle(e, (el) => pickMain(el.value), () => mainTarget()?.id ?? '')}>
+          {#if main?.unloaded}<option value={main.id} disabled>основная группа не загружена</option>{/if}
+          <TargetOptions current={main?.unloaded ? '' : main?.id} />
         </select>
+        {#if main?.unloaded}
+          <p class="small bad-text sub">groups.json не загружен: соединения «через VPN» отклоняются. Исправьте или удалите файл.</p>
+        {:else if groupLine}
+          <p class="small sub">{hide(groupLine)}</p>
+        {/if}
         <p class="muted small explain">Через него идёт «весь трафик» и правила, где сервер не выбран явно.</p>
         <div class="row">
-          <button onclick={() => (checking = true)} disabled={!main}><Icon name="zap" size={16} />Проверить сервер</button>
+          {#if main?.group}
+            {#if !main.unloaded}
+              <button onclick={probeGroup} disabled={probing}><Icon name="zap" size={16} />{probing ? 'Проверяю…' : 'Проверить группу'}</button>
+            {/if}
+          {:else}
+            <button onclick={() => (checking = true)} disabled={!main}><Icon name="zap" size={16} />Проверить сервер</button>
+          {/if}
           <button class="ghost" onclick={() => go('servers')}>Все серверы<Icon name="arrow" size={15} /></button>
         </div>
+        {#if probeError}<div class="note error small">{hide(probeError)}</div>{/if}
+        {#if probeView && main?.group && probeView.id === main.id}
+          <div class="probe">
+            {#each probeView.memberViews as m (m.id)}
+              <div class="row small">
+                <span class="grow ellipsis">{m.missing ? 'удалённый сервер' : profileName(m.id)}</span>
+                {#if m.probeError}<span class="bad-text" title={hide(m.probeError)}>{hide(m.probeError)}</span>{:else if m.latencyMs}<span class="mono">{m.latencyMs} мс</span>{:else}<span class="muted">—</span>{/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
       </section>
     </div>
 
@@ -327,7 +398,7 @@
   {/if}
 </div>
 
-{#if checking && main}
+{#if checking && main && !main.group}
   <CheckProfile id={main.id} name={main.name} onclose={() => (checking = false)} />
 {/if}
 
@@ -365,6 +436,8 @@
   .seg.wide button { flex: 1; }
   .explain { margin: 10px 0 12px; min-height: 36px; }
   .main-select { width: 100%; font-size: 15px; padding: 9px 12px; }
+  .sub { margin: 8px 0 0; }
+  .probe { display: grid; gap: 4px; margin-top: 10px; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--surface-2); }
 
   .start ol { margin: 0; padding-left: 20px; display: grid; gap: 12px; }
   .start.simple { display: flex; align-items: center; gap: 16px; }

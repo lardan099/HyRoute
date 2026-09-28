@@ -2,9 +2,10 @@
   // Local proxies: a port per entry that programs with a proxy setting use
   // to go out through a chosen server.
   import { onMount } from 'svelte';
-  import { api, errText, fmtBytes, type ProxyInput, type ProxyView } from '../api';
-  import { ui, hide, settle, mainProfile } from '../state.svelte';
+  import { api, errText, fmtBytes, isGroupId, type ProxyInput, type ProxyView } from '../api';
+  import { ui, hide, settle, mainTarget, mainText } from '../state.svelte';
   import Icon from './Icon.svelte';
+  import TargetOptions from './TargetOptions.svelte';
 
   let list = $state<ProxyView[]>([]);
   let error = $state('');
@@ -104,7 +105,13 @@
 
   const stateText: Record<string, string> = { off: 'выключен', waiting: 'ждёт подключения HyRoute', listening: 'работает', error: 'ошибка' };
   const tone = (p: ProxyView) => (p.state === 'listening' ? 'ok' : p.state === 'error' ? 'bad' : p.state === 'waiting' ? 'wait' : '');
-  const main = $derived(mainProfile());
+  const main = $derived(mainTarget());
+  // «через группу «Авто»», «через DE1», «через основной сервер — …».
+  function via(p: ProxyView): string {
+    if (!p.profile) return `основной сервер${main ? ' — ' + mainText(main) : ''}`;
+    if (isGroupId(p.profile)) return p.profileName ? `группу «${hide(p.profileName)}»` : 'удалённую группу';
+    return hide(p.profileName) || 'удалённый сервер';
+  }
 </script>
 
 <div class="layout">
@@ -147,7 +154,7 @@
         <div class="grow">
           <div class="name"><b>{p.name}</b> <span class="dot {tone(p)}"></span> <span class="muted small">{stateText[p.state]}</span></div>
           <div class="muted small">
-            через {p.profile ? hide(p.profileName) || 'удалённый сервер' : `основной сервер${main ? ' — ' + hide(main.name) : ''}`}
+            через {via(p)}
             {#if p.username}· с паролем{:else}· без пароля{/if}
             {#if p.lan}· доступен из локальной сети{/if}
           </div>
@@ -187,8 +194,8 @@
 
         <label for="ps">Через сервер</label>
         <select id="ps" bind:value={editing.profile}>
-          <option value="">Основной{main ? ` — ${hide(main.name)}` : ''}</option>
-          {#each ui.profiles as pr (pr.id)}<option value={pr.id}>{hide(pr.name)}</option>{/each}
+          <option value="">Основной{main ? ` — ${mainText(main)}` : ''}</option>
+          <TargetOptions current={editing.profile} />
         </select>
 
         <label for="pp">Порт</label>

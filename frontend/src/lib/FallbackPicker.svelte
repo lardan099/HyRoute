@@ -1,20 +1,25 @@
 <script lang="ts">
-  // Fallback servers of a "через VPN" route: tried in order when the
-  // route's own server is down. "" is the main server.
-  import { ui, hide, mainProfile, profileName } from '../state.svelte';
+  // Fallback servers (or groups) of a "через VPN" route: tried in order
+  // when the route's own server is down. "" is the main server.
+  import { isGroupId } from '../api';
+  import { ui, mainTarget, mainText, profileName } from '../state.svelte';
   import Icon from './Icon.svelte';
 
   let { value, primary, onchange, compact = false }: { value: string[]; primary: string; onchange: (v: string[]) => void; compact?: boolean } =
     $props();
 
-  const main = $derived(mainProfile());
-  const label = (id: string) => (id ? profileName(id) : `Основной${main ? ` — ${hide(main.name)}` : ''}`);
+  const main = $derived(mainTarget());
+  const label = (id: string) => (id ? (isGroupId(id) ? `${profileName(id)} (группа)` : profileName(id)) : `Основной${main ? ` — ${mainText(main)}` : ''}`);
   // Servers resolved: "" is the main one, so "Основной" and the main
   // server by name are the same server.
   const key = (id: string) => id || main?.id || '';
   const own = $derived(key(primary));
   const taken = (id: string) => key(id) === own || value.some((v) => key(v) === key(id));
-  const options = $derived([{ id: '', name: label('') }, ...ui.profiles.map((p) => ({ id: p.id, name: p.name }))].filter((o) => !taken(o.id)));
+  const options = $derived(
+    [{ id: '', name: label('') }, ...ui.profiles.map((p) => ({ id: p.id, name: label(p.id) })), ...ui.groups.map((g) => ({ id: g.id, name: label(g.id) }))].filter(
+      (o) => !taken(o.id),
+    ),
+  );
   // Entries routing skips (the route's own server or a repeat), e.g. after
   // the main server changed: shown as unused rather than as a reserve, and
   // dropped when the route is saved (cleanSettings).
@@ -45,7 +50,7 @@
         }}
       >
         <option value="__add" disabled>{value.length ? '+ ещё запасной' : '+ запасной сервер'}</option>
-        {#each options as o (o.id)}<option value={o.id}>{hide(o.name)}</option>{/each}
+        {#each options as o (o.id)}<option value={o.id}>{o.name}</option>{/each}
       </select>
     {/if}
   </div>

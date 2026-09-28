@@ -1,7 +1,7 @@
 <script lang="ts">
   // Many rules at once as text: edit the whole list, or add a batch.
   import { onMount } from 'svelte';
-  import { api, errText, guardOf, isStale, type RulesTextResult, type RulesTextView } from '../api';
+  import { api, errText, guardOf, isStale, plural, type RulesTextResult, type RulesTextView } from '../api';
   import { ui, hide } from '../state.svelte';
   import Icon from './Icon.svelte';
   import { geo, loadGeo, missingText } from '../geo.svelte';
@@ -199,8 +199,27 @@ instagram.com -> vpn`);
           : p.name.trim(),
       hint: [p.main ? '★ основной' : '', p.sourceName, p.missing ? 'нет в подписке' : ''].filter(Boolean).join(' · ') || 'сервер',
     }));
+    // Groups: группа:Имя (id: when the name repeats or does not read back,
+    // as in targetWord).
+    const gcount = new Map<string, number>();
+    for (const g of ui.groups) gcount.set(key(g.name), (gcount.get(key(g.name)) ?? 0) + 1);
+    const groups = ui.groups.map((g) => {
+      const n = g.members.length - g.missing;
+      return {
+        label: 'группа:' + g.name,
+        insert:
+          !key(g.name) ||
+          (gcount.get(key(g.name)) ?? 0) > 1 ||
+          /[|#\n,→"]|->|=>/.test(g.name) ||
+          /^(direct|напрямую|прямо|block|блок|заблокировать|блокировать|vpn|tunnel|туннель|впн|основной|main)$/i.test(g.name.trim())
+            ? 'id:' + g.id
+            : 'группа:' + g.name.trim(),
+        hint: [`группа · ${n} ${plural(n, 'сервер', 'сервера', 'серверов')}`, ui.status?.mainId === g.id ? '★ основная' : ''].filter(Boolean).join(' · '),
+      };
+    });
     return [
       ...servers,
+      ...groups,
       { label: 'vpn', insert: 'vpn', hint: 'основной сервер' },
       { label: 'напрямую', insert: 'напрямую', hint: 'мимо VPN' },
       { label: 'блок', insert: 'блок', hint: 'заблокировать' },
@@ -450,7 +469,7 @@ instagram.com -> vpn`);
           <li><code>192.168.0.0/16</code>, <code>1.2.3.4</code> — сеть или адрес</li>
           <li><code>keyword:torrent</code> — любой сайт со словом в имени</li>
         </ul>
-        <p><b>Куда:</b> <code>vpn</code> (основной сервер), имя сервера или его часть, <code>напрямую</code>, <code>блок</code>. Запасные серверы — следом через стрелку или запятую: <code>-&gt; DE -&gt; NL</code> (если DE недоступен — NL, если недоступны оба — соединение не пройдёт, напрямую не уйдёт). В конце можно дописать <code>-&gt; блок</code>, это то же самое. После <code>-&gt;</code> появится список серверов — выберите стрелками и Enter (или Ctrl+Пробел).</p>
+        <p><b>Куда:</b> <code>vpn</code> (основной сервер или группа), имя сервера или его часть, группа — <code>группа:Имя</code>, <code>напрямую</code>, <code>блок</code>. Запасные серверы — следом через стрелку или запятую: <code>-&gt; DE -&gt; NL</code> (если DE недоступен — NL, если недоступны оба — соединение не пройдёт, напрямую не уйдёт). В конце можно дописать <code>-&gt; блок</code>, это то же самое. После <code>-&gt;</code> появится список серверов — выберите стрелками и Enter (или Ctrl+Пробел).</p>
         <p><b>Для одной программы:</b> строка <code>[chrome.exe]</code>, под ней правила только для Chrome. <code>[*]</code> — снова для всех.</p>
         <p><b>Всё остальное:</b> <code>* -&gt; vpn</code> (только в «Все правила»)</p>
         <p><b>Опции</b> после <code>|</code>: <code>tcp</code>, <code>udp</code>, <code>выкл</code>, <code>без дочерних</code>.</p>

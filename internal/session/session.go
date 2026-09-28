@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/lardan099/hyroute/internal/flows"
+	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/logx"
 	"github.com/lardan099/hyroute/internal/rules"
@@ -74,6 +75,12 @@ type Config struct {
 	OnTraffic func(profile, process string, sent, recv int64)
 	// OnEngineFail: the packet engine removed its filters after an error.
 	OnEngineFail func()
+	// groups
+	// Groups resolves server group targets. OnDial and OnHealth report the
+	// dials and the status of routing endpoints only (tunnels.Manager).
+	Groups   *groups.Runtime
+	OnDial   func(profile, dst string, err error)
+	OnHealth func(profile string, st hysteria.Status)
 }
 
 // Stats are the counters shown next to the status.

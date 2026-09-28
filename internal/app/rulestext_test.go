@@ -33,7 +33,7 @@ x.com -> id:nl2
 "C:\Games\*" -> блок | udp
 * -> vpn
 `
-	res := parseRulesText(text, textProfiles)
+	res := parseRulesText(text, serverTargets(textProfiles))
 	if len(res.Errors) != 0 {
 		t.Fatalf("%+v", res.Errors)
 	}
@@ -64,7 +64,7 @@ x.com -> id:nl2
 	}
 
 	// Errors carry line numbers; ambiguous server names are refused.
-	bad := parseRulesText("youtube.com -> 🇳🇱\nfoo.com\nbar.com -> марс\nqux.com -> vpn | быстро\n[chrome.exe]\n* -> vpn", textProfiles)
+	bad := parseRulesText("youtube.com -> 🇳🇱\nfoo.com\nbar.com -> марс\nqux.com -> vpn | быстро\n[chrome.exe]\n* -> vpn", serverTargets(textProfiles))
 	lines := map[int]string{}
 	for _, e := range bad.Errors {
 		lines[e.Line] = e.Text
@@ -85,11 +85,11 @@ func TestRulesTextRoundTrip(t *testing.T) {
 		{Apps: []rules.AppMatch{{Pattern: `C:\Program Files\Discord\Discord.exe`, InheritChildren: false}}, Action: rules.Tunnel},
 		{App: &rules.AppMatch{Pattern: "curl.exe", InheritChildren: true}, Domain: &rules.DomainMatch{Pattern: "ifconfig.me"}, Action: rules.Tunnel},
 	}}
-	text := formatRulesText(cfg, textProfiles)
+	text := formatRulesText(cfg, serverTargets(textProfiles))
 	if !strings.Contains(text, "[chrome.exe]") {
 		t.Fatal(text)
 	}
-	res := parseRulesText(text, textProfiles)
+	res := parseRulesText(text, serverTargets(textProfiles))
 	if len(res.Errors) != 0 {
 		t.Fatalf("%v\n%s", res.Errors, text)
 	}
@@ -125,7 +125,7 @@ DNS: * -> напрямую | udp 53
 [*]
 * -> vpn
 `
-	res := parseRulesText(text, textProfiles)
+	res := parseRulesText(text, serverTargets(textProfiles))
 	if len(res.Errors) != 0 {
 		t.Fatalf("%+v", res.Errors)
 	}
@@ -154,8 +154,8 @@ DNS: * -> напрямую | udp 53
 
 	// Back to text and again: the same rules.
 	cfg := rules.Config{DefaultAction: res.DefaultAction, Rules: res.Rules}
-	out := formatRulesText(cfg, textProfiles)
-	again := parseRulesText(out, textProfiles)
+	out := formatRulesText(cfg, serverTargets(textProfiles))
+	again := parseRulesText(out, serverTargets(textProfiles))
 	if len(again.Errors) != 0 || len(again.Rules) != len(r) {
 		t.Fatalf("%+v\n%s", again.Errors, out)
 	}
@@ -169,7 +169,7 @@ DNS: * -> напрямую | udp 53
 		t.Fatal(out)
 	}
 
-	bad := parseRulesText("a.com -> vpn | порт 70000\nb.com -> vpn | порт\nc.com -> vpn | tcp 5-1", textProfiles)
+	bad := parseRulesText("a.com -> vpn | порт 70000\nb.com -> vpn | порт\nc.com -> vpn | tcp 5-1", serverTargets(textProfiles))
 	if len(bad.Errors) != 3 {
 		t.Fatalf("%+v", bad.Errors)
 	}
@@ -210,7 +210,7 @@ keyword:torrent regexp:^ads?\. -> блок
 [chrome.exe]
 geosite:instagram -> 🇩🇪
 `
-	res := parseRulesText(text, textProfiles)
+	res := parseRulesText(text, serverTargets(textProfiles))
 	if len(res.Errors) != 0 {
 		t.Fatalf("%+v", res.Errors)
 	}
@@ -231,7 +231,7 @@ geosite:instagram -> 🇩🇪
 	if len(res.Warnings) == 0 {
 		t.Fatal("no warnings for categories without a database")
 	}
-	back := parseRulesText(formatRulesText(rules.Config{Rules: r}, textProfiles), textProfiles)
+	back := parseRulesText(formatRulesText(rules.Config{Rules: r}, serverTargets(textProfiles)), serverTargets(textProfiles))
 	if len(back.Errors) != 0 || len(back.Rules) != len(r) {
 		t.Fatalf("%+v", back.Errors)
 	}
@@ -243,7 +243,7 @@ geosite:instagram -> 🇩🇪
 }
 
 func TestRulesTextFallback(t *testing.T) {
-	res := parseRulesText("yt: youtube.com -> Нидерланды, vpn\n* -> vpn, Нидерланды", textProfiles)
+	res := parseRulesText("yt: youtube.com -> Нидерланды, vpn\n* -> vpn, Нидерланды", serverTargets(textProfiles))
 	if len(res.Errors) != 0 || len(res.Rules) != 1 {
 		t.Fatalf("%+v", res)
 	}
@@ -255,35 +255,35 @@ func TestRulesTextFallback(t *testing.T) {
 		t.Fatalf("default %+v", res)
 	}
 	// Round trip keeps the fallbacks.
-	txt := formatRulesText(rules.Config{Rules: res.Rules, DefaultAction: res.DefaultAction, DefaultFallback: res.DefaultFallback}, textProfiles)
+	txt := formatRulesText(rules.Config{Rules: res.Rules, DefaultAction: res.DefaultAction, DefaultFallback: res.DefaultFallback}, serverTargets(textProfiles))
 	if !strings.Contains(txt, " -> vpn\n") {
 		t.Fatalf("format: %s", txt)
 	}
-	back := parseRulesText(txt, textProfiles)
+	back := parseRulesText(txt, serverTargets(textProfiles))
 	if len(back.Errors) != 0 || len(back.Rules[0].Fallback) != 1 || len(back.DefaultFallback) != 1 {
 		t.Fatalf("round trip: %+v\n%s", back, txt)
 	}
 	// Arrows chain the same way; a trailing "блок" is the end of any chain.
 	for _, ok := range []string{"a.com -> Нидерланды -> vpn", "a.com -> Нидерланды → vpn -> блок", "a.com -> Нидерланды, vpn, блок"} {
-		r := parseRulesText(ok, textProfiles)
+		r := parseRulesText(ok, serverTargets(textProfiles))
 		if len(r.Errors) != 0 || len(r.Rules) != 1 || len(r.Rules[0].Fallback) != 1 || r.Rules[0].Fallback[0] != "" {
 			t.Errorf("%q: %+v", ok, r)
 		}
 	}
 	for _, bad := range []string{"a.com -> напрямую, vpn", "a.com -> vpn -> блок -> vpn", "a.com -> vpn, марс",
 		"a.com -> vpn -> напрямую", "a.com -> Нидерланды ->", "a.com -> блок -> vpn"} {
-		if r := parseRulesText(bad, textProfiles); len(r.Errors) == 0 {
+		if r := parseRulesText(bad, serverTargets(textProfiles)); len(r.Errors) == 0 {
 			t.Errorf("%q accepted", bad)
 		}
 	}
 	// A server whose name has an arrow or a comma is written as id: and
 	// still found by its full name.
 	odd := append(slices.Clone(textProfiles), hysteria.Profile{ID: "odd", Name: "Каскад RU -> NL, US"})
-	r2 := parseRulesText("a.com -> Каскад RU -> NL, US", odd)
+	r2 := parseRulesText("a.com -> Каскад RU -> NL, US", serverTargets(odd))
 	if len(r2.Errors) != 0 || r2.Rules[0].Profile != "odd" || len(r2.Rules[0].Fallback) != 0 {
 		t.Errorf("odd name: %+v", r2)
 	}
-	if w := targetWord(rules.Tunnel, "odd", odd); w != "id:odd" {
+	if w := targetWord(rules.Tunnel, "odd", serverTargets(odd)); w != "id:odd" {
 		t.Errorf("odd name written as %q", w)
 	}
 }
@@ -334,8 +334,8 @@ func TestRulesTextRoundTripOdd(t *testing.T) {
 		{Apps: []rules.AppMatch{{Pattern: `C:\Tools\runner`}, {Pattern: "discord.exe", InheritChildren: true}}, Action: rules.Direct},
 		{Domains: []string{".setup.exe", "run.exe"}, Action: rules.Block},
 	}}
-	text := formatRulesText(cfg, profiles)
-	res := parseRulesText(text, profiles)
+	text := formatRulesText(cfg, serverTargets(profiles))
+	res := parseRulesText(text, serverTargets(profiles))
 	if len(res.Errors) != 0 || len(res.Rules) != len(cfg.Rules) {
 		t.Fatalf("%d rules %+v\n%s", len(res.Rules), res.Errors, text)
 	}
@@ -357,7 +357,7 @@ func TestRulesTextRoundTripOdd(t *testing.T) {
 		}
 	}
 	// A second round gives the same text.
-	if again := formatRulesText(rules.Config{DefaultAction: res.DefaultAction, DefaultProfile: res.DefaultProfile, Rules: res.Rules}, profiles); again != text {
+	if again := formatRulesText(rules.Config{DefaultAction: res.DefaultAction, DefaultProfile: res.DefaultProfile, Rules: res.Rules}, serverTargets(profiles)); again != text {
 		t.Errorf("not stable:\n%s\n---\n%s", text, again)
 	}
 }
@@ -365,7 +365,7 @@ func TestRulesTextRoundTripOdd(t *testing.T) {
 func TestParseRulesTextItems(t *testing.T) {
 	ok := func(text string) rules.Rule {
 		t.Helper()
-		res := parseRulesText(text, textProfiles)
+		res := parseRulesText(text, serverTargets(textProfiles))
 		if len(res.Errors) != 0 || len(res.Rules) != 1 {
 			t.Fatalf("%q: %+v", text, res)
 		}
@@ -373,7 +373,7 @@ func TestParseRulesTextItems(t *testing.T) {
 	}
 	bad := func(text, want string) {
 		t.Helper()
-		res := parseRulesText(text, textProfiles)
+		res := parseRulesText(text, serverTargets(textProfiles))
 		if len(res.Errors) == 0 || !strings.Contains(res.Errors[0].Text, want) {
 			t.Errorf("%q: %+v, want an error with %q", text, res.Errors, want)
 		}
@@ -393,7 +393,7 @@ func TestParseRulesTextItems(t *testing.T) {
 		t.Errorf("%+v", r.Apps)
 	}
 	for _, it := range []string{"youtube.com", "*.ru"} {
-		res := parseRulesText("["+it+"]\na.com -> vpn", textProfiles)
+		res := parseRulesText("["+it+"]\na.com -> vpn", serverTargets(textProfiles))
 		if len(res.Errors) != 0 || len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0].Text, "а не сайт") ||
 			len(res.Rules) != 1 || !slices.Equal(res.Rules[0].Apps, []rules.AppMatch{{Pattern: it, InheritChildren: true}}) {
 			t.Errorf("%s: %+v", it, res)
@@ -414,7 +414,7 @@ func TestParseRulesTextItems(t *testing.T) {
 	// "* ->" has no options.
 	bad("* -> блок | udp", "нет опций")
 	bad("* -> vpn | мусор", "нет опций")
-	if res := parseRulesText("* -> vpn |", textProfiles); len(res.Errors) != 0 || !res.HasDefault {
+	if res := parseRulesText("* -> vpn |", serverTargets(textProfiles)); len(res.Errors) != 0 || !res.HasDefault {
 		t.Errorf("%+v", res)
 	}
 	// The first arrow of any kind ends the rule; the rest is the chain.
@@ -468,11 +468,11 @@ func TestTargetWordReserved(t *testing.T) {
 		hysteria.Profile{ID: "sp", Name: " FI "}, hysteria.Profile{ID: "e", Name: "  "})
 	for id, want := range map[string]string{"d": "id:d", "m": "id:m", "b": "id:b", "ok": "Finland", "de": "🇩🇪 DE up to 10 Gb/s",
 		"sp": "FI", "e": "id:e"} {
-		if w := targetWord(rules.Tunnel, id, profiles); w != want {
+		if w := targetWord(rules.Tunnel, id, serverTargets(profiles)); w != want {
 			t.Errorf("%s: %q, want %q", id, w, want)
 		}
 	}
-	if a, id, _, err := parseTargets("FI", profiles); err != nil || a != rules.Tunnel || id != "sp" {
+	if a, id, _, err := parseTargets("FI", serverTargets(profiles)); err != nil || a != rules.Tunnel || id != "sp" {
 		t.Errorf("FI: %v %q %v", a, id, err)
 	}
 }
@@ -482,7 +482,7 @@ func TestTargetWordReserved(t *testing.T) {
 func TestParseRulesTextAmbiguous(t *testing.T) {
 	ok := func(text string) RulesTextResult {
 		t.Helper()
-		res := parseRulesText(text, textProfiles)
+		res := parseRulesText(text, serverTargets(textProfiles))
 		if len(res.Errors) != 0 {
 			t.Fatalf("%q: %+v", text, res.Errors)
 		}
@@ -490,7 +490,7 @@ func TestParseRulesTextAmbiguous(t *testing.T) {
 	}
 	bad := func(text string, line int, want string) {
 		t.Helper()
-		res := parseRulesText(text, textProfiles)
+		res := parseRulesText(text, serverTargets(textProfiles))
 		for _, e := range res.Errors {
 			if e.Line == line && strings.Contains(e.Text, want) {
 				return
@@ -520,7 +520,7 @@ func TestParseRulesTextAmbiguous(t *testing.T) {
 		{Apps: []rules.AppMatch{{Pattern: "chrome.exe", InheritChildren: true}}, Domains: []string{"2001:db8::", ".a.com"}, Action: rules.Tunnel},
 		{Domains: []string{"regexp:a:", ".b.com"}, Action: rules.Block},
 	}}
-	back := ok(formatRulesText(cfg, textProfiles))
+	back := ok(formatRulesText(cfg, serverTargets(textProfiles)))
 	for i, r := range back.Rules {
 		if r.Name != "" || !slices.Equal(r.Domains, cfg.Rules[i].Domains) {
 			t.Errorf("round trip %d: %+v", i, r)
@@ -549,7 +549,7 @@ func TestParseRulesTextAmbiguous(t *testing.T) {
 	// Repeats that would silently override.
 	bad("* -> vpn\na.com -> блок\n* -> напрямую", 3, "строке 1")
 	bad("a.com -> vpn | tcp | udp", 1, "tcp и udp")
-	if res := parseRulesText("a.com -> vpn | tcp | udp | tcp", textProfiles); len(res.Errors) != 1 {
+	if res := parseRulesText("a.com -> vpn | tcp | udp | tcp", serverTargets(textProfiles)); len(res.Errors) != 1 {
 		t.Errorf("tcp|udp|tcp: %+v", res.Errors)
 	}
 	if r := ok("a.com -> vpn | udp | udp").Rules[0]; r.Protocol != "udp" {
@@ -573,7 +573,7 @@ func TestParseRulesTextAmbiguous(t *testing.T) {
 	}
 	// A refused item is the only error of its line.
 	for _, text := range []string{"domain:.a.com -> vpn", "(a.com) -> vpn"} {
-		if res := parseRulesText(text, textProfiles); len(res.Errors) != 1 {
+		if res := parseRulesText(text, serverTargets(textProfiles)); len(res.Errors) != 1 {
 			t.Errorf("%q: %+v", text, res.Errors)
 		}
 	}
@@ -615,15 +615,94 @@ func TestParseRulesTextAmbiguous(t *testing.T) {
 func TestTargetWordLineBreak(t *testing.T) {
 	for _, name := range []string{"DE\nfast", "DE\rfast", "DE\u2028fast", "DE\x00"} {
 		profiles := append(slices.Clone(textProfiles), hysteria.Profile{ID: "p1", Name: name})
-		if w := targetWord(rules.Tunnel, "p1", profiles); w != "id:p1" {
+		if w := targetWord(rules.Tunnel, "p1", serverTargets(profiles)); w != "id:p1" {
 			t.Errorf("%q written as %q", name, w)
 		}
 		cfg := rules.Config{DefaultAction: rules.Tunnel, DefaultFallback: []string{"p1"}, Rules: []rules.Rule{
 			{Name: "Y", Domains: []string{".youtube.com"}, Action: rules.Tunnel, Profile: "p1"},
 		}}
-		res := parseRulesText(formatRulesText(cfg, profiles), profiles)
+		res := parseRulesText(formatRulesText(cfg, serverTargets(profiles)), serverTargets(profiles))
 		if len(res.Errors) != 0 || len(res.Rules) != 1 || res.Rules[0].Profile != "p1" || !slices.Equal(res.DefaultFallback, []string{"p1"}) {
 			t.Errorf("%q: %+v", name, res)
+		}
+	}
+}
+
+// Groups in rules text: группа:Имя (or the bare name), id:grp-…; the
+// formatter writes группа:Имя when it reads back, else id:.
+func TestRulesTextGroups(t *testing.T) {
+	ts := append(serverTargets(textProfiles),
+		target{ID: "grp-000000000001", Name: "Авто", Group: true},
+		target{ID: "grp-000000000002", Name: "vpn", Group: true},
+		target{ID: "grp-000000000003", Name: "блок", Group: true},
+		target{ID: "grp-000000000004", Name: "Нидерланды", Group: true})
+	res := parseRulesText("Стриминг: geosite:netflix -> группа:Авто -> нидерланды напрямую\nx.com -> авто\ny.com -> id:grp-000000000002, group:Авто", ts)
+	if len(res.Errors) != 0 {
+		t.Fatalf("%+v", res.Errors)
+	}
+	if r := res.Rules[0]; r.Profile != "grp-000000000001" || !slices.Equal(r.Fallback, []string{"nl1"}) {
+		t.Fatalf("%+v", r)
+	}
+	if res.Rules[1].Profile != "grp-000000000001" || res.Rules[2].Profile != "grp-000000000002" || res.Rules[2].Fallback[0] != "grp-000000000001" {
+		t.Fatalf("%+v", res.Rules)
+	}
+	// A bare name that fits a server and a group alike: an error naming both
+	// (an exact name wins).
+	bad := parseRulesText("x.com -> нидерл", ts)
+	if len(bad.Errors) != 1 || bad.Errors[0].Text != "«нидерл» подходит к нескольким: сервер «🇳🇱 Нидерланды напрямую», группа «Нидерланды» — уточните (для группы: группа:Нидерланды)" {
+		t.Fatalf("%+v", bad.Errors)
+	}
+	if bad := parseRulesText("x.com -> группа:Марс\ny.com -> id:grp-00000000000f", ts); len(bad.Errors) != 2 ||
+		bad.Errors[0].Text != "группа «Марс» не найдена" || bad.Errors[1].Text != "группы с id grp-00000000000f нет" {
+		t.Fatalf("%+v", bad.Errors)
+	}
+	for id, want := range map[string]string{"grp-000000000001": "группа:Авто", "grp-000000000002": "id:grp-000000000002",
+		"grp-000000000003": "id:grp-000000000003", "grp-000000000004": "группа:Нидерланды"} {
+		if w := targetWord(rules.Tunnel, id, ts); w != want {
+			t.Errorf("%s: %q, want %q", id, w, want)
+		}
+	}
+	cfg := rules.Config{DefaultAction: rules.Tunnel, DefaultProfile: "grp-000000000002", Rules: res.Rules}
+	text := formatRulesText(cfg, ts)
+	if !strings.Contains(text, "# Куда: vpn (основной), имя сервера, группа:Имя, напрямую, блок.") ||
+		!strings.Contains(text, "-> группа:Авто -> 🇳🇱 Нидерланды напрямую") {
+		t.Fatal(text)
+	}
+	back := parseRulesText(text, ts)
+	if len(back.Errors) != 0 || back.DefaultProfile != "grp-000000000002" || !slices.Equal(back.Rules[0].Fallback, res.Rules[0].Fallback) {
+		t.Fatalf("%+v", back)
+	}
+}
+
+// Port options after "|" and group targets on the other side of the arrow
+// read and write together (PLAN §6.1, ports ← groups).
+func TestRulesTextGroupsWithPorts(t *testing.T) {
+	ts := append(serverTargets(textProfiles), target{ID: "grp-000000000001", Name: "Авто", Group: true})
+	res := parseRulesText("ssh.exe -> группа:Авто, DE | tcp 22\nDNS: * -> группа:Авто | udp 53\ngame.exe -> авто | порт 27000-27200", ts)
+	if len(res.Errors) != 0 || len(res.Rules) != 3 {
+		t.Fatalf("%+v", res)
+	}
+	r := res.Rules
+	if r[0].Profile != "grp-000000000001" || !slices.Equal(r[0].Fallback, []string{"de"}) || r[0].Protocol != "tcp" || r[0].Ports != "22" {
+		t.Fatalf("%+v", r[0])
+	}
+	if r[1].Profile != "grp-000000000001" || r[1].Ports != "53" || r[1].Protocol != "udp" || len(r[1].Apps)+len(r[1].Domains) != 0 {
+		t.Fatalf("%+v", r[1])
+	}
+	if r[2].Profile != "grp-000000000001" || r[2].Ports != "27000-27200" {
+		t.Fatalf("%+v", r[2])
+	}
+	text := formatRulesText(rules.Config{Rules: r}, ts)
+	if !strings.Contains(text, "ssh.exe -> группа:Авто -> ") || !strings.Contains(text, "| tcp 22") || !strings.Contains(text, "-> группа:Авто | udp 53") {
+		t.Fatal(text)
+	}
+	back := parseRulesText(text, ts)
+	if len(back.Errors) != 0 || len(back.Rules) != 3 {
+		t.Fatalf("%+v\n%s", back, text)
+	}
+	for i := range r {
+		if back.Rules[i].Profile != r[i].Profile || !slices.Equal(back.Rules[i].Fallback, r[i].Fallback) || back.Rules[i].Ports != r[i].Ports || back.Rules[i].Protocol != r[i].Protocol {
+			t.Fatalf("rule %d: %+v vs %+v\n%s", i, back.Rules[i], r[i], text)
 		}
 	}
 }

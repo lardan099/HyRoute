@@ -1,13 +1,20 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, errText, fmtBytes, fmtDuration, fmtTime, actionLabel, type Flow } from '../api';
-  import { hide, profileName } from '../state.svelte';
+  import { api, errText, fmtBytes, fmtDuration, fmtTime, actionLabel, strategyLabel, type Flow } from '../api';
+  import { ui, hide, profileName } from '../state.svelte';
   import RuleFromFlow from './RuleFromFlow.svelte';
   import Icon from './Icon.svelte';
 
+  // «Туннель → DE1 · Авто»: the server, then the group it was chosen by.
   function routeText(f: Flow): string {
     const r = actionLabel[f.route] ?? f.route;
-    return f.route === 'tunnel' && f.profile ? `${r} → ${profileName(f.profile)}` : r;
+    return f.route === 'tunnel' && f.profile ? `${r} → ${profileName(f.profile)}${f.group ? ` · ${profileName(f.group)}` : ''}` : r;
+  }
+
+  // «Авто (самый быстрый)».
+  function groupText(id: string): string {
+    const g = ui.groups.find((x) => x.id === id);
+    return `${profileName(id)}${g ? ` (${strategyLabel[g.strategy].toLowerCase()})` : ''}`;
   }
 
   let active = $state<Flow[]>([]);
@@ -62,6 +69,7 @@
           f.dst.includes(q) ||
           f.rule.toLowerCase().includes(q) ||
           profileName(f.profile).toLowerCase().includes(q) ||
+          (!!f.group && profileName(f.group).toLowerCase().includes(q)) ||
           f.outcome.toLowerCase().includes(q),
       )
       .slice(0, 1500);
@@ -147,6 +155,7 @@
         <span>{hide(selected.path || selected.process)} (PID {selected.pid})</span>
         <span>{selected.proto} {hide(selected.src)} → {hide(selected.dst)}</span>
         <span>исход: {selected.outcome} · процесс найден: {selected.attrib} · решение: {selected.stage}</span>
+        {#if selected.group}<span>Группа: {groupText(selected.group)}</span>{/if}
       </div>
       {#if canRule(selected)}
         <div class="row">

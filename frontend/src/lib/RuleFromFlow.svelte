@@ -4,7 +4,7 @@
   // editor opens with it filled in. The rule goes to the top of the list:
   // below the rule that took the connection it would never be reached.
   import { api, cleanSettings, toLists, type Flow, type InspectHit, type Rule } from '../api';
-  import { hide, mainProfile } from '../state.svelte';
+  import { hide, mainTarget } from '../state.svelte';
   import { toast } from '../toast.svelte';
   import Icon from './Icon.svelte';
   import RuleEditor from './RuleEditor.svelte';
@@ -115,7 +115,7 @@
     s.rules = (s.rules ?? []).map(toLists);
     s.rules.unshift(r);
     // With the revision of the copy just read (only a true race refuses it).
-    await api.SaveSettings({ ...cleanSettings(s, mainProfile()?.id), rev: s.rev ?? 0 });
+    await api.SaveSettings({ ...cleanSettings(s, mainTarget()?.id), rev: s.rev ?? 0 });
     const name = r.name;
     toast({ tone: 'ok', text: () => `Правило «${hide(name)}» добавлено в начало списка`, detail: () => 'Действует на новые соединения.' });
     onclose();

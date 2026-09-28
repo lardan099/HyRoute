@@ -2,7 +2,7 @@
   // Live explanation of one rule: what the patterns mean and what the rule
   // will match.
   import type { Rule } from '../api';
-  import { hide, profileName, ui } from '../state.svelte';
+  import { profileName, mainTarget } from '../state.svelte';
 
   let { rule, onexample }: { rule: Rule; onexample: (field: 'app' | 'domain', v: string) => void } = $props();
 
@@ -33,8 +33,8 @@
   const target = $derived.by(() => {
     if (rule.action === 'direct') return 'напрямую, мимо туннеля';
     if (rule.action === 'block') return 'будет сброшено (Блок)';
-    const main = ui.profiles.find((p) => p.main);
-    const name = rule.profile ? profileName(rule.profile) : main ? `основной профиль «${hide(main.name)}»` : 'основной профиль (не выбран!)';
+    const main = mainTarget();
+    const name = rule.profile ? profileName(rule.profile) : main ? `основной профиль «${main.name}»` : 'основной профиль (не выбран!)';
     return `через туннель: ${rule.profile ? '«' + name + '»' : name}`;
   });
 
