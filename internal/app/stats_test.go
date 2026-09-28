@@ -208,12 +208,14 @@ func TestDisconnectDoesNotWaitForStatsIO(t *testing.T) {
 	<-flushed
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go c.RunStats(ctx)
+	ran := make(chan struct{})
+	go func() { c.RunStats(ctx); close(ran) }()
 	waitFor(t, "the Disconnect's deltas on disk", func() bool {
 		b, _ := os.ReadFile(filepath.Join(c.Store.Dir, "stats", "day-"+time.Now().Format("2006-01-02")+".json"))
 		return bytes.Contains(b, []byte(`"du":7`))
 	})
 	cancel()
+	<-ran // its last flush is done before the next part and the TempDir cleanup
 
 	// The same with the disk lock held by a slow «Без сайтов».
 	gate2 := make(chan struct{})
@@ -225,11 +227,15 @@ func TestDisconnectDoesNotWaitForStatsIO(t *testing.T) {
 		}
 		<-gate2
 	})
-	go c.SetStatsMode("no-sites")
+	modeSet := make(chan struct{})
+	go func() { c.SetStatsMode("no-sites"); close(modeSet) }()
 	<-entered2
 	within(t, time.Second, "Disconnect", c.Disconnect)
 	h.setWrite(nil)
 	close(gate2)
+	// Its writes go on after the gate opens: wait, or the TempDir cleanup
+	// races them («directory not empty»).
+	<-modeSet
 }
 
 func TestEndSessionDoesNotWaitForMu(t *testing.T) {
