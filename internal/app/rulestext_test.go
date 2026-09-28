@@ -112,6 +112,8 @@ func TestRulesTextRoundTrip(t *testing.T) {
 	}
 }
 
+// Rules text written for v1.2.0 (several port options on a line, "* -> …
+// | порт 25") still reads, and writes back in one option.
 func TestRulesTextPorts(t *testing.T) {
 	text := `ssh.exe -> DE | tcp 22
 game.exe -> id:nl2 | udp 27000-27200, 27015
@@ -133,22 +135,22 @@ DNS: * -> напрямую | udp 53
 	if len(r) != 6 || !res.HasDefault {
 		t.Fatalf("%d rules %+v", len(r), res)
 	}
-	if r[0].Protocol != "tcp" || r[0].Ports != "22" || r[0].Apps[0].Pattern != "ssh.exe" {
+	if r[0].Protocol != "tcp" || strings.Join(r[0].Ports, ",") != "22" || r[0].Apps[0].Pattern != "ssh.exe" {
 		t.Fatalf("%+v", r[0])
 	}
-	if r[1].Protocol != "udp" || r[1].Ports != "27000-27200,27015" {
+	if r[1].Protocol != "udp" || strings.Join(r[1].Ports, ",") != "27000-27200,27015" {
 		t.Fatalf("%+v", r[1])
 	}
-	if r[2].Protocol != "" || r[2].Ports != "443,8443" || r[2].Domains[0] != "*.example.com" {
+	if r[2].Protocol != "" || strings.Join(r[2].Ports, ",") != "443,8443" || r[2].Domains[0] != "*.example.com" {
 		t.Fatalf("%+v", r[2])
 	}
-	if r[3].Name != "DNS" || len(r[3].Apps)+len(r[3].Domains) != 0 || r[3].Ports != "53" || r[3].Action != rules.Direct {
+	if r[3].Name != "DNS" || len(r[3].Apps)+len(r[3].Domains) != 0 || strings.Join(r[3].Ports, ",") != "53" || r[3].Action != rules.Direct {
 		t.Fatalf("%+v", r[3])
 	}
-	if r[4].Name != "" || r[4].Ports != "25" || r[4].Action != rules.Block {
+	if r[4].Name != "" || strings.Join(r[4].Ports, ",") != "25" || r[4].Action != rules.Block {
 		t.Fatalf("%+v", r[4])
 	}
-	if r[5].Apps[0].Pattern != "chrome.exe" || len(r[5].Domains) != 0 || r[5].Ports != "8080" {
+	if r[5].Apps[0].Pattern != "chrome.exe" || len(r[5].Domains) != 0 || strings.Join(r[5].Ports, ",") != "8080" {
 		t.Fatalf("%+v", r[5])
 	}
 
@@ -160,7 +162,7 @@ DNS: * -> напрямую | udp 53
 		t.Fatalf("%+v\n%s", again.Errors, out)
 	}
 	for i := range r {
-		if again.Rules[i].Ports != r[i].Ports || again.Rules[i].Protocol != r[i].Protocol || again.Rules[i].Name != r[i].Name ||
+		if !slices.Equal(again.Rules[i].Ports, r[i].Ports) || again.Rules[i].Protocol != r[i].Protocol || again.Rules[i].Name != r[i].Name ||
 			len(again.Rules[i].Apps) != len(r[i].Apps) || len(again.Rules[i].Domains) != len(r[i].Domains) {
 			t.Fatalf("rule %d: %+v vs %+v\n%s", i, again.Rules[i], r[i], out)
 		}
@@ -548,7 +550,7 @@ func TestParseRulesTextAmbiguous(t *testing.T) {
 	}
 	// Repeats that would silently override.
 	bad("* -> vpn\na.com -> блок\n* -> напрямую", 3, "строке 1")
-	bad("a.com -> vpn | tcp | udp", 1, "tcp и udp")
+	bad("a.com -> vpn | tcp | udp", 1, "один протокол")
 	if res := parseRulesText("a.com -> vpn | tcp | udp | tcp", serverTargets(textProfiles)); len(res.Errors) != 1 {
 		t.Errorf("tcp|udp|tcp: %+v", res.Errors)
 	}
@@ -683,13 +685,13 @@ func TestRulesTextGroupsWithPorts(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	r := res.Rules
-	if r[0].Profile != "grp-000000000001" || !slices.Equal(r[0].Fallback, []string{"de"}) || r[0].Protocol != "tcp" || r[0].Ports != "22" {
+	if r[0].Profile != "grp-000000000001" || !slices.Equal(r[0].Fallback, []string{"de"}) || r[0].Protocol != "tcp" || strings.Join(r[0].Ports, ",") != "22" {
 		t.Fatalf("%+v", r[0])
 	}
-	if r[1].Profile != "grp-000000000001" || r[1].Ports != "53" || r[1].Protocol != "udp" || len(r[1].Apps)+len(r[1].Domains) != 0 {
+	if r[1].Profile != "grp-000000000001" || strings.Join(r[1].Ports, ",") != "53" || r[1].Protocol != "udp" || len(r[1].Apps)+len(r[1].Domains) != 0 {
 		t.Fatalf("%+v", r[1])
 	}
-	if r[2].Profile != "grp-000000000001" || r[2].Ports != "27000-27200" {
+	if r[2].Profile != "grp-000000000001" || strings.Join(r[2].Ports, ",") != "27000-27200" {
 		t.Fatalf("%+v", r[2])
 	}
 	text := formatRulesText(rules.Config{Rules: r}, ts)
@@ -701,7 +703,7 @@ func TestRulesTextGroupsWithPorts(t *testing.T) {
 		t.Fatalf("%+v\n%s", back, text)
 	}
 	for i := range r {
-		if back.Rules[i].Profile != r[i].Profile || !slices.Equal(back.Rules[i].Fallback, r[i].Fallback) || back.Rules[i].Ports != r[i].Ports || back.Rules[i].Protocol != r[i].Protocol {
+		if back.Rules[i].Profile != r[i].Profile || !slices.Equal(back.Rules[i].Fallback, r[i].Fallback) || !slices.Equal(back.Rules[i].Ports, r[i].Ports) || back.Rules[i].Protocol != r[i].Protocol {
 			t.Fatalf("rule %d: %+v vs %+v\n%s", i, back.Rules[i], r[i], text)
 		}
 	}

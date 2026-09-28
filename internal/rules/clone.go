@@ -12,6 +12,7 @@ func (r Rule) Clone() Rule {
 	r.App = clonePtr(r.App)
 	r.Domain = clonePtr(r.Domain)
 	r.Fallback = slices.Clone(r.Fallback)
+	r.Ports = slices.Clone(r.Ports)
 	return r
 }
 

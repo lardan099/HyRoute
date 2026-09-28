@@ -280,6 +280,12 @@ instagram.com -> vpn`);
       }
     }
     appSeq++;
+    // Options started ("-> DE | порты 80, 4"): no server menu; the comma
+    // there separates ports, not fallback servers.
+    if (/\|/.test(before.replace(/"[^"]*"/g, ''))) {
+      menu = null;
+      return;
+    }
     // The server being typed: after the last "->" or comma of the target
     // ("-> DE -> N", "-> DE, N").
     const m = /(->|→|=>)/.test(before) ? before.match(/(->|→|=>|,)([^|,>→]*)$/) : null;
@@ -472,7 +478,11 @@ instagram.com -> vpn`);
         <p><b>Куда:</b> <code>vpn</code> (основной сервер или группа), имя сервера или его часть, группа — <code>группа:Имя</code>, <code>напрямую</code>, <code>блок</code>. Запасные серверы — следом через стрелку или запятую: <code>-&gt; DE -&gt; NL</code> (если DE недоступен — NL, если недоступны оба — соединение не пройдёт, напрямую не уйдёт). В конце можно дописать <code>-&gt; блок</code>, это то же самое. После <code>-&gt;</code> появится список серверов — выберите стрелками и Enter (или Ctrl+Пробел).</p>
         <p><b>Для одной программы:</b> строка <code>[chrome.exe]</code>, под ней правила только для Chrome. <code>[*]</code> — снова для всех.</p>
         <p><b>Всё остальное:</b> <code>* -&gt; vpn</code> (только в «Все правила»)</p>
-        <p><b>Опции</b> после <code>|</code>: <code>tcp</code>, <code>udp</code>, <code>выкл</code>, <code>без дочерних</code>.</p>
+        <p>
+          <b>Опции</b> после <code>|</code>: <code>tcp</code>, <code>udp</code>, порты — <code>tcp 443</code>, <code>udp 27000-27100</code>,
+          <code>порты 80, 443</code>; <code>выкл</code>, <code>без дочерних</code>. <b>Только по порту:</b> <code>* -&gt; напрямую | tcp 22</code> (без
+          порта <code>* -&gt;</code> — это «всё остальное»).
+        </p>
         <p><b>Название:</b> <code>YouTube: youtube.com -&gt; vpn</code>. Строки с <code>#</code> — комментарии.</p>
       </div>
     </div>

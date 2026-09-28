@@ -74,6 +74,7 @@ func newCtlAt(t *testing.T, st *store.Store) (*Controller, *[]*fakeSession) {
 	// Tests that fail an engine reconnect by hand; recover_test.go sets
 	// its own delay.
 	c.recoverDelay = time.Hour
+	noDNS(c, "") // ports: Explain and Inspect never query DNS in tests
 	if err := c.Load(); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +319,11 @@ func TestCleanTarget(t *testing.T) {
 		"http://2ip.io:8080/": {"2ip.io", 8080}, "2ip.io:443": {"2ip.io", 443}, "[2001:db8::1]:22": {"2001:db8::1", 22},
 		" 1.2.3.4 ": {"1.2.3.4", 0},
 	} {
-		if h, p := cleanTarget(in); h != want.host || p != want.port {
+		h, p, scheme := splitTarget(in)
+		if p == 0 {
+			p = schemePort(scheme)
+		}
+		if h != want.host || p != want.port || cleanTarget(in) != h {
 			t.Errorf("%q: %q %d", in, h, p)
 		}
 	}

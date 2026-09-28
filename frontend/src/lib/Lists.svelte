@@ -50,6 +50,8 @@
     if (!w) return '';
     const to = w.action === 'direct' ? 'напрямую' : w.action === 'block' ? 'блокируется' : `через ${w.profile ? profileName(w.profile) : 'основной сервер'}`;
     const why = w.index < 0 ? 'ни одно правило не подошло, сработало «Всё остальное»' : `правило «${w.name}»`;
+    // With port rules the answer is for one port: the site's web port.
+    if (r.route?.portRules) return `Сейчас HyRoute для TCP ${r.route.port}: ${to} (${why}). На других портах может быть иначе — «Проверить адрес» покажет.`;
     return `Сейчас HyRoute: ${to} (${why}).`;
   }
 

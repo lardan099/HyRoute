@@ -36,8 +36,18 @@ type Query struct {
 	// IP is the destination address when known (for IP and geoip rules).
 	IP    netip.Addr `json:"ip"`
 	Proto uint8      `json:"proto"` // 6 or 17
-	Port  uint16     `json:"port"`  // 0 = not known
+	// Port is the destination port (0 = unknown: rules with ports do not
+	// match).
+	Port uint16 `json:"port"`
+	// QUICNameless: the explained settings decide UDP/443 without a site
+	// name, as the engine does (see QUICNameless).
+	QUICNameless bool `json:"quicNameless"`
 }
+
+// StepQUICBlock is the index of the synthetic winner «Блокировка QUIC»: a
+// UDP/443 flow whose route depends on the site name, which QUIC does not
+// show, is dropped. -1 is the default route.
+const StepQUICBlock = -2
 
 // Explanation is the full trace.
 type Explanation struct {
@@ -45,6 +55,8 @@ type Explanation struct {
 	Winner Step   `json:"winner"`
 	// Notes list caveats (unknown path, inheritance, ambiguous names).
 	Notes []string `json:"notes"`
+	// PortRules: an enabled rule has ports.
+	PortRules bool `json:"portRules"`
 }
 
 // Explain evaluates q against every rule of c (disabled ones included, for
@@ -104,6 +116,15 @@ func Explain(c Config, main string, q Query) Explanation {
 	if app != "" && !pathKnown {
 		ex.Notes = append(ex.Notes, "Указано только имя файла: правила по полному пути и по маске папки проверить нельзя.")
 	}
+	for _, r := range c.Rules {
+		if len(r.Ports) > 0 && enabled(r) {
+			ex.PortRules = true
+			break
+		}
+	}
+	if q.Port == 0 && ex.PortRules {
+		ex.Notes = append(ex.Notes, "Порт не указан, поэтому правила с портами считаются несовпавшими. Укажите порт — например, 443 для HTTPS.")
+	}
 	res := func(a Action, p string) (Action, string) {
 		if a != Tunnel {
 			return a, ""
@@ -159,7 +180,17 @@ func Explain(c Config, main string, q Query) Explanation {
 		}
 		return append(steps, def), winner
 	}
+	// QUIC (UDP 443) with the default settings: the engine gives the flow
+	// no names (packetSites), so neither does the explanation.
+	quic := q.QUICNameless && NamelessUDP(true, true, q.Proto, q.Port)
+	hadName := len(names) > 0
+	if quic {
+		names, dom = nil, ""
+	}
 	ex.Steps, ex.Winner = trace(dom)
+	if quic {
+		ex.quicBlock(c, main, crs, errs, proc, q, hadName)
+	}
 	for _, n := range names {
 		if len(siteOf[n]) > 1 {
 			ex.Notes = append(ex.Notes, "Имена одной цепочки CNAME считаются одним сайтом: доменное правило срабатывает, если подходит любое из них.")
@@ -220,19 +251,14 @@ func Explain(c Config, main string, q Query) Explanation {
 			break
 		}
 	}
-	if q.Port == 0 {
-		for _, r := range c.Rules {
-			if strings.TrimSpace(r.Ports) != "" && (r.Enabled == nil || *r.Enabled) {
-				ex.Notes = append(ex.Notes, "Порт не указан, поэтому правила с портом не сработали. Чтобы их проверить, укажите адрес с портом: example.com:443.")
-				break
-			}
-		}
-	}
 	if ex.Notes == nil {
 		ex.Notes = []string{}
 	}
 	return ex
 }
+
+// enabled reports whether a rule is on.
+func enabled(r Rule) bool { return r.Enabled == nil || *r.Enabled }
 
 // nameRule reports whether a rule has a program given by this very file
 // name (lower-case).
@@ -261,14 +287,11 @@ func (r *compiled) explain(p *procinfo.Info, pathKnown bool, proto uint8, port u
 		why = append(why, "протокол "+protoName(r.proto))
 	}
 	if len(r.ports) > 0 {
-		ports := portsText(r.ports)
-		switch {
-		case port == 0:
-			return false, "порт не указан, а правило только для порта " + ports
-		case !r.matchPort(port):
-			return false, fmt.Sprintf("порт %d, а правило только для порта %s", port, ports)
+		ok, reason := r.explainPort(port)
+		if !ok {
+			return false, reason
 		}
-		why = append(why, fmt.Sprintf("порт %d", port))
+		why = append(why, reason)
 	}
 	if r.hasApp() {
 		var list []string
@@ -397,9 +420,20 @@ type Issue struct {
 	Text     string `json:"text"`
 }
 
-// Lint finds rules that can never match (an earlier enabled rule catches
-// every connection they would) and invalid rules.
-func Lint(c Config) []Issue {
+// LintOptions are engine settings that change what a rule can match.
+type LintOptions struct {
+	// QUICNameless: UDP/443 flows are decided without a site name
+	// (QUICNameless(ExactWeb, BlockQUIC)).
+	QUICNameless bool
+}
+
+// Lint is LintWith the default engine settings.
+func Lint(c Config) []Issue { return LintWith(c, LintOptions{QUICNameless: true}) }
+
+// LintWith finds rules that can never match (an earlier enabled rule
+// catches every connection they would) and invalid rules, and gives hints
+// on port rules.
+func LintWith(c Config, o LintOptions) []Issue {
 	out := []Issue{}
 	type entry struct {
 		i  int
@@ -435,6 +469,7 @@ func Lint(c Config) []Issue {
 				break
 			}
 		}
+		out = append(out, cr.portIssues(i, o)...)
 		prev = append(prev, entry{i, cr})
 	}
 	return out
@@ -445,7 +480,7 @@ func (r *compiled) covers(b *compiled) bool {
 	if r.proto != 0 && r.proto != b.proto {
 		return false
 	}
-	if !r.coversPorts(b) {
+	if len(r.ports) > 0 && !portsCover(r.ports, b.ports) {
 		return false
 	}
 	if r.hasApp() {

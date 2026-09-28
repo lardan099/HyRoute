@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,7 +20,7 @@ func TestBackupFullRoundTrip(t *testing.T) {
 	}
 	nl := res.Added[1].ID
 	st := a.Settings()
-	st.Rules = []rules.Rule{{Name: "ssh", Apps: []rules.AppMatch{{Pattern: "ssh.exe"}}, Ports: "22", Action: rules.Tunnel, Profile: nl}}
+	st.Rules = []rules.Rule{{Name: "ssh", Apps: []rules.AppMatch{{Pattern: "ssh.exe"}}, Ports: rules.PortList{"22"}, Action: rules.Tunnel, Profile: nl}}
 	if _, err := a.SaveRulesIn(EditGuard{}, st.Config); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func TestBackupFullRoundTrip(t *testing.T) {
 	if auth != "secret2" || proxyPass != "proxy-pass" {
 		t.Fatalf("secrets: %q %q", auth, proxyPass)
 	}
-	if got := c.Settings().Rules; len(got) != 1 || got[0].Profile != nl || got[0].Ports != "22" {
+	if got := c.Settings().Rules; len(got) != 1 || got[0].Profile != nl || !slices.Equal(got[0].Ports, rules.PortList{"22"}) {
 		t.Fatalf("%+v", got)
 	}
 

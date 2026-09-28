@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, errText, toLists, cleanSettings, cleanFallback, isGroupId, type Settings, type Rule, type LintIssue } from '../api';
+  import { api, errText, toLists, cleanSettings, cleanFallback, isGroupId, portsText, type Settings, type Rule, type LintIssue } from '../api';
   import { ui, hide, profileName, mainTarget, mainText } from '../state.svelte';
   import Icon from './Icon.svelte';
   import TargetOptions from './TargetOptions.svelte';
@@ -276,9 +276,7 @@
                 >
               {/each}
               {#if more}<span class="tag more">+{more}</span>{/if}
-              {#if r.protocol || r.ports}<span class="tag"
-                  >{[r.protocol?.toUpperCase(), r.ports ? `порт ${r.ports.split(/[\s,;]+/).filter(Boolean).join(', ')}` : ''].filter(Boolean).join(' ')}</span
-                >{/if}
+              {#if portsText(r)}<span class="tag" title={portsText(r)}>{portsText(r, 3)}</span>{/if}
             </span>
           </button>
           <Icon name="arrow" size={16} />
@@ -291,7 +289,7 @@
           {#if pr || li.length}
             <div class="problems">
               {#if pr}<span><Icon name="alert" size={14} /> {pr}</span>{/if}
-              {#each li as x}<span><Icon name="alert" size={14} /> {x.text}</span>{/each}
+              {#each li as x}<span class:info={x.severity === 'info'}><Icon name={x.severity === 'info' ? 'info' : 'alert'} size={14} /> {x.text}</span>{/each}
             </div>
           {/if}
         </div>
@@ -442,6 +440,7 @@
   .acts { display: flex; gap: 0; }
   .problems { flex-basis: 100%; display: grid; gap: 2px; padding-left: 68px; font-size: 12.5px; color: var(--warn); }
   .problems span { display: flex; gap: 6px; align-items: center; }
+  .problems span.info { color: var(--muted); }
 
   .switch { position: relative; width: 34px; height: 20px; flex: none; cursor: pointer; }
   .switch input { opacity: 0; width: 0; height: 0; position: absolute; }

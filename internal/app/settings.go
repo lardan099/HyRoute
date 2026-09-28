@@ -5,10 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/netip"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -374,10 +371,7 @@ func (c *Controller) ruleWarningsLocked() []RuleWarning {
 		if r.Action != rules.Tunnel || (r.Enabled != nil && !*r.Enabled) {
 			continue
 		}
-		name := r.Name
-		if name == "" {
-			name = fmt.Sprintf("правило %d", i+1)
-		}
+		name := rules.RuleLabel(i, r)
 		check(i, name, r.Profile)
 		checkFallback(i, name, r.Fallback)
 	}
@@ -388,15 +382,18 @@ func (c *Controller) ruleWarningsLocked() []RuleWarning {
 	return out
 }
 
-// LintRules checks an edited (unsaved) rule list.
-func (c *Controller) LintRules(st settings.Settings) []rules.Issue { return rules.Lint(st.Config) }
+// LintRules checks an edited (unsaved) rule list with its engine options.
+func (c *Controller) LintRules(st settings.Settings) []rules.Issue {
+	return rules.LintWith(st.Config, rules.LintOptions{QUICNameless: rules.QUICNameless(st.ExactWeb(), st.QUICBlocked())})
+}
 
 // ExplainQuery is "why does this go there?" from the rule editor.
 type ExplainQuery struct {
 	App    string `json:"app"`
 	Target string `json:"target"` // domain or IP
 	Proto  string `json:"proto"`  // tcp | udp
-	// Port is the destination port (0 = the one in Target, if any).
+	// Port is the destination port (0 = none: taken from the target when
+	// it has one).
 	Port int `json:"port,omitempty"`
 }
 
@@ -409,28 +406,30 @@ type Explanation struct {
 	// would take now (connected, failover or latency groups).
 	Group bool   `json:"group,omitempty"`
 	Via   string `json:"via,omitempty"`
+	// ports
+	// Port is the port actually checked (0 = none).
+	Port int `json:"port"`
 }
 
 // Explain traces a hypothetical connection through the saved rules, or
 // through st when it is given (the editor's unsaved state).
 func (c *Controller) Explain(q ExplainQuery, st *settings.Settings) Explanation {
 	c.mu.Lock()
-	cfg := c.settings.Config
+	src := c.settings
 	if st != nil {
-		cfg = st.Config
+		src = st
 	}
+	cfg := src.Config
+	quic := rules.QUICNameless(src.ExactWeb(), src.QUICBlocked())
 	main := c.mainTargetLocked()
 	sess := c.sess
 	c.mu.Unlock()
-	rq := rules.Query{App: q.App, Proto: 6}
+	rq := rules.Query{App: q.App, Proto: 6, QUICNameless: quic}
 	if strings.EqualFold(q.Proto, "udp") {
 		rq.Proto = 17
 	}
-	var notes []string
-	target, port := cleanTarget(q.Target)
-	if q.Port > 0 && q.Port <= 65535 {
-		port = uint16(q.Port)
-	}
+	target, tport, scheme := splitTarget(q.Target)
+	port, notes := explainPort(q.Port, tport, scheme)
 	rq.Port = port
 	if ip, err := netip.ParseAddr(strings.Trim(target, "[]")); err == nil {
 		rq.IP = ip.Unmap()
@@ -444,7 +443,7 @@ func (c *Controller) Explain(q ExplainQuery, st *settings.Settings) Explanation 
 		rq.Domain = target
 		if target != "" && usesAddresses(cfg) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", target)
+			ips, err := c.lookupNetIP(ctx, "ip4", target)
 			cancel()
 			if err == nil && len(ips) > 0 {
 				rq.IP = ips[0].Unmap()
@@ -454,7 +453,7 @@ func (c *Controller) Explain(q ExplainQuery, st *settings.Settings) Explanation 
 			}
 		}
 	}
-	ex := Explanation{Explanation: rules.Explain(cfg, main, rq)}
+	ex := Explanation{Explanation: rules.Explain(cfg, main, rq), Port: int(rq.Port)}
 	ex.Notes = append(ex.Notes, notes...)
 	if ex.Winner.Action == rules.Tunnel {
 		ex.ProfileName = c.profileName(ex.Winner.Profile)
@@ -484,25 +483,7 @@ func usesAddresses(cfg rules.Config) bool {
 
 // cleanTarget accepts what people paste: a URL, host:port, a rule-style
 // pattern (.example.com, *.example.com) or an IP.
-func cleanTarget(s string) (string, uint16) {
-	s = strings.TrimSpace(s)
-	var port uint16
-	if u, err := url.Parse(s); err == nil && u.Host != "" {
-		s = u.Hostname()
-		if n, err := strconv.ParseUint(u.Port(), 10, 16); err == nil {
-			port = uint16(n)
-		} else if p, ok := schemePorts[strings.ToLower(u.Scheme)]; ok {
-			port = p
-		}
-	} else if h, p, err := net.SplitHostPort(s); err == nil {
-		s = h
-		if n, err := strconv.ParseUint(p, 10, 16); err == nil {
-			port = uint16(n)
-		}
-	}
-	s = strings.TrimPrefix(s, "*.")
-	return strings.Trim(s, ".[]"), port
+func cleanTarget(s string) string {
+	h, _, _ := splitTarget(s)
+	return h
 }
-
-// schemePorts: the port a link without one goes to.
-var schemePorts = map[string]uint16{"https": 443, "http": 80, "wss": 443, "ws": 80, "ftp": 21, "ssh": 22}

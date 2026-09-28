@@ -18,7 +18,8 @@ export interface Rule {
   app?: AppMatch | null;
   domain?: { pattern: string } | null;
   protocol?: string;
-  // Destination ports: "443", "80,443", "27000-27200" ('' = any).
+  // Destination ports: "443", "80,443,27000-27200" ('' or absent = any
+  // port). Go writes this v1.2.0 string form; items: portItems/parsePorts.
   ports?: string;
   action: Action;
   // A server or group ID ('' = the main target).
@@ -213,6 +214,10 @@ export interface Explanation {
   // would take now (connected, failover or latency groups).
   group?: boolean;
   via?: string;
+  // ports: the port checked (0 = none); an enabled rule has ports.
+  // winner.index -2 (StepQUICBlock) is the synthetic «Блокировка QUIC».
+  port: number;
+  portRules: boolean;
 }
 
 export type State = 'disconnected' | 'starting' | 'connecting' | 'connected' | 'tunnel-down' | 'error';
@@ -732,6 +737,7 @@ export function cleanRule(r: Rule, mainId: string | undefined): Rule {
   if (!out.apps.length) delete out.apps;
   if (!out.domains.length) delete out.domains;
   if (!out.protocol) delete out.protocol;
+  // Ports are validated by Go; the editor canonicalises them (parsePorts).
   out.ports = (out.ports ?? '').trim();
   if (!out.ports) delete out.ports;
   if (out.enabled !== false) delete out.enabled;
@@ -901,4 +907,82 @@ interface GUI {
   DeleteGroup(id: string): Promise<void>;
   ProbeGroup(id: string): Promise<GroupView>;
   SetProbe(p: ProbeSettings): Promise<void>;
+}
+
+// ==== ports ====
+
+// parsePorts reads "80, 443 8000-8100" like Go's rules.ParsePortList:
+// spaced ranges are one item ("8000 - 8100", en/em dash too), items are
+// split by commas, semicolons and spaces; canonical items (order kept,
+// repeats dropped) or the first error, in Go's words. Each side of an item
+// must be digits only before Number(), as strconv.ParseUint wants.
+// Reference cases (Go's TestParsePortItem):
+//   ok:  "443", "0443"->"443", "000443"->"443", "8000-8100", "8000–8100", "8000 - 8100",
+//        "1-65535", "443-443"->"443"
+//   bad: "0", "65536", "-1", "+443", "0x1bb", "1e3", "443-", "-443",
+//        "100-50" (reversed message), "abc", "1-2-3"
+// Spaces are Go's unicode.IsSpace (JS \s differs: it has U+FEFF, lacks U+0085).
+const portSp = '[\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]';
+const portDash = new RegExp(`${portSp}*[-–—]${portSp}*`, 'g');
+const portSplit = new RegExp(`(?:${portSp}|[,;])+`);
+
+export function parsePorts(text: string): { ports: string[]; error: string } {
+  const items = portItems(text);
+  // Separators only («,») name no port: not an empty list, which is any port.
+  if (!items.length && text.trim()) return { ports: [], error: 'не указан ни один порт: например, 443 или 80, 443' };
+  if (items.length > 256) return { ports: [], error: 'слишком много портов в правиле (больше 256): объедините их в диапазоны' };
+  const ports: string[] = [];
+  for (const it of items) {
+    const echo = [...it].length > 24 ? [...it].slice(0, 24).join('') + '…' : it;
+    const bad = `неверный порт «${echo}»: нужно число от 1 до 65535 или диапазон, например 8000-8100`;
+    const dash = it.indexOf('-');
+    const sides = dash < 0 ? [it] : [it.slice(0, dash), it.slice(dash + 1)];
+    if (!sides.every((s) => /^\d+$/.test(s))) return { ports: [], error: bad };
+    const [lo, hi] = [Number(sides[0]), Number(sides[sides.length - 1])];
+    if (lo < 1 || lo > 65535 || hi < 1 || hi > 65535) return { ports: [], error: bad };
+    if (lo > hi) return { ports: [], error: `диапазон «${echo}» наоборот: меньший порт пишется первым, например 8000-8100` };
+    const c = lo === hi ? String(lo) : `${lo}-${hi}`;
+    if (!ports.includes(c)) ports.push(c);
+  }
+  return { ports, error: '' };
+}
+
+// portItems splits a stored list ("80,443,27000-27200", the v1.2.0 form Go
+// writes) or typed text into raw items, as Go's splitPortText.
+export function portItems(text: string | undefined): string[] {
+  return (text ?? '').replace(portDash, '-').split(portSplit).filter(Boolean);
+}
+
+// portsText is the label of a rule by protocol and ports, as Go's
+// rules.PortsLabel: "TCP", "TCP 22", "UDP 50000-65535", "порт 443",
+// "порты 80, 443". max > 0 shows that many items and "…". '' when neither
+// is set.
+export function portsText(r: Pick<Rule, 'protocol' | 'ports'>, max = 0): string {
+  const proto = r.protocol && r.protocol !== 'any' ? r.protocol.toUpperCase() : '';
+  const raw = portItems(r.ports);
+  const ports = canonPorts(raw) ?? raw;
+  if (!ports.length) return proto;
+  const list = (max > 0 && ports.length > max ? ports.slice(0, max) : ports).join(', ') + (max > 0 && ports.length > max ? '…' : '');
+  if (proto) return `${proto} ${list}`;
+  return `${ports.length === 1 && !ports[0].includes('-') ? 'порт' : 'порты'} ${list}`;
+}
+
+// canonPorts is stored items made canonical, item by item as Go's
+// rules.CanonPorts ("0443" -> "443", repeats dropped); null when an item
+// is not one valid port or range (a hand-edited settings.json).
+export function canonPorts(items: string[]): string[] | null {
+  if (items.length > 256) return null;
+  const out: string[] = [];
+  for (const it of items) {
+    const p = parsePorts(it);
+    if (p.error || p.ports.length !== 1) return null;
+    if (!out.includes(p.ports[0])) out.push(p.ports[0]);
+  }
+  return out;
+}
+
+// portRange reads a canonical item: [lo, hi].
+export function portRange(item: string): [number, number] {
+  const [lo, hi] = item.split('-').map(Number);
+  return [lo, hi ?? lo];
 }

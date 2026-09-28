@@ -1,7 +1,7 @@
 // Rule titles as the Rules page shows them, for every surface that names a
 // rule (Rules, toasts). A title can contain sites: callers outside the
 // Rules page pass it through hide().
-import type { Rule } from './api';
+import { portsText, type Rule } from './api';
 import { hide } from './state.svelte';
 import { itemLabel, shortLabel } from './geo.svelte';
 
@@ -16,12 +16,11 @@ export function siteLabel(d: string): string {
 
 // ruleTitle of a rule without a name is made of its items: sites are
 // masked in Privacy mode as in the Rules page's tags (lists from the
-// database are not).
+// database are not). A rule with ports only is named by them («TCP 22»),
+// as Go's ruleName names it (Connections, the log, Explain).
 export function ruleTitle(r: Rule): string {
   if (r.name) return r.name;
   const a = (r.apps ?? []).map((x) => appLabel(x.pattern));
   const d = (r.domains ?? []).map((x) => (itemLabel(x)?.geo ? siteLabel(x) : hide(siteLabel(x))));
-  const what = [...a, ...d].slice(0, 2).join(', ') + (a.length + d.length > 2 ? '…' : '');
-  if (!what && r.ports?.trim()) return `Порт ${r.ports.split(/[\s,;]+/).filter(Boolean).join(', ')}`;
-  return what || 'Правило';
+  return [...a, ...d].slice(0, 2).join(', ') + (a.length + d.length > 2 ? '…' : '') || (r.ports ? portsText(r) : '') || 'Правило';
 }

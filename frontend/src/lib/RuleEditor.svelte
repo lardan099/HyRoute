@@ -1,7 +1,7 @@
 <script lang="ts">
   // One rule: what (programs and/or sites) -> where (VPN server, direct,
   // block). Saved as soon as the user presses "Сохранить".
-  import { api, errText, cleanFallback, isGroupId, strategyLabel, type Rule, type Action, type RunningApp } from '../api';
+  import { api, errText, cleanFallback, isGroupId, strategyLabel, parsePorts, canonPorts, portsText, portRange, portItems, type Rule, type Action, type RunningApp } from '../api';
   import { ui, hide, mainTarget, mainText, profileName } from '../state.svelte';
   import Icon from './Icon.svelte';
   import TargetOptions from './TargetOptions.svelte';
@@ -17,7 +17,6 @@
   r.apps ??= [];
   r.domains ??= [];
   r.protocol ??= '';
-  r.ports ??= '';
   r.profile ??= '';
   r.fallback ??= [];
   let siteInput = $state('');
@@ -25,6 +24,19 @@
   let error = $state('');
   let saving = $state(false);
   let advanced = $state(!!r.protocol || !!r.ports);
+  // ports: the ports field as typed; parsed live, canonical on save (and
+  // on load, when the stored items are valid).
+  let portText = $state((canonPorts(portItems(r.ports)) ?? portItems(r.ports)).join(', '));
+  const pp = $derived(parsePorts(portText));
+  // The rule had programs or sites when opened: removing the last of them
+  // would silently make a rule for every program and site on these ports.
+  const hadWho = !!(r.apps?.length || r.domains?.length);
+  // A port that a pasted site had (example.com:8443), offered for the ports
+  // field until the sites or the ports change.
+  let sitePort = $state('');
+  let sitePortFor = $state('');
+  // «Сохранить» stopped once to show that offer: the next press saves.
+  let sitePortAsked = $state(false);
   let picking = $state(false);
   let pickingApps = $state(false);
   loadGeo();
@@ -39,11 +51,25 @@
     return s;
   }
 
+  // explicitPort is the port written in a pasted site ("host:8443",
+  // "https://h:8443/x"), not one implied by a scheme; '' when none.
+  function explicitPort(raw: string): string {
+    let p = '';
+    try {
+      if (/^[a-z]+:\/\//i.test(raw)) p = new URL(raw).port;
+      else p = raw.replace(/\/.*$/, '').match(/^(?:\[[^\]]*\]|[^:]*):(\d{1,5})$/)?.[1] ?? '';
+    } catch {}
+    const n = Number(p);
+    return p && n >= 1 && n <= 65535 ? String(n) : '';
+  }
+
   function addSites(text: string) {
     const add = (t: string) => {
       if (!r.domains!.some((x) => x.toLowerCase() === t.toLowerCase())) r.domains!.push(t);
     };
+    const ports = new Set<string>();
     for (let raw of text.split(/[\s,;]+/)) {
+      if (!raw) continue;
       if (isSpecial(raw)) {
         // geosite:, geoip:, IP, network…: kept as written.
         add(raw.replace(/^[a-z]+:/i, (p) => p.toLowerCase()));
@@ -51,6 +77,8 @@
       }
       let s = cleanSite(raw);
       if (!s) continue;
+      const port = explicitPort(raw.trim());
+      if (port) ports.add(port);
       // An IP from a link or with a port (https://1.2.3.4/…, [2a01::1]:443)
       // is an address rule: as a site (".1.2.3.4") it would never match.
       const ip = s.replace(/^\[(.*)\]$/, '$1');
@@ -63,6 +91,9 @@
       if (!r.domains!.includes(s)) r.domains!.push(s);
     }
     siteInput = '';
+    sitePort = ports.size === 1 && !portText.trim() ? [...ports][0] : '';
+    sitePortFor = JSON.stringify(r.domains);
+    sitePortAsked = false;
   }
 
   function addApps(text: string) {
@@ -158,17 +189,21 @@
   const main = $derived(mainTarget());
   // The fallbacks routing uses: struck-through ones go on save.
   const fallback = $derived(cleanFallback(r.fallback, r.profile, main?.id));
-  const empty = $derived(r.apps!.length === 0 && r.domains!.length === 0 && !r.ports!.trim());
-  const portList = $derived(r.ports!.split(/[\s,;]+/).filter(Boolean));
-  // As Go rules.ParsePorts: "443", "80, 443", "27000-27200".
-  const portsBad = $derived(
-    portList.find((f) => {
-      const m = /^(\d{1,5})(?:-(\d{1,5}))?$/.exec(f);
-      const lo = m ? +m[1] : 0;
-      const hi = m?.[2] ? +m[2] : lo;
-      return !m || lo < 1 || hi > 65535 || lo > hi;
-    }) ?? '',
+  const empty = $derived(r.apps!.length === 0 && r.domains!.length === 0 && pp.ports.length === 0);
+  const ppText = $derived(portsText({ protocol: r.protocol, ports: pp.ports.join(',') }));
+  const widened = $derived(hadWho && !r.apps!.length && !r.domains!.length && pp.ports.length > 0);
+  // Replies of local UDP servers go to high ports too (ports §1.1).
+  const highUdp = $derived(!r.apps!.length && r.protocol !== 'tcp' && pp.ports.some((x) => portRange(x)[1] >= 49152));
+  // A site by name in QUIC (UDP 443) is not seen with the default settings.
+  const quicName = $derived(
+    r.protocol === 'udp' &&
+      r.domains!.some((d) => !isAddress(d)) &&
+      pp.ports.some((x) => {
+        const [lo, hi] = portRange(x);
+        return lo <= 443 && 443 <= hi;
+      }),
   );
+  const sitePortShown = $derived(!!sitePort && !portText.trim() && JSON.stringify(r.domains) === sitePortFor);
 
   const where: { v: Action; l: string; d: string; icon: string }[] = [
     { v: 'tunnel', l: 'Через VPN', d: 'через выбранный сервер', icon: 'shield' },
@@ -182,13 +217,12 @@
     // in Privacy mode, as in the chips).
     const sites = r.domains!.map((d) => (itemLabel(d)?.geo ? `«${shortLabel(d)}»` : hide(itemLabel(d) ? shortLabel(d) : siteLabel(d).host)));
     let who = '';
+    let proto = ppText ? ` (только ${ppText})` : '';
     if (apps.length && sites.length) who = `${apps.join(', ')}, когда открывает ${sites.join(', ')}`;
     else if (apps.length) who = `Всё от ${apps.join(', ')}`;
     else if (sites.length) who = `${sites.join(', ')} — в любой программе,`;
-    else if (portList.length) who = 'Любая программа, любой сайт';
-    else return 'Добавьте программу, сайт или порт.';
-    const p = r.protocol === 'tcp' ? 'TCP' : r.protocol === 'udp' ? 'UDP' : '';
-    const proto = portList.length ? ` (${p ? p + ', ' : ''}порт ${portList.join(', ')})` : p ? ` (только ${p})` : '';
+    else if (pp.ports.length) [who, proto] = [`Все соединения на ${ppText}`, ''];
+    else return 'Добавьте программу, сайт или порт (в «Протокол и порты»).';
     // A group: «группу «Авто» (самый быстрый)».
     const via = (id: string) => {
       if (!isGroupId(id)) return profileName(id);
@@ -211,7 +245,21 @@
   async function save() {
     if (siteInput.trim()) addSites(siteInput);
     if (appInput.trim()) addApps(appInput);
-    if (empty || portsBad) return;
+    // A pasted site had a port (the field's blur adds it before this click):
+    // show the offer once, or the rule silently covers every port.
+    if (sitePortShown && !sitePortAsked) {
+      sitePortAsked = true;
+      return;
+    }
+    if (pp.error) {
+      error = pp.error;
+      advanced = true;
+      return;
+    }
+    if (empty) return;
+    // No auto-name: a rule with ports only is labelled by them everywhere.
+    if (pp.ports.length) r.ports = pp.ports.join(',');
+    else delete r.ports;
     saving = true;
     error = '';
     try {
@@ -294,6 +342,20 @@
       {#each r.domains!.map((d) => ({ d, il: itemLabel(d) })).filter((x) => x.il?.missing) as x (x.d)}
         <div class="note warn small">«{x.il!.text}» ({x.d}): {x.il!.missing}. Правило сохранится, но этот список не сработает, пока в «Настройки → Базы правил» не выбрана база, где он есть.</div>
       {/each}
+      {#if sitePortShown}
+        <div class="note info small">
+          В адресе был порт {sitePort}.{#if sitePortAsked}
+            Без него правило сработает на всех портах: «Сохранить» ещё раз сохранит так.{/if}
+          <button
+            class="link"
+            onclick={() => {
+              portText = sitePort;
+              advanced = true;
+              sitePort = '';
+            }}>Добавить порт</button
+          >
+        </div>
+      {/if}
       {#if r.domains!.some((d) => itemLabel(d)?.geo)}
         <div class="hint">Готовые списки берутся из базы правил <b>{geo.sourceName || '—'}</b>. Базу можно сменить в «Настройки → Базы правил».</div>
       {/if}
@@ -425,27 +487,37 @@
     {/if}
 
     <details bind:open={advanced} class="adv">
-      <summary>Дополнительно</summary>
+      <summary>Протокол и порты{#if !advanced && ppText}<span class="faint"> · {ppText}</span>{/if}</summary>
       <div class="row">
-        <span class="muted">Протокол</span>
+        <span class="muted lbl-w">Протокол</span>
         <div class="seg">
           <button class:on={!r.protocol} onclick={() => (r.protocol = '')}>Любой</button>
           <button class:on={r.protocol === 'tcp'} onclick={() => (r.protocol = 'tcp')}>TCP</button>
           <button class:on={r.protocol === 'udp'} onclick={() => (r.protocol = 'udp')}>UDP</button>
         </div>
-        <span class="muted small">TCP — сайты и большинство программ, UDP — игры, звонки, QUIC. Если не уверены — «Любой».</span>
       </div>
       <div class="row">
-        <span class="muted">Порт</span>
-        <input class="ports" bind:value={r.ports} placeholder="любой" />
-        <span class="muted small grow">
-          Порт сервера, куда идёт соединение: <code>22</code> (SSH), <code>443, 8443</code> или диапазон <code>27000-27200</code>. Пусто — любой.
-        </span>
+        <span class="muted lbl-w">Порты</span>
+        <input class="grow" bind:value={portText} placeholder="443 или 80, 443, 8000-8100" aria-label="Порты" aria-invalid={!!pp.error} />
       </div>
-      {#if portsBad}<div class="note error small">«{portsBad}» — не порт: нужно число от 1 до 65535 или диапазон вида 27000-27200.</div>{/if}
-      {#if !r.apps!.length && !r.domains!.length && portList.length}
-        <div class="note info small">Ни программы, ни сайта нет: правило сработает для любой программы и любого сайта на этом порту.</div>
+      {#if pp.error && portText.trim()}<div class="note error small">{pp.error}</div>{/if}
+      {#if quicName}
+        <div class="note warn small">
+          В UDP 443 (QUIC) HyRoute не видит имя сайта: при «Точное определение сайта» и «Блокировать QUIC с неизвестным сайтом» (так по умолчанию)
+          такое соединение блокируется, и браузер переходит на TCP — правило по сайту здесь не сработает. Укажите программу вместо сайта или уберите UDP.
+        </div>
       {/if}
+      {#if highUdp}
+        <div class="note info small">
+          Правило по порту без программы действует и на ответы локальных UDP-серверов (игры, WireGuard, торренты). Для портов 49152–65535 лучше указать
+          программу.
+        </div>
+      {/if}
+      <div class="hint">
+        Порт, к которому подключается программа: 443 — HTTPS и QUIC, 80 — HTTP, 22 — SSH, 3389 — удалённый рабочий стол. Несколько — через запятую,
+        диапазон — через дефис: 27000-27100. Пусто — любые порты.
+      </div>
+      <div class="hint">TCP — сайты и большинство программ, UDP — игры, звонки, QUIC. Если не уверены — «Любой».</div>
     </details>
 
     <div class="summary"><Icon name="info" size={16} /> {sentence}</div>
@@ -463,10 +535,11 @@
       />
     {/if}
     {#if error}<div class="note error">{error}</div>{/if}
+    {#if widened}<div class="note warn small">Правило теперь для всех программ и сайтов на этих портах.</div>{/if}
 
     <div class="actions">
       <button onclick={onclose}>Отмена</button>
-      <button class="primary" onclick={save} disabled={saving || !!portsBad || (empty && !siteInput.trim() && !appInput.trim())}>Сохранить</button>
+      <button class="primary" onclick={save} disabled={saving || (empty && !siteInput.trim() && !appInput.trim() && !portText.trim())}>Сохранить</button>
     </div>
   </div>
 </div>
@@ -514,7 +587,9 @@
   .server select { font-size: 14px; }
   .adv summary { cursor: pointer; color: var(--muted); font-weight: 500; }
   .adv .row { margin-top: 10px; }
-  .ports { width: 150px; }
+  .adv .hint { margin-top: 6px; }
+  .lbl-w { min-width: 70px; }
+  .faint { color: var(--faint); font-weight: 400; }
   .summary { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--accent-soft); font-size: 13px; }
   .summary :global(svg) { flex: none; margin-top: 1px; color: var(--accent); }
   .actions { margin-top: 4px; }

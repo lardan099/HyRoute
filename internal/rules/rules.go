@@ -64,10 +64,11 @@ type Rule struct {
 	App      *AppMatch    `json:"app,omitempty"`
 	Domain   *DomainMatch `json:"domain,omitempty"`
 	Protocol string       `json:"protocol,omitempty"` // any|tcp|udp
-	// Ports limits the rule to destination ports: "443", "80,443",
-	// "27000-27200" ("" = any port).
-	Ports  string `json:"ports,omitempty"`
-	Action Action `json:"action"`
+	// Ports: destination ports ("443", "8000-8100"); empty = any. With
+	// Protocol they narrow the rule; a rule may have ports only. Stored in
+	// the v1.2.0 string form "80,443,27000-27200" (PortList).
+	Ports  PortList `json:"ports,omitempty"`
+	Action Action   `json:"action"`
 	// Profile is the server or group ID for Tunnel ("" = the main target).
 	Profile string `json:"profile,omitempty"`
 	// Fallback lists server or group IDs ("" = the main target) tried in
@@ -216,15 +217,16 @@ func (d *domPat) alt(name string) (string, bool) {
 type compiled struct {
 	src      Rule
 	name     string
-	apps     []appPat    // empty = any application
-	doms     []domPat    // names; with ips: the destinations (any = none)
-	ips      []ipPat     // addresses
-	warns    []string    // unusable geosite:/geoip: items
-	proto    uint8       // 0 any
-	ports    []PortRange // empty = any
+	apps     []appPat // empty = any application
+	doms     []domPat // names; with ips: the destinations (any = none)
+	ips      []ipPat  // addresses
+	warns    []string // unusable geosite:/geoip: items
+	proto    uint8    // 0 any
 	action   Action
 	profile  string   // "" = main
 	fallback []string // "" = main
+	// ports: destination ports, sorted and merged; empty = any port.
+	ports []PortRange
 }
 
 func (r *compiled) hasApp() bool  { return len(r.apps) > 0 }
@@ -268,11 +270,27 @@ func WebPort(port uint16) bool {
 	return false
 }
 
+// QUICNameless reports whether a UDP flow to port 443 is decided without a
+// site name: with ExactWeb and BlockQUIC, QUIC gets no DNS-cache names and
+// has no SNI. The engine's packetSites, Explain and Lint share it.
+func QUICNameless(exactWeb, blockQUIC bool) bool { return exactWeb && blockQUIC }
+
+// NamelessUDP reports whether a flow of proto to port gets no site name at
+// packet level (QUICNameless).
+func NamelessUDP(exactWeb, blockQUIC bool, proto uint8, port uint16) bool {
+	return proto == 17 && port == 443 && QUICNameless(exactWeb, blockQUIC)
+}
+
 // Compile validates and normalizes a config.
 func Compile(c Config) (*Set, error) {
 	s := &Set{def: c.DefaultAction, defProfile: c.DefaultProfile, defFallback: c.DefaultFallback}
 	for i, r := range c.Rules {
 		if r.Enabled != nil && !*r.Enabled {
+			// Ports of disabled rules are checked too: a bad one would
+			// widen the rule on export or when it is turned on.
+			if _, err := compilePorts(r.Ports); err != nil {
+				return nil, fmt.Errorf("%s: %v", ruleName(i, r), err)
+			}
 			continue
 		}
 		cr, err := compileRule(i, r)
@@ -287,10 +305,16 @@ func Compile(c Config) (*Set, error) {
 	return s, nil
 }
 
-// ruleName is the display name ("правило N" when unnamed).
+// ruleName is the display name ("правило N" when unnamed). An unnamed rule
+// with ports only is named by them ("TCP 22"), as the rules list names it.
 func ruleName(i int, r Rule) string {
 	if r.Name != "" {
 		return r.Name
+	}
+	if len(r.Ports) > 0 && len(r.AllApps()) == 0 && len(r.AllDomains()) == 0 {
+		if l := PortsLabel(r.Protocol, r.Ports); l != "" {
+			return l
+		}
 	}
 	return fmt.Sprintf("правило %d", i+1)
 }
@@ -349,12 +373,7 @@ func parseDomainPattern(p string) (domPat, error) {
 func compileRule(i int, r Rule) (compiled, error) {
 	cr := compiled{src: r, name: ruleName(i, r), action: r.Action, profile: r.Profile, fallback: r.Fallback}
 	apps, doms := r.AllApps(), r.AllDomains()
-	ports, err := ParsePorts(r.Ports)
-	if err != nil {
-		return cr, fmt.Errorf("%s: %v", cr.name, err)
-	}
-	cr.ports = ports
-	if len(apps) == 0 && len(doms) == 0 && len(ports) == 0 {
+	if len(apps) == 0 && len(doms) == 0 && len(r.Ports) == 0 {
 		return cr, fmt.Errorf("%s: укажите программу, сайт или порт", cr.name)
 	}
 	for _, a := range apps {
@@ -407,6 +426,11 @@ func compileRule(i int, r Rule) (compiled, error) {
 	default:
 		return cr, fmt.Errorf("%s: неизвестный протокол %q", cr.name, r.Protocol)
 	}
+	ps, err := compilePorts(r.Ports)
+	if err != nil {
+		return cr, fmt.Errorf("%s: %v", cr.name, err)
+	}
+	cr.ports = ps
 	return cr, nil
 }
 
@@ -543,7 +567,7 @@ func (r *compiled) base(sub Subject) bool {
 	if r.proto != 0 && r.proto != sub.Proto {
 		return false
 	}
-	if !r.matchPort(sub.Dst.Port()) {
+	if len(r.ports) > 0 && !matchPort(r.ports, sub.Dst.Port()) {
 		return false
 	}
 	if r.hasApp() && (sub.Proc == nil || !r.matchApp(sub.Proc)) {

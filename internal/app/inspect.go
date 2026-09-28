@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -168,7 +168,7 @@ func (c *Controller) Inspect(query string) (InspectResult, error) {
 	use := usage(c.settings.Config, c.profileName)
 	c.mu.Unlock()
 
-	target, _ := cleanTarget(res.Query)
+	target, tport, scheme := splitTarget(res.Query)
 	var ips []netip.Addr
 	if ip, err := netip.ParseAddr(strings.Trim(target, "[]")); err == nil {
 		ips = []netip.Addr{ip.Unmap()}
@@ -185,7 +185,7 @@ func (c *Controller) Inspect(query string) (InspectResult, error) {
 				Size: h.Size, Priority: p, Broad: broad, UsedBy: use[tag]})
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", res.Host)
+		addrs, err := c.lookupNetIP(ctx, "ip", res.Host)
 		cancel()
 		if err != nil {
 			res.Errors = append(res.Errors, "DNS: не удалось узнать IP сайта ("+err.Error()+"), списки IP не проверены")
@@ -221,7 +221,9 @@ func (c *Controller) Inspect(query string) (InspectResult, error) {
 	sortHits(res.Site)
 	sortHits(res.IP)
 	if res.Host != "" || len(ips) > 0 {
-		ex := c.Explain(ExplainQuery{Target: res.Query}, nil) // with its port, if any
+		// A TCP connection to the site's web port: with port rules the
+		// answer depends on it (the page says which one when so).
+		ex := c.Explain(ExplainQuery{Target: target, Proto: "tcp", Port: int(inspectPort(tport, scheme))}, nil)
 		res.Route = &ex
 	}
 	return res, nil
@@ -292,6 +294,7 @@ type aclRule struct {
 	action   string
 	resource string
 	extra    string // protocol/port argument
+	hijack   string // the third argument: an address to redirect to ("" = none)
 }
 
 func parseACL(text string) []aclRule {
@@ -308,6 +311,9 @@ func parseACL(text string) []aclRule {
 		r := aclRule{line: i + 1, action: strings.ToLower(strings.TrimSpace(m[1])), resource: strings.ToLower(strings.TrimSpace(args[0]))}
 		if len(args) > 1 {
 			r.extra = strings.ToLower(strings.TrimSpace(args[1]))
+		}
+		if len(args) > 2 {
+			r.hijack = strings.TrimSpace(args[2])
 		}
 		out = append(out, r)
 	}
@@ -376,6 +382,12 @@ func (c *Controller) aclToDomains(list []aclRule, suffix string) ConvertResult {
 		}
 	}
 	for _, r := range list {
+		if r.hijack != "" {
+			res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: перенаправление на %s не учитывается", r.line, r.hijack))
+		}
+		if _, ports, _, ok := aclProtoPort(r.extra); ok && len(ports) > 0 {
+			res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: порт из %q в списке доменов не учитывается", r.line, r.extra))
+		}
 		kind, val, typed := strings.Cut(r.resource, ":")
 		switch {
 		case typed && kind == "geosite":
@@ -406,13 +418,17 @@ func (c *Controller) aclToDomains(list []aclRule, suffix string) ConvertResult {
 }
 
 // aclToRules maps ACL actions: direct -> напрямую, reject/block -> блок,
-// any other outbound -> vpn. Consecutive rules with the same action and
-// protocol become one line; order is kept, since both evaluate top down.
+// any other outbound -> vpn. Consecutive rules with the same action,
+// protocol and ports become one line; order is kept, since both evaluate
+// top down.
 func aclToRules(list []aclRule) ConvertResult {
 	res := ConvertResult{Warnings: []string{}}
 	type group struct {
-		action, target, proto, ports string
-		items                        []string
+		action, target, proto string
+		items                 []string
+		ports                 []string // canonical; nil = any port
+		all                   bool     // a rule with ports only (all/* with a port)
+		off                   bool     // written disabled
 	}
 	var groups []*group
 	def := ""
@@ -430,38 +446,51 @@ func aclToRules(list []aclRule) ConvertResult {
 		case "reject", "block":
 			target = "блок"
 		}
-		if (r.resource == "all" || r.resource == "*") && r.extra != "" {
-			msg := fmt.Sprintf("строка %d: %s(all, %s) пропущено: «всё остальное» в HyRoute задаётся без протокола и порта", r.line, r.action, r.extra)
-			if r.extra == "udp/443" && target == "блок" {
-				msg = fmt.Sprintf("строка %d: reject(all, udp/443) — это блокировка QUIC; в HyRoute она включается в «Настройки → Маршрутизация»", r.line)
-			}
-			res.Warnings = append(res.Warnings, msg)
+		proto, ports, anyPort, ok := aclProtoPort(r.extra)
+		if !ok {
+			res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: непонятный протокол или порт %q — строка пропущена (Hysteria такую строку тоже не примет)", r.line, r.extra))
 			continue
 		}
-		proto, ports := "", ""
-		if r.extra != "" {
-			p, port, _ := strings.Cut(r.extra, "/")
-			switch p {
-			case "tcp", "udp":
-				proto = p
-			case "*":
-			default:
-				res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: непонятный протокол %q, правило без него", r.line, r.extra))
+		if r.hijack != "" {
+			// Hysteria sends such traffic to another address; HyRoute cannot.
+			res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: перенаправление на %s в HyRoute не переносится — строка пропущена", r.line, r.hijack))
+			if (r.resource == "all" || r.resource == "*") && anyPort {
+				all = &list[i] // it still ends the list in Hysteria
 			}
-			if port != "" && port != "*" {
-				if _, err := rules.ParsePorts(port); err != nil {
-					res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: %v, правило действует на все порты", r.line, err))
-				} else {
-					ports = rules.FormatPorts(port)
-				}
+			continue
+		}
+		if r.resource == "all" || r.resource == "*" {
+			if anyPort {
+				def, all = target, &list[i]
+				continue
 			}
+			if target == "блок" && proto == "udp" && slices.Equal(ports, []string{"443"}) {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: reject(all, udp/443) — это блокировка QUIC; в HyRoute она включается в «Настройки → Маршрутизация»", r.line))
+				continue
+			}
+			g := &group{action: r.action, target: target, proto: proto, ports: ports, all: true}
+			if g.ports == nil {
+				g.ports = []string{"1-65535"} // a protocol without a port: every port of it
+			}
+			switch target {
+			case "блок":
+				// A server blocks only what goes through it; a client rule
+				// would block direct traffic too: the user turns it on.
+				g.off = true
+				res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: на сервере это блокировало только трафик через этот сервер, а правило HyRoute заблокировало бы и прямой (игры, звонки) — оно добавлено выключенным, включите, если нужно", r.line))
+			case "напрямую":
+				// On the server "direct" is the server's own exit, still
+				// inside the tunnel; a client-wide direct rule would take
+				// that traffic of every program out of the VPN.
+				g.off = true
+				res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: на сервере это означало выход сервера напрямую (трафик всё равно шёл через VPN), а правило HyRoute пустит этот трафик всех программ мимо VPN — оно добавлено выключенным, включите, если нужно", r.line))
+			}
+			groups = append(groups, g)
+			continue
 		}
 		item := ""
 		kind, val, typed := strings.Cut(r.resource, ":")
 		switch {
-		case r.resource == "all" || r.resource == "*":
-			def, all = target, &list[i]
-			continue
 		case typed && (kind == "geosite" || kind == "geoip"):
 			item = r.resource
 		case typed && (kind == "suffix" || kind == "domain"):
@@ -478,7 +507,8 @@ func aclToRules(list []aclRule) ConvertResult {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: %s пропущен: не понимаю", r.line, r.resource))
 			continue
 		}
-		if n := len(groups); n > 0 && groups[n-1].action == r.action && groups[n-1].proto == proto && groups[n-1].ports == ports {
+		if n := len(groups); n > 0 && groups[n-1].action == r.action && groups[n-1].proto == proto && !groups[n-1].all &&
+			slices.Equal(groups[n-1].ports, ports) {
 			groups[n-1].items = append(groups[n-1].items, item)
 			continue
 		}
@@ -487,14 +517,16 @@ func aclToRules(list []aclRule) ConvertResult {
 	var b strings.Builder
 	b.WriteString("# Из Hysteria ACL. direct → напрямую, reject → блок, остальные выходы → vpn (поменяйте на нужный сервер)\n")
 	for _, g := range groups {
-		line := "ACL " + g.action + ": " + strings.Join(g.items, " ") + " -> " + g.target
-		switch {
-		case g.proto != "" && g.ports != "":
-			line += " | " + g.proto + " " + g.ports
-		case g.ports != "":
-			line += " | порт " + g.ports
-		case g.proto != "":
-			line += " | " + g.proto
+		items := strings.Join(g.items, " ")
+		if g.all {
+			items = "*"
+		}
+		line := "ACL " + g.action + ": " + items + " -> " + g.target
+		if o := ruleOptionText(g.proto, g.ports); o != "" {
+			line += " | " + o
+		}
+		if g.off {
+			line += " | выкл"
 		}
 		b.WriteString(line + "\n")
 		res.Count++

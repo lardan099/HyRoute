@@ -1038,7 +1038,7 @@ func (c *Core) packetSites(set *rules.Set, proto uint8, dst netip.AddrPort) [][]
 		if proto == packet.ProtoTCP && rules.WebPort(dst.Port()) {
 			return nil
 		}
-		if proto == packet.ProtoUDP && dst.Port() == 443 && c.Opt.BlockQUIC {
+		if rules.NamelessUDP(set.ExactWeb, c.Opt.BlockQUIC, proto, dst.Port()) {
 			return nil
 		}
 	}

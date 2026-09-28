@@ -2,13 +2,16 @@ package settings
 
 import (
 	"encoding/json"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/procinfo"
 	"github.com/lardan099/hyroute/internal/rules"
 )
 
@@ -173,5 +176,73 @@ func TestEngineOptionsCoverSettings(t *testing.T) {
 	}
 	if len(am) == 0 {
 		t.Fatal("empty options JSON")
+	}
+}
+
+// ports: settings.json with port rules.
+func TestParsePorts(t *testing.T) {
+	for _, ports := range []string{`["443"]`, `[443]`, `[443, "8000-8100"]`} {
+		st, set, err := Parse([]byte(`{"defaultAction":"direct","rules":[{"name":"x","ports":` + ports + `,"action":"tunnel"}]}`))
+		if err != nil || set == nil || len(st.Rules[0].Ports) == 0 {
+			t.Fatalf("%s: %v", ports, err)
+		}
+	}
+	for _, rule := range []string{
+		`{"name":"SSH","ports":["0"],"action":"direct"}`,
+		`{"name":"SSH","enabled":false,"ports":["0"],"action":"direct"}`,
+	} {
+		if _, _, err := Parse([]byte(`{"defaultAction":"direct","rules":[` + rule + `]}`)); err == nil || !strings.Contains(err.Error(), "SSH: неверный порт") {
+			t.Errorf("%s: %v", rule, err)
+		}
+	}
+	if _, _, err := Parse([]byte(`{"defaultAction":"direct","rules":[{"name":"x","ports":{},"action":"direct"}]}`)); err == nil || !strings.Contains(err.Error(), "ports") {
+		t.Errorf("object: %v", err)
+	}
+}
+
+// A settings.json written by v1.2.0: ports are a string. It loads, the
+// rules match as there, and it is written back in the same string form, so
+// v1.2.0 still reads it after a downgrade.
+func TestParsePortsV120(t *testing.T) {
+	const v120 = `{
+  "defaultAction": "direct",
+  "rules": [
+    {"name": "Игра", "apps": [{"pattern": "game.exe"}], "protocol": "udp", "ports": "80,443,27000-27200", "action": "tunnel"},
+    {"name": "DNS", "ports": "53", "action": "block"},
+    {"name": "SMB", "apps": [{"pattern": "*"}], "ports": "445", "action": "block"},
+    {"name": "Веб", "domains": [".example.com"], "protocol": "tcp", "action": "tunnel"}
+  ]
+}`
+	st, set, err := Parse([]byte(v120))
+	if err != nil || set == nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(st.Rules[0].Ports, rules.PortList{"80", "443", "27000-27200"}) || !slices.Equal(st.Rules[1].Ports, rules.PortList{"53"}) || st.Rules[3].Ports != nil {
+		t.Fatalf("%q %q %q", st.Rules[0].Ports, st.Rules[1].Ports, st.Rules[3].Ports)
+	}
+	game := &procinfo.Info{PID: 1, Path: `C:\Games\game.exe`, Name: "game.exe"}
+	for _, c := range []struct {
+		sub  rules.Subject
+		want string
+	}{
+		{rules.Subject{Proc: game, Proto: 17, Dst: netip.MustParseAddrPort("203.0.113.5:27015")}, "Игра"},
+		{rules.Subject{Proc: game, Proto: 17, Dst: netip.MustParseAddrPort("203.0.113.5:27201")}, "default"},
+		{rules.Subject{Proto: 17, Dst: netip.MustParseAddrPort("8.8.8.8:53")}, "DNS"},
+	} {
+		if got := set.Evaluate(c.sub, nil).Rule; got != c.want {
+			t.Errorf("%v: %s, want %s", c.sub.Dst, got, c.want)
+		}
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"ports":"80,443,27000-27200"`, `"ports":"53"`, `"ports":"445"`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("%s not in %s", want, b)
+		}
+	}
+	if strings.Count(string(b), `"ports"`) != 3 {
+		t.Errorf("a rule without ports gained the key: %s", b)
 	}
 }

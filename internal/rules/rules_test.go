@@ -1,6 +1,8 @@
 package rules
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -348,5 +350,117 @@ func TestFallbackResolved(t *testing.T) {
 	// Fallback profiles are started with the rest.
 	if got := strings.Join(s.Profiles(), ","); got != "de,main,nl,us" {
 		t.Fatal(got)
+	}
+}
+
+// ---- ports ----
+
+func TestCompilePortRules(t *testing.T) {
+	off := false
+	if _, err := Compile(Config{Rules: []Rule{{Protocol: "tcp", Ports: PortList{"22"}, Action: Direct}}}); err != nil {
+		t.Fatalf("port-only: %v", err)
+	}
+	if _, err := Compile(Config{Rules: []Rule{{Name: "x", Protocol: "udp", Action: Direct}}}); err == nil || err.Error() != "x: укажите программу, сайт или порт" {
+		t.Fatalf("protocol only: %v", err)
+	}
+	if _, err := Compile(Config{Rules: []Rule{{Name: "SSH", Domains: []string{"a.com"}, Ports: PortList{"0"}, Action: Direct}}}); err == nil || !strings.HasPrefix(err.Error(), "SSH: неверный порт «0»") {
+		t.Fatalf("bad port: %v", err)
+	}
+	// Ports of disabled rules are validated; their other conditions are not.
+	if _, err := Compile(Config{Rules: []Rule{{Name: "d", Enabled: &off, Ports: PortList{"0"}, Action: Direct}}}); err == nil || !strings.HasPrefix(err.Error(), "d: ") {
+		t.Fatalf("disabled bad port: %v", err)
+	}
+	if _, err := Compile(Config{Rules: []Rule{{Name: "d", Enabled: &off, Domains: []string{"regexp:("}, Action: Direct}}}); err != nil {
+		t.Fatalf("disabled bad regexp: %v", err)
+	}
+	many := make(PortList, MaxPortItems+1)
+	for i := range many {
+		many[i] = fmt.Sprint(i + 1)
+	}
+	if _, err := Compile(Config{Rules: []Rule{{Name: "many", Ports: many, Action: Direct}}}); err == nil || !strings.HasPrefix(err.Error(), "many: слишком много портов") {
+		t.Fatalf("257: %v", err)
+	}
+}
+
+func TestRuleNamePorts(t *testing.T) {
+	for _, c := range []struct {
+		r    Rule
+		want string
+	}{
+		{Rule{Protocol: "tcp", Ports: PortList{"22"}}, "TCP 22"},
+		{Rule{Ports: PortList{"443"}}, "порт 443"},
+		{Rule{Ports: PortList{"0"}}, "правило 3"},
+		{Rule{Apps: []AppMatch{{Pattern: "a.exe"}}, Ports: PortList{"22"}}, "правило 3"},
+		{Rule{Name: "SSH", Ports: PortList{"22"}}, "SSH"},
+	} {
+		if got := ruleName(2, c.r); got != c.want {
+			t.Errorf("%+v: %q", c.r, got)
+		}
+	}
+	// The label reaches the result (Connections, the log).
+	s := mustCompile(t, Config{DefaultAction: Tunnel, Rules: []Rule{{Protocol: "tcp", Ports: PortList{"22"}, Action: Direct}}})
+	if r := s.EvaluateNoDomain(Subject{Proto: 6, Dst: netip.MustParseAddrPort("1.2.3.4:22")}); r.Rule != "TCP 22" || r.Action != Direct {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestEvaluatePorts(t *testing.T) {
+	discord := proc(`C:\Discord\Discord.exe`, nil)
+	s := mustCompile(t, Config{DefaultAction: Direct, Rules: []Rule{
+		{Name: "discord", Apps: []AppMatch{{Pattern: "discord.exe"}}, Protocol: "udp", Ports: PortList{"50000-65535"}, Action: Tunnel},
+	}})
+	at := func(p *procinfo.Info, proto uint8, port uint16) Result {
+		return s.Evaluate(Subject{Proc: p, Proto: proto, Dst: netip.AddrPortFrom(netip.MustParseAddr("1.2.3.4"), port)}, nil)
+	}
+	for _, c := range []struct {
+		p     *procinfo.Info
+		proto uint8
+		port  uint16
+		want  Action
+	}{
+		{discord, 17, 50001, Tunnel},
+		{discord, 17, 443, Direct},
+		{discord, 6, 50001, Direct},
+		{nil, 17, 50001, Direct},
+		{discord, 17, 0, Direct}, // an unknown port never matches
+	} {
+		if r := at(c.p, c.proto, c.port); r.NeedsDomain || r.Action != c.want {
+			t.Errorf("%v %d %d: %+v", c.p != nil, c.proto, c.port, r)
+		}
+	}
+}
+
+// A port condition is decided at packet level: a flow to a port the domain
+// rule does not cover never waits for its name.
+func TestTriStatePorts(t *testing.T) {
+	s := mustCompile(t, Config{DefaultAction: Direct, Rules: []Rule{
+		{Name: "yt", Domains: []string{".youtube.com"}, Protocol: "tcp", Ports: PortList{"443"}, Action: Tunnel},
+	}})
+	ip := netip.MustParseAddr("1.2.3.4")
+	s80 := Subject{Proto: 6, Dst: netip.AddrPortFrom(ip, 80)}
+	s443 := Subject{Proto: 6, Dst: netip.AddrPortFrom(ip, 443)}
+	if r := s.Evaluate(s80, nil); r.NeedsDomain || r.Action != Direct {
+		t.Fatalf(":80 %+v", r)
+	}
+	if r := s.Evaluate(s443, nil); !r.NeedsDomain {
+		t.Fatalf(":443 %+v", r)
+	}
+	if r := s.EvaluateDomain(s443, "www.youtube.com", SrcSNI); r.Action != Tunnel {
+		t.Fatalf("sni :443 %+v", r)
+	}
+	if r := s.EvaluateDomain(s80, "www.youtube.com", SrcHost); r.Action != Direct {
+		t.Fatalf("host :80 %+v", r)
+	}
+}
+
+// Rules without ports keep the v1.0.0 JSON: no "ports" key.
+func TestPortlessRuleJSON(t *testing.T) {
+	b, err := json.Marshal(Rule{Name: "x", Domains: []string{".a.com"}, Protocol: "tcp", Action: Tunnel})
+	if err != nil || strings.Contains(string(b), "ports") {
+		t.Fatalf("%s %v", b, err)
+	}
+	b, _ = json.Marshal(Rule{Name: "x", Domains: []string{".a.com"}, Ports: PortList{}, Action: Tunnel})
+	if strings.Contains(string(b), "ports") {
+		t.Fatalf("empty: %s", b)
 	}
 }

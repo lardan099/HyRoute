@@ -162,6 +162,7 @@ type Controller struct {
 	// Feature state (one line per feature, landing order).
 	traffic trafficState // VPN traffic statistics (traffic.go)
 	groupsState
+	portsState
 }
 
 // New builds a controller with journals and a logger.
