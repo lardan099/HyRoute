@@ -410,11 +410,12 @@ func TestCloseWaitBounded(t *testing.T) {
 	if err := s.Start(0); err != nil {
 		t.Fatal(err)
 	}
-	c, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(s.Port()))))
-	if err != nil {
-		t.Fatal(err)
+	// The handler resets the connection at once (no upstream): the reset
+	// can beat the dial's own check of the connect (seen on Linux under
+	// -race), so a failed dial is fine as long as the handler ran.
+	if c, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(s.Port())))); err == nil {
+		defer c.Close()
 	}
-	defer c.Close()
 	select {
 	case <-entered:
 	case <-time.After(3 * time.Second):
