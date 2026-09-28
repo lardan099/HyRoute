@@ -416,6 +416,22 @@ func TestDNSQueryRow(t *testing.T) {
 	}
 }
 
+// TestDNSQueryRowAboveIPRule: the connection that follows a lookup may go
+// to an address an IP rule catches, so a site rule from the lookup goes
+// above that rule instead of changing the site rule below it.
+func TestDNSQueryRowAboveIPRule(t *testing.T) {
+	c, s, _, _ := connCtl(t)
+	setConnRules(t, c, rules.Rule{Domains: []string{"1.2.3.0/24"}, Action: rules.Direct}, siteRule(".example.com", rules.Block, ""))
+	f := s.record(&flows.Record{Process: "app.exe", Path: `C:\Apps\app.exe`, Proto: 17, Dst: netip.MustParseAddrPort("8.8.8.8:53")},
+		func(f *flows.Fields) {
+			f.Stage, f.DomainSrc, f.Domain, f.Attrib = flows.StageDNS, rules.SrcQuery.String(), "a.example.com", "packet"
+		})
+	res, err := c.AddConnRule(quick(f, siteRule(".example.com", rules.Tunnel, "")))
+	if err != nil || res.Kind != "added" || res.Index != 0 || res.AboveIndex != 1 || res.NotEffective {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
 // dnsClientRow records a DNS row of the Windows DNS client for b.example.com.
 func dnsClientRow(s *connSess, rec *flows.Record) ConnFacts {
 	return s.record(rec, func(f *flows.Fields) {
@@ -452,6 +468,44 @@ func TestAddConnRuleInsertsAboveWinner(t *testing.T) {
 	f = sniRow(s, "y.exe", "1.2.3.4:443", "a.example.com")
 	if res, _ = c.AddConnRule(quick(f, siteRule("a.example.com", rules.Tunnel, s1))); res.Index != 0 || res.Kind != "added" {
 		t.Fatalf("%+v", res)
+	}
+}
+
+// TestAddConnRuleQUICNameless: with ExactWeb and BlockQUIC (the defaults)
+// the engine decides QUIC without the DNS names the row shows, so a site
+// rule made from it does not decide it.
+func TestAddConnRuleQUICNameless(t *testing.T) {
+	c, s, s1, _ := connCtl(t)
+	setConnRules(t, c, appRule("chrome.exe", rules.Direct))
+	rec := &flows.Record{PID: 10, Process: "chrome.exe", Path: `C:\Apps\chrome.exe`, Proto: 17, Dst: netip.MustParseAddrPort("1.2.3.4:443"),
+		Sites: [][]string{{"a.example.com"}}, Nameless: true}
+	f := s.record(rec, func(f *flows.Fields) { f.Domain, f.DomainSrc = "a.example.com", "dns" })
+	i, err := c.ConnRuleInfo(f)
+	if err != nil || !i.Nameless || i.Current.Index != 0 || i.Current.Ambiguous || !slices.ContainsFunc(i.Scopes, func(s ConnScope) bool { return s.Kind == "site" }) {
+		t.Fatalf("%+v %v", i, err)
+	}
+	res, err := c.AddConnRule(quick(f, siteRule(".example.com", rules.Tunnel, s1)))
+	if err != nil || res.Kind != "added" || res.Index != 0 || !res.Matches || !res.NotEffective || !res.Nameless || res.Unchanged || res.PlacedByRule {
+		t.Fatalf("%+v %v", res, err)
+	}
+	// The record is gone: the settings say how the engine decides QUIC.
+	row := ConnFacts{ID: 999, Process: "chrome.exe", PID: 10, Proto: "udp", Dst: "1.2.3.5:443", DomainSrc: "dns", Domain: "b.example.com"}
+	if fl, err := c.resolveFlow(row); err != nil || !fl.Nameless || len(fl.Sites) != 1 {
+		t.Fatalf("gone: %+v %v", fl, err)
+	}
+	row.Proto = "tcp"
+	if fl, _ := c.resolveFlow(row); fl.Nameless {
+		t.Fatal("tcp nameless")
+	}
+	st := c.Settings()
+	off := false
+	st.BlockQUIC = &off
+	if _, err := c.SaveSettings(st); err != nil {
+		t.Fatal(err)
+	}
+	row.Proto = "udp"
+	if fl, _ := c.resolveFlow(row); fl.Nameless {
+		t.Fatal("nameless without BlockQUIC")
 	}
 }
 

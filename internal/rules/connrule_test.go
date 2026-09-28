@@ -171,11 +171,65 @@ func TestPlaceUnknownProto(t *testing.T) {
 		{Domains: []string{".example.com"}, Action: Tunnel},
 	}}
 	f := Flow{Proc: cproc("x.exe"), Name: "a.example.com"}
-	if p := Place(c, f); p != 1 {
+	// The address is unknown too: the IP rule may take the connection.
+	if p := Place(c, f); p != 0 {
 		t.Fatalf("Place = %d", p)
 	}
 	if w, _ := Winner(c, f); w != 3 {
 		t.Fatalf("Winner = %d", w)
+	}
+	if p := Place(Config{Rules: c.Rules[1:]}, f); p != 0 {
+		t.Fatalf("Place without the IP rule = %d", p)
+	}
+}
+
+// TestPlaceDNSQueryBelowIPRule: a site rule from a DNS-query row goes above
+// an enabled IP rule, which would otherwise decide the connection that
+// follows the lookup; a disabled one or one for another program does not
+// count.
+func TestPlaceDNSQueryBelowIPRule(t *testing.T) {
+	withGeo(t, connGeo{})
+	c := Config{DefaultAction: Direct, Rules: []Rule{
+		{Domains: []string{"1.2.3.0/24"}, Enabled: off(), Action: Block},
+		{Apps: []AppMatch{{Pattern: "y.exe"}}, Domains: []string{"1.2.3.0/24"}, Action: Block},
+		{Domains: []string{"1.2.3.0/24"}, Action: Direct},
+		{Domains: []string{".example.com"}, Action: Tunnel},
+	}}
+	f := Flow{Proc: cproc("x.exe"), Name: "a.example.com"}
+	if p := Place(c, f); p != 2 {
+		t.Fatalf("Place = %d", p)
+	}
+	c.Rules[2].Domains = []string{"geoip:ru"}
+	if p := Place(c, f); p != 2 {
+		t.Fatalf("geoip: Place = %d", p)
+	}
+	// With the address known, the IP rule counts only when it matches.
+	f.Proto, f.Dst = 6, dst("9.9.9.9:443")
+	if p := Place(c, f); p != 3 {
+		t.Fatalf("known address: Place = %d", p)
+	}
+}
+
+// TestNamelessFlow: QUIC decided without a name (NamelessUDP): Winner and
+// Place ignore the cached sites, Matches still sees them.
+func TestNamelessFlow(t *testing.T) {
+	c := Config{DefaultAction: Direct, Rules: []Rule{
+		{Domains: []string{".example.com"}, Action: Tunnel},
+		{Apps: []AppMatch{{Pattern: "x.exe"}}, Action: Block},
+	}}
+	f := Flow{Proc: cproc("x.exe"), Proto: 17, Dst: dst("1.2.3.4:443"), Sites: [][]string{{"a.example.com"}}}
+	if w, amb := Winner(c, f); w != 0 || amb {
+		t.Fatalf("named: %d %v", w, amb)
+	}
+	f.Nameless = true
+	if w, amb := Winner(c, f); w != 1 || amb {
+		t.Fatalf("nameless: %d %v", w, amb)
+	}
+	if p := Place(c, f); p != 1 {
+		t.Fatalf("nameless: Place = %d", p)
+	}
+	if ok, err := Matches(c.Rules[0], f); !ok || err != nil {
+		t.Fatalf("Matches = %v %v", ok, err)
 	}
 }
 
@@ -213,6 +267,9 @@ func TestWinnerAgreesWithEngine(t *testing.T) {
 		}
 		f := Flow{Proc: cproc(pick(apps)), Proto: []uint8{6, 17}[rnd.Intn(2)],
 			Dst: dst([]string{"1.2.3.4:443", "10.1.1.1:53", "8.8.8.8:80"}[rnd.Intn(3)]), Main: "M"}
+		if rnd.Intn(3) == 0 && f.Proto == 17 {
+			f.Nameless = true
+		}
 		if rnd.Intn(3) == 0 {
 			f.Name = pick(names)
 		} else {
@@ -232,9 +289,14 @@ func TestWinnerAgreesWithEngine(t *testing.T) {
 		sub := Subject{Proc: f.Proc, Proto: f.Proto, Dst: f.Dst}
 		var want Result
 		needs := false
-		if f.Name != "" {
+		switch {
+		case f.Nameless:
+			if want = set.EvaluateSites(sub, nil); want.NeedsDomain {
+				want = set.EvaluateNoDomain(sub)
+			}
+		case f.Name != "":
 			want = set.EvaluateDomain(sub, f.Name, SrcSNI)
-		} else {
+		default:
 			want = set.EvaluateSites(sub, f.Sites)
 			if want.NeedsDomain {
 				needs = true
@@ -252,7 +314,10 @@ func TestWinnerAgreesWithEngine(t *testing.T) {
 		if !sameRoute(got, want) {
 			t.Fatalf("case %d: winner %d route %+v, engine %+v\n%+v\n%+v", n, w, got, want, c, f)
 		}
-		if f.Name == "" && len(f.Sites) > 0 && amb != needs {
+		if f.Nameless && amb {
+			t.Fatalf("case %d: nameless ambiguous", n)
+		}
+		if !f.Nameless && f.Name == "" && len(f.Sites) > 0 && amb != needs {
 			t.Fatalf("case %d: ambiguous %v, engine NeedsDomain %v\n%+v\n%+v", n, amb, needs, c, f)
 		}
 		if w >= 0 && Place(c, f) > w {

@@ -245,6 +245,11 @@ func TestPayloadUnknownTopLevel(t *testing.T) {
 	if _, err := env(`{"secrets":"x","sections":{}}`).Open(""); !errors.Is(err, ErrDamaged) {
 		t.Fatal(err)
 	}
+	// A plain file never claims secrets: the envelope and the payload
+	// would disagree (the subscriptions and statistics are password-only).
+	if _, err := env(`{"secrets":true,"sections":{"subscriptions":[]}}`).Open(""); !errors.Is(err, ErrDamaged) || !strings.Contains(err.Error(), "secrets") {
+		t.Fatal(err)
+	}
 	var many strings.Builder
 	many.WriteString(`{"sections":{},"targets":{`)
 	for i := range maxTargets + 1 {

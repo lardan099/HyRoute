@@ -98,6 +98,7 @@ type ConnRuleInfo struct {
 	Scopes        []ConnScope `json:"scopes"`        // may be empty only for an invalid address
 	DNSName       bool        `json:"dnsName"`       // names come from the DNS cache
 	Sites         int         `json:"sites"`         // DNS-cache sites of the address the menu decides by (0 with an exact name)
+	Nameless      bool        `json:"nameless"`      // QUIC decided without a site name (rules.NamelessUDP): a site rule misses it
 	SharedIP      bool        `json:"sharedIP"`      // the IP carries several sites or an ECH public name
 	AddrSites     int         `json:"addrSites"`     // DNS-cache sites of the address, also with an exact name (SharedIP hint)
 	ECH           string      `json:"ech"`           // "" | public | hidden
@@ -132,6 +133,7 @@ type ConnRuleResult struct {
 	Matches      bool          `json:"matches"`      // the rule catches this connection
 	PlacedByRule bool          `json:"placedByRule"` // editor rule that does not fit: placed by PlaceRule
 	NotEffective bool          `json:"notEffective"` // matches, but the engine still decides the flow otherwise
+	Nameless     bool          `json:"nameless"`     // the flow is decided without a site name (ConnRuleInfo.Nameless)
 	Unchanged    bool          `json:"unchanged"`    // the rule decides the connection and it already went this way
 	OverriddenBy []int         `json:"overriddenBy"` // enabled rules above that take part of its connections
 	Shadowed     []int         `json:"shadowed"`     // rules below that can no longer match
@@ -201,12 +203,12 @@ func (c *Controller) resolveFlow(f ConnFacts) (connFlow, error) {
 	}
 	var parents []string
 	var sites [][]string
-	var partial bool
+	var partial, nameless, found bool
 	if v, ok := c.lookupFlow(f); ok {
 		// The engine's own facts: the WebView cannot make a service flow
 		// look like an ordinary one, and the DNS grouping is the engine's.
 		f.Excluded, f.ECH, f.Stage, f.Attrib, f.Domain, f.DomainSrc = v.Excluded, v.ECH, v.Stage, v.Attrib, v.Domain, v.DomainSrc
-		parents, sites, partial = v.Parents, v.Sites, v.SitesPartial
+		parents, sites, partial, nameless, found = v.Parents, v.Sites, v.SitesPartial, v.Nameless, true
 	}
 	if len(sites) == 0 && f.DomainSrc == "dns" && f.Domain != "" {
 		sites, partial = c.rebuildSites(dst.Addr().Unmap(), f.Domain)
@@ -215,7 +217,21 @@ func (c *Controller) resolveFlow(f ConnFacts) (connFlow, error) {
 		sites, cut = flows.CapSites(sites)
 		partial = partial || cut
 	}
-	return buildFlow(f, parents, sites, partial)
+	fl, err := buildFlow(f, parents, sites, partial)
+	if err != nil || fl.DNSQuery {
+		return fl, err
+	}
+	if !found {
+		// The record is gone: the engine decides QUIC as the settings say.
+		c.mu.Lock()
+		if st := c.settings; st != nil {
+			nameless = rules.NamelessUDP(st.ExactWeb(), st.QUICBlocked(), fl.Proto, fl.Dst.Port())
+		}
+		c.mu.Unlock()
+	}
+	// The names still offer site rules; Winner and Place use none.
+	fl.Nameless = nameless
+	return fl, nil
 }
 
 // lookupFlow finds the row's record in the session's registry; a record
@@ -438,6 +454,7 @@ func (c *Controller) ConnRuleInfo(f ConnFacts) (ConnRuleInfo, error) {
 	info.ECH, info.ECHName = c.connECH(fl)
 	info.Scopes = c.connScopes(fl, info.ECH)
 	info.DNSName = fl.DNSName
+	info.Nameless = fl.Nameless
 	if fl.Name == "" {
 		info.Sites = len(fl.Sites)
 	}
@@ -637,7 +654,7 @@ func (c *Controller) AddConnRule(req ConnRuleRequest) (ConnRuleResult, error) {
 		p := rules.Place(*cfg, flow)
 		matches, _ := rules.Matches(rule, flow)
 		oldRoute := connRouteKey(*cfg, w, main)
-		res.Matches = matches
+		res.Matches, res.Nameless = matches, fl.Nameless
 		switch {
 		case req.Source == "quick" && w >= 0 && p == w && ruleOn(cfg.Rules[w]) && rules.SameMatch(cfg.Rules[w], rule):
 			old := cfg.Rules[w]

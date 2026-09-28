@@ -839,9 +839,11 @@ func (c *Core) decide(p *packet.Packet, addr *divert.Address, proto uint8, key n
 	}
 	res, excluded := c.exclusion(pid, known, proc, proto, key.Dst)
 	// conn-rules: the cache is read once; the record keeps the sites as the
-	// engine saw them (a rule made from this row is placed by them).
+	// engine saw them (a rule made from this row is placed by them), and
+	// whether it decided without them (QUIC: the relay reads no name).
 	sites := c.DNS.Sites(key.Dst.Addr())
 	rec.Sites, rec.SitesPartial = flows.CapSites(sites)
+	rec.Nameless = rules.NamelessUDP(set.ExactWeb, c.Opt.BlockQUIC, proto, key.Dst.Port())
 	var pk groups.Pick
 	if excluded == "" && c.dohBlocked(proc, proto, key.Dst, "") { // dns
 		res = rules.Result{Action: rules.Block, Rule: dnspolicy.RuleBrowserDoH}

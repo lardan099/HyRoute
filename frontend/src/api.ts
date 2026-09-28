@@ -1518,6 +1518,7 @@ export interface ConnRuleInfo {
   scopes: ConnScope[] | null;
   dnsName: boolean;
   sites: number;
+  nameless: boolean; // QUIC decided without a site name: a site rule misses it
   sharedIP: boolean;
   addrSites: number;
   ech: '' | 'public' | 'hidden';
@@ -1544,6 +1545,7 @@ export interface ConnRuleResult {
   matches: boolean;
   placedByRule: boolean;
   notEffective: boolean;
+  nameless: boolean; // the connection is decided without a site name (ConnRuleInfo.nameless)
   unchanged: boolean;
   overriddenBy: number[] | null;
   shadowed: number[] | null;

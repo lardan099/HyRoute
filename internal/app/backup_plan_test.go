@@ -72,6 +72,69 @@ func texts(pl *restorePlan) string {
 	return b.String()
 }
 
+// TestPlanGroupsProbe: «Группы серверов: Заменить» shows a changed
+// latency probe; a URL other than the default is also a warning.
+func TestPlanGroupsProbe(t *testing.T) {
+	cur := baseState(srv("aaaaaaaa0001", "NL", "nl.example"))
+	f := groups.File{Version: 1, Groups: []groups.Group{}}
+	pl := plan(cur, payload(false).put("groups", f).p, map[string]string{"groups": "replace"})
+	if strings.Contains(texts(pl), "Проверка задержки") {
+		t.Fatal(texts(pl))
+	}
+	f.Probe = &groups.Probe{URL: "https://track.example/p", IntervalSec: 120}
+	pl = plan(cur, payload(false).put("groups", f).p, map[string]string{"groups": "replace"})
+	want := "L Проверка задержки: " + groups.DefaultProbeURL + ", каждые 60 с → https://track.example/p, каждые 120 с.\n"
+	if pl.err != "" || !strings.Contains(texts(pl), want) || !strings.Contains(texts(pl), "W Группы будут проверять задержку") {
+		t.Fatalf("%s\nwant %s", texts(pl), want)
+	}
+	for _, m := range pl.lines {
+		if strings.HasPrefix(m.Text, "Проверка задержки") && !slices.ContainsFunc(m.Parts, func(p BackupPart) bool { return p.S && p.T == "https://track.example/p" }) {
+			t.Fatalf("URL not sensitive: %+v", m.Parts)
+		}
+	}
+	// Back to the default: a line, no warning.
+	cur.Groups.Probe = f.Probe
+	pl = plan(cur, payload(false).put("groups", groups.File{Version: 1, Groups: []groups.Group{}}).p, map[string]string{"groups": "replace"})
+	if !strings.Contains(texts(pl), "L Проверка задержки: https://track.example/p") || strings.Contains(texts(pl), "W Группы будут") {
+		t.Fatal(texts(pl))
+	}
+	// «Добавить к текущим» keeps the current probe.
+	pl = plan(baseState(), payload(false).put("groups", f).p, map[string]string{"groups": "add"})
+	if strings.Contains(texts(pl), "Проверка задержки") || pl.next.Groups.Probe != nil {
+		t.Fatal(texts(pl))
+	}
+}
+
+// TestPlanLegacyRulesOnlyTargets: a 1.2.0 «Только правила» file names no
+// servers: its targets are «сервер из копии», not deleted ones, and one
+// warning says what the dangling references mean.
+func TestPlanLegacyRulesOnlyTargets(t *testing.T) {
+	cur := baseState(srv("aaaaaaaa0001", "NL", "nl.example"))
+	cfg := rules.Config{DefaultAction: rules.Tunnel, DefaultProfile: "ffffffff0009", Rules: []rules.Rule{
+		{Name: "a", Domains: []string{"a.example"}, Action: rules.Tunnel, Profile: "ffffffff0009"},
+		{Name: "b", Domains: []string{"b.example"}, Action: rules.Tunnel, Profile: "ffffffff0008"},
+		{Name: "c", Domains: []string{"c.example"}, Action: rules.Direct},
+	}}
+	b := payload(false).put("rules", bkRules{Config: cfg})
+	b.p.Legacy = "rules"
+	tx := texts(plan(cur, b.p, map[string]string{"rules": "replace"}))
+	for _, want := range []string{"«Всё остальное» — через VPN («сервер из копии»).",
+		"В копии HyRoute 1.2 «Только правила» нет серверов: «Всё остальное» и 2 правила будут отклонять соединения"} {
+		if !strings.Contains(tx, want) {
+			t.Fatalf("%s\nwant %s", tx, want)
+		}
+	}
+	if strings.Contains(tx, "удалён") || strings.Contains(tx, "Правило «a»") {
+		t.Fatal(tx)
+	}
+	// Ours: a target the file does not name is «из копии» too.
+	b.p.Legacy = ""
+	tx = texts(plan(cur, b.p, map[string]string{"rules": "replace"}))
+	if !strings.Contains(tx, "Правило «b»: сервера из копии нет") || strings.Contains(tx, "удалён") {
+		t.Fatal(tx)
+	}
+}
+
 func TestPlanSecretsNeedSameConnection(t *testing.T) {
 	cur := baseState(srv("aaaaaaaa0001", "NL", "nl.example"))
 	for _, mode := range []string{"replace", "add"} {

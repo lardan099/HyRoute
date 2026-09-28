@@ -3,7 +3,7 @@
   // names, browser DoH blocking. Saves at once; applies at once.
   import { onMount } from 'svelte';
   import { api, errText, dnsErrorText, type DNSConfig, type DNSHealth, type DNSView } from '../api';
-  import { ui, hide, settle, profileName } from '../state.svelte';
+  import { ui, hide, settle, profileName, trackUnsaved } from '../state.svelte';
   import Icon from './Icon.svelte';
   import { canPause as portalPausable } from './HomeDNS.svelte';
 
@@ -74,6 +74,14 @@
   const directPresets = $derived(view?.presets.filter((p) => p.direct) ?? []);
   const tunnelSel = $derived(pickTunnel || cfg?.tunnel.preset || 'cloudflare');
   const directSel = $derived(pickDirect || cfg?.direct.preset || 'cloudflare');
+  // backup: a typed custom address not saved yet.
+  const savedURL = (u: { preset: string; url?: string } | undefined) => (u?.preset === 'custom' ? (u.url ?? '').trim() : '');
+  trackUnsaved(
+    () =>
+      !!view &&
+      ((tunnelSel === 'custom' && customTunnel.trim() !== savedURL(view.config.tunnel)) ||
+        (directSel === 'custom' && customDirect.trim() !== savedURL(view.config.direct))),
+  );
 
   function chooseTunnel(id: string) {
     if (id === 'custom') {

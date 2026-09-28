@@ -27,6 +27,10 @@ type Flow struct {
 	Sites [][]string
 	// SitesPartial: Sites were cut (more than the record keeps).
 	SitesPartial bool
+	// Nameless: the engine decides f without any name (UDP 443 under
+	// NamelessUDP): Winner and Place ignore Name and Sites, which only say
+	// what a rule made from f may name (Names, Matches).
+	Nameless bool
 	// Main is the main target ID, which Tunnel rules without a server use
 	// ("" = none): routes compare as the engine compares them.
 	Main string
@@ -50,6 +54,15 @@ func (f Flow) Names() []string {
 }
 
 func (f Flow) subject() Subject { return Subject{Proc: f.Proc, Proto: f.Proto, Dst: f.Dst} }
+
+// decisionNames are the names the engine decides f by: Names, none when
+// f.Nameless.
+func (f Flow) decisionNames() []string {
+	if f.Nameless {
+		return nil
+	}
+	return f.Names()
+}
 
 // indexed is a config compiled rule by rule, so that indexes map to
 // c.Rules (disabled rules and rules that fail to compile included): set
@@ -128,17 +141,23 @@ func (r *compiled) mayMatchDomain(name string) bool {
 // every site counts on its own (a rule matching only a CDN neighbour's or
 // a CNAME target's name still counts), and a geosite:/geoip: item whose
 // database is not downloaded yet (pending) counts as matching, so the rule
-// does not end up below it once the database loads. An unknown protocol or
-// port (Proto 0, invalid Dst) satisfies any condition on it.
+// does not end up below it once the database loads. An unknown protocol,
+// port or address (Proto 0, invalid Dst: a DNS-query row, whose connection
+// is still to come) satisfies any condition on it, so an IP rule counts.
+// A Nameless flow counts no names.
 func Place(c Config, f Flow) int {
 	ix := compileIndexed(c, f.Main)
-	sub, names := f.subject(), f.Names()
+	sub, names := f.subject(), f.decisionNames()
 	for k := range ix.set.rules {
 		r := &ix.set.rules[k]
 		if !r.mayBase(sub) {
 			continue
 		}
-		if !r.hasDest() || f.Dst.IsValid() && r.mayMatchIP(f.Dst.Addr()) || slices.ContainsFunc(names, r.mayMatchDomain) {
+		ip := len(r.ips) > 0
+		if f.Dst.IsValid() {
+			ip = r.mayMatchIP(f.Dst.Addr())
+		}
+		if !r.hasDest() || ip || slices.ContainsFunc(names, r.mayMatchDomain) {
 			return ix.idx[k]
 		}
 	}
@@ -175,10 +194,13 @@ func PlaceRule(c Config, r Rule) int {
 // SitesPartial with agreeing sites also reports ambiguous (a cut-off site
 // might disagree); the index is then the first site's winner. A protocol
 // or port condition never decides a flow whose protocol or port is
-// unknown.
+// unknown. A Nameless flow: the no-domain winner, never ambiguous.
 func Winner(c Config, f Flow) (index int, ambiguous bool) {
 	ix := compileIndexed(c, f.Main)
 	s, sub := ix.set, f.subject()
+	if f.Nameless {
+		return ix.index(siteWinner(s.rules, sub, nil)), false
+	}
 	if f.Name != "" {
 		return ix.index(siteWinner(s.rules, sub, []string{NormalizeDomain(f.Name)})), false
 	}

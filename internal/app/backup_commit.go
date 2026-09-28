@@ -242,16 +242,6 @@ type commitResult struct {
 func (c *Controller) commitRestoreLocked(pl *restorePlan, before map[string]store.RawFile) (res commitResult, rollbackErr, err error) {
 	now := time.Now()
 	var copies []string
-	for _, f := range pl.keepBroken {
-		name, err := c.Store.KeepBroken(f, before[f].Data, now)
-		if err != nil {
-			for _, n := range copies {
-				c.Store.RemoveBroken(n)
-			}
-			return res, nil, err
-		}
-		copies = append(copies, name)
-	}
 	next := &pl.next
 	var written []string
 	rollback := func(err error) (commitResult, error, error) {
@@ -313,6 +303,18 @@ func (c *Controller) commitRestoreLocked(pl *restorePlan, before map[string]stor
 	} else if has("rulesets.json") {
 		rsOnly = rulesetsOnlyState(s, pl.rules.rulesets)
 		prep = prepRulesets(s, rsOnly)
+	}
+
+	// The copies of broken files, only once nothing above can refuse.
+	for _, f := range pl.keepBroken {
+		name, err := c.Store.KeepBroken(f, before[f].Data, now)
+		if err != nil {
+			for _, n := range copies {
+				c.Store.RemoveBroken(n)
+			}
+			return res, nil, err
+		}
+		copies = append(copies, name)
 	}
 
 	for _, f := range pl.writes {

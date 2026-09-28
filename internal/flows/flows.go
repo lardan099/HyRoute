@@ -43,6 +43,10 @@ type Record struct {
 	// Nil for flows not decided from a packet. Never mutated after Open.
 	Sites        [][]string
 	SitesPartial bool
+	// Nameless: the engine decided without any name although Sites lists
+	// the address's names (UDP 443 under rules.NamelessUDP); the names
+	// are then only for the menu. Never mutated after Open.
+	Nameless bool
 
 	mu     sync.Mutex
 	f      Fields
@@ -126,6 +130,7 @@ type View struct {
 	Parents      []string   `json:"-"`
 	Sites        [][]string `json:"-"`
 	SitesPartial bool       `json:"-"`
+	Nameless     bool       `json:"-"`
 }
 
 // OutcomeTooBig is the outcome a view shows for a tunneled UDP flow of
@@ -152,7 +157,7 @@ func (r *Record) View(now time.Time) View {
 		Duration: end.Sub(r.Start), Closed: r.closed,
 	}
 	v.TooBig = r.TooBig.Load()
-	v.Parents, v.Sites, v.SitesPartial = r.Parents, r.Sites, r.SitesPartial
+	v.Parents, v.Sites, v.SitesPartial, v.Nameless = r.Parents, r.Sites, r.SitesPartial, r.Nameless
 	if v.TooBig > 0 && v.Sent == 0 && v.Outcome == "tunneled" {
 		v.Outcome = OutcomeTooBig
 	}

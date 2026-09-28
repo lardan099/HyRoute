@@ -54,6 +54,7 @@ export const ui = $state({
   // restore); backupPath is masked apart.
   backupNote: '',
   backupPath: '',
+  backupWarnings: [] as BackupMsg[],
 });
 
 export function setExpert(on: boolean) {

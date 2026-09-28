@@ -13,6 +13,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -329,6 +330,11 @@ func decodePayload(body []byte, plain bool) (*Payload, error) {
 		}
 	}
 	slices.Sort(p.Unknown)
+	if plain && p.Secrets {
+		// Anyone can write a plain file: it never unlocks the sections
+		// only a password-protected copy carries (Encode refuses one).
+		return nil, damaged(errors.New("secrets в копии без пароля"))
+	}
 	if p.Sections == nil {
 		p.Sections = map[string]json.RawMessage{}
 	}

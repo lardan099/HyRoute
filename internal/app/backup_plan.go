@@ -969,10 +969,32 @@ func (x *planCtx) planGroups() {
 		next.Groups = f
 		x.groupsReplaced = old
 		x.pl.linef("groups", "Группы серверов: будет %d.", len(f.Groups))
+		var was *groups.Probe
+		if old != nil {
+			was = old.Probe
+		}
+		x.planProbe(was, f.Probe)
 		return
 	}
 	next.Groups.Groups = append(next.Groups.Groups, f.Groups...)
 	x.pl.linef("groups", "Группы серверов: добавится %d.", len(f.Groups))
+}
+
+// planProbe shows the latency probe a «Группы серверов: Заменить» installs
+// when it changes. The probe URL is fetched through every server of a used
+// group on a schedule, so one other than the default is also a warning.
+func (x *planCtx) planProbe(a, b *groups.Probe) {
+	ua, ea := a.Effective()
+	ub, eb := b.Effective()
+	if ua == ub && ea == eb {
+		return
+	}
+	x.pl.line(msg("groups").t("Проверка задержки: ").s(ua).t(fmt.Sprintf(", каждые %d с → ", int(ea.Seconds()))).
+		s(ub).t(fmt.Sprintf(", каждые %d с.", int(eb.Seconds()))))
+	if ub != ua && ub != groups.DefaultProbeURL {
+		x.pl.warn(msg("groups").t("Группы будут проверять задержку через каждый свой сервер запросом на адрес из копии: ").s(ub).
+			t(". Этот сайт увидит адреса ваших серверов и когда вы в сети."))
+	}
 }
 
 // resolveMember maps a group member of the file (a server) into the result.
@@ -1014,7 +1036,7 @@ func (x *planCtx) planRules() {
 			next.Settings.Config = a.Config.Clone()
 			pl.rules.rulesets = rs
 			pl.counts.rules = len(a.Config.Rules)
-			pl.line(msg("rules").t(fmt.Sprintf("Правила: %s из копии заменят ваши. Включится профиль правил «%s». ", nProfiles(len(rs.List)), a.Name)).t(defaultText(a.Config, next)))
+			pl.line(msg("rules").t(fmt.Sprintf("Правила: %s из копии заменят ваши. Включится профиль правил «%s». ", nProfiles(len(rs.List)), a.Name)).t(defaultText(a.Config, x.fileTargetName)))
 			pl.rules.changed = true
 			return
 		}
@@ -1028,7 +1050,7 @@ func (x *planCtx) planRules() {
 		}
 		pl.rules.changed = true
 		pl.counts.rules = len(fileCfg.Rules)
-		pl.line(msg("rules").t(fmt.Sprintf("Правила: %s из копии заменят ваши %d. ", nRules(len(fileCfg.Rules)), before)).t(defaultText(fileCfg, next)))
+		pl.line(msg("rules").t(fmt.Sprintf("Правила: %s из копии заменят ваши %d. ", nRules(len(fileCfg.Rules)), before)).t(defaultText(fileCfg, x.fileTargetName)))
 		return
 	}
 	if rs := x.d.rulesets; rs != nil {
@@ -1115,8 +1137,8 @@ func (x *planCtx) importRulesets(rs *store.Rulesets, taken map[string]bool, add 
 	}
 }
 
-// defaultText describes «Всё остальное».
-func defaultText(cfg rules.Config, next *cfgState) string {
+// defaultText describes «Всё остальное»; name names its target.
+func defaultText(cfg rules.Config, name func(id string) string) string {
 	switch cfg.DefaultAction {
 	case rules.Direct:
 		return "«Всё остальное» — напрямую."
@@ -1126,7 +1148,27 @@ func defaultText(cfg rules.Config, next *cfgState) string {
 	if cfg.DefaultProfile == "" {
 		return "«Всё остальное» — через VPN (основной сервер)."
 	}
-	return "«Всё остальное» — через VPN («" + next.targetName(cfg.DefaultProfile) + "»)."
+	return "«Всё остальное» — через VPN («" + name(cfg.DefaultProfile) + "»)."
+}
+
+// fileTargetName names a target the file's rules use (resolved): ours,
+// else the name the file gives, else «сервер из копии» — a HyRoute 1.2.0
+// «Только правила» file names none, and nothing was deleted here.
+func (x *planCtx) fileTargetName(id string) string {
+	next := &x.pl.next
+	if next.Profiles.Find(id) != nil || next.Groups.Find(id) != nil {
+		return next.targetName(id)
+	}
+	if t, ok := x.p.Targets[id]; ok && t.Name != "" {
+		return t.Name
+	}
+	if f, ok := x.full[id]; ok && f.Name != "" {
+		return f.Name
+	}
+	if groups.IsGroupID(id) {
+		return "группа из копии"
+	}
+	return "сервер из копии"
 }
 
 func (s *cfgState) targetName(id string) string {
@@ -1377,16 +1419,27 @@ func (x *planCtx) reportDangling() {
 	next := &x.pl.next
 	n := 0
 	seen := map[danglingRef]bool{}
+	// A 1.2.0 «Только правила» file carries no servers: one warning that
+	// says what it means (1.2.0 sent such rules through the main server).
+	legacy := x.p.Legacy == "rules"
+	def, ruleWhere := false, map[string]bool{}
 	for _, r := range x.dangling {
 		if r.where == "" || seen[r] || next.Profiles.Find(r.id) != nil || next.Groups.Find(r.id) != nil {
 			continue
 		}
 		seen[r] = true
+		if legacy {
+			if strings.HasPrefix(r.where, "«Всё остальное»") {
+				def = true
+			} else {
+				ruleWhere[r.where] = true
+			}
+			continue
+		}
 		if n++; n > 20 {
 			continue
 		}
-		name := "удалённый сервер"
-		what := "сервера"
+		name, what := "", "сервера"
 		if t, ok := x.p.Targets[r.id]; ok {
 			name = t.Name
 			if t.Group {
@@ -1395,12 +1448,30 @@ func (x *planCtx) reportDangling() {
 		} else if f, ok := x.full[r.id]; ok {
 			name = f.Name
 		} else if groups.IsGroupID(r.id) {
-			what, name = "группы", "удалённая группа"
+			what = "группы"
 		}
-		x.pl.warn(msg("").t(r.where + ": " + what + " «" + name + "» нет — соединения по нему будут отклоняться, пока вы не выберете сервер"))
+		ref := what + " «" + name + "»"
+		if name == "" {
+			ref = what + " из копии" // the file does not name it
+		}
+		x.pl.warn(msg("").t(r.where + ": " + ref + " нет — соединения по нему будут отклоняться, пока вы не выберете сервер"))
 	}
 	if n > 20 {
 		x.pl.warnf("", "И ещё %d ссылок на серверы, которых нет.", n-20)
+	}
+	if nr := len(ruleWhere); def || nr > 0 {
+		who, verb := "«Всё остальное»", "будет"
+		switch {
+		case def && nr > 0:
+			who, verb = "«Всё остальное» и "+nRules(nr), "будут"
+		case nr > 0:
+			who = nRules(nr)
+			if nr%10 != 1 || nr%100 == 11 {
+				verb = "будут"
+			}
+		}
+		x.pl.warn(msg("").t("В копии HyRoute 1.2 «Только правила» нет серверов: " + who + " " + verb +
+			" отклонять соединения, пока вы не выберете для них сервер на странице «Правила» (HyRoute 1.2 вёл их через основной сервер)."))
 	}
 }
 

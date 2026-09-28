@@ -231,9 +231,10 @@ func TestExclusionKinds(t *testing.T) {
 // conn-rules: decide keeps the owner's ancestry and the DNS sites it
 // decided by on the record (a rule made from the row is placed by them),
 // from its single cache read; the display fallback still shows the sorted
-// flat names.
+// flat names. QUIC under ExactWeb and BlockQUIC is marked Nameless: it is
+// decided without the sites the record still carries.
 func TestRecordParentsAndSites(t *testing.T) {
-	h := newHarness(t, appRules, Options{})
+	h := newHarness(t, appRules, Options{BlockQUIC: true})
 	paths := map[uint32]string{
 		1:   `C:\Windows\explorer.exe`,
 		600: `C:\Steam\steam.exe`,
@@ -255,8 +256,8 @@ func TestRecordParentsAndSites(t *testing.T) {
 	if len(v.Parents) != 2 || v.Parents[0] != `C:\Steam\steam.exe` || v.Parents[1] != `C:\Windows\explorer.exe` {
 		t.Fatalf("parents %q", v.Parents)
 	}
-	if len(v.Sites) != 1 || len(v.Sites[0]) != 2 || v.Sites[0][0] != "game.example.com" || v.Sites[0][1] != "xyz.elb.amazonaws.com" || v.SitesPartial {
-		t.Fatalf("sites %q %v", v.Sites, v.SitesPartial)
+	if len(v.Sites) != 1 || len(v.Sites[0]) != 2 || v.Sites[0][0] != "game.example.com" || v.Sites[0][1] != "xyz.elb.amazonaws.com" || v.SitesPartial || v.Nameless {
+		t.Fatalf("sites %q %v %v", v.Sites, v.SitesPartial, v.Nameless)
 	}
 	if v.Domain != "game.example.com,xyz.elb.amazonaws.com" || v.DomainSrc != "dns" {
 		t.Fatalf("display %q %q", v.Domain, v.DomainSrc)
@@ -270,8 +271,13 @@ func TestRecordParentsAndSites(t *testing.T) {
 	h.own(6, "192.168.1.5:40300", "198.51.100.60:443", 700)
 	h.sendTCP("192.168.1.5:40300", "198.51.100.60:443", packet.FlagSYN, "")
 	h.next(t)
-	if v := lastRecord(t, h.c); len(v.Sites) != 1 || v.Sites[0][0] != "game.example.com" {
+	if v := lastRecord(t, h.c); len(v.Sites) != 1 || v.Sites[0][0] != "game.example.com" || v.Nameless {
 		t.Fatalf("exact web: %+v", v)
+	}
+	h.own(17, "192.168.1.5:40301", "198.51.100.60:443", 700)
+	h.sendUDP("192.168.1.5:40301", "198.51.100.60:443", []byte("hi"))
+	if v := lastRecord(t, h.c); len(v.Sites) != 1 || v.Sites[0][0] != "game.example.com" || !v.Nameless {
+		t.Fatalf("quic: %+v", v)
 	}
 }
 

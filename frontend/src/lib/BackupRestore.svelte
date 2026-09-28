@@ -23,19 +23,25 @@
   let planError = $state(''); // the plan request failed (e.g. the file was closed)
   let busy = $state(false);
   let result = $state<BackupApplyResult | null>(null);
-  let undone = $state(false);
+  let undone = $state<BackupApplyResult | null>(null); // «Вернуть как было» done: its result
 
   const connected = $derived(!!ui.status && ui.status.state !== 'disconnected' && !(ui.status.state === 'error' && !ui.status.stats));
 
   async function pick() {
     const was = step;
+    const wasError = error;
     step = 'opening';
     error = '';
     try {
       const o = await api.OpenBackup();
       if (!o.token) {
-        if (was === 'error') step = 'error';
-        else onclose();
+        // A cancelled file dialog changes nothing: only the first one
+        // (nothing opened yet) closes the dialog.
+        if (was === 'opening') onclose();
+        else {
+          step = was;
+          error = wasError;
+        }
         return;
       }
       if (token && token !== o.token) api.CloseBackup(token);
@@ -135,7 +141,7 @@
     error = '';
     try {
       const r = await api.UndoRestore();
-      undone = true;
+      undone = r;
       await afterRestore(r.appearance);
     } catch (e) {
       error = errText(e);
@@ -283,6 +289,13 @@
     {:else if step === 'done' && result}
       {#if undone}
         <div class="note ok">Настройки возвращены.</div>
+        {#if undone.warnings.length}
+          <div class="note warn">
+            <ul class="plan">
+              {#each undone.warnings as m}<li>{hideMsg(m)}</li>{/each}
+            </ul>
+          </div>
+        {/if}
       {:else}
         <div class="note ok">Восстановлено: {result.restored.join(', ')}.</div>
         {#if result.warnings.length}
@@ -296,7 +309,7 @@
       {#if error}<div class="note error">{hidePaths(hide(error))}</div>{/if}
       <div class="actions">
         {#if !undone && result.undo}<button onclick={undo} disabled={busy}>Вернуть как было</button>{/if}
-        {#if !undone && result.needsReconnect && connected}<button onclick={reconnect} disabled={busy}>Переподключить</button>{/if}
+        {#if (undone ?? result).needsReconnect && connected}<button onclick={reconnect} disabled={busy}>Переподключить</button>{/if}
         <button class="primary" onclick={onclose} disabled={busy}>Готово</button>
       </div>
     {/if}

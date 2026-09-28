@@ -301,6 +301,29 @@ func mapsEqual(a, b map[string]string) bool {
 	return true
 }
 
+// TestCommitRestoreRefusedKeepsNoCopy: when the rules step refuses (the
+// rules do not compile) nothing is written and no copy of a broken file
+// is left behind.
+func TestCommitRestoreRefusedKeepsNoCopy(t *testing.T) {
+	c, _ := newCtl(t)
+	pl := &restorePlan{writes: []string{"profiles.json", "settings.json"}, keepBroken: []string{"profiles.json"}}
+	pl.next.Settings = *store.DefaultSettings()
+	pl.next.Settings.Rules = []rules.Rule{{Domains: []string{"regexp:("}, Action: rules.Direct}}
+	before := map[string]store.RawFile{"profiles.json": {Exists: true, Data: []byte("{broken")}, "settings.json": {}}
+	c.mu.Lock()
+	_, rbErr, err := c.commitRestoreLocked(pl, before)
+	c.mu.Unlock()
+	if err == nil || rbErr != nil {
+		t.Fatal(err, rbErr)
+	}
+	ents, _ := os.ReadDir(c.Store.Dir)
+	for _, e := range ents {
+		if strings.Contains(e.Name(), ".broken-") || e.Name() == "profiles.json" {
+			t.Fatal(e.Name())
+		}
+	}
+}
+
 func TestBackupRollback(t *testing.T) {
 	a, _ := richCtl(t)
 	b := exportAll(t, a, bkPass)
