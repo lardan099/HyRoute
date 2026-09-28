@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/lardan099/hyroute/internal/flows"
@@ -359,5 +360,210 @@ func TestKillSwitchKeptWithUnloadedSettings(t *testing.T) {
 	// The user's "unblock" still works.
 	if err := c.ReleaseKillSwitch(); err != nil || ks.blocks {
 		t.Fatalf("%v %+v", err, ks)
+	}
+}
+
+// A cancelled end of the session puts back a block that closed the
+// internet: routing is not there to arm it again.
+func TestKillSwitchEndSessionCancelledWhileBlocking(t *testing.T) {
+	// The engine failed and HyRoute stopped reconnecting by itself.
+	c, started := newCtl(t)
+	ks := &fakeKS{}
+	c.KillSwitch = ks
+	setKillSwitch(t, c, true)
+	if err := c.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	(*started)[0].fail()
+	c.EndSession()
+	if ks.blocks {
+		t.Fatal("block kept over the end of the session")
+	}
+	c.SessionResumed()
+	if st := c.Status(); !ks.blocks || ks.pass || st.KillSwitch != "blocking" {
+		t.Fatalf("failed engine: %+v %q", ks, st.KillSwitch)
+	}
+
+	// A block a crashed run left, no session.
+	c2, _ := newCtl(t)
+	ks2 := &fakeKS{blocks: true}
+	c2.KillSwitch = ks2
+	c2.InitKillSwitch()
+	setKillSwitch(t, c2, true)
+	c2.EndSession()
+	c2.SessionResumed()
+	if st := c2.Status(); !ks2.blocks || ks2.pass || st.KillSwitch != "blocking" {
+		t.Fatalf("left block: %+v %q", ks2, st.KillSwitch)
+	}
+
+	// The user opened the internet meanwhile: it stays open.
+	for name, open := range map[string]func(*Controller){
+		"disconnect": (*Controller).Disconnect,
+		"unblock":    func(c *Controller) { c.ReleaseKillSwitch() },
+		"setting":    func(c *Controller) { setKillSwitch(t, c, false) },
+	} {
+		c3, _ := newCtl(t)
+		ks3 := &fakeKS{blocks: true}
+		c3.KillSwitch = ks3
+		c3.InitKillSwitch()
+		setKillSwitch(t, c3, true)
+		c3.EndSession()
+		open(c3)
+		c3.SessionResumed()
+		if ks3.blocks || c3.Status().KillSwitch != "" {
+			t.Fatalf("%s: %+v", name, ks3)
+		}
+	}
+}
+
+// failedStatsSession counts Stats once its engine failed: they take the
+// engine's locks, which a packet loop the watchdog gave up on may hold for
+// good.
+type failedStatsSession struct {
+	*fakeSession
+	calls atomic.Int32
+}
+
+func (s *failedStatsSession) Stats() session.Stats {
+	if s.failed.Load() {
+		s.calls.Add(1)
+	}
+	return s.fakeSession.Stats()
+}
+
+// Putting the block back after the engine failed does not ask the failed
+// session for its relay port (lifeMu and ksMu are held): the port of the
+// last Arm is used.
+func TestKillSwitchRestoreBlockNoStats(t *testing.T) {
+	c, _ := newCtl(t)
+	ks := &fakeKS{}
+	c.KillSwitch = ks
+	setKillSwitch(t, c, true)
+	var s *failedStatsSession
+	c.Start = func(cfg session.Config) (Session, error) {
+		s = &failedStatsSession{fakeSession: &fakeSession{reg: flows.NewRegistry(10), cfg: cfg, stats: session.Stats{RelayPort: 50123}}}
+		return s, nil
+	}
+	if err := c.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	s.fail()
+	c.EndSession()
+	ks.relay = 0
+	c.SessionResumed()
+	if n := s.calls.Load(); n != 0 {
+		t.Fatalf("Stats of the failed session called %d times", n)
+	}
+	if !ks.blocks || ks.pass || ks.relay != 50123 {
+		t.Fatalf("%+v", ks)
+	}
+}
+
+// A second end of the session before the first cancel is done: its
+// SessionResumed still puts the block back.
+func TestKillSwitchEndSessionTwice(t *testing.T) {
+	c, _ := newCtl(t)
+	ks := &fakeKS{blocks: true}
+	c.KillSwitch = ks
+	c.InitKillSwitch()
+	setKillSwitch(t, c, true)
+	c.EndSession()
+	// SessionResumed up to applyKillSwitch, then Windows ends it again.
+	c.ksMu.Lock()
+	c.ks.ending = false
+	c.ksMu.Unlock()
+	c.applyKillSwitch()
+	c.EndSession()
+	c.restoreBlock()
+	if ks.blocks {
+		t.Fatal("block put back while Windows ends the session")
+	}
+	c.SessionResumed()
+	if !ks.blocks || c.Status().KillSwitch != "blocking" {
+		t.Fatalf("resume lost: %+v", ks)
+	}
+}
+
+// "Open the internet" clicked just after an automatic reconnect armed the
+// kill switch again: the internet is open, the kill switch stays.
+func TestKillSwitchUnblockWhileArmed(t *testing.T) {
+	c, _ := newCtl(t)
+	ks := &fakeKS{}
+	c.KillSwitch = ks
+	setKillSwitch(t, c, true)
+	if err := c.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ReleaseKillSwitch(); err != nil {
+		t.Fatal(err)
+	}
+	if st := c.Status(); !ks.blocks || !ks.pass || st.KillSwitch != "armed" {
+		t.Fatalf("%+v %q", ks, st.KillSwitch)
+	}
+}
+
+// A block found at start may be another copy's (moved to Program Files,
+// updated): its exceptions are renewed for this copy's programs.
+func TestKillSwitchLeftoverRefreshesApps(t *testing.T) {
+	c, _ := newCtl(t)
+	ks := &refreshKS{}
+	c.KillSwitch = ks
+	c.InitKillSwitch()
+	if ks.refreshed != 0 {
+		t.Fatal("refreshed without a block")
+	}
+	ks.blocks = true
+	c.InitKillSwitch()
+	if ks.refreshed != 1 {
+		t.Fatalf("refreshed %d times", ks.refreshed)
+	}
+	// Hysteria resolves its servers before the Arm: the DNS servers the
+	// block lets through are renewed before the start (the network may
+	// have changed).
+	setKillSwitch(t, c, true)
+	c.Start = func(session.Config) (Session, error) {
+		if ks.refreshed != 2 {
+			t.Errorf("started with the exceptions refreshed %d times", ks.refreshed)
+		}
+		return &fakeSession{reg: flows.NewRegistry(10)}, nil
+	}
+	if err := c.Connect(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// engagedErrKS cannot tell whether the block is installed, or (blocks)
+// another HyRoute owns the installed one.
+type engagedErrKS struct{ fakeKS }
+
+func (k *engagedErrKS) Engaged() (bool, error) {
+	return k.blocks, errors.New("занят другим HyRoute")
+}
+
+// Whether the block is there is unknown (another HyRoute owns it): the
+// status says so while the kill switch is on.
+func TestKillSwitchStateUnknown(t *testing.T) {
+	c, _ := newCtl(t)
+	c.KillSwitch = &engagedErrKS{}
+	c.InitKillSwitch()
+	if st := c.Status(); st.KillSwitchError != "" {
+		t.Fatalf("kill switch off: %q", st.KillSwitchError)
+	}
+	setKillSwitch(t, c, true)
+	c.InitKillSwitch()
+	if st := c.Status(); !strings.Contains(st.KillSwitchError, "занят") {
+		t.Fatalf("%q", st.KillSwitchError)
+	}
+}
+
+// Another HyRoute (another Windows user's) owns an installed block: the
+// internet may be closed for this user too, and the status says why even
+// with the kill switch off.
+func TestKillSwitchOwnedByAnother(t *testing.T) {
+	c, _ := newCtl(t)
+	c.KillSwitch = &engagedErrKS{fakeKS{blocks: true}}
+	c.InitKillSwitch()
+	if st := c.Status(); !strings.Contains(st.KillSwitchError, "занят") || st.KillSwitch != "" {
+		t.Fatalf("%q %q", st.KillSwitch, st.KillSwitchError)
 	}
 }

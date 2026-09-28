@@ -26,16 +26,18 @@ func startProcess(exe string, args, env []string, out io.Writer) (process, error
 	return execProcess{cmd}, nil
 }
 
-func writeSecretFile(path string, data []byte) error {
+// writeSecretFile returns the file still open, as on Windows.
+func writeSecretFile(path string, data []byte) (release func(), err error) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	_, err = f.Write(data)
-	if cerr := f.Close(); err == nil {
-		err = cerr
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(path)
+		return nil, err
 	}
-	return err
+	return func() { f.Close() }, nil
 }
 
 func hideWindow(*exec.Cmd) {}

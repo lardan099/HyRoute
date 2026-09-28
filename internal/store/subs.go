@@ -91,14 +91,22 @@ func (s *Store) snapPath(id, which string) string {
 
 // PushSnapshot stores body as the current snapshot; the old current one
 // becomes the previous one. The current body again changes nothing: a
-// repeated update must keep the version a rollback returns to.
-func (s *Store) PushSnapshot(id string, body []byte) error {
+// repeated update must keep the version a rollback returns to. Neither
+// does a body that same reports equal to the current one (the same
+// servers under other names or in another order, as panels that put the
+// traffic left into the names send every time): it replaces the current
+// snapshot and the previous one stays.
+func (s *Store) PushSnapshot(id string, body []byte, same func(cur []byte) bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cur := s.snapPath(id, "cur")
+	shift := true
 	if old, err := os.ReadFile(cur); err == nil {
-		if old, err = unseal(old); err == nil && bytes.Equal(old, body) {
-			return nil
+		if old, err = unseal(old); err == nil {
+			if bytes.Equal(old, body) {
+				return nil
+			}
+			shift = same == nil || !same(old)
 		}
 	}
 	if err := os.MkdirAll(filepath.Join(s.Dir, "subs"), 0o700); err != nil {
@@ -108,7 +116,7 @@ func (s *Store) PushSnapshot(id string, body []byte) error {
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(cur); err == nil {
+	if _, err := os.Stat(cur); err == nil && shift {
 		if err := os.Rename(cur, s.snapPath(id, "prev")); err != nil {
 			return err
 		}
@@ -116,29 +124,37 @@ func (s *Store) PushSnapshot(id string, body []byte) error {
 	return writeAtomic(cur, sealed)
 }
 
-// SwapSnapshots makes the previous snapshot current (rollback) and
-// returns its body.
-func (s *Store) SwapSnapshots(id string) ([]byte, error) {
+// PreviousSnapshot returns the previous snapshot's body, the one a
+// rollback applies; SwapSnapshots then makes it current once it is.
+func (s *Store) PreviousSnapshot(id string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	prev, cur := s.snapPath(id, "prev"), s.snapPath(id, "cur")
-	sealed, err := os.ReadFile(prev)
+	sealed, err := os.ReadFile(s.snapPath(id, "prev"))
 	if err != nil {
 		return nil, errors.New("предыдущей версии подписки нет")
 	}
-	body, err := unseal(sealed)
-	if err != nil {
-		return nil, err
+	return unseal(sealed)
+}
+
+// SwapSnapshots makes the previous snapshot current and the current one
+// previous (a rollback that has been applied).
+func (s *Store) SwapSnapshots(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev, cur := s.snapPath(id, "prev"), s.snapPath(id, "cur")
+	if _, err := os.Stat(prev); err != nil {
+		return errors.New("предыдущей версии подписки нет")
 	}
 	tmp := s.snapPath(id, "swap")
 	if err := os.Rename(cur, tmp); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+		return err
 	}
 	if err := os.Rename(prev, cur); err != nil {
-		return nil, err
+		os.Rename(tmp, cur)
+		return err
 	}
 	os.Rename(tmp, prev)
-	return body, nil
+	return nil
 }
 
 func (s *Store) DeleteSnapshots(id string) {

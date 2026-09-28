@@ -3,6 +3,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,31 +19,57 @@ import (
 // process may have created in advance is refused (see checkOwner), and
 // an accepted one is given to Administrators: an owner keeps WRITE_DAC
 // whatever the DACL says.
+//
+// A new directory gets that DACL as it is created: set afterwards, it
+// would leave a moment in which the DACL inherited from C:\ProgramData
+// (Users may create subfolders and own what they create) lets a normal
+// process create HyRoute\core or HyRoute\updates of its own first.
 func ProtectDir(dir string) error {
-	for _, d := range []string{filepath.Dir(dir), dir} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+	elevated := windows.GetCurrentProcessToken().IsElevated()
+	sddl := "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"
+	if elevated {
+		// Only an elevated token may make Administrators the owner
+		// (tests run without elevation and keep their own).
+		sddl = "O:BA" + sddl
+	}
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	info := windows.SECURITY_INFORMATION(windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION)
+	var owner *windows.SID
+	if elevated {
+		if owner, _, err = sd.Owner(); err != nil {
 			return err
+		}
+		info |= windows.OWNER_SECURITY_INFORMATION
+	}
+	// The folders above (C:\ProgramData) are Windows' own.
+	if err := os.MkdirAll(filepath.Dir(filepath.Dir(dir)), 0o755); err != nil {
+		return err
+	}
+	for _, d := range []string{filepath.Dir(dir), dir} {
+		p, err := windows.UTF16PtrFromString(d)
+		if err != nil {
+			return err
+		}
+		sa := &windows.SecurityAttributes{SecurityDescriptor: sd}
+		sa.Length = uint32(unsafe.Sizeof(*sa))
+		if err := windows.CreateDirectory(p, sa); err != nil {
+			if !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+				return fmt.Errorf("%s: %w", d, err)
+			}
+			// Already there: it must be a directory, made by the right owner.
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				return err
+			}
 		}
 		if err := checkOwner(d); err != nil {
 			return err
-		}
-		sd, err := windows.SecurityDescriptorFromString("O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)")
-		if err != nil {
-			return err
-		}
-		dacl, _, err := sd.DACL()
-		if err != nil {
-			return err
-		}
-		info := windows.SECURITY_INFORMATION(windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION)
-		var owner *windows.SID
-		if windows.GetCurrentProcessToken().IsElevated() {
-			// Only an elevated token may make Administrators the owner
-			// (tests run without elevation and keep their own).
-			if owner, _, err = sd.Owner(); err != nil {
-				return err
-			}
-			info |= windows.OWNER_SECURITY_INFORMATION
 		}
 		if err := windows.SetNamedSecurityInfo(d, windows.SE_FILE_OBJECT, info, owner, nil, dacl, nil); err != nil {
 			return fmt.Errorf("%s: %w", d, err)

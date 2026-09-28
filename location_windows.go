@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -45,6 +46,13 @@ func under(dir, root string) bool {
 // user's programs, which run without elevation, cannot change what HyRoute
 // runs from there (see userCanReplace).
 func protectedLocation(dir string) bool {
+	exe, _ := os.Executable()
+	return protectedLocationOf(dir, exe)
+}
+
+// protectedLocationOf is protectedLocation for the program exe (checked
+// when it is in dir) instead of this one.
+func protectedLocationOf(dir, exe string) bool {
 	dir = filepath.Clean(dir)
 	for _, root := range programFiles() {
 		if !under(dir, root) {
@@ -60,7 +68,6 @@ func protectedLocation(dir string) bool {
 			return true
 		}
 		defer user.Close()
-		exe, _ := os.Executable()
 		return !userCanReplace(dir, root, exe, user)
 	}
 	return false
@@ -123,6 +130,10 @@ func moveTarget() string {
 // Downloads) is left alone.
 var programFilesList = []string{"HyRoute.exe", "hyroute-updater.exe", "hysteria.exe", "WinDivert.dll", "WinDivert64.sys", "LICENSE.txt", "THIRD-PARTY-NOTICES.txt"}
 
+// runtimeFilesList: files of programFilesList that run from the runtime
+// folder (see runtimefiles.Stage), never from the program folder.
+var runtimeFilesList = []string{"hysteria.exe", "WinDivert.dll", "WinDivert64.sys"}
+
 // MoveToProgramFiles copies HyRoute into Program Files, adds a Start menu
 // shortcut, starts the new copy and exits. As after an update, the new
 // copy connects again, and the kill switch keeps the internet closed
@@ -146,7 +157,7 @@ func (g *GUI) MoveToProgramFiles() error {
 	if !protectedLocation(target) {
 		return fmt.Errorf("в папку %s могут писать программы без прав администратора: удалите её или оставьте в её свойствах запись только администраторам и повторите", target)
 	}
-	if err := copyProgram(g.dllDir, self, target); err != nil {
+	if err := copyProgram(g.dllDir, self, g.runtimeDir, target); err != nil {
 		return err
 	}
 	exe := filepath.Join(target, "HyRoute.exe")
@@ -175,19 +186,25 @@ func (g *GUI) MoveToProgramFiles() error {
 
 // copyProgram copies the files of programFilesList from dir into target;
 // HyRoute.exe from self, the running file (a repeated download is
-// "HyRoute (1).exe", maybe next to an older HyRoute.exe).
-func copyProgram(dir, self, target string) error {
+// "HyRoute (1).exe", maybe next to an older HyRoute.exe). Only HyRoute.exe
+// is needed: hysteria.exe and WinDivert are taken from runtimeDir, where
+// their verified copies are (the new copy checks them again, and
+// downloads what it lacks), and an update brings its own updater.
+func copyProgram(dir, self, runtimeDir, target string) error {
 	for _, name := range programFilesList {
 		src := filepath.Join(dir, name)
-		if name == "HyRoute.exe" {
+		switch {
+		case name == "HyRoute.exe":
 			src = self
+		case slices.Contains(runtimeFilesList, name):
+			src = filepath.Join(runtimeDir, name)
 		}
 		b, err := os.ReadFile(src)
 		if err != nil {
-			if name == "LICENSE.txt" || name == "THIRD-PARTY-NOTICES.txt" {
+			if name != "HyRoute.exe" {
 				continue
 			}
-			return fmt.Errorf("нет файла %s в папке программы", name)
+			return fmt.Errorf("не удалось прочитать %s: %w", src, err)
 		}
 		// A new file, not one written over: a new file takes the folder's
 		// permissions, one already there keeps its own (maybe open to users).

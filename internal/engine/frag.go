@@ -118,7 +118,7 @@ func (c *Core) fragRoute(proto uint8, key nat.FlowKey) rules.Action {
 		return res.Action
 	}
 	set := c.Rules.Load()
-	res := set.Evaluate(sub, c.packetNames(set, proto, key.Dst))
+	res := set.EvaluateSites(sub, c.packetSites(set, proto, key.Dst))
 	if res.NeedsDomain {
 		// Same as a whole UDP datagram with an unknown name (applyUDP).
 		if c.Opt.BlockQUIC && key.Dst.Port() == 443 {

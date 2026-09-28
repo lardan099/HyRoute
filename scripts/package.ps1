@@ -8,7 +8,17 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 try {
-    $ver = (git describe --tags --exact-match --match 'v[0-9]*' 2>$null)
+    # The release workflow names the tag it packs in HYROUTE_VERSION (as
+    # for build.ps1): with two tags on one commit, git describe may pick
+    # the other one.
+    $ver = $env:HYROUTE_VERSION
+    if ($ver) {
+        if ((git rev-parse -q --verify "refs/tags/$ver^{commit}" 2>$null) -ne (git rev-parse HEAD)) {
+            throw "HEAD is not tag $ver (HYROUTE_VERSION)"
+        }
+    } else {
+        $ver = (git describe --tags --exact-match --match 'v[0-9]*' 2>$null)
+    }
     if (-not $ver) { throw 'HEAD is not a v* tag: tag the release first (git tag v0.5.0)' }
     # frontend/dist is rebuilt from the sources by build.ps1 -Frontend in
     # the release workflow; any other change means the tag is not what

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/lardan099/hyroute/internal/sysdns"
 )
 
@@ -36,4 +38,27 @@ func (s *systemDNS) Has(a netip.Addr) bool {
 		s.list = l
 	}
 	return s.list[a]
+}
+
+// ipv4Route answers Core.IPv4Route from the routing table (read at most
+// every sysDNSRefresh): only an IPv6 connection that may go through the
+// tunnel pays for it.
+type ipv4Route struct {
+	mu sync.Mutex
+	at time.Time
+	ok bool
+}
+
+func (r *ipv4Route) Has() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.at.IsZero() && time.Since(r.at) < sysDNSRefresh {
+		return r.ok
+	}
+	r.at = time.Now()
+	// Any public address: the best interface for it is the default
+	// route's. Only the table is read, nothing is sent.
+	var idx uint32
+	r.ok = windows.GetBestInterfaceEx(&windows.SockaddrInet4{Addr: [4]byte{1, 1, 1, 1}}, &idx) == nil
+	return r.ok
 }

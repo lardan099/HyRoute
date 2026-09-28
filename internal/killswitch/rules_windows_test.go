@@ -136,7 +136,7 @@ func TestRules(t *testing.T) {
 				t.Fatalf("%s: Release does not remove kind %d", r.Name, kind)
 			}
 		}
-		for _, kind := range []byte{kindSecureDNS, kindRelay} {
+		for _, kind := range []byte{kindDNS, kindSecureDNS, kindRelay} {
 			if find(block, i, kind) == nil {
 				t.Fatalf("layer %d: no filter of kind %d", i, kind)
 			}
@@ -154,6 +154,10 @@ func TestRules(t *testing.T) {
 			otherDNS = at("2620:fe::fe", 443)
 		}
 		tcp, udp := wf.IPProtoTCP, wf.IPProtoUDP
+		client, server := uint16(68), uint16(67)
+		if l.v6 {
+			client, server = 546, 547
+		}
 		cases := []struct {
 			what string
 			c    conn
@@ -163,11 +167,21 @@ func TestRules(t *testing.T) {
 			{"a browser to the DNS server's DoH port", conn{app: "browser", proto: tcp, local: 50000, remote: at(dns, 443)}, wf.ActionBlock},
 			{"the local network", conn{app: "browser", proto: tcp, local: 50000, remote: at(lan, 445)}, wf.ActionPermit},
 			{"loopback", conn{app: "browser", proto: tcp, local: 50000, remote: at(host, 80), loopback: true}, wf.ActionPermit},
-			{"DNS", conn{app: "svchost", proto: udp, local: 50000, remote: at(host, 53)}, wf.ActionPermit},
-			{"DNS of another program", conn{app: "browser", proto: udp, local: 50000, remote: at(host, 53)}, wf.ActionBlock},
+			{"DNS", conn{app: "svchost", proto: udp, local: 50000, remote: at(dns, 53)}, wf.ActionPermit},
+			{"DNS over TCP", conn{app: "svchost", proto: tcp, local: 50000, remote: at(dns, 53)}, wf.ActionPermit},
+			{"DNS of another program", conn{app: "browser", proto: udp, local: 50000, remote: at(dns, 53)}, wf.ActionBlock},
+			// svchost.exe also runs BITS and WebDAV, which reach any host
+			// and port for any program.
+			{"a service to port 53 of another host", conn{app: "svchost", proto: tcp, local: 50000, remote: at(host, 53)}, wf.ActionBlock},
+			{"a service from port 53 of another host (inbound)", conn{app: "svchost", proto: tcp, local: 3389, remote: at(host, 53)}, wf.ActionBlock},
+			{"DHCP", conn{app: "svchost", proto: udp, local: client, remote: at(host, server)}, wf.ActionPermit},
+			{"DHCP of another program", conn{app: "browser", proto: udp, local: client, remote: at(host, server)}, wf.ActionBlock},
+			{"a service to the DHCP port", conn{app: "svchost", proto: tcp, local: 50000, remote: at(host, server)}, wf.ActionBlock},
+			{"a service from the DHCP port (inbound)", conn{app: "svchost", proto: udp, local: 3389, remote: at(host, server)}, wf.ActionBlock},
 			{"DoH to the DNS server", conn{app: "svchost", proto: tcp, local: 50000, remote: at(dns, 443)}, wf.ActionPermit},
 			{"DoT to the DNS server", conn{app: "svchost", proto: tcp, local: 50000, remote: at(dns, 853)}, wf.ActionPermit},
 			{"DoH to another server", conn{app: "svchost", proto: tcp, local: 50000, remote: otherDNS}, wf.ActionBlock},
+			{"DoQ to the DNS server", conn{app: "svchost", proto: udp, local: 50000, remote: at(dns, 853)}, wf.ActionBlock},
 			{"QUIC to the DNS server", conn{app: "svchost", proto: udp, local: 50000, remote: at(dns, 443)}, wf.ActionBlock},
 			{"a service to the DNS server's web port", conn{app: "svchost", proto: tcp, local: 50000, remote: at(dns, 80)}, wf.ActionBlock},
 			{"Hysteria", conn{app: "hysteria", proto: udp, local: 50000, remote: at(host, 443)}, wf.ActionPermit},
@@ -194,6 +208,42 @@ func TestRules(t *testing.T) {
 		rs := exceptions{dns: e.dns}.rules(i)
 		if len(rs) != 1 || rs[0].ID != ruleID(i, kindPorts) || len(rs[0].Conditions) != len(Ports) {
 			t.Fatalf("layer %d without app IDs, relay: %v", i, rs)
+		}
+	}
+	// Without the DNS servers (no adapter up yet) Windows' DNS client
+	// reaches any host on port 53, but only outbound; DHCP stays narrow and
+	// other programs and services get nothing.
+	at := func(a string, port uint16) netip.AddrPort { return netip.AddrPortFrom(netip.MustParseAddr(a), port) }
+	for i, l := range layers {
+		host := "93.184.216.34"
+		client, server := uint16(68), uint16(67)
+		if l.v6 {
+			host = "2001:db8::34"
+			client, server = 546, 547
+		}
+		rs := append(fixedRules(i), exceptions{svc: "svchost"}.rules(i)...)
+		// On the inbound layers port 53 is a source port: BITS or WebDAV
+		// accepting from any host.
+		dns := wf.ActionPermit
+		if l.in {
+			dns = wf.ActionBlock
+		}
+		for _, tc := range []struct {
+			what string
+			c    conn
+			want wf.Action
+		}{
+			{"DNS", conn{app: "svchost", proto: wf.IPProtoUDP, local: 50000, remote: at(host, 53)}, dns},
+			{"DNS over TCP", conn{app: "svchost", proto: wf.IPProtoTCP, local: 50000, remote: at(host, 53)}, dns},
+			{"DNS of another program", conn{app: "browser", proto: wf.IPProtoUDP, local: 50000, remote: at(host, 53)}, wf.ActionBlock},
+			{"DHCP", conn{app: "svchost", proto: wf.IPProtoUDP, local: client, remote: at(host, server)}, wf.ActionPermit},
+			{"a service to the DHCP port", conn{app: "svchost", proto: wf.IPProtoTCP, local: 50000, remote: at(host, server)}, wf.ActionBlock},
+			{"a service from the DHCP client port", conn{app: "svchost", proto: wf.IPProtoTCP, local: 50000, remote: at(host, client)}, wf.ActionBlock},
+			{"DoH to any host", conn{app: "svchost", proto: wf.IPProtoTCP, local: 50000, remote: at(host, 443)}, wf.ActionBlock},
+		} {
+			if got := decide(t, rs, tc.c); got != tc.want {
+				t.Errorf("layer %d without DNS servers, %s: %v, want %v", i, tc.what, got, tc.want)
+			}
 		}
 	}
 	// Only the family's DNS servers: no IPv6 server, no IPv6 filter.

@@ -80,6 +80,9 @@ type Supervisor struct {
 	available atomic.Bool
 	kick      chan restart // current run's restart request
 	probing   atomic.Bool
+	// pinFailed is the pinned IP of the last run that never connected: the
+	// next run pins another address. Used by the loop goroutine only.
+	pinFailed netip.Addr
 }
 
 // restart asks the running Hysteria to be killed and started again.
@@ -323,14 +326,26 @@ func (s *Supervisor) resolve(ctx context.Context) ([]netip.Addr, error) {
 	return ips, nil
 }
 
-// pickPinned prefers IPv4: IPv6 connectivity is often absent.
-func pickPinned(ips []netip.Addr) netip.Addr {
+// pickPinned prefers IPv4: IPv6 connectivity is often absent. failed is
+// the address of the last run that never connected: the one after it is
+// taken (the other IPv4 addresses first, then IPv6, then around again), so
+// one dead address of several does not keep the profile down.
+func pickPinned(ips []netip.Addr, failed netip.Addr) netip.Addr {
+	order := make([]netip.Addr, 0, len(ips))
 	for _, ip := range ips {
 		if ip.Is4() {
-			return ip
+			order = append(order, ip)
 		}
 	}
-	return ips[0]
+	for _, ip := range ips {
+		if !ip.Is4() {
+			order = append(order, ip)
+		}
+	}
+	if i := slices.Index(order, failed); i >= 0 {
+		return order[(i+1)%len(order)]
+	}
+	return order[0]
 }
 
 // runOnce runs one Hysteria process until it exits. It returns how long it
@@ -342,7 +357,7 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 	}
 	var pinned netip.Addr
 	if s.Profile.PinServerIP && !s.Profile.HostIsIP() {
-		pinned = pickPinned(ips)
+		pinned = pickPinned(ips, s.pinFailed)
 	}
 	if s.SetServerIPs != nil {
 		if err := s.SetServerIPs(ips); err != nil {
@@ -382,10 +397,20 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 	s.kick = kick
 	s.status.SOCKS = opts.SOCKSListen
 	s.mu.Unlock()
-	if err := writeSecretFile(cfgPath, cfg); err != nil {
+	releaseCfg, err := writeSecretFile(cfgPath, cfg)
+	if err != nil {
 		return 0, ErrOther, "Не удалось записать конфиг Hysteria: " + err.Error()
 	}
-	defer os.Remove(cfgPath)
+	// The config is read at startup only: it goes once Hysteria has
+	// connected, or with the process.
+	var dropOnce sync.Once
+	dropConfig := func() {
+		dropOnce.Do(func() {
+			releaseCfg()
+			os.Remove(cfgPath)
+		})
+	}
+	defer dropConfig()
 
 	pr, pw := io.Pipe()
 	env := append(os.Environ(),
@@ -448,7 +473,7 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 				first := connectedAt.IsZero()
 				if first {
 					connectedAt = time.Now()
-					os.Remove(cfgPath) // config is read at startup only
+					dropConfig()
 				}
 				lastUDP = ev.UDPEnabled
 				evMu.Unlock()
@@ -567,13 +592,22 @@ wait:
 	if !connectedAt.IsZero() {
 		connectedFor = time.Since(connectedAt)
 	}
+	kind, msg := lastKind, lastMsg
 	if restartReason != "" {
-		return connectedFor, restartKind, restartReason
+		kind, msg = restartKind, restartReason
+	} else if lastMsg == "Hysteria завершилась" && waitErr != nil {
+		msg += ": " + waitErr.Error()
 	}
-	if lastMsg == "Hysteria завершилась" && waitErr != nil {
-		lastMsg += ": " + waitErr.Error()
+	switch {
+	case !pinned.IsValid() || ctx.Err() != nil:
+	case !connectedAt.IsZero():
+		s.pinFailed = netip.Addr{}
+	case kind != ErrPortBusy && kind != ErrConfig:
+		// Not a local problem or one of the profile: the address may be
+		// the one that does not answer.
+		s.pinFailed = pinned
 	}
-	return connectedFor, lastKind, lastMsg
+	return connectedFor, kind, msg
 }
 
 // redactLine hides secrets in a parsed log line: the raw text, the message

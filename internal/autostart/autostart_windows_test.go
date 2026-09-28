@@ -4,11 +4,14 @@ package autostart
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"unsafe"
 
+	"github.com/go-ole/go-ole"
 	"golang.org/x/sys/windows"
 )
 
@@ -18,7 +21,7 @@ func TestXMLEscapesPath(t *testing.T) {
 		!strings.Contains(x, "<Priority>4</Priority>") {
 		t.Fatal(x)
 	}
-	// decode reads schtasks /Query output, which may be UTF-16 with a BOM.
+	// decode reads schtasks output (errors), which may be UTF-16 with a BOM.
 	if s := decode([]byte{0xff, 0xfe, 'a', 0, 'b', 0}); s != "ab" {
 		t.Fatalf("decode UTF-16: %q", s)
 	}
@@ -27,12 +30,14 @@ func TestXMLEscapesPath(t *testing.T) {
 	}
 }
 
-// TestParseTask reads back what schtasks /Query /XML prints for a task
-// made from taskXML.
+// TestParseTask reads back the definition of a task made from taskXML, as
+// Task Scheduler returns it (taskDefinition), a path outside ASCII too.
 func TestParseTask(t *testing.T) {
-	got, err := parseTask("HyRoute", taskXML(startTask, `C:\Program Files\HyRoute\HyRoute.exe`, "S-1-5-21-1-2-3-1001"))
-	if err != nil || got.command != `C:\Program Files\HyRoute\HyRoute.exe` || got.user != "S-1-5-21-1-2-3-1001" {
-		t.Fatalf("%+v %v", got, err)
+	for _, exe := range []string{`C:\Program Files\HyRoute\HyRoute.exe`, `C:\Program Files\Утилиты\HyRoute\HyRoute.exe`} {
+		got, err := parseTask("HyRoute", taskXML(startTask, exe, "S-1-5-21-1-2-3-1001"))
+		if err != nil || got.command != exe || got.user != "S-1-5-21-1-2-3-1001" {
+			t.Fatalf("%+v %v", got, err)
+		}
 	}
 	if _, err := parseTask("HyRoute", "not xml"); err == nil {
 		t.Fatal("garbage parsed")
@@ -42,6 +47,32 @@ func TestParseTask(t *testing.T) {
 // TestCheckTaskXML: the kill switch check starts HyRoute like the
 // autostart task (the user's own, elevated, normal priority) but with
 // CheckFlag, under a name of its own.
+// TestTaskNotFound: only a missing task reads as no task; access denied
+// or a broken COM call must not make Disable skip deleting it.
+func TestTaskNotFound(t *testing.T) {
+	exc := func(scode uint32) error {
+		var ei ole.EXCEPINFO
+		f, _ := reflect.TypeOf(ei).FieldByName("scode")
+		*(*uint32)(unsafe.Add(unsafe.Pointer(&ei), f.Offset)) = scode
+		return ole.NewErrorWithSubError(dispEException, "", ei)
+	}
+	for err, want := range map[error]bool{
+		ole.NewError(hresultFileNotFound):             true,
+		ole.NewError(hresultPathNotFound):             true,
+		exc(hresultFileNotFound):                      true,
+		fmt.Errorf("x: %w", exc(hresultPathNotFound)): true,
+		ole.NewError(0x80070005):                      false, // access denied
+		exc(0x80070005):                               false,
+		ole.NewError(dispEException):                  false,
+		errors.New("0x80070002"):                      false,
+		nil:                                           false,
+	} {
+		if got := taskNotFound(err); got != want {
+			t.Errorf("%v: %v, want %v", err, got, want)
+		}
+	}
+}
+
 func TestCheckTaskXML(t *testing.T) {
 	const exe, sid = `C:\Program Files\HyRoute\HyRoute.exe`, "S-1-5-21-1-2-3-1001"
 	x := taskXML(checkTask, exe, sid)

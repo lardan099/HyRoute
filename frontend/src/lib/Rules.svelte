@@ -188,6 +188,7 @@
       {#each s.rules as r, i (i + ':' + JSON.stringify(r))}
         {@const pr = problem(r)}
         {@const li = lint.filter((x) => x.index === i)}
+        {@const more = Math.max(0, (r.apps?.length ?? 0) - 3) + Math.max(0, (r.domains?.length ?? 0) - 4)}
         <div
           class="rule card"
           class:off={r.enabled === false}
@@ -225,13 +226,13 @@
               {#each (r.apps ?? []).slice(0, 3) as a}<span class="tag"><Icon name="app" size={12} />{appLabel(a.pattern)}</span>{/each}
               {#each (r.domains ?? []).slice(0, 4) as d}
                 {@const il = itemLabel(d)}
-                <span class="tag" class:geo={il?.geo} class:miss={!!il?.missing} title={il?.tip ?? ''}
+                <span class="tag" class:geo={il?.geo} class:miss={!!il?.missing} title={il?.geo ? il.tip : hide(il?.tip)}
                   ><Icon name={il?.missing ? 'alert' : il?.geo ? 'database' : 'globe'} size={12} />{il?.geo ? siteLabel(d) : hide(siteLabel(d))}{#if il?.geo}<span
                       class="src">{il.kind}</span
                     >{/if}</span
                 >
               {/each}
-              {#if (r.apps?.length ?? 0) + (r.domains?.length ?? 0) > 7}<span class="tag more">+{(r.apps?.length ?? 0) + (r.domains?.length ?? 0) - 7}</span>{/if}
+              {#if more}<span class="tag more">+{more}</span>{/if}
               {#if r.protocol}<span class="tag">{r.protocol.toUpperCase()}</span>{/if}
             </span>
           </button>

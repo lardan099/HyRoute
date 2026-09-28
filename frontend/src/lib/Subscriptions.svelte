@@ -103,10 +103,14 @@
   }
 
   // edit reports whether the change was saved. token (a preview's) also
-  // changes the link and applies what the preview downloaded.
+  // changes the link and applies what the preview downloaded. The fields
+  // the patch leaves are sent as the list has them now, not as s had them:
+  // changeURL calls this after a check that may take tens of seconds, and
+  // the switch, interval or name changed meanwhile must not be undone.
   async function edit(s: Subscription, patch: Partial<{ name: string; token: string; enabled: boolean; interval: string }>): Promise<boolean> {
+    const cur = list.find((x) => x.id === s.id) ?? s;
     const ok = await step('edit', async () => {
-      await api.EditSubscription({ id: s.id, name: patch.name ?? s.name, token: patch.token ?? '', enabled: patch.enabled ?? s.enabled, interval: patch.interval ?? s.interval });
+      await api.EditSubscription({ id: s.id, name: patch.name ?? cur.name, token: patch.token ?? '', enabled: patch.enabled ?? cur.enabled, interval: patch.interval ?? cur.interval });
       return true;
     });
     await load();
@@ -116,12 +120,20 @@
   // changeURL checks the new link the way adding does before it replaces
   // the old one: the saved link is shown only masked, so a mistyped one
   // would lose it for good. The checked download is what gets applied: the
-  // link is not downloaded a second time.
+  // link is not downloaded a second time. What the check warns about (a
+  // plain http:// link, links it could not parse) is shown before that, as
+  // adding shows it in the preview.
   async function changeURL(s: Subscription) {
     const u = prompt(`Новая ссылка подписки «${hide(s.name)}»:`)?.trim();
     if (!u) return;
     const pv = await step('upd:' + s.id, () => api.PreviewSubscription(u));
     if (!pv) return;
+    const notes = [...pv.warnings, ...pv.errors];
+    if (notes.length) {
+      const more = notes.length > 8 ? `\n… и ещё ${notes.length - 8}` : '';
+      const found = `Найдено ${pv.count} ${plural(pv.count, 'Hysteria-профиль', 'Hysteria-профиля', 'Hysteria-профилей')}.`;
+      if (!confirm(`${found}\n\n${notes.slice(0, 8).map(hide).join('\n')}${more}\n\nСменить ссылку подписки «${hide(s.name)}»?`)) return;
+    }
     const ok = await edit(s, { token: pv.token });
     onchange();
     if (ok) info = `«${s.name}»: ссылка изменена, профили обновлены.`;

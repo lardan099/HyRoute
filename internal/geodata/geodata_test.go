@@ -2,9 +2,13 @@ package geodata
 
 import (
 	"errors"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -312,5 +316,103 @@ func TestOpenReadAllowsRename(t *testing.T) {
 	b := make([]byte, 3)
 	if _, err := f.ReadAt(b, 0); err != nil || string(b) != "old" {
 		t.Fatalf("%v %q", err, b)
+	}
+}
+
+// Attributes are all required ("google@cn@ads", as in Xray); a category
+// with no entry left by them is an error, not a silently empty item.
+func TestSiteAttrs(t *testing.T) {
+	dir := t.TempDir()
+	writeList(t, filepath.Join(dir, "geosite.dat"), siteEntry("ADS",
+		dom{typeDomain, "a.cn", []string{"cn", "ads"}},
+		dom{typeDomain, "b.cn", []string{"cn"}},
+		dom{typeDomain, "c.com", []string{"ads"}},
+	))
+	db := &DB{Dir: dir}
+	both, err := db.Site("ads@cn@ads")
+	if err != nil || both.Len() != 1 || !both.Match("a.cn") || both.Match("b.cn") {
+		t.Fatalf("%v %v", err, both)
+	}
+	for _, name := range []string{"ads@cnn", "ads@cn@x"} {
+		if _, err := db.Site(name); err == nil || !strings.Contains(err.Error(), "нет записей") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if d, _, err := db.Expand("ads@cn@ads"); err != nil || len(d) != 1 || d[0] != "a.cn" {
+		t.Fatalf("expand: %v %v", err, d)
+	}
+	if d, _, err := db.Expand("ads@cnn"); err == nil || !strings.Contains(err.Error(), "@cnn") {
+		t.Fatalf("typo expanded: %v %v", err, d)
+	}
+	// The list viewer reads "google@cn" as the rules do.
+	l, err := db.List(Site, "ads@cn", "", 0, 10)
+	if err != nil || l.Total != 2 || l.Entries[0] != "domain:a.cn @cn @ads" {
+		t.Fatalf("%v %+v", err, l)
+	}
+	if _, err := db.List(Site, "ads@cnn", "", 0, 10); err == nil || !strings.Contains(err.Error(), "@cnn") {
+		t.Fatalf("typo listed: %v", err)
+	}
+}
+
+// The built-in geoip:private is listed with IPv6 and prefix lengths.
+func TestListPrivate(t *testing.T) {
+	db := &DB{Dir: t.TempDir()}
+	l, err := db.List(IP, "private", "", 0, 100)
+	if err != nil || l.Total != len(privatePrefixes) {
+		t.Fatalf("%v %+v", err, l)
+	}
+	for _, want := range []string{"fc00::/7", "224.0.0.0/4", "255.255.255.255/32", "10.0.0.0/8"} {
+		if !slices.Contains(l.Entries, want) {
+			t.Errorf("%s missing: %v", want, l.Entries)
+		}
+	}
+}
+
+// Categories no rule in use needs are dropped from memory.
+func TestRetain(t *testing.T) {
+	db := testDB(t)
+	for _, n := range []string{"youtube", "google", "google@cn"} {
+		if _, err := db.Site(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.IP("ru"); err != nil {
+		t.Fatal(err)
+	}
+	db.Retain(Site, []string{"Google@CN"})
+	db.Retain(IP, nil)
+	db.mu.Lock()
+	sites, ips := slices.Collect(maps.Keys(db.files[Site].sites)), len(db.files[IP].ips)
+	db.mu.Unlock()
+	if len(sites) != 1 || sites[0] != "google@cn" || ips != 0 {
+		t.Fatalf("kept %v and %d geoip", sites, ips)
+	}
+	if d, err := db.Site("youtube"); err != nil || !d.Match("youtube.com") {
+		t.Fatal(err)
+	}
+}
+
+// A link planted under a database name is refused, not followed.
+func TestOpenReadRefusesLinks(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("links are refused on Windows, where HyRoute runs elevated")
+	}
+	dir := t.TempDir()
+	secret := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secret, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(secret, filepath.Join(dir, "geosite.dat")); err != nil {
+		t.Skipf("no hard links here: %v", err)
+	}
+	if f, err := openRead(filepath.Join(dir, "geosite.dat")); err == nil {
+		f.Close()
+		t.Fatal("hard link opened")
+	}
+	if err := os.Symlink(secret, filepath.Join(dir, "geoip.dat")); err == nil {
+		if f, err := openRead(filepath.Join(dir, "geoip.dat")); err == nil {
+			f.Close()
+			t.Fatal("symlink followed")
+		}
 	}
 }

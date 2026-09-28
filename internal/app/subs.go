@@ -35,6 +35,16 @@ type FetchResult struct {
 	UserInfo string // subscription-userinfo header
 }
 
+// directTransport is http.DefaultTransport without a proxy: HyRoute's own
+// requests go straight to the server, never through the HTTP_PROXY or
+// HTTPS_PROXY of the user's environment (a proxy that is not running yet
+// at logon, or another VPN, which would also see an http:// link whole).
+var directTransport = func() *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.Proxy = nil
+	return tr
+}()
+
 // httpFetch downloads a subscription. HyRoute's own traffic is never
 // routed, so this goes straight to the subscription server.
 func (c *Controller) httpFetch(ctx context.Context, rawURL string) (FetchResult, error) {
@@ -48,7 +58,7 @@ func (c *Controller) httpFetch(ctx context.Context, rawURL string) (FetchResult,
 	}
 	req.Header.Set("User-Agent", "HyRoute/"+c.Version)
 	req.Header.Set("Accept", "text/plain, */*")
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	resp, err := (&http.Client{Timeout: 30 * time.Second, Transport: directTransport}).Do(req)
 	if err != nil {
 		// The error text contains the URL: never show it.
 		var ue *url.Error
@@ -345,9 +355,10 @@ func (c *Controller) AddSubscription(in SubInput) (SubView, error) {
 	}
 	c.subs = subs
 	c.mu.Unlock()
-	if _, err := c.applyFetched(sub.ID, pend.res, true); err != nil {
+	if _, err := c.applyFetched(sub.ID, pend.res, false); err != nil {
 		// Nothing imported: take the subscription back out. Once its
-		// profiles are saved it stays (only its status was not saved).
+		// profiles are saved it stays (only its snapshot or status was not
+		// saved).
 		c.mu.Lock()
 		imported := slices.ContainsFunc(c.profiles.List, func(p hysteria.Profile) bool { return p.Source == "sub:"+sub.ID })
 		if !imported {
@@ -418,7 +429,7 @@ func (c *Controller) EditSubscription(in SubInput) error {
 	if in.Token == "" {
 		return nil
 	}
-	_, err := c.applyFetched(in.ID, pend.res, true)
+	_, err := c.applyFetched(in.ID, pend.res, false)
 	return err
 }
 
@@ -479,18 +490,19 @@ func (c *Controller) UpdateSubscription(id string) (MergeStats, error) {
 		c.recordSubError(id, err)
 		return MergeStats{}, err
 	}
-	return c.applyFetched(id, res, true)
+	return c.applyFetched(id, res, false)
 }
 
 // RollbackSubscription re-applies the previous successful body (after an
-// update in progress).
+// update in progress). The snapshots swap only once its profiles are
+// saved: a rollback that failed leaves them as they were.
 func (c *Controller) RollbackSubscription(id string) (MergeStats, error) {
 	defer c.lockSub(id)()
-	body, err := c.Store.SwapSnapshots(id)
+	body, err := c.Store.PreviousSnapshot(id)
 	if err != nil {
 		return MergeStats{}, err
 	}
-	st, err := c.applyFetched(id, FetchResult{Body: body}, false)
+	st, err := c.applyFetched(id, FetchResult{Body: body}, true)
 	if err == nil {
 		c.Log.Info("subscription rolled back to the previous version", "subscription", c.subName(id))
 	}
@@ -513,9 +525,10 @@ func (c *Controller) recordSubError(id string, err error) {
 	next := slices.Clone(c.subs)
 	if i := slices.IndexFunc(next, func(s store.Subscription) bool { return s.ID == id }); i >= 0 {
 		next[i].LastAttempt, next[i].LastError = time.Now(), err.Error()
-		if c.saveSubsLocked(next) == nil {
-			c.subs = next
-		}
+		// Kept even when subscriptions.json cannot be saved: the error
+		// shows, and the scheduler retries at its pace, not every minute.
+		c.saveSubsLocked(next)
+		c.subs = next
 	}
 	c.mu.Unlock()
 	c.Log.Warn("subscription update failed, previous profiles kept", "subscription", c.subName(id), "err", err)
@@ -523,9 +536,10 @@ func (c *Controller) recordSubError(id string, err error) {
 }
 
 // applyFetched parses res and, only if that succeeds, merges the profiles
-// and stores the body as the current snapshot (snapshot=false: it already
-// is, e.g. a rollback).
-func (c *Controller) applyFetched(id string, res FetchResult, snapshot bool) (MergeStats, error) {
+// and then stores the body as the current snapshot (rollback: res is the
+// previous snapshot, and the two swap). A failure is the subscription's
+// last error.
+func (c *Controller) applyFetched(id string, res FetchResult, rollback bool) (MergeStats, error) {
 	l, err := parseSubscription(res.Body)
 	if err != nil {
 		c.recordSubError(id, err)
@@ -546,30 +560,46 @@ func (c *Controller) applyFetched(id string, res FetchResult, snapshot bool) (Me
 			next.Active = list[0].ID
 		}
 	}
-	if snapshot {
-		if err := c.Store.PushSnapshot(id, res.Body); err != nil {
-			c.mu.Unlock()
-			return st, fmt.Errorf("не удалось сохранить снимок подписки: %w", err)
-		}
-	}
+	// Profiles first: the snapshots follow only a list that was applied,
+	// so a failed save leaves them, and what a rollback returns to, as
+	// they were.
 	if err := c.saveProfilesLocked(next); err != nil {
 		c.mu.Unlock()
+		c.recordSubError(id, err)
 		return st, err
+	}
+	var snapErr error
+	if rollback {
+		snapErr = c.Store.SwapSnapshots(id)
+	} else {
+		// The same servers again (other names, another order) keep the
+		// version a rollback returns to.
+		snapErr = c.Store.PushSnapshot(id, res.Body, func(cur []byte) bool {
+			return sameServers(ParseLinks(string(cur)).Profiles, l.Profiles)
+		})
 	}
 	subs := slices.Clone(c.subs)
 	s := &subs[i]
 	now := time.Now()
 	s.LastUpdate, s.LastAttempt, s.LastError = now, now, ""
+	if snapErr != nil {
+		// The profiles are applied; a rollback may now return to an older
+		// version than the one before them.
+		snapErr = fmt.Errorf("не удалось сохранить снимок подписки: %w", snapErr)
+		s.LastError = snapErr.Error()
+	}
 	s.Count, s.Ignored, s.Warnings = len(l.Profiles), l.Ignored, l.Warnings
-	if res.UserInfo != "" || snapshot {
+	if res.UserInfo != "" || !rollback {
 		s.UserInfo = res.UserInfo
 	}
 	s.HasPrevious = c.Store.HasPrevious(id)
 	err = c.saveSubsLocked(subs)
-	if err == nil {
-		c.subs = subs
-	}
+	// The status is kept even when it cannot be saved (see recordSubError).
+	c.subs = subs
 	c.mu.Unlock()
+	if err == nil {
+		err = snapErr
+	}
 	c.Log.Info("subscription updated", "subscription", s.Name, "profiles", len(l.Profiles), "added", st.Added,
 		"updated", st.Updated, "removed", st.Removed, "missingKept", st.MissingKept, "ignored", l.IgnoredTotal())
 	c.changed()
@@ -579,8 +609,10 @@ func (c *Controller) applyFetched(id string, res FetchResult, snapshot bool) (Me
 // profileUsedLocked reports whether profile id must outlive its
 // subscription dropping it: it is the main one, or a rule or a local proxy
 // names it (its ID would be lost, and they would refuse their traffic).
+// While settings.json or proxies.json is not loaded their references are
+// unknown, and every profile counts as used.
 func (c *Controller) profileUsedLocked(id string) bool {
-	return id == c.profiles.Active || len(c.explicitRefsLocked(id)) > 0 || len(c.proxyRefsLocked(id)) > 0
+	return id == c.profiles.Active || c.refsUnknownLocked() != nil || len(c.explicitRefsLocked(id)) > 0 || len(c.proxyRefsLocked(id)) > 0
 }
 
 // proxyRefsLocked lists local proxies that name profile id explicitly.
@@ -597,10 +629,17 @@ func (c *Controller) proxyRefsLocked(id string) []string {
 // DeleteSubscription removes the subscription. Its profiles that rules or
 // proxies use become manual profiles (so they keep working); the rest go.
 // It does not wait for an update in progress: that one finds the
-// subscription gone (under mu) and stores nothing.
+// subscription gone (under mu) and stores nothing. subscriptions.json goes
+// first and is put back when the profiles cannot be saved: a subscription
+// never stays without its profiles, snapshots and masked link.
 func (c *Controller) DeleteSubscription(id string) error {
 	source := "sub:" + id
 	c.mu.Lock()
+	subs := slices.DeleteFunc(slices.Clone(c.subs), func(s store.Subscription) bool { return s.ID == id })
+	if err := c.saveSubsLocked(subs); err != nil {
+		c.mu.Unlock()
+		return err
+	}
 	var list []hysteria.Profile
 	for _, p := range c.profiles.List {
 		if p.Source != source {
@@ -613,15 +652,14 @@ func (c *Controller) DeleteSubscription(id string) error {
 		}
 	}
 	next := &store.Profiles{Active: c.profiles.Active, List: list}
-	if err := c.saveProfilesLocked(next); err != nil {
+	err := c.saveProfilesLocked(next)
+	if err != nil && c.saveSubsLocked(c.subs) == nil {
 		c.mu.Unlock()
 		return err
 	}
-	subs := slices.DeleteFunc(slices.Clone(c.subs), func(s store.Subscription) bool { return s.ID == id })
-	err := c.saveSubsLocked(subs)
-	if err == nil {
-		c.subs = subs
-	}
+	// Gone from subscriptions.json: when its profiles could not be saved
+	// either, they stay as those of a deleted subscription.
+	c.subs = subs
 	c.mu.Unlock()
 	c.Store.DeleteSnapshots(id)
 	c.Redactor.SetGroup("sub:" + id)
@@ -686,6 +724,12 @@ func (c *Controller) due(s store.Subscription, now, started time.Time) bool {
 	d, ok := intervals[s.Interval]
 	if !s.Enabled || !ok {
 		return false
+	}
+	// A try stamped while the clock was well ahead: waiting for that time
+	// could take a year. Once tried, LastAttempt is right again. (A tick
+	// read late may be a little older than a try made meanwhile.)
+	if s.LastAttempt.Sub(now) > retry {
+		return true
 	}
 	if s.LastError != "" && now.Sub(s.LastAttempt) >= retry && now.Sub(s.LastUpdate) >= d {
 		return true

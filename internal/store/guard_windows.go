@@ -117,7 +117,7 @@ func hold(dir string, user windows.Token) (handles, error) {
 	var fi windows.ByHandleFileInformation
 	err = windows.GetFileInformationByHandle(dh, &fi)
 	if err == nil && (fi.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || fi.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0) {
-		err = fmt.Errorf("%s — ссылка на другое место, а не обычная папка: HyRoute работает с правами администратора и не пишет туда, куда она ведёт. Замените её обычной папкой", dir)
+		err = notFolder(dir)
 	}
 	if err == nil {
 		err = sameFinalPath(dh, dir)
@@ -127,13 +127,18 @@ func hold(dir string, user windows.Token) (handles, error) {
 	}
 	var lh windows.Handle
 	if err == nil {
-		lh, err = lockFile(dir)
+		lh, err = lockFile(dh, dir)
 	}
 	if err != nil {
 		windows.CloseHandle(dh)
 		return handles{}, err
 	}
 	return handles{dir: dh, lock: lh}, nil
+}
+
+// notFolder is the refusal of a guarded folder that is a link.
+func notFolder(dir string) error {
+	return fmt.Errorf("%s — ссылка на другое место, а не обычная папка: HyRoute работает с правами администратора и не пишет туда, куда она ведёт. Замените её обычной папкой", dir)
 }
 
 // sameFinalPath refuses a folder whose path leads through a link higher
@@ -216,23 +221,32 @@ func appDataDir() (string, error) {
 // *.log* glob.
 const lockName = ".hyroute-lock"
 
-// lockFile creates (or opens) lockName inside dir and keeps it open with
-// no delete sharing, so it cannot be removed and the folder stays
-// non-empty. The name must not lead elsewhere either.
-func lockFile(dir string) (windows.Handle, error) {
+// lockFile creates (or opens) lockName inside the folder dh, dir, and
+// keeps it open with no delete sharing, so it cannot be removed and the
+// folder stays non-empty. The name must not lead elsewhere either. It is
+// opened relative to dh, not by path: the folder, still empty, may have
+// become a mount point since hold checked it, and by path the file would
+// land where that leads, leaving the folder empty and open to redirection.
+// Once the file is in it, the folder can no longer become one, so it is
+// checked again after.
+func lockFile(dh windows.Handle, dir string) (windows.Handle, error) {
 	name := filepath.Join(dir, lockName)
-	p, err := windows.UTF16PtrFromString(name)
+	un, err := windows.NewNTUnicodeString(lockName)
 	if err != nil {
 		return 0, err
 	}
+	oa := windows.OBJECT_ATTRIBUTES{RootDirectory: dh, ObjectName: un, Attributes: windows.OBJ_CASE_INSENSITIVE}
+	oa.Length = uint32(unsafe.Sizeof(oa))
 	// FILE_READ_DATA makes the sharing mode count (as FILE_LIST_DIRECTORY
 	// does for the folder): a handle with attribute access only takes no
 	// part in the sharing check, and the file could be deleted under it.
-	// OPEN_ALWAYS creates it on first run. Hidden and system so it does
+	// FILE_OPEN_IF creates it on first run. Hidden and system so it does
 	// not show among the user's files.
-	h, err := windows.CreateFile(p, windows.FILE_READ_DATA|windows.FILE_READ_ATTRIBUTES|windows.SYNCHRONIZE,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_ALWAYS,
-		windows.FILE_ATTRIBUTE_HIDDEN|windows.FILE_ATTRIBUTE_SYSTEM|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	var h windows.Handle
+	var iosb windows.IO_STATUS_BLOCK
+	err = windows.NtCreateFile(&h, windows.FILE_READ_DATA|windows.FILE_READ_ATTRIBUTES|windows.SYNCHRONIZE, &oa, &iosb, nil,
+		windows.FILE_ATTRIBUTE_HIDDEN|windows.FILE_ATTRIBUTE_SYSTEM, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, windows.FILE_OPEN_IF,
+		windows.FILE_NON_DIRECTORY_FILE|windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_OPEN_REPARSE_POINT, 0, 0)
 	if err != nil {
 		return 0, fmt.Errorf("файл %s: %w", name, err)
 	}
@@ -240,6 +254,12 @@ func lockFile(dir string) (windows.Handle, error) {
 	err = windows.GetFileInformationByHandle(h, &fi)
 	if err == nil && (fi.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 || fi.NumberOfLinks != 1) {
 		err = fmt.Errorf("%s — ссылка, а не обычный файл: замените папку %s обычной", name, dir)
+	}
+	if err == nil {
+		err = windows.GetFileInformationByHandle(dh, &fi)
+		if err == nil && fi.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+			err = notFolder(dir)
+		}
 	}
 	if err != nil {
 		windows.CloseHandle(h)

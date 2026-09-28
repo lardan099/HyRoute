@@ -93,7 +93,11 @@
 
   const st = $derived(ui.status);
   const online = $derived(st != null && st.state !== 'disconnected' && !(st.state === 'error' && !st.stats));
+  // A kill switch block closes the internet whatever the state: the window
+  // opened at logon on the last page must not say just «Отключено».
+  const blocking = $derived(st?.killSwitch === 'blocking');
   const tone = $derived.by(() => {
+    if (blocking) return 'bad';
     if (!st || st.state === 'disconnected') return 'off';
     if (st.state === 'error' || st.state === 'tunnel-down') return 'bad';
     if (st.state === 'connected' && !st.noTunnel) return 'ok';
@@ -113,6 +117,44 @@
       actionError = errText(e);
     }
     refresh();
+  }
+
+  // The kill switch banner on the pages without their own note (Главная
+  // and Настройки have one): the same actions as the card on Главная.
+  let ksBusy = $state(false);
+  async function ksConnect() {
+    ksBusy = true;
+    try {
+      if (online) await api.Reconnect();
+      else await api.Connect();
+    } catch (e) {
+      actionError = errText(e);
+    }
+    ksBusy = false;
+    refresh();
+  }
+
+  async function ksRelease() {
+    try {
+      await api.ReleaseKillSwitch();
+    } catch (e) {
+      actionError = errText(e);
+    }
+    refresh();
+  }
+
+  // installCore serves the banner and Settings. updates.coreBusy comes only
+  // with the next poll, and a second click before it would get «нет
+  // доступного обновления ядра» while the first install goes on.
+  let coreInstalling = $state(false);
+  async function installCore() {
+    coreInstalling = true;
+    try {
+      await api.InstallCore();
+    } finally {
+      coreInstalling = false;
+      refreshUpdates();
+    }
   }
 </script>
 
@@ -135,7 +177,7 @@
     <div class="grow"></div>
     <button class="side-status tone-{tone}" onclick={() => go('home')} title="Главная">
       <span class="dot"></span>
-      <span class="ellipsis">{st?.noTunnel && tone === 'wait' ? 'Без туннеля' : stateText[tone]}</span>
+      <span class="ellipsis">{blocking ? 'Интернет закрыт' : st?.noTunnel && tone === 'wait' ? 'Без туннеля' : stateText[tone]}</span>
     </button>
     <button
       class="nav privacy"
@@ -157,14 +199,21 @@
         <div class="note ok row"><span class="grow">{notice}</span><button class="icon" onclick={() => (notice = '')}><Icon name="x" size={16} /></button></div>
       {/if}
       {#if st?.loadError}
-        <div class="note error">Настройки не загружены: {st.loadError}</div>
+        <div class="note error">Настройки не загружены: {hide(st.loadError)}</div>
+      {/if}
+      {#if blocking && page !== 'home'}
+        <div class="note warn row">
+          <span class="grow">Kill switch закрыл интернет: HyRoute перестал маршрутизировать трафик без команды «Отключить». Подключитесь снова или откройте интернет.</span>
+          <button class="primary" onclick={ksConnect} disabled={ksBusy || st?.state === 'starting' || ui.profiles.length === 0}>Подключиться</button>
+          <button onclick={ksRelease}>Открыть интернет</button>
+        </div>
       {/if}
       {#if updates?.coreUpdate && !coreLater}
         <div class="note info row">
           <Icon name="download" size={16} />
           <span class="grow">Доступно ядро Hysteria <b>{updates.coreUpdate.version}</b> (сейчас {updates.core.version}).{online ? ' Текущие соединения не прервутся.' : ''}</span>
-          <button class="primary" onclick={() => api.InstallCore().catch((e) => (actionError = errText(e))).finally(refreshUpdates)} disabled={updates.coreBusy}>
-            {updates.coreBusy ? `Загрузка ${Math.round(updates.coreProgress * 100)}%` : 'Обновить'}
+          <button class="primary" onclick={() => installCore().catch((e) => (actionError = errText(e)))} disabled={updates.coreBusy || coreInstalling}>
+            {updates.coreBusy || coreInstalling ? `Загрузка ${Math.round(updates.coreProgress * 100)}%` : 'Обновить'}
           </button>
           <button class="ghost" onclick={() => (coreLater = true)}>Позже</button>
         </div>
@@ -192,7 +241,7 @@
       {:else if page === 'logs'}
         <Logs />
       {:else}
-        <System {updates} onupdates={refreshUpdates} oninstall={() => (showUpdate = true)} />
+        <System {updates} onupdates={refreshUpdates} oninstall={() => (showUpdate = true)} {installCore} {coreInstalling} />
       {/if}
     </div>
   </main>

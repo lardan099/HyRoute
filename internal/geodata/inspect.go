@@ -180,7 +180,7 @@ func (db *DB) FindIP(ip netip.Addr) ([]IPHit, error) {
 	path, names, f, err := db.spans(IP)
 	if err != nil {
 		if err == ErrNoData && Private.Contains(ip) {
-			return []IPHit{{Category: "private", Entry: "встроенный список", Size: Private.Len()}}, nil
+			return []IPHit{{Category: "private", Entry: "встроенный список", Size: len(privatePrefixes)}}, nil
 		}
 		return nil, err
 	}
@@ -199,7 +199,7 @@ func (db *DB) FindIP(ip netip.Addr) ([]IPHit, error) {
 		}
 	})
 	if _, ok := f.index["private"]; !ok && Private.Contains(ip) {
-		hits = append(hits, IPHit{Category: "private", Entry: "встроенный список", Size: Private.Len()})
+		hits = append(hits, IPHit{Category: "private", Entry: "встроенный список", Size: len(privatePrefixes)})
 	}
 	sort.Slice(hits, func(i, j int) bool { return hits[i].Category < hits[j].Category })
 	return hits, nil
@@ -298,19 +298,28 @@ func (db *DB) List(k Kind, name, filter string, offset, limit int) (Listing, err
 	}
 	lastList.Unlock()
 	if entries == nil {
-		sp, ok := idx[name]
+		// "google@cn" lists the entries of google with the attribute, as
+		// the rules read it.
+		cat, attrs := name, []string(nil)
+		if k == Site {
+			cat, attrs = splitAttrs(name)
+		}
+		sp, ok := idx[cat]
 		switch {
 		case !ok && k == IP && name == "private":
-			entries = privateList
+			entries = privatePrefixes // built in: IPv4 and IPv6 networks as written
 		case !ok:
-			return out, &UnknownError{Kind: k, Name: name, Similar: similar(idx, name)}
+			return out, &UnknownError{Kind: k, Name: cat, Similar: similar(idx, cat)}
 		default:
 			b, err := readSpan(path, sp)
 			if err != nil {
 				return out, err
 			}
-			if entries, err = listEntries(k, b); err != nil {
+			if entries, err = listEntries(k, b, attrs); err != nil {
 				return out, err
+			}
+			if len(entries) == 0 && len(attrs) > 0 {
+				return out, attrsError(cat, attrs)
 			}
 		}
 		lastList.Lock()
@@ -337,15 +346,9 @@ func (db *DB) List(k Kind, name, filter string, offset, limit int) (Listing, err
 	return out, nil
 }
 
-var privateList = func() []string {
-	var out []string
-	for _, r := range Private.v4 {
-		out = append(out, netip.AddrFrom4([4]byte{byte(r.lo >> 24), byte(r.lo >> 16), byte(r.lo >> 8), byte(r.lo)}).String()+" …")
-	}
-	return out
-}()
-
-func listEntries(k Kind, b []byte) ([]string, error) {
+// listEntries lists the entries of a category; attrs keeps only geosite
+// entries with all of them.
+func listEntries(k Kind, b []byte, attrs []string) ([]string, error) {
 	var out []string
 	p := pb{b}
 	for !p.done() {
@@ -375,12 +378,15 @@ func listEntries(k Kind, b []byte) ([]string, error) {
 			}
 			continue
 		}
-		typ, val, attrs, err := decodeDomain(raw)
+		typ, val, has, err := decodeDomain(raw)
 		if err != nil {
 			return nil, err
 		}
+		if !hasAttrs(has, attrs) {
+			continue
+		}
 		s := entryText(typ, normValue(typ, val))
-		for _, a := range attrs {
+		for _, a := range has {
 			s += " @" + a
 		}
 		out = append(out, s)
@@ -393,7 +399,7 @@ func listEntries(k Kind, b []byte) ([]string, error) {
 // be listed and are counted in skipped.
 func (db *DB) Expand(name string) (domains []string, skipped int, err error) {
 	name = strings.ToLower(strings.TrimSpace(name))
-	cat, attr, _ := strings.Cut(name, "@")
+	cat, attrs := splitAttrs(name)
 	path, _, f, err := db.spans(Site)
 	if err != nil {
 		return nil, 0, err
@@ -407,6 +413,7 @@ func (db *DB) Expand(name string) (domains []string, skipped int, err error) {
 		return nil, 0, err
 	}
 	p := pb{b}
+	total := 0
 	for !p.done() {
 		num, wire, err := p.field()
 		if err != nil {
@@ -422,11 +429,12 @@ func (db *DB) Expand(name string) (domains []string, skipped int, err error) {
 		if err != nil {
 			return nil, 0, err
 		}
-		typ, val, attrs, err := decodeDomain(raw)
+		typ, val, has, err := decodeDomain(raw)
 		if err != nil {
 			return nil, 0, err
 		}
-		if attr != "" && !containsStr(attrs, attr) {
+		total++
+		if !hasAttrs(has, attrs) {
 			continue
 		}
 		switch typ {
@@ -436,16 +444,10 @@ func (db *DB) Expand(name string) (domains []string, skipped int, err error) {
 			skipped++
 		}
 	}
-	return domains, skipped, nil
-}
-
-func containsStr(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
+	if len(domains)+skipped == 0 && total > 0 && len(attrs) > 0 {
+		return nil, 0, attrsError(cat, attrs)
 	}
-	return false
+	return domains, skipped, nil
 }
 
 // compileLoose compiles a regexp entry once; invalid ones never match.

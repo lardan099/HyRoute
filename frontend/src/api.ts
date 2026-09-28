@@ -577,13 +577,16 @@ export function fmtBytes(n: number): string {
   return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${u[i]}`;
 }
 
+// fmtDuration rounds before picking the unit, so 119.6 s is "2 мин 0 с",
+// not "1 мин 60 с".
 export function fmtDuration(ns: number): string {
-  const ms = ns / 1e6;
-  if (ms < 1000) return `${Math.round(ms)} мс`;
-  const s = ms / 1000;
-  if (s < 60) return `${s.toFixed(1)} с`;
+  const ms = Math.round(ns / 1e6);
+  if (ms < 1000) return `${ms} мс`;
+  const ds = Math.round(ns / 1e8); // tenths of a second
+  if (ds < 600) return `${(ds / 10).toFixed(1)} с`;
+  const s = Math.round(ns / 1e9);
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m} мин ${Math.round(s % 60)} с`;
+  if (m < 60) return `${m} мин ${s % 60} с`;
   return `${Math.floor(m / 60)} ч ${m % 60} мин`;
 }
 

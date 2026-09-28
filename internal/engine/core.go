@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -124,6 +125,11 @@ type Core struct {
 	// SystemDNS reports whether an address is a DNS server of the system
 	// (its network adapters'): Dnscache's encrypted DNS goes there.
 	SystemDNS func(netip.Addr) bool
+	// IPv4Route reports whether the machine has an IPv4 route to the
+	// internet (nil: assume it does). Without one an IPv6 connection
+	// refused at its SYN has no IPv4 to fall back to (an IPv6-only
+	// network, NAT64 without CLAT).
+	IPv4Route func() bool
 	Log       *slog.Logger
 	// OnDecision is called once per new flow after the decision.
 	OnDecision func(flows.View)
@@ -165,6 +171,9 @@ type udpFlow struct {
 	last    time.Time
 	sub     rules.Subject // for a new decision when the profile cannot carry it (udpRetarget)
 	checked time.Time     // last udpRetarget
+	// refused: a Tunnel flow recorded as refused, its tunnel down; set
+	// back to "tunneled" once the tunnel carries it.
+	refused atomic.Bool
 }
 
 // sessKey: one SOCKS5 UDP association per application socket and profile.
@@ -503,7 +512,9 @@ func (c *Core) untrackedRoute(p *packet.Packet, key nat.FlowKey, now time.Time) 
 		return server, nil
 	}
 	snap := c.tcpSnapshot(now, snapshotAge)
-	pid, known := c.Conns.Lookup(attrib.Key5{Proto: packet.ProtoTCP, Local: key.Src, Remote: key.Dst})
+	// Not the bind of the local port: the events never saw a connection
+	// opened before start, so a bind of its port is another socket's.
+	pid, known := c.Conns.LookupConn(attrib.Key5{Proto: packet.ProtoTCP, Local: key.Src, Remote: key.Dst})
 	if !known && snap != nil {
 		pid, known = snap.Owner(key.Src, key.Dst)
 		if !known {
@@ -527,7 +538,7 @@ func (c *Core) untrackedRoute(p *packet.Packet, key nat.FlowKey, now time.Time) 
 	}
 	set := c.Rules.Load()
 	sub := rules.Subject{Proc: proc, Proto: packet.ProtoTCP, Dst: key.Dst}
-	res := set.Evaluate(sub, c.packetNames(set, packet.ProtoTCP, key.Dst))
+	res := set.EvaluateSites(sub, c.packetSites(set, packet.ProtoTCP, key.Dst))
 	if res.NeedsDomain {
 		res = set.EvaluateNoDomain(sub)
 		if c.Opt.ResetUnknownDomain && res.Action == rules.Direct {
@@ -610,7 +621,7 @@ func (c *Core) retargetDue(uf *udpFlow, now time.Time) bool {
 // to a fallback profile that is up.
 func (c *Core) udpRetarget(uf *udpFlow, key nat.FlowKey) bool {
 	set := c.Rules.Load()
-	res := set.Evaluate(uf.sub, c.packetNames(set, packet.ProtoUDP, key.Dst))
+	res := set.EvaluateSites(uf.sub, c.packetSites(set, packet.ProtoUDP, key.Dst))
 	if res.NeedsDomain {
 		// As in applyUDP: the domain of a UDP flow never shows up later.
 		if c.Opt.BlockQUIC && key.Dst.Port() == 443 {
@@ -629,6 +640,11 @@ func (c *Core) udpApply(uf *udpFlow, p *packet.Packet, addr *divert.Address, key
 		c.Inject(p.Buf, addr)
 	case rules.Block:
 	case rules.Tunnel:
+		if uf.refused.Load() {
+			if t := c.tunnel(uf.profile); t != nil && t.Available() && t.UDPAvailable() && uf.refused.CompareAndSwap(true, false) {
+				c.finish(uf.rec, rules.Tunnel, "tunneled")
+			}
+		}
 		c.udpSend(uf, p.Payload(), addr, key)
 	}
 }
@@ -748,7 +764,7 @@ func (c *Core) decide(p *packet.Packet, addr *divert.Address, proto uint8, key n
 	set := c.Rules.Load()
 	res, excl := c.exclusion(pid, known, proc, proto, key.Dst)
 	if !excl {
-		res = c.pick(set.Evaluate(sub, c.packetNames(set, proto, key.Dst)), proto == packet.ProtoUDP)
+		res = c.pick(set.EvaluateSites(sub, c.packetSites(set, proto, key.Dst)), proto == packet.ProtoUDP)
 	}
 	// Our own sockets (the relay's Direct dials, Hysteria's control
 	// traffic) are not shown: the relayed flow already describes them.
@@ -823,6 +839,20 @@ func (c *Core) finish(rec *flows.Record, route rules.Action, outcome string) {
 func (c *Core) applyTCP(p *packet.Packet, addr *divert.Address, key nat.FlowKey, pid uint32, proc *procinfo.Info,
 	sub rules.Subject, set *rules.Set, res rules.Result, rec *flows.Record) (closed bool) {
 	now := time.Now()
+	if res.NeedsDomain && p.IPv6 && c.Opt.BlockIPv6Tunnel && c.mayTunnel(sub, set) && (c.IPv4Route == nil || c.IPv4Route()) {
+		// The relay would learn the domain only once the connection is up,
+		// and a Tunnel decision then resets it: the application does not
+		// fall back to IPv4 for a connection it has. A refused SYN makes
+		// it (happy eyeballs), and over IPv4 the relay sees the domain.
+		// Without an IPv4 route there is nothing to fall back to: the
+		// relay decides by the domain as usual, so a site it sends Direct
+		// stays reachable.
+		c.Blocked.Add(1)
+		rec.Set(func(f *flows.Fields) { f.Rule = "IPv6 blocked for tunnel (domain unknown)" })
+		c.finish(rec, rules.Block, "rst: IPv6 blocked for tunnel")
+		c.rejectSYN(p, addr, key, now)
+		return true
+	}
 	if res.NeedsDomain {
 		ent, err := c.NAT.Insert(&nat.Entry{Flow: key, PID: pid, Mode: nat.Sniff, Rec: rec, Meta: proc}, now)
 		if err == nil {
@@ -911,11 +941,19 @@ func (c *Core) applyUDP(p *packet.Packet, addr *divert.Address, key nat.FlowKey,
 		}
 		c.Blocked.Add(1)
 	case rules.Tunnel:
-		if p.IPv6 && c.Opt.BlockIPv6Tunnel {
+		switch t := c.tunnel(res.Profile); {
+		case p.IPv6 && c.Opt.BlockIPv6Tunnel:
 			uf.route = rules.Block
 			outcome = "dropped: IPv6 blocked for tunnel"
 			c.Blocked.Add(1)
-		} else {
+		case t == nil || !t.Available() || !t.UDPAvailable():
+			// As TCP counts a refused SYN. The flow stays on the tunnel:
+			// its datagrams go once the tunnel is up (see udpOut).
+			noteRejected(t)
+			c.Rejected.Add(1)
+			uf.refused.Store(true)
+			outcome = "dropped: tunnel unavailable"
+		default:
 			outcome = "tunneled"
 		}
 	}
@@ -958,11 +996,30 @@ func (c *Core) resetApp(p *packet.Packet, addr *divert.Address) {
 	c.Inject(rst, &a)
 }
 
-// packetNames are the DNS cache names used for a packet-level decision.
-// With ExactWeb, web flows get none: a domain-dependent TCP flow then goes
-// to the relay for SNI/Host, and QUIC with an unknown domain is dropped so
-// the browser falls back to TCP. The cache stays the relay's fallback.
-func (c *Core) packetNames(set *rules.Set, proto uint8, dst netip.AddrPort) []string {
+// mayTunnel reports whether a domain-dependent flow may turn out to go
+// through the tunnel. The DNS cache is a hint here even with ExactWeb:
+// when every site it has for the address goes elsewhere, the flow is not
+// refused (an IPv6-only site sent Direct stays reachable), and should its
+// SNI still go to the tunnel, RelayDecide blocks it.
+func (c *Core) mayTunnel(sub rules.Subject, set *rules.Set) bool {
+	if !set.MayTunnel(sub) {
+		return false
+	}
+	sites := c.DNS.Sites(sub.Dst.Addr())
+	for _, site := range sites {
+		if set.EvaluateSites(sub, [][]string{site}).Action == rules.Tunnel {
+			return true
+		}
+	}
+	return len(sites) == 0
+}
+
+// packetSites are the DNS cache names, grouped by site, used for a
+// packet-level decision. With ExactWeb, web flows get none: a
+// domain-dependent TCP flow then goes to the relay for SNI/Host, and QUIC
+// with an unknown domain is dropped so the browser falls back to TCP. The
+// cache stays the relay's fallback.
+func (c *Core) packetSites(set *rules.Set, proto uint8, dst netip.AddrPort) [][]string {
 	if set.ExactWeb {
 		if proto == packet.ProtoTCP && rules.WebPort(dst.Port()) {
 			return nil
@@ -971,7 +1028,7 @@ func (c *Core) packetNames(set *rules.Set, proto uint8, dst netip.AddrPort) []st
 			return nil
 		}
 	}
-	return c.DNS.Names(dst.Addr())
+	return c.DNS.Sites(dst.Addr())
 }
 
 // RelayDecide is the relay's Decide callback for SNIFF entries.
@@ -980,9 +1037,18 @@ func (c *Core) RelayDecide(e *nat.Entry, domain string, src rules.DomainSource) 
 	sub := rules.Subject{Proc: proc, Proto: packet.ProtoTCP, Dst: e.Flow.Dst}
 	set := c.Rules.Load()
 	var res rules.Result
+	if src == rules.SrcECH {
+		// The relay keeps the outer name as the tunnel's target only when
+		// the result says SrcSNI.
+		if domain != "" && c.echSite(e.Flow.Dst.Addr(), domain) {
+			src = rules.SrcSNI
+		} else {
+			domain = ""
+		}
+	}
 	if domain != "" {
 		res = set.EvaluateDomain(sub, domain, src)
-	} else if r := set.Evaluate(sub, c.DNS.Names(e.Flow.Dst.Addr())); !r.NeedsDomain {
+	} else if r := set.EvaluateSites(sub, c.DNS.Sites(e.Flow.Dst.Addr())); !r.NeedsDomain {
 		res = r
 	} else {
 		res = set.EvaluateNoDomain(sub)
@@ -993,6 +1059,21 @@ func (c *Core) RelayDecide(e *nat.Entry, domain string, src rules.DomainSource) 
 		res.Action, res.Profile, res.Rule = rules.Block, "", res.Rule+" (IPv6 blocked for tunnel)"
 	}
 	return res
+}
+
+// echSite reports whether the outer SNI of an ECH hello to ip names the
+// site. Chrome and Firefox send GREASE ECH to every site without an ECH
+// config, and then it does. Only a known ECH public name
+// (dnscache.PublicName) hides the site, unless the DNS cache holds that
+// very name for ip (the application asked for it). A hidden site is
+// decided like one without SNI: by the DNS cache names of the address, or
+// as an unknown domain. The public name itself never decides: a rule on it
+// would catch every site behind the provider.
+func (c *Core) echSite(ip netip.Addr, outer string) bool {
+	if !c.DNS.PublicName(outer) {
+		return true
+	}
+	return slices.ContainsFunc(c.DNS.Sites(ip), func(site []string) bool { return slices.Contains(site, outer) })
 }
 
 // RelayDone is the relay's OnDone callback.

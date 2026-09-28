@@ -6,7 +6,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -122,12 +125,9 @@ func main() {
 	var staged runtimefiles.Result
 	files, err := runtimefiles.FromDeps(depsJSON)
 	if err == nil {
-		err = core.ProtectDir(runtimeDir)
-	}
-	if err == nil {
 		dlCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		get := runtimefiles.HTTPGetter(dlCtx, &http.Client{Timeout: 4 * time.Minute}, "HyRoute/"+version)
-		staged, err = runtimefiles.Stage(dir, runtimeDir, files, get)
+		runtimeDir, staged, err = stageRuntime(dir, runtimeDir, files, get, core.ProtectDir)
 		cancel()
 	}
 	if err != nil {
@@ -164,8 +164,11 @@ func main() {
 		Stub:   *stub,
 	}, level)
 	// The engine log also goes to logs\hyroute.log (size-rotated) unless
-	// the user keeps logs in memory only.
+	// the user keeps logs in memory only. The folder is set once the
+	// settings are loaded: before, the setting reads as its default (on),
+	// and the first lines would reach the disk of a user who turned it off.
 	ctl.Log = slog.New(ctl.NewFileHandler(level, ctl.EngineWriter()))
+	loadErr := ctl.Load()
 	ctl.SetLogDir(filepath.Join(dataDir, "logs"))
 	ctl.Log.Info("HyRoute starting", "build", build, "dir", dir, "runtime", runtimeDir, "data", dataDir, "stub", *stub)
 	if len(staged.Downloaded) > 0 {
@@ -175,11 +178,14 @@ func main() {
 		ctl.Log.Warn("files next to HyRoute.exe do not match the ones HyRoute was built with (damaged or replaced); verified copies were downloaded instead",
 			"files", strings.Join(staged.Replaced, ", "))
 	}
+	if runtimeDir != core.DefaultDir("runtime") {
+		ctl.Log.Warn("the shared copies of hysteria.exe and WinDivert are in use by a HyRoute of another version (another Windows user): this one runs its own", "runtime", runtimeDir)
+	}
 	if !protectedLocation(dir) {
 		ctl.Log.Warn("HyRoute runs from a folder other programs can write to; move it to Program Files", "dir", dir)
 	}
-	if err := ctl.Load(); err != nil {
-		ctl.Log.Error("settings not loaded", "err", err)
+	if loadErr != nil {
+		ctl.Log.Error("settings not loaded", "err", loadErr)
 	}
 
 	ctl.Version = version
@@ -196,6 +202,9 @@ func main() {
 		return append([]string{exe}, coreMgr.Paths()...)
 	}}
 	ctl.InitKillSwitch()
+	// A block left from before is what a start at sign-in has to show:
+	// the autostart task stands in for the kill switch check.
+	blocked := ctl.Status().KillSwitch == "blocking"
 	if *ksCheck {
 		ctl.Log.Info("started at sign-in by the kill switch check: a block from before closes the internet")
 	}
@@ -246,9 +255,10 @@ func main() {
 	}
 	// Started by the sign-in task: in the tray, or minimized without it.
 	// The kill switch check starts HyRoute with its window shown: the
-	// block is what the user has to see.
+	// block is what the user has to see, and so does the autostart task
+	// when it finds one.
 	startState, startHidden := options.Normal, false
-	if *atLogon {
+	if *atLogon && !blocked {
 		if ctl.Prefs().CloseToTrayOn() {
 			startHidden = true
 		} else {
@@ -311,8 +321,12 @@ func webviewDataDir() (string, error) {
 }
 
 // cleanUpdates removes old staging directories (the one the updater may
-// still run from is busy and stays until the next start).
+// still run from is busy and stays until the next start). A folder a
+// normal process may have made (and could fill with links) is left alone.
 func cleanUpdates(dir string) {
+	if core.CheckOwner(dir) != nil {
+		return
+	}
 	ents, _ := os.ReadDir(dir)
 	for _, e := range ents {
 		os.RemoveAll(filepath.Join(dir, e.Name()))
@@ -338,7 +352,7 @@ func recoverInterruptedUpdate(exe string, atLogon bool) {
 	if err != nil || j == nil || !j.For(dir) {
 		return
 	}
-	if j.UpdaterPID != 0 && processAlive(uint32(j.UpdaterPID)) {
+	if j.UpdaterPID != 0 && updaterAlive(uint32(j.UpdaterPID), j.Started) {
 		return // the updater is still working on it
 	}
 	if err := j.Undo(jp); err != nil {
@@ -348,6 +362,10 @@ func recoverInterruptedUpdate(exe string, atLogon bool) {
 	}
 	args := []string{"--update-failed", j.To,
 		"--update-error", "обновление было прервано (например, выключилось питание), прежняя версия восстановлена"}
+	if j.Reconnect {
+		// Connected before the update: as after the updater's own rollback.
+		args = append(args, "--reconnect")
+	}
 	if atLogon {
 		args = append(args, "--autostart")
 	}
@@ -357,14 +375,52 @@ func recoverInterruptedUpdate(exe string, atLogon bool) {
 	os.Exit(0)
 }
 
-func processAlive(pid uint32) bool {
-	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, pid)
+// updaterAlive reports whether the updater that began a swap at started
+// still runs as pid. A process created after that only took the number of
+// one that is gone (after a restart of Windows, any process may have it).
+func updaterAlive(pid uint32, started time.Time) bool {
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
 		return false
 	}
 	defer windows.CloseHandle(h)
+	var created, x, k, u windows.Filetime
+	if windows.GetProcessTimes(h, &created, &x, &k, &u) == nil && !started.IsZero() &&
+		time.Unix(0, created.Nanoseconds()).After(started) {
+		return false
+	}
 	r, _ := windows.WaitForSingleObject(h, 0)
 	return r == uint32(windows.WAIT_TIMEOUT)
+}
+
+// stageRuntime stages the verified copies of files into runtimeDir (see
+// runtimefiles.Stage) and returns the folder they run from. That folder is
+// shared by the users of the computer: when a different copy there is in
+// use (loaded or started by another user's HyRoute of another version),
+// this build's copies go to a folder of their own under it instead of
+// HyRoute not starting. protect makes a folder writable by administrators
+// only (core.ProtectDir).
+func stageRuntime(src, runtimeDir string, files []runtimefiles.File, get runtimefiles.Getter, protect func(string) error) (string, runtimefiles.Result, error) {
+	if err := protect(runtimeDir); err != nil {
+		return runtimeDir, runtimefiles.Result{}, err
+	}
+	res, err := runtimefiles.Stage(src, runtimeDir, files, get)
+	if err == nil || !(errors.Is(err, windows.ERROR_SHARING_VIOLATION) || errors.Is(err, windows.ERROR_ACCESS_DENIED)) {
+		return runtimeDir, res, err
+	}
+	h := sha256.New()
+	for _, f := range files {
+		fmt.Fprintf(h, "%s %s\n", f.Name, f.SHA256)
+	}
+	own := filepath.Join(runtimeDir, hex.EncodeToString(h.Sum(nil))[:16])
+	if perr := protect(own); perr != nil {
+		return runtimeDir, res, err
+	}
+	res2, err2 := runtimefiles.Stage(src, own, files, get)
+	if err2 != nil {
+		return runtimeDir, res, err
+	}
+	return own, res2, nil
 }
 
 // waitProcess waits for a process to exit (the old copy after a move).

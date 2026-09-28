@@ -8,18 +8,22 @@
 
   let { onchange }: { onchange: () => void } = $props();
 
-  let list = $state<ProfileSummary[]>([]);
+  // The list is the shared one: App reloads it on every change the backend
+  // reports, a background subscription update included, so the page never
+  // shows (and moves by) a list that is no longer there.
+  const list = $derived(ui.profiles);
   let adding = $state(false);
   let text = $state('');
   let result = $state<ImportResult | null>(null);
   let error = $state('');
   let info = $state('');
   let editing = $state<Profile | null>(null);
+  let editingSource = $state(''); // the subscription name of the edited server
   let checking = $state<ProfileSummary | null>(null);
 
   async function load() {
     try {
-      list = await api.Profiles();
+      ui.profiles = await api.Profiles();
     } catch (e) {
       error = errText(e);
     }
@@ -38,13 +42,38 @@
     result = null;
     try {
       result = fromClipboard ? await api.ImportClipboard() : await api.ImportURIs(text);
-      if (result.added.length > 0) text = '';
+      // The clipboard import leaves the field alone. After the field's own
+      // import it keeps only the links that failed, to fix them in place:
+      // added ones would be added again (there is no dedup).
+      if (!fromClipboard && result.added.length > 0) text = failedLinks(text, result.errors);
       await after();
       if (result.added.length && !result.errors.length && !result.warnings.length) adding = false;
       if (result.added.length) info = `Добавлено серверов: ${result.added.length} — ${result.added.map((p) => p.name).join(', ')}`;
     } catch (e) {
       error = errText(e);
     }
+  }
+
+  // failedLinks returns the hysteria2:// / hy2:// links of text that the
+  // import errors ("ссылка N: …", N counting those links) name, one per
+  // line. It splits links the way the backend's splitLinks does; text it
+  // finds no links in (a base64 list) gives ''.
+  function failedLinks(text: string, errors: string[]): string {
+    const bad = new Set(errors.map((e) => Number(/^ссылка (\d+):/.exec(e)?.[1])));
+    const out: string[] = [];
+    let n = 0;
+    for (const line of text.trim().split(/[\r\n]+/)) {
+      // Go's \s: a link starts a line or follows a space or tab.
+      const starts = [...line.matchAll(/(?:^|[\t\f ])([A-Za-z][A-Za-z0-9+.\-]*:\/\/)/g)];
+      starts.forEach((m, i) => {
+        const scheme = m[1].slice(0, -3).toLowerCase();
+        if (scheme !== 'hysteria2' && scheme !== 'hy2') return;
+        n++;
+        const end = i + 1 < starts.length ? starts[i + 1].index : line.length;
+        if (bad.has(n)) out.push(line.slice(m.index + m[0].length - m[1].length, end).trim());
+      });
+    }
+    return out.join('\n');
   }
 
   async function run(f: () => Promise<unknown>, ok = '') {
@@ -59,9 +88,10 @@
     }
   }
 
-  async function edit(id: string) {
+  async function edit(p: ProfileSummary) {
     try {
-      editing = await api.Profile(id);
+      editing = await api.Profile(p.id);
+      editingSource = p.source ? p.sourceName : '';
     } catch (e) {
       error = errText(e);
     }
@@ -69,7 +99,20 @@
 
   function create() {
     adding = false;
+    editingSource = '';
     editing = { id: '', name: '', host: '', ports: '443', auth: '', tls: {}, obfs: {}, hop: {}, bandwidth: {}, congestion: {}, quic: {}, pinServerIP: true };
+  }
+
+  // move shifts a server one place up (-1) or down (+1) from where it is
+  // now: MoveProfile takes an absolute index, and a background
+  // subscription update may have reordered the list since it was shown.
+  function move(id: string, by: -1 | 1) {
+    run(async () => {
+      const cur = await api.Profiles();
+      const i = cur.findIndex((x) => x.id === id);
+      if (i < 0) throw new Error('Сервер уже удалён');
+      if (i + by >= 0 && i + by < cur.length) await api.MoveProfile(id, i + by);
+    });
   }
 
   function remove(p: ProfileSummary) {
@@ -153,10 +196,10 @@
         {/if}
         <button onclick={() => (checking = p)} title="Запустить и проверить: подключение, внешний IP, задержка, UDP"><Icon name="zap" size={15} />Проверить</button>
         <div class="acts">
-          <button class="icon" onclick={() => edit(p.id)} title="Изменить"><Icon name="edit" size={16} /></button>
+          <button class="icon" onclick={() => edit(p)} title="Изменить"><Icon name="edit" size={16} /></button>
           <button class="icon" onclick={() => run(() => api.CopyURI(p.id), 'Ссылка скопирована (в ней пароль сервера)')} title="Копировать ссылку"><Icon name="copy" size={16} /></button>
-          <button class="icon" onclick={() => run(() => api.MoveProfile(p.id, i - 1))} disabled={i === 0} title="Выше"><Icon name="up" size={16} /></button>
-          <button class="icon" onclick={() => run(() => api.MoveProfile(p.id, i + 1))} disabled={i === list.length - 1} title="Ниже"><Icon name="down" size={16} /></button>
+          <button class="icon" onclick={() => move(p.id, -1)} disabled={i === 0} title="Выше"><Icon name="up" size={16} /></button>
+          <button class="icon" onclick={() => move(p.id, 1)} disabled={i === list.length - 1} title="Ниже"><Icon name="down" size={16} /></button>
           <button class="icon danger" onclick={() => remove(p)} title="Удалить"><Icon name="trash" size={16} /></button>
         </div>
       </div>
@@ -171,6 +214,7 @@
 {#if editing}
   <ProfileEditor
     profile={editing}
+    sourceName={editingSource}
     onclose={() => (editing = null)}
     onsaved={() => {
       editing = null;

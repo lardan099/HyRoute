@@ -34,8 +34,11 @@ const (
 type Result struct {
 	Kind Kind
 	Host string // normalized; empty if absent
-	// ECH: the ClientHello carries encrypted_client_hello, so the visible
-	// SNI is only the public (outer) name and is not reported.
+	// ECH: the ClientHello carries encrypted_client_hello, so Host is the
+	// outer SNI. Under GREASE ECH, which Chrome and Firefox send in every
+	// hello to a site without an ECH config, that is the site itself; under
+	// real ECH it is the provider's public name. The bytes cannot tell the
+	// two apart, so the caller weighs the name against other sources.
 	ECH bool
 	// Done: no more data is needed (a verdict was reached).
 	Done bool
@@ -198,10 +201,7 @@ func helloFrom(hs []byte, r Result) (bool, Result) {
 	}
 	host, ech := parseClientHello(hs[4 : 4+n])
 	r.Done = true
-	r.ECH = ech
-	if !ech {
-		r.Host = host
-	}
+	r.Host, r.ECH = host, ech
 	return true, r
 }
 

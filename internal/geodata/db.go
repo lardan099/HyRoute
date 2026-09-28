@@ -81,6 +81,9 @@ type dbFile struct {
 	index map[string]span
 	sites map[string]*DomainSet
 	ips   map[string]*IPSet
+	// noAttrs: "category@attr" names no entry matches, so a rule with a
+	// typo does not decode the category again on every compile.
+	noAttrs map[string]error
 }
 
 var fileGen atomic.Uint64
@@ -105,7 +108,7 @@ func (db *DB) file(k Kind) (*dbFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", k.File(), err)
 	}
-	f := &dbFile{gen: fileGen.Add(1), mod: fi.ModTime(), size: fi.Size(), index: idx, sites: map[string]*DomainSet{}, ips: map[string]*IPSet{}}
+	f := &dbFile{gen: fileGen.Add(1), mod: fi.ModTime(), size: fi.Size(), index: idx, sites: map[string]*DomainSet{}, ips: map[string]*IPSet{}, noAttrs: map[string]error{}}
 	db.files[k] = f
 	return f, nil
 }
@@ -119,10 +122,10 @@ func (db *DB) Forget() {
 }
 
 // Site returns a geosite category: "youtube" or "google@cn" (only entries
-// with the attribute).
+// with the attribute; "google@cn@ads": with both).
 func (db *DB) Site(name string) (*DomainSet, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
-	cat, attr, _ := strings.Cut(name, "@")
+	cat, attrs := splitAttrs(name)
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	f, err := db.file(Site)
@@ -132,6 +135,9 @@ func (db *DB) Site(name string) (*DomainSet, error) {
 	if d, ok := f.sites[name]; ok {
 		return d, nil
 	}
+	if err, ok := f.noAttrs[name]; ok {
+		return nil, err
+	}
 	sp, ok := f.index[cat]
 	if !ok {
 		return nil, &UnknownError{Kind: Site, Name: cat, Similar: similar(f.index, cat)}
@@ -140,12 +146,42 @@ func (db *DB) Site(name string) (*DomainSet, error) {
 	if err != nil {
 		return nil, err
 	}
-	d, err := decodeSite(b, attr)
+	d, total, err := decodeSite(b, attrs)
 	if err != nil {
 		return nil, fmt.Errorf("geosite:%s: %w", cat, err)
 	}
+	if d.Len() == 0 && total > 0 && len(attrs) > 0 {
+		f.noAttrs[name] = attrsError(cat, attrs)
+		return nil, f.noAttrs[name]
+	}
 	f.sites[name] = d
 	return d, nil
+}
+
+// Retain keeps in memory only the decoded categories named (without the
+// "geosite:"/"geoip:" prefix): those the rules in use need. Others, e.g.
+// tried in the rule editor and removed, are decoded again when asked for.
+func (db *DB) Retain(k Kind, names []string) {
+	keep := map[string]bool{}
+	for _, n := range names {
+		keep[strings.ToLower(strings.TrimSpace(n))] = true
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	f := db.files[k]
+	if f == nil {
+		return
+	}
+	for n := range f.sites {
+		if !keep[n] {
+			delete(f.sites, n)
+		}
+	}
+	for n := range f.ips {
+		if !keep[n] {
+			delete(f.ips, n)
+		}
+	}
 }
 
 // IP returns a geoip category. "private" works without a database.
@@ -186,7 +222,7 @@ func (db *DB) IP(name string) (*IPSet, error) {
 // always counts for geoip). ok is false when the file is not downloaded.
 func (db *DB) Has(k Kind, name string) (has, ok bool) {
 	name = strings.ToLower(strings.TrimSpace(name))
-	cat, _, _ := strings.Cut(name, "@")
+	cat, _ := splitAttrs(name)
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	f, err := db.file(k)

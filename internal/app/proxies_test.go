@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/relay"
@@ -285,3 +286,27 @@ func TestProxyTrafficCounted(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// The tunnel side of a proxy connection resets through its wrapper
+// (socks5.Abort): a broken stream must not reach Hysteria as a clean end.
+func TestTunnelConnResets(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	socks5.Abort(&tunnelConn{Conn: c})
+	peer.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := peer.Read(make([]byte, 1)); err == nil || err == io.EOF {
+		t.Fatalf("want a reset, got %v", err)
+	}
+}

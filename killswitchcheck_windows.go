@@ -18,7 +18,8 @@ import (
 // While the kill switch is on, a sign-in task (autostart.EnableCheck)
 // starts HyRoute with --killswitch-check: it ends at once unless such a
 // block is in place, and otherwise starts as usual with its window shown.
-// The autostart task starts HyRoute anyway, so with it there is no check.
+// The autostart task starts HyRoute anyway (with its window shown when
+// it finds a block), so with one that starts this copy there is no check.
 // Like autostart, the task needs HyRoute in Program Files.
 
 // signInCheck decides a start: one by the kill switch check (check) goes
@@ -46,8 +47,8 @@ const (
 // and known: the kill switch setting, and whether settings.json loaded
 // (the default "off" is not the user's choice then); protected: exe is in
 // Program Files and only administrators can change its folder;
-// autostart: the user's autostart task exists; exists and current: the
-// check exists and the program it starts ("" if unreadable).
+// autostart: the user's autostart task starts exe; exists and current:
+// the check exists and the program it starts ("" if unreadable).
 func planCheck(on, known, protected, autostart, exists bool, current, exe string) checkPlan {
 	mine := exists && current != "" && strings.EqualFold(filepath.Clean(current), filepath.Clean(exe))
 	switch {
@@ -73,12 +74,28 @@ func planCheck(on, known, protected, autostart, exists bool, current, exe string
 	return checkCreate
 }
 
+// planAutostart decides the user's autostart task, which starts cmd.
+// remove: like the check, a task never starts a program from a folder
+// any program can write to (protected says whether cmd and its folder
+// are safe; see protectedLocation), whatever the settings say. mine: the
+// task starts exe, this copy.
+func planAutostart(cmd, exe string, protected func(dir, exe string) bool) (remove, mine bool) {
+	if cmd == "" {
+		return false, false // unreadable: left as it is
+	}
+	if !protected(filepath.Dir(cmd), cmd) {
+		return true, false
+	}
+	return false, strings.EqualFold(filepath.Clean(cmd), filepath.Clean(exe))
+}
+
 var checkMu sync.Mutex
 
 // syncKillSwitchCheck creates or removes the kill switch check to follow
 // the setting, the autostart task and the program's folder (at start and
-// when one of them changes). Task Scheduler is slow to ask: callers run it
-// in the background.
+// when one of them changes), and removes an autostart task whose program
+// other programs could replace (see planAutostart). Task Scheduler is slow
+// to ask: callers run it in the background.
 func (g *GUI) syncKillSwitchCheck() {
 	checkMu.Lock()
 	defer checkMu.Unlock()
@@ -88,12 +105,23 @@ func (g *GUI) syncKillSwitchCheck() {
 	}
 	st := g.ctl.Settings()
 	on, known := st.KillSwitchOn(), g.ctl.SettingsError() == nil
-	_, err = autostart.Command()
+	cmd, err := autostart.Command()
 	if err != nil && !errors.Is(err, autostart.ErrNoTask) {
 		g.ctl.Log.Warn("kill switch check at sign-in not updated: the autostart task is unreadable", "err", err)
 		return
 	}
-	auto := err == nil
+	auto := false
+	if err == nil {
+		var remove bool
+		remove, auto = planAutostart(cmd, exe, protectedLocationOf)
+		if remove {
+			if err := autostart.Disable(); err != nil {
+				g.ctl.Log.Warn("start with Windows not turned off: its task starts HyRoute from a folder other programs can write to", "exe", cmd, "err", err)
+			} else {
+				g.ctl.Log.Warn("start with Windows: off, its task started HyRoute from a folder other programs can write to (with administrator rights, without asking)", "exe", cmd)
+			}
+		}
+	}
 	current, err := autostart.CheckCommand()
 	exists := !errors.Is(err, autostart.ErrNoTask)
 	switch planCheck(on, known, protectedLocation(g.dllDir), auto, exists, current, exe) {

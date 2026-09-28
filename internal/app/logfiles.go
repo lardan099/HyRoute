@@ -68,9 +68,10 @@ func (c *Controller) applyLogPrefs() {
 	if f.engine == nil {
 		f.engine = &logx.RotatingFile{Path: filepath.Join(f.dir, "hyroute.log"), Header: "# HyRoute engine log"}
 	}
-	f.engine.MaxBytes, f.engine.Keep = f.max, f.keep
+	// The files may be written right now (under their own lock).
+	f.engine.SetLimits(f.max, f.keep)
 	for _, h := range f.hy {
-		h.MaxBytes, h.Keep = f.max, f.keep
+		h.SetLimits(f.max, f.keep)
 	}
 	f.out.Set(f.engine)
 }
@@ -145,6 +146,10 @@ func (c *Controller) SavePrefs(p store.Prefs) error {
 	return nil
 }
 
+// clearLogsHook, set by tests, runs in ClearLogs between closing the
+// files and deleting them.
+var clearLogsHook func()
+
 // ClearLogs empties the in-memory logs and deletes the log files.
 func (c *Controller) ClearLogs() error {
 	c.EngineLog.Clear()
@@ -155,11 +160,16 @@ func (c *Controller) ClearLogs() error {
 	}
 	c.hyMu.Unlock()
 	f := &c.files
+	// f.mu is held until the files are gone: a Hysteria line arriving
+	// meanwhile would open its file again (hysteriaFile), and an open log
+	// cannot be deleted.
 	f.mu.Lock()
 	dir := f.dir
 	f.out.Set(nil)
 	f.closeLocked()
-	f.mu.Unlock()
+	if clearLogsHook != nil {
+		clearLogsHook()
+	}
 	var errs []error
 	if dir != "" {
 		matches, _ := filepath.Glob(filepath.Join(dir, "*.log*"))
@@ -178,6 +188,7 @@ func (c *Controller) ClearLogs() error {
 			}
 		}
 	}
+	f.mu.Unlock()
 	c.applyLogPrefs()
 	c.Log.Info("logs cleared")
 	return errors.Join(errs...)

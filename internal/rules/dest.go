@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
+	"unicode"
 )
 
 // Destinations of a rule ("domains" in the JSON) are sites and addresses:
@@ -218,4 +219,42 @@ func parseTypedDomain(s string, g Geo) (d domPat, warn string, ok bool, err erro
 		return domPat{kind: k, dom: n, src: s}, "", true, nil
 	}
 	return d, "", false, nil
+}
+
+// SiteProblem says why a site item can never match: a character that no
+// site name has («youtube.com», (a.com), a.com!) or an empty part
+// (..a.com, a..com, domain:.a.com). It is "" for a good name and for
+// other items (addresses, geosite:, keyword:, regexp:); characters that
+// Compile refuses are left to its error.
+func SiteProblem(item string) string {
+	s := strings.TrimSpace(item)
+	if IsAddressItem(s) {
+		return ""
+	}
+	if pfx, rest, typed := strings.Cut(s, ":"); typed {
+		if !strings.EqualFold(pfx, "full") && !strings.EqualFold(pfx, "domain") {
+			return ""
+		}
+		s = strings.TrimSpace(rest)
+	} else if strings.HasPrefix(s, "*.") {
+		s = s[2:]
+	} else if strings.HasPrefix(s, ".") {
+		s = s[1:]
+	}
+	if s == "" || strings.ContainsAny(s, "*/ :") {
+		return ""
+	}
+	if strings.HasPrefix(s, ".") || strings.Contains(s, "..") {
+		return fmt.Sprintf("«%s»: в имени сайта пустая часть (лишняя точка), такое правило не сработает", item)
+	}
+	for _, c := range s {
+		// Letters of any script (IDN), digits, "-", "_", the dots IDNA
+		// maps to "." and the joiners and dots IDNA allows by context
+		// (col·legi.cat): ZWNJ, ZWJ, U+00B7, U+0375, U+05F3, U+05F4, U+30FB.
+		if !unicode.IsLetter(c) && !unicode.IsDigit(c) && !unicode.IsMark(c) &&
+			!strings.ContainsRune("-_.。．｡\u200c\u200d\u00b7\u0375\u05f3\u05f4\u30fb", c) {
+			return fmt.Sprintf("«%s»: в имени сайта не бывает символа «%c», такое правило не сработает (кавычки и скобки уберите)", item, c)
+		}
+	}
+	return ""
 }

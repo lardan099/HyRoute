@@ -394,3 +394,53 @@ func TestDirectDialsFromAppAddress(t *testing.T) {
 	default:
 	}
 }
+
+// CloseWait does not hang on a handler that cannot finish (OnDone waiting
+// for a lock a stuck packet loop holds): the session must still stop.
+func TestCloseWaitBounded(t *testing.T) {
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	s := &Server{
+		Lookup: func(netip.AddrPort) *nat.Entry { return &nat.Entry{Mode: nat.NoSniff} },
+		OnDone: func(Result) {
+			entered <- struct{}{}
+			<-release
+		},
+		ListenIPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")},
+	}
+	if err := s.Start(0); err != nil {
+		t.Fatal(err)
+	}
+	c, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(s.Port()))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no OnDone")
+	}
+	begin := time.Now()
+	if s.CloseWait(200 * time.Millisecond) {
+		t.Fatal("reported finished with a handler stuck")
+	}
+	if d := time.Since(begin); d > time.Second {
+		t.Fatalf("CloseWait took %v", d)
+	}
+	// A second call (Stop after ResetConnections) does not wait again.
+	begin = time.Now()
+	if s.CloseWait(2 * time.Second) {
+		t.Fatal("reported finished with a handler stuck")
+	}
+	if d := time.Since(begin); d > time.Second {
+		t.Fatalf("second CloseWait took %v", d)
+	}
+	close(release)
+	deadline := time.Now().Add(3 * time.Second)
+	for !s.CloseWait(0) {
+		if time.Now().After(deadline) {
+			t.Fatal("handler not finished")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

@@ -233,6 +233,22 @@ func TestUntrackedLocalServerPasses(t *testing.T) {
 	wantReset(t, h.next(t), R, eph, 43)
 }
 
+// The bind of the connection's port number is another socket's: a
+// connection opened before start has no events of its own. Its owner comes
+// from the OS tables, not from the program that took the port since.
+func TestUntrackedIgnoresBindOfPort(t *testing.T) {
+	h := newHarness(t, untrackedRules, Options{})
+	o := withTable(h)
+	o.conn(L, R, 100) // curl: through the tunnel
+	// Since start chrome (Direct) listens on the port number where a [::]
+	// socket leaves IPv4 free.
+	h.c.Conns.Bind(6, netip.MustParseAddrPort(L).Port(), 200, 1, time.Now())
+	o.listen("[::]:40000", 200)
+	h.seg(L, R, packet.FlagACK|packet.FlagPSH, 1001, 5006, "GET /secret2")
+	wantReset(t, h.next(t), R, L, 5006)
+	h.none(t)
+}
+
 // The domain comes from the DNS cache only; with exact web domains a web
 // connection is decided without it, as there is nothing to sniff.
 func TestUntrackedDomainFromDNSCache(t *testing.T) {

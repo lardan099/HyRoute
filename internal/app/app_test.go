@@ -52,7 +52,7 @@ func (f *fakeSession) SetRules(s *rules.Set, p []hysteria.Profile) {
 func (f *fakeSession) Flows() *flows.Registry            { return f.reg }
 func (f *fakeSession) EngineFailed() bool                { return f.failed.Load() }
 func (f *fakeSession) Tunnels() []tunnels.Status         { return f.tunnels }
-func (f *fakeSession) DNSNames(netip.Addr) []string      { return nil }
+func (f *fakeSession) DNSSites(netip.Addr) [][]string    { return nil }
 func (f *fakeSession) Endpoint(string) *tunnels.Endpoint { return nil }
 func (f *fakeSession) Stats() session.Stats              { return f.stats }
 func (f *fakeSession) Acquire(hysteria.Profile) (*tunnels.Endpoint, func()) {

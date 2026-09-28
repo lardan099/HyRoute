@@ -66,10 +66,17 @@ func TestTTLAndExpiry(t *testing.T) {
 	if len(c.Names(ip("93.184.216.34"))) != 0 {
 		t.Fatal("not expired after MinTTL")
 	}
-	// Huge TTL is clamped down to MaxTTL.
+	// A day-long TTL is kept: Windows answers from its own cache that
+	// long, and no query shows up on the wire to relearn the name.
 	c.AddResponse(response(t, "long.test.", ans{name: "long.test.", ip: "1.1.1.1", ttl: 86400}))
-	*now = now.Add(time.Hour + time.Second)
-	if len(c.Names(ip("1.1.1.1"))) != 0 {
+	*now = now.Add(23 * time.Hour)
+	if len(c.Names(ip("1.1.1.1"))) != 1 {
+		t.Fatal("day-long TTL cut short")
+	}
+	// Longer ones are clamped down to MaxTTL.
+	c.AddResponse(response(t, "longer.test.", ans{name: "longer.test.", ip: "1.1.1.2", ttl: 7 * 86400}))
+	*now = now.Add(24*time.Hour + time.Second)
+	if len(c.Names(ip("1.1.1.1"))) != 0 || len(c.Names(ip("1.1.1.2"))) != 0 {
 		t.Fatal("MaxTTL not applied")
 	}
 	c.Sweep()
@@ -118,6 +125,54 @@ func TestCNAMEChain(t *testing.T) {
 	}
 	if got := c.Names(ip("::ffff:203.0.113.5")); !reflect.DeepEqual(got, want) {
 		t.Fatal("mapped lookup", got)
+	}
+	// The chain is one site, led by the queried name.
+	site := []string{"www.example.com", "edge.cdn.net", "www.example.com.cdn.net"}
+	if got := c.Sites(ip("203.0.113.5")); !reflect.DeepEqual(got, [][]string{site}) {
+		t.Fatal(got)
+	}
+}
+
+// Names of one CNAME chain form one site; another query that lands on the
+// same address (a CDN neighbour) is another site, even through the same
+// CDN name, which then belongs to both.
+func TestSites(t *testing.T) {
+	c, now := newCache()
+	c.AddResponse(response(t, "game.example.com.",
+		ans{name: "game.example.com.", cname: "xyz.elb.amazonaws.com."},
+		ans{name: "xyz.elb.amazonaws.com.", ip: "3.4.5.6", ttl: 300}))
+	c.AddResponse(response(t, "other.example.org.",
+		ans{name: "other.example.org.", cname: "xyz.elb.amazonaws.com."},
+		ans{name: "xyz.elb.amazonaws.com.", ip: "3.4.5.6", ttl: 60}))
+	c.AddResponse(response(t, "flat.example.net.", ans{name: "edge.example.net.", ip: "3.4.5.6", ttl: 300}))
+	want := [][]string{
+		{"flat.example.net", "edge.example.net"}, // the queried name first
+		{"game.example.com", "xyz.elb.amazonaws.com"},
+		{"other.example.org", "xyz.elb.amazonaws.com"},
+	}
+	if got := c.Sites(ip("3.4.5.6")); !reflect.DeepEqual(got, want) {
+		t.Fatal(got)
+	}
+	if got := c.Names(ip("3.4.5.6")); !reflect.DeepEqual(got, []string{"edge.example.net", "flat.example.net", "game.example.com", "other.example.org", "xyz.elb.amazonaws.com"}) {
+		t.Fatal(got)
+	}
+	if got := c.IPs("xyz.elb.amazonaws.com"); !reflect.DeepEqual(got, []netip.Addr{ip("3.4.5.6")}) {
+		t.Fatal(got)
+	}
+	// Each site's names expire on their own.
+	*now = now.Add(2 * time.Minute)
+	if got := c.Sites(ip("3.4.5.6")); !reflect.DeepEqual(got, want[:2]) {
+		t.Fatal(got)
+	}
+	c.Sweep()
+	if c.Len() != 4 {
+		t.Fatalf("len %d after sweep", c.Len())
+	}
+	if got := c.IPs("xyz.elb.amazonaws.com"); !reflect.DeepEqual(got, []netip.Addr{ip("3.4.5.6")}) {
+		t.Fatal(got)
+	}
+	if c.Sites(ip("192.0.2.1")) != nil {
+		t.Fatal("unknown address has sites")
 	}
 }
 
@@ -300,6 +355,30 @@ func TestMaxEntriesLongTTL(t *testing.T) {
 	}
 	if c.Len() != 100 || live != 100 || len(c.Names(ip("10.0.3.231"))) != 1 {
 		t.Fatal("wrong pairs evicted", c.Len(), live)
+	}
+}
+
+// One Sweep looks at a bounded number of pairs, so a full cache does not
+// hold the lock for long; successive sweeps still clear it.
+func TestSweepBounded(t *testing.T) {
+	c, now := newCache()
+	total := 3 * sweepBudget
+	c.mu.Lock()
+	exp := now.Add(time.Minute)
+	for i := range total {
+		c.addLocked(siteName{"n.test", "n.test"}, netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}), exp)
+	}
+	c.mu.Unlock()
+	*now = now.Add(2 * time.Minute)
+	c.Sweep()
+	if n := c.Len(); n < total-sweepBudget || n == total {
+		t.Fatalf("one sweep removed %d of %d expired pairs, budget %d", total-n, total, sweepBudget)
+	}
+	for i := 0; i < 200 && c.Len() > 0; i++ {
+		c.Sweep()
+	}
+	if c.Len() != 0 || len(c.byIP) != 0 || len(c.byName) != 0 {
+		t.Fatalf("sweeps left %d pairs", c.Len())
 	}
 }
 

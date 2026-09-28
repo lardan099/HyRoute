@@ -44,17 +44,25 @@ func (c *Controller) startLocked(recovering bool) error {
 	// SaveSettings compares engine options with what is starting.
 	c.sessSet = &st
 	c.starting, c.startErr = true, ""
+	failedBefore := c.failedStop
 	c.mu.Unlock()
 	gen := c.newRecoverGen() // an engine failure of this session reconnects
 	c.changed()
 
 	// Connections the tunnel may have carried and nothing reset (the
-	// resets of a failed engine may not have got through; a block from a
-	// crash, an update or a reconnect kept the applications from seeing
-	// them) are reset when their route depends on a domain the new engine
-	// does not know yet, rather than sent on direct without it.
+	// resets of a failed engine may not have got through, also when the
+	// user reconnects; a block from a crash, an update or a reconnect kept
+	// the applications from seeing them) are reset when their route
+	// depends on a domain the new engine does not know yet, rather than
+	// sent on direct without it.
 	ks, _ := c.killSwitchStatus()
-	cfg.ResetUnknownDomain = recovering || ks == "blocking"
+	cfg.ResetUnknownDomain = recovering || failedBefore || ks == "blocking"
+	if ks == "blocking" {
+		// Hysteria resolves its servers before the kill switch is armed:
+		// the block lets DNS through to the adapters' DNS servers of its
+		// last Arm, and the network may have changed since.
+		c.refreshKillSwitchApps()
+	}
 
 	cfg.Log = c.Log
 	cfg.Redactor = c.Redactor
@@ -85,6 +93,7 @@ func (c *Controller) startLocked(recovering bool) error {
 		return err
 	}
 	c.sess, c.lastFlows, c.since = sess, sess.Flows(), time.Now()
+	c.failedStop = false
 	// Rules, profiles and servers saved while it started.
 	c.applyRoutingLocked()
 	c.mu.Unlock()
@@ -132,6 +141,9 @@ func (c *Controller) disconnectLocked(release bool) {
 	c.mu.Lock()
 	s := c.sess
 	c.sess, c.startErr = nil, ""
+	// Until the next start, unless the user turns routing off: its
+	// connections have gone direct since.
+	c.failedStop = !release && (c.failedStop || s != nil && s.EngineFailed())
 	c.mu.Unlock()
 	if s != nil {
 		// While the kill switch's pass still lets the resets in.

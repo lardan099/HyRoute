@@ -56,6 +56,10 @@ type System struct {
 	Query func(pid uint32) (path string, created int64, ok bool)
 	// Snapshot lists running processes with their parent PIDs.
 	Snapshot func() []ProcEntry
+	// Created returns only the creation time, cheaper than Query: ok=false
+	// if it cannot be read, gone=true if no process has the PID. nil uses
+	// Query.
+	Created func(pid uint32) (created int64, ok, gone bool)
 }
 
 type node struct {
@@ -86,16 +90,24 @@ func NewCacheWith(sys System) *Cache {
 		keep: 10 * time.Minute, nowFn: time.Now}
 }
 
-// Get returns process info, querying the OS on a cache miss.
+// Get returns process info, querying the OS on a cache miss. A cached
+// entry is used only while the process under pid is still the one it
+// describes (same creation time): a freed PID is soon given to another
+// program, and Revalidate runs only every few seconds. An entry whose
+// process has exited is still returned: nothing else has the PID, so the
+// flow is that process's own. When the check itself fails (access denied)
+// the entry is not trusted: the PID may belong to another process.
 func (c *Cache) Get(pid uint32) *Info {
 	c.mu.Lock()
-	if in, ok := c.m[pid]; ok {
-		c.mu.Unlock()
-		return in
-	}
+	in, ok := c.m[pid]
 	c.mu.Unlock()
+	if ok {
+		if created, alive, gone := c.created(pid); gone || alive && created == in.Created {
+			return in
+		}
+	}
 	path, created, ok := c.sys.Query(pid)
-	in := newInfo(pid, path, created)
+	in = newInfo(pid, path, created)
 	if !ok {
 		return in
 	}
@@ -112,6 +124,16 @@ func (c *Cache) Get(pid uint32) *Info {
 	}
 	c.m[pid] = in
 	return in
+}
+
+// created is the creation time of the process under pid now (see
+// System.Created).
+func (c *Cache) created(pid uint32) (created int64, ok, gone bool) {
+	if c.sys.Created != nil {
+		return c.sys.Created(pid)
+	}
+	_, created, ok = c.sys.Query(pid)
+	return created, ok, !ok
 }
 
 // parentLocked builds the ancestor chain from the tree. A parent must have

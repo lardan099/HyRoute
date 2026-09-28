@@ -135,6 +135,38 @@ func TestGuardedFolderRefusesReparse(t *testing.T) {
 	}
 }
 
+// TestLockFileAfterLateMountPoint: an empty folder that became a mount
+// point after hold opened and checked it gets no lock file where the mount
+// point leads (which would leave the folder empty and open to redirection
+// while HyRoute works in it), and it is refused.
+func TestLockFileAfterLateMountPoint(t *testing.T) {
+	target := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "raced")
+	os.Mkdir(dir, 0o700)
+	p, err := windows.UTF16PtrFromString(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dh, err := windows.CreateFile(p, windows.FILE_LIST_DIRECTORY|windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL|windows.SYNCHRONIZE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(dh)
+	if err := setMountPoint(dir, target); err != nil {
+		t.Fatal(err)
+	}
+	lh, err := lockFile(dh, dir)
+	if err == nil {
+		windows.CloseHandle(lh)
+		t.Error("folder turned into a mount point accepted")
+	}
+	if _, err := os.Lstat(filepath.Join(target, lockName)); err == nil {
+		t.Error("lock file created where the mount point leads")
+	}
+}
+
 // setMountPoint makes dir a mount point to target (like an attacker's
 // junction). It needs no administrator rights.
 func setMountPoint(dir, target string) error {

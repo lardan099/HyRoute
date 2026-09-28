@@ -385,7 +385,13 @@ func aclToRules(list []aclRule) ConvertResult {
 	}
 	var groups []*group
 	def := ""
-	for _, r := range list {
+	var all *aclRule
+	for i, r := range list {
+		if all != nil {
+			// Hysteria stops at the first match: nothing below is reached.
+			res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: %s(all) ловит весь остальной трафик, строки ниже неё (%d) в Hysteria не действуют и пропущены", all.line, all.action, len(list)-i))
+			break
+		}
 		target := "vpn"
 		switch r.action {
 		case "direct":
@@ -419,7 +425,7 @@ func aclToRules(list []aclRule) ConvertResult {
 		kind, val, typed := strings.Cut(r.resource, ":")
 		switch {
 		case r.resource == "all" || r.resource == "*":
-			def = target
+			def, all = target, &list[i]
 			continue
 		case typed && (kind == "geosite" || kind == "geoip"):
 			item = r.resource

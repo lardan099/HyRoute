@@ -60,9 +60,10 @@ func TestExplainSeveralNames(t *testing.T) {
 	if ex.Winner.Index != -1 || want.Rule != "default" || !strings.Contains(strings.Join(ex.Notes, " "), "UDP") {
 		t.Fatalf("udp: %+v %+v", ex.Winner, ex.Notes)
 	}
-	// TCP: the first name is shown, with what happens without SNI/Host.
+	// TCP: the result without a name (no SNI/Host), as the engine decides
+	// then; the notes give the result for each name.
 	ex = Explain(c, "main", Query{IP: ip, Names: split, Proto: 6})
-	if ex.Winner.Name != "yt" || !strings.Contains(strings.Join(ex.Notes, " "), "сработает «по умолчанию»") {
+	if ex.Winner.Index != -1 || !strings.Contains(strings.Join(ex.Notes, " "), "www.youtube.com — «yt»; other.org — «по умолчанию»") {
 		t.Fatalf("tcp: %+v %+v", ex.Winner, ex.Notes)
 	}
 	// The same route for every name: that route, as the engine decides.
@@ -106,5 +107,50 @@ func TestLint(t *testing.T) {
 	}
 	if !strings.Contains(got[8], "неверный шаблон") || len(got) != 4 {
 		t.Fatalf("%v", got)
+	}
+}
+
+// A program typed without .exe, as the hint suggests ("chrome"), is
+// checked as chrome.exe: the name rules are saved with; a name that a rule
+// has as is (vmmem) is checked as is.
+func TestExplainAppWithoutExe(t *testing.T) {
+	c := Config{DefaultAction: Tunnel, Rules: []Rule{
+		{Name: "chrome", Apps: []AppMatch{{Pattern: "chrome.exe", InheritChildren: true}}, Action: Direct},
+		{Name: "my.app", Apps: []AppMatch{{Pattern: "my.app"}}, Action: Block},
+		// Processes without an extension: a rule for the bare name.
+		{Name: "wsl", Apps: []AppMatch{{Pattern: "vmmem"}}, Action: Tunnel},
+		{Name: "sys", Apps: []AppMatch{{Pattern: "System", Kind: "name"}}, Action: Block},
+	}}
+	for app, want := range map[string]string{"chrome": "chrome", "Chrome": "chrome", "chrome.exe": "chrome", "my.app": "my.app",
+		"vmmem": "wsl", "System": "sys", "vmmem.exe": "по умолчанию"} {
+		if ex := Explain(c, "main", Query{App: app, Domain: "example.com", Proto: 6}); ex.Winner.Name != want {
+			t.Errorf("%s: %+v %v", app, ex.Winner, ex.Notes)
+		}
+	}
+}
+
+// Site names with an empty part or a character no name has compile (saved
+// settings still load) but never match: Lint says so.
+func TestSiteProblem(t *testing.T) {
+	for _, p := range []string{"..example.com", "example..com", "domain:.example.com", "full:.example.com", "*..a.com",
+		".«youtube.com»", ".(youtube.com)", "youtube.com!", "a'b.com"} {
+		if SiteProblem(p) == "" {
+			t.Errorf("%q: no problem", p)
+		}
+		c := Config{Rules: []Rule{{Name: "x", Domains: []string{p}, Action: Direct}}}
+		s := mustCompile(t, c)
+		if r := s.EvaluateDomain(Subject{Proto: 6}, "www.example.com", SrcSNI); r.Rule != "default" {
+			t.Errorf("%q matched", p)
+		}
+		if is := Lint(c); len(is) != 1 || !strings.Contains(is[0].Text, "в имени сайта") {
+			t.Errorf("%q: lint %+v", p, is)
+		}
+	}
+	for _, p := range []string{".example.com", "*.example.com", "example.com", "example.com.", ".рф", "пример.рф", "_dmarc.example.com",
+		"localhost", "domain:example.com", "full:a.b", "geosite:youtube", "keyword:a..b", `regexp:^a\.\.`, "1.2.3.4", "2001:db8::", "geoip:ru",
+		"a b", "*.*.ru", "col·legi.cat", "ab\u200ccd.com", "a\u30fbb.jp", "א\u05f4ב.il"} {
+		if w := SiteProblem(p); w != "" {
+			t.Errorf("%q: %s", p, w)
+		}
 	}
 }

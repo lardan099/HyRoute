@@ -5,6 +5,7 @@ package tunnels
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -57,6 +58,10 @@ type Endpoint struct {
 	recv     atomic.Int64
 	users    int           // Acquire references (test endpoints)
 	started  chan struct{} // closed once r.Start has returned
+	// ipKey holds this endpoint's server IPs in the union. It is unique per
+	// endpoint, not per profile: an endpoint that is still stopping must
+	// not remove the exclusion of the one that already replaced it.
+	ipKey string
 }
 
 func (e *Endpoint) Available() bool    { return e.r.Available() }
@@ -105,8 +110,9 @@ type Manager struct {
 
 	mu     sync.Mutex
 	ipMu   sync.Mutex
-	eps    map[string]*Endpoint // key: profile ID, or "test:"+ID
-	ips    map[string][]netip.Addr
+	eps    map[string]*Endpoint    // key: profile ID, or "test:"+ID
+	ips    map[string][]netip.Addr // key: Endpoint.ipKey
+	seq    atomic.Uint64
 	closed bool
 }
 
@@ -184,8 +190,9 @@ func (m *Manager) start(key string, p hysteria.Profile, test bool) *Endpoint {
 // It holds no resources yet, so dropping it costs nothing.
 func (m *Manager) newEndpoint(key string, p hysteria.Profile, test bool) *Endpoint {
 	e := &Endpoint{ID: p.ID, Profile: p, Test: test, Started: time.Now(), started: make(chan struct{})}
+	e.ipKey = fmt.Sprintf("%s#%d", key, m.seq.Add(1))
 	e.r = m.New(p, Hooks{
-		SetServerIPs: func(ips []netip.Addr) error { return m.setIPs(key, ips) },
+		SetServerIPs: func(ips []netip.Addr) error { return m.setIPs(e.ipKey, ips) },
 		OnStatus: func(st hysteria.Status) {
 			if m.OnStatus != nil {
 				m.OnStatus(p.ID, st)
@@ -217,11 +224,7 @@ func (m *Manager) stop(e *Endpoint) {
 	// would be a no-op and leave the Hysteria started after it running.
 	<-e.started
 	e.r.Stop()
-	key := e.ID
-	if e.Test {
-		key = "test:" + e.ID
-	}
-	m.setIPs(key, nil)
+	m.setIPs(e.ipKey, nil)
 	m.log().Info("hysteria stopped", "profile", e.Profile.Name, "test", e.Test)
 }
 
@@ -299,8 +302,8 @@ func (m *Manager) Acquire(p hysteria.Profile) (e *Endpoint, release func()) {
 	e.users++
 	m.mu.Unlock()
 	if old != nil {
-		// Stopped now, not by its last release: two Hysterias must not
-		// share the key's server exclusion.
+		// Stopped now: its last release no longer finds it registered
+		// and would leave it running.
 		m.stop(old)
 	}
 	m.run(e, p)

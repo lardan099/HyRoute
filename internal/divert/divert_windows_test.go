@@ -55,3 +55,34 @@ func TestLoadUnloadsWrongDLL(t *testing.T) {
 		t.Fatal("failed load left state behind")
 	}
 }
+
+// A closed handle never passes its value to WinDivert again: Windows may
+// have given it to another handle since. The DLL is not loaded in tests,
+// so a call reaching it would panic.
+func TestClosedHandleUnused(t *testing.T) {
+	h := &Handle{h: 0x2a4}
+	h.closed.Store(true)
+	buf := make([]byte, 64)
+	addrs := make([]Address, 1)
+	if _, _, err := h.RecvEx(buf, addrs); err != windows.ERROR_INVALID_HANDLE {
+		t.Fatalf("RecvEx: %v", err)
+	}
+	if _, err := h.Recv(buf, &addrs[0]); err != windows.ERROR_INVALID_HANDLE {
+		t.Fatalf("Recv: %v", err)
+	}
+	if err := h.Send(buf, &addrs[0]); err != windows.ERROR_INVALID_HANDLE {
+		t.Fatalf("Send: %v", err)
+	}
+	if err := h.Shutdown(ShutdownBoth); err != windows.ERROR_INVALID_HANDLE {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if err := h.SetParam(ParamQueueLength, 1); err != windows.ERROR_INVALID_HANDLE {
+		t.Fatalf("SetParam: %v", err)
+	}
+	if _, err := h.GetParam(ParamVersionMajor); err != windows.ERROR_INVALID_HANDLE {
+		t.Fatalf("GetParam: %v", err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}

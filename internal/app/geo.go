@@ -269,11 +269,19 @@ func (c *Controller) SetGeoPrefs(source, siteURL, ipURL string, auto bool, hours
 // UpdateGeo downloads the databases now (force: even when unchanged).
 func (c *Controller) UpdateGeo(ctx context.Context, force bool) (geodata.Result, error) {
 	c.initGeo()
-	return c.updateGeo(ctx, c.geoSource(), force)
+	c.mu.Lock()
+	broken := c.prefsBroken
+	c.mu.Unlock()
+	if broken != nil {
+		// The source in memory is the default, not the user's.
+		return geodata.Result{}, fmt.Errorf("prefs.json не загружен: источник баз неизвестен, базы не обновляются, чтобы не заменить ваши. Исправьте или удалите файл и перезапустите HyRoute. Ошибка: %v", broken)
+	}
+	return c.updateGeo(ctx, c.geoSource(), force, false)
 }
 
-// updateGeo downloads the databases of src that have a URL.
-func (c *Controller) updateGeo(ctx context.Context, src geodata.Source, force bool) (geodata.Result, error) {
+// updateGeo downloads the databases of src that have a URL. scheduled:
+// the background update, which keeps a rollback.
+func (c *Controller) updateGeo(ctx context.Context, src geodata.Source, force, scheduled bool) (geodata.Result, error) {
 	c.geo.mu.Lock()
 	if c.geo.busy {
 		c.geo.mu.Unlock()
@@ -284,7 +292,11 @@ func (c *Controller) updateGeo(ctx context.Context, src geodata.Source, force bo
 	c.changed()
 	var res geodata.Result
 	err := geoLinksErr(src)
-	if err == nil {
+	switch {
+	case err != nil:
+	case scheduled:
+		res, err = c.geo.up.UpdateScheduled(ctx, src)
+	default:
 		res, err = c.geo.up.Update(ctx, src, force)
 	}
 	c.geo.mu.Lock()
@@ -358,8 +370,12 @@ func (c *Controller) GeoCategories(kind, query string, limit int) []string {
 }
 
 // recompileRules rebuilds the compiled rules with the current databases
-// and pushes them to the session.
+// and pushes them to the session. It runs after a save in progress, in
+// the same lock order: that save compiled its rules with the old
+// databases and would otherwise publish them last.
 func (c *Controller) recompileRules() {
+	c.saveMu.Lock()
+	defer c.saveMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.settings == nil {
@@ -393,27 +409,41 @@ func (c *Controller) geoDue() (geodata.Source, bool) {
 	if c.settings != nil {
 		site, ip = geoKinds(c.settings.Config)
 	}
+	broken := c.prefsBroken != nil
 	c.mu.Unlock()
 	if !site && !ip {
 		return geodata.Source{}, false // nothing uses the databases: no 90 MB downloads
 	}
 	st := c.geo.up.State()
 	src := c.geoSource()
+	if broken {
+		// prefs.json did not load: the source in memory is the default,
+		// not the user's. Only a database a rule needs and none is there
+		// is downloaded; the user's are not replaced.
+		if !site || st.Site != nil {
+			src.Site = ""
+		}
+		if !ip || st.IP != nil {
+			src.IP = ""
+		}
+		return src, (src.Site != "" || src.IP != "") && geoLinksErr(src) == nil
+	}
 	// A database no rule uses is neither downloaded nor kept fresh; it is
 	// only replaced once when left from another source, since lists are
 	// shown everywhere under the name of the source in use.
-	if !site && (st.Site == nil || st.From(geodata.Site, src.Site)) {
+	if !site && (st.Site == nil || st.From(geodata.Site, src.Site) || st.Held(geodata.Site, src.Site)) {
 		src.Site = ""
 	}
-	if !ip && (st.IP == nil || st.From(geodata.IP, src.IP)) {
+	if !ip && (st.IP == nil || st.From(geodata.IP, src.IP) || st.Held(geodata.IP, src.IP)) {
 		src.IP = ""
 	}
 	if (src.Site == "" && src.IP == "") || geoLinksErr(src) != nil {
 		return src, false // nothing to download, or http:// links (GeoInfo says so)
 	}
 	for _, k := range []geodata.Kind{geodata.Site, geodata.IP} {
-		// Not downloaded, or from another source or old custom links.
-		if u := src.URL(k); u != "" && !st.From(k, u) {
+		// Not downloaded, or from another source or old custom links (a
+		// file the user rolled back to is kept for this source).
+		if u := src.URL(k); u != "" && !st.From(k, u) && !st.Held(k, u) {
 			return src, true // a rule waits for data: even with auto-update off
 		}
 	}
@@ -441,6 +471,7 @@ func (c *Controller) RunGeoUpdates(ctx context.Context) {
 		case <-t.C:
 		case <-c.geo.poke:
 		}
+		c.trimGeoCache()
 		src, due := c.geoDue()
 		if !due {
 			continue
@@ -456,7 +487,7 @@ func (c *Controller) RunGeoUpdates(ctx context.Context) {
 			}
 		}
 		uctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-		_, err := c.updateGeo(uctx, src, false)
+		_, err := c.updateGeo(uctx, src, false, true)
 		cancel()
 		if err != nil {
 			failures++
@@ -466,12 +497,34 @@ func (c *Controller) RunGeoUpdates(ctx context.Context) {
 	}
 }
 
+// trimGeoCache frees the decoded categories no enabled rule uses: tried in
+// the rule editor, or gone from the rules (ru-blocked-all alone is tens of
+// megabytes).
+func (c *Controller) trimGeoCache() {
+	var cats []string
+	c.mu.Lock()
+	if c.settings != nil {
+		cats = geoCategories(c.settings.Config)
+	}
+	c.mu.Unlock()
+	site, ip := []string{}, []string{"private"}
+	for _, cat := range cats {
+		if n, ok := strings.CutPrefix(cat, "geosite:"); ok {
+			site = append(site, n)
+		} else if n, ok := strings.CutPrefix(cat, "geoip:"); ok {
+			ip = append(ip, n)
+		}
+	}
+	c.geo.db.Retain(geodata.Site, site)
+	c.geo.db.Retain(geodata.IP, ip)
+}
+
 // geoDownload fetches directly and, when that fails while a VPN tunnel is
 // up, through the main profile (GitHub downloads are often slow or cut
 // off without it). attempt 1 is the retry after a broken download: it
 // goes through the VPN when it can.
 func (c *Controller) geoDownload(ctx context.Context, rawURL string, attempt int) (*http.Response, error) {
-	direct := &http.Client{Timeout: 20 * time.Minute}
+	direct := &http.Client{Timeout: 20 * time.Minute, Transport: directTransport, CheckRedirect: geodata.NoDowngrade}
 	tun := c.mainEndpoint()
 	if attempt == 0 || tun == nil {
 		resp, err := doGet(ctx, direct, rawURL)
@@ -485,7 +538,7 @@ func (c *Controller) geoDownload(ctx context.Context, rawURL string, attempt int
 	c.geo.mu.Lock()
 	c.geo.viaVPN = true
 	c.geo.mu.Unlock()
-	viaVPN := &http.Client{Timeout: 20 * time.Minute, Transport: &http.Transport{
+	viaVPN := &http.Client{Timeout: 20 * time.Minute, CheckRedirect: geodata.NoDowngrade, Transport: &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {

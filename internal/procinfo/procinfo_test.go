@@ -14,12 +14,19 @@ type fakeSys struct {
 	}
 	// withCreated: snapshots carry creation times (as on Windows).
 	withCreated bool
+	// fastCreated: System.Created is set (as on Windows).
+	fastCreated bool
+	// denied: processes that cannot be opened.
+	denied map[uint32]bool
 }
 
 func (f *fakeSys) sys() System {
-	return System{
+	s := System{
 		Query: func(pid uint32) (string, int64, bool) {
 			p, ok := f.procs[pid]
+			if f.denied[pid] {
+				return "", 0, false
+			}
 			return p.path, p.created, ok
 		},
 		Snapshot: func() []ProcEntry {
@@ -34,6 +41,16 @@ func (f *fakeSys) sys() System {
 			return out
 		},
 	}
+	if f.fastCreated {
+		s.Created = func(pid uint32) (int64, bool, bool) {
+			p, ok := f.procs[pid]
+			if f.denied[pid] {
+				return 0, false, false
+			}
+			return p.created, ok, !ok
+		}
+	}
+	return s
 }
 
 func (f *fakeSys) set(pid uint32, path string, created int64, ppid uint32) {
@@ -53,26 +70,86 @@ func newFake() *fakeSys {
 }
 
 func TestCachePIDReuse(t *testing.T) {
+	for _, fast := range []bool{false, true} {
+		t.Run(fmt.Sprint("fast=", fast), func(t *testing.T) { testCachePIDReuse(t, fast) })
+	}
+}
+
+func testCachePIDReuse(t *testing.T, fast bool) {
 	f := newFake()
+	f.fastCreated = fast
 	f.set(100, `C:\Program Files\curl\CURL.EXE`, 1, 0)
 	c := NewCacheWith(f.sys())
 	in := c.Get(100)
 	if in.Name != "curl.exe" || in.Path != `C:\Program Files\curl\CURL.EXE` {
 		t.Fatalf("%+v", in)
 	}
+	// The PID goes to another program before Revalidate runs: the cached
+	// entry of the exited one must not be handed out.
 	f.set(100, `C:\Windows\notepad.exe`, 2, 0)
-	if c.Get(100).Name != "curl.exe" {
-		t.Fatal("cached value expected before revalidation")
+	if in := c.Get(100); in.Name != "notepad.exe" || in.Created != 2 {
+		t.Fatalf("stale entry for a reused PID: %+v", in)
 	}
 	c.Revalidate()
 	if c.Get(100).Name != "notepad.exe" {
-		t.Fatal("stale entry survived revalidation")
+		t.Fatal("entry lost on revalidation")
+	}
+	// A process that exited keeps its entry until Revalidate: nothing
+	// else has the PID, so its last flows are still its own.
+	delete(f.procs, 100)
+	if c.Get(100).Name != "notepad.exe" {
+		t.Fatal("exited process forgotten before revalidation")
+	}
+	c.Revalidate()
+	if in := c.Get(100); in.Name != "" {
+		t.Fatalf("stale entry survived revalidation: %+v", in)
 	}
 	if in := c.Get(200); in.Path != "" || in.Name != "" {
 		t.Fatalf("%+v", in)
 	}
 	if c.Get(4).Name != "system" {
 		t.Fatal("system pid")
+	}
+	if !fast {
+		return // Query cannot tell a denied process from a gone one
+	}
+	// The PID goes to a process that cannot be opened: whose it is is
+	// unknown, so the cached entry is not handed out either.
+	f.set(300, `C:\Tools\app.exe`, 5, 0)
+	if c.Get(300).Name != "app.exe" {
+		t.Fatal("pid 300")
+	}
+	f.set(300, `C:\Windows\protected.exe`, 6, 0)
+	f.denied = map[uint32]bool{300: true}
+	if in := c.Get(300); in.Name != "" {
+		t.Fatalf("stale entry for an unreadable PID: %+v", in)
+	}
+}
+
+// TestCachePIDReuseChild: the PID of a program that exited goes to
+// another one (with another parent): the new process gets neither the old
+// one's identity nor its ancestors, whether or not the tracker saw it.
+func TestCachePIDReuseChild(t *testing.T) {
+	for i := range 4 {
+		tracked, fast := i&1 != 0, i&2 != 0
+		f := newFake()
+		f.withCreated, f.fastCreated = true, fast
+		f.set(1, `C:\Windows\explorer.exe`, 10, 0)
+		f.set(50, `C:\Telegram\telegram.exe`, 20, 1)
+		f.set(7340, `C:\Games\game.exe`, 30, 1)
+		c := NewCacheWith(f.sys())
+		c.Track()
+		if in := c.Get(7340); in.Name != "game.exe" {
+			t.Fatalf("%+v", in)
+		}
+		f.set(7340, `C:\Telegram\updater.exe`, 40, 50)
+		if tracked {
+			c.Track()
+		}
+		in := c.Get(7340)
+		if in.Name != "updater.exe" || in.Parent == nil || in.Parent.Name != "telegram.exe" {
+			t.Fatalf("tracked %v fast %v: reused PID: %+v parent %+v", tracked, fast, in, in.Parent)
+		}
 	}
 }
 

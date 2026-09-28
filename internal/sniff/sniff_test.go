@@ -119,10 +119,19 @@ func TestNoSNIAndIP(t *testing.T) {
 	}
 }
 
-func TestECHHidesOuterName(t *testing.T) {
+// An encrypted_client_hello extension keeps the outer SNI: Chrome and
+// Firefox send GREASE ECH in every hello, and then it is the site itself.
+func TestECHKeepsOuterName(t *testing.T) {
 	ech := []byte{0xfe, 0x0d, 0, 1, 0}
-	r := Parse(syntheticHello(sniExt("public.cloudflare-ech.com"), ech))
-	if !r.Done || !r.ECH || r.Host != "" {
+	r := Parse(syntheticHello(sniExt("WWW.YouTube.com"), ech))
+	if !r.Done || !r.ECH || r.Host != "www.youtube.com" || r.Kind != TLS {
+		t.Fatalf("%+v", r)
+	}
+	// Extension order does not matter.
+	if r := Parse(syntheticHello(ech, sniExt("public.cloudflare-ech.com"))); !r.ECH || r.Host != "public.cloudflare-ech.com" {
+		t.Fatalf("%+v", r)
+	}
+	if r := Parse(syntheticHello(sniExt("plain.example"))); r.ECH || r.Host != "plain.example" {
 		t.Fatalf("%+v", r)
 	}
 }

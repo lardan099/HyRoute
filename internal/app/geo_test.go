@@ -65,6 +65,11 @@ func TestGeoDue(t *testing.T) {
 	// file is still the old one.
 	geoWriteState(t, c, geodata.State{Source: "v2fly", IP: file(rf.IP), Checked: time.Now()})
 	due(true, "", v2.IP)
+	// But a file of runetfreedom the user rolled back to is kept.
+	held := file(rf.IP)
+	held.HeldFor, held.RolledBackFrom = v2.IP, "cd"
+	geoWriteState(t, c, geodata.State{Source: "v2fly", IP: held, Checked: time.Now()})
+	due(false, "", "")
 
 	// An unused file left from another source is replaced once.
 	geoWriteState(t, c, geodata.State{Source: "v2fly", Site: file(rf.Site), IP: file(v2.IP), Checked: time.Now()})

@@ -33,6 +33,60 @@ func TestRotatingFile(t *testing.T) {
 	}
 }
 
+// TestRotationAfterKeepLowered: copies numbered past a Keep that was
+// lowered (left by an earlier run) go at the next rotation, not only the
+// one shifted out. Other files sharing the name's prefix stay.
+func TestRotationAfterKeepLowered(t *testing.T) {
+	dir := t.TempDir()
+	r := &RotatingFile{Path: filepath.Join(dir, "a.log"), MaxBytes: 100, Keep: 1}
+	for i := 1; i <= 5; i++ {
+		os.WriteFile(fmt.Sprintf("%s.%d", r.Path, i), []byte("old"), 0o600)
+	}
+	others := []string{r.Path + ".rotating.x", r.Path + ".07", filepath.Join(dir, "b.log.9")}
+	for _, o := range others {
+		os.WriteFile(o, []byte("other"), 0o600)
+	}
+	os.WriteFile(r.Path, []byte(strings.Repeat("c", 90)), 0o600)
+	r.Write([]byte(strings.Repeat("x", 29) + "\n"))
+	r.Close()
+	for i := 2; i <= 6; i++ {
+		if _, err := os.Stat(fmt.Sprintf("%s.%d", r.Path, i)); err == nil {
+			t.Fatalf(".%d kept with Keep 1", i)
+		}
+	}
+	if b, _ := os.ReadFile(r.Path + ".1"); string(b) != strings.Repeat("c", 90) {
+		t.Fatalf(".1 = %q", b)
+	}
+	for _, o := range others {
+		if _, err := os.Stat(o); err != nil {
+			t.Fatalf("%s: %v", o, err)
+		}
+	}
+}
+
+// TestSetLimitsLowersKeep: lowering Keep deletes the surplus copies at
+// once; raising it deletes nothing.
+func TestSetLimitsLowersKeep(t *testing.T) {
+	dir := t.TempDir()
+	r := &RotatingFile{Path: filepath.Join(dir, "a.log"), MaxBytes: 100, Keep: 5}
+	for i := 1; i <= 5; i++ {
+		os.WriteFile(fmt.Sprintf("%s.%d", r.Path, i), []byte("old"), 0o600)
+	}
+	count := func() int { return len(r.Files()) }
+	r.SetLimits(1000, 7)
+	if n := count(); n != 5 {
+		t.Fatalf("raised Keep: %d files", n)
+	}
+	r.SetLimits(1000, 2)
+	if n := count(); n != 2 {
+		t.Fatalf("Keep 2: %d files %v", n, r.Files())
+	}
+	r.SetLimits(1000, 0)
+	if n := count(); n != 0 {
+		t.Fatalf("Keep 0: %v", r.Files())
+	}
+}
+
 func TestRotatingFileClosedDropsWrites(t *testing.T) {
 	dir := t.TempDir()
 	r := &RotatingFile{Path: filepath.Join(dir, "a.log")}

@@ -19,22 +19,30 @@
   let viewing = $state<string | null>(null);
   let adding = $state<Rule | null>(null);
 
+  // Every search bumps seq: the answer to an earlier one (a slow DNS
+  // lookup) must not replace the result of the newer one or end its wait.
+  let seq = 0;
   async function search(q = query) {
     query = q;
     if (!q.trim()) return;
+    const my = ++seq;
     busy = true;
     error = info = '';
     try {
-      res = await api.Inspect(q);
-      if (res.list) {
+      const r = await api.Inspect(q);
+      if (my !== seq) return;
+      res = r;
+      if (r.list) {
         viewing = q.trim().toLowerCase();
         res = null;
       }
     } catch (e) {
+      if (my !== seq) return;
       error = errText(e);
       res = null;
+    } finally {
+      if (my === seq) busy = false;
     }
-    busy = false;
   }
 
   function routeText(r: InspectResult): string {

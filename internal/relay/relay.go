@@ -114,6 +114,11 @@ type Server struct {
 	done   chan struct{}
 	ctx    context.Context // canceled by Abort: interrupts pending dials
 	cancel context.CancelFunc
+	// idle is closed once the handlers are done (see CloseWait); stuck
+	// records that a CloseWait gave up on them.
+	idleOnce sync.Once
+	idle     chan struct{}
+	stuck    atomic.Bool
 }
 
 // Dynamic port range used for the relay (the firewall rule covers it).
@@ -186,6 +191,41 @@ func (s *Server) Close() error {
 	return nil
 }
 
+// CloseWait is Close that waits at most d for the handlers and reports
+// whether they finished. A handler ends with OnDone, which may need a lock
+// held by a packet loop that never returns: whoever stops the session must
+// not hang on it. One goroutine waits for the handlers however often it
+// is called, and once a call gave up the later ones do not wait again.
+func (s *Server) CloseWait(d time.Duration) bool {
+	s.Abort()
+	s.idleOnce.Do(func() {
+		s.idle = make(chan struct{})
+		go func() {
+			s.wg.Wait()
+			close(s.idle)
+		}()
+	})
+	select {
+	case <-s.idle:
+		return true
+	default:
+	}
+	if s.stuck.Load() {
+		return false
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-s.idle:
+		return true
+	case <-t.C:
+		if !s.stuck.Swap(true) {
+			s.Log.Error("relay: connection handlers still running after close", "waited", d)
+		}
+		return false
+	}
+}
+
 // Abort stops listening, cancels pending upstream dials and resets every
 // connection, application and upstream side, without waiting. A reset
 // sends no FIN, queued data or keepalives later: an accepted socket's peer
@@ -216,6 +256,8 @@ func (s *Server) Abort() {
 
 func (s *Server) serve(ln net.Listener) {
 	defer s.wg.Done()
+	var retry time.Duration // 0: the last Accept succeeded
+	var logged time.Time
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -228,10 +270,20 @@ func (s *Server) serve(ln net.Listener) {
 			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
-			s.Log.Error("relay accept failed", "err", err)
-			time.Sleep(50 * time.Millisecond)
+			// A lasting failure is logged once a minute, not per retry.
+			if logged.IsZero() || time.Since(logged) >= time.Minute {
+				logged = time.Now()
+				s.Log.Error("relay accept failed", "err", err)
+			}
+			retry = min(max(2*retry, 50*time.Millisecond), time.Second)
+			select {
+			case <-s.done:
+				return
+			case <-time.After(retry):
+			}
 			continue
 		}
+		retry = 0
 		if !s.track(c, true) {
 			Reset(c)
 			continue
@@ -287,10 +339,7 @@ func (s *Server) handle(c net.Conn) {
 		}
 	}()
 
-	var client net.Conn = c
-	if e.Rec != nil {
-		client = &countingConn{Conn: c, rec: e.Rec}
-	}
+	client := &appConn{Conn: c, s: s, rec: e.Rec}
 	action, profile := rules.Tunnel, e.Profile
 	var head []byte
 	host := ""       // name the route is decided by
@@ -310,6 +359,14 @@ func (s *Server) handle(c net.Conn) {
 			return
 		}
 		d := s.Decide(e, host, src)
+		if src == rules.SrcECH && d.DomainSrc != rules.SrcSNI {
+			// Unless the decider took the outer SNI of the ECH hello for
+			// the site itself (GREASE ECH), it is a provider's public
+			// name: its address need not lead to the server that holds
+			// the site, so the tunnel connects to the address the
+			// application chose.
+			remoteName = ""
+		}
 		action, profile, res.Rule, res.Domain, res.DomainSrc = d.Action, d.Profile, d.Rule, d.Domain, d.DomainSrc
 		if e.Rec != nil {
 			e.Rec.Set(func(f *flows.Fields) {
@@ -401,11 +458,75 @@ func (s *Server) handle(c net.Conn) {
 	}
 	// Pipe resets both sides when either breaks: the application must not
 	// take a broken upstream for a clean end of stream, nor keep a
-	// half-closed socket that outlives the NAT entry.
+	// half-closed socket that outlives the NAT entry. The application side
+	// is shut down only once it has taken what it was sent (see settle).
 	res.Sent, res.Recv = socks5.Pipe(client, up)
 	res.Sent += int64(len(head))
 	c.Close()
 	up.Close()
+}
+
+// drainTimeout: send counters that show room, nothing in flight and bytes
+// still unacknowledged for this long without change do not add up; settle
+// stops waiting on them (a variable for tests).
+var drainTimeout = 10 * time.Second
+
+// TCP states (TCPSTATE, mstcpip.h) in which the application may still
+// acknowledge what it was sent.
+const (
+	tcpEstablished = 4
+	tcpCloseWait   = 7
+)
+
+// progress is the send side of a socket as the kernel sees it.
+type progress struct {
+	state    uint32 // TCPSTATE
+	acked    int64  // bytes the peer has acknowledged
+	inFlight uint32 // bytes sent, not acknowledged
+	window   uint32 // the peer's receive window
+}
+
+// settle waits until the application has acknowledged the written bytes
+// sent to c and has room for a FIN, and reports whether c may now be shut
+// down. Not before: on Windows, once shutdown(SD_SEND) has queued a FIN,
+// closing with SO_LINGER 0 no longer resets the connection, and the socket
+// goes on sending its tail (retransmits, window probes, the FIN) after
+// Abort, once the filters are gone: to the real remote. While settle
+// waits, c stays tracked and Abort still resets it; after it, only a FIN
+// is outstanding, which the application acknowledges at once. An
+// application that pauses reading is waited for as long as the connection
+// lives, like an idle one: it gets the tail and the end of stream when it
+// resumes. One that closes or resets its socket ends the wait.
+func (s *Server) settle(c net.Conn, written int64) bool {
+	last, ok := sendProgress(c)
+	stalled := time.Now() // since the counters last changed
+	wait := time.Millisecond
+	for ok && (last.acked < written || last.window == 0) {
+		if last.state != tcpEstablished && last.state != tcpCloseWait {
+			return true // the application is gone: nothing more reaches it
+		}
+		if last.window > 0 && last.inFlight == 0 && time.Since(stalled) > drainTimeout {
+			// Room and nothing in flight with bytes outstanding: the
+			// counters do not add up, not a paused application.
+			s.Log.Warn("relay: send counters inconsistent", "written", written, "acked", last.acked)
+			return true
+		}
+		t := time.NewTimer(wait)
+		select {
+		case <-s.done:
+			t.Stop()
+			Reset(c)
+			return false
+		case <-t.C:
+		}
+		wait = min(2*wait, 100*time.Millisecond)
+		var p progress
+		if p, ok = sendProgress(c); ok && p != last {
+			stalled = time.Now()
+		}
+		last = p
+	}
+	return true
 }
 
 // dialFrom is the default DialDirect. Binding to the application's source
@@ -461,6 +582,8 @@ func (s *Server) sniff(c net.Conn, e *nat.Entry) (head []byte, host string, src 
 		if r.Done {
 			switch {
 			case r.Host == "":
+			case r.Kind == sniff.TLS && r.ECH:
+				host, src = r.Host, rules.SrcECH
 			case r.Kind == sniff.TLS:
 				host, src = r.Host, rules.SrcSNI
 			case r.Kind == sniff.HTTP:
@@ -496,26 +619,38 @@ func (s *Server) reject(c net.Conn, res *Result, reason string, err error) {
 // Reset closes c with RST instead of FIN so the application fails fast.
 func Reset(c net.Conn) { socks5.Abort(c) }
 
-// countingConn counts application bytes into the flow record as they pass:
-// reads from the app are "sent", writes to the app are "received".
-type countingConn struct {
+// appConn is the application side of a relayed connection. It counts
+// application bytes into the flow record as they pass (reads from the app
+// are "sent", writes to the app are "received") and delays its shutdown
+// until the application has acknowledged them (see settle).
+type appConn struct {
 	net.Conn
-	rec *flows.Record
+	s       *Server
+	rec     *flows.Record // nil: not recorded
+	written int64         // by the one goroutine that writes
 }
 
-func (c *countingConn) Read(b []byte) (int, error) {
+func (c *appConn) Read(b []byte) (int, error) {
 	n, err := c.Conn.Read(b)
-	c.rec.Sent.Add(int64(n))
+	if c.rec != nil {
+		c.rec.Sent.Add(int64(n))
+	}
 	return n, err
 }
 
-func (c *countingConn) Write(b []byte) (int, error) {
+func (c *appConn) Write(b []byte) (int, error) {
 	n, err := c.Conn.Write(b)
-	c.rec.Recv.Add(int64(n))
+	c.written += int64(n)
+	if c.rec != nil {
+		c.rec.Recv.Add(int64(n))
+	}
 	return n, err
 }
 
-func (c *countingConn) CloseWrite() error {
+func (c *appConn) CloseWrite() error {
+	if !c.s.settle(c.Conn, c.written) {
+		return net.ErrClosed
+	}
 	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
 		return cw.CloseWrite()
 	}
@@ -523,4 +658,4 @@ func (c *countingConn) CloseWrite() error {
 }
 
 // NetConn returns the wrapped connection (socks5.Abort resets through it).
-func (c *countingConn) NetConn() net.Conn { return c.Conn }
+func (c *appConn) NetConn() net.Conn { return c.Conn }

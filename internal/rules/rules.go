@@ -114,9 +114,14 @@ const (
 	SrcDNS
 	SrcHost
 	SrcSNI
+	// SrcECH is the outer SNI of a ClientHello with encrypted_client_hello:
+	// the site itself under GREASE ECH, a provider's public name under real
+	// ECH. The relay passes it to the decider, which settles which it is;
+	// it is shown as "sni".
+	SrcECH
 )
 
-func (s DomainSource) String() string { return [...]string{"unknown", "dns", "host", "sni"}[s] }
+func (s DomainSource) String() string { return [...]string{"unknown", "dns", "host", "sni", "sni"}[s] }
 
 // Subject is what the engine knows about a new flow.
 type Subject struct {
@@ -619,6 +624,22 @@ func (s *Set) firstMatch(sub Subject, domain string) *compiled {
 	return nil
 }
 
+// firstMatchAny is firstMatch for a site known by several names: a domain
+// rule matches when any of them does.
+func (s *Set) firstMatchAny(sub Subject, names []string) *compiled {
+	for i := range s.rules {
+		r := &s.rules[i]
+		if !r.base(sub) {
+			continue
+		}
+		if r.hasDest() && !r.matchIP(sub.Dst.Addr()) && !slices.ContainsFunc(names, r.matchDomain) {
+			continue
+		}
+		return r
+	}
+	return nil
+}
+
 // EvaluateDomain decides with an exact domain (SNI, Host, or a single name).
 func (s *Set) EvaluateDomain(sub Subject, domain string, src DomainSource) Result {
 	domain = NormalizeDomain(domain)
@@ -638,30 +659,65 @@ func (s *Set) EvaluateNoDomain(sub Subject) Result {
 // action, or when every possible outcome of the unknown domain gives the
 // same action; otherwise NeedsDomain.
 func (s *Set) Evaluate(sub Subject, dnsNames []string) Result {
-	if len(dnsNames) > 0 {
+	sites := make([][]string, len(dnsNames))
+	for i := range dnsNames {
+		sites[i] = dnsNames[i : i+1]
+	}
+	return s.EvaluateSites(sub, sites)
+}
+
+// EvaluateSites is Evaluate for cached names grouped by site: the names of
+// one CNAME chain (the queried name and the CDN names it points to) are one
+// site, which matches a domain rule when any of its names does. Only
+// different sites on one address (CDN neighbours) can disagree.
+func (s *Set) EvaluateSites(sub Subject, sites [][]string) Result {
+	if len(sites) > 0 {
 		var first Result
+		var all []string
 		agree := true
-		for i, n := range dnsNames {
-			r := s.EvaluateDomain(sub, n, SrcDNS)
+		for i, site := range sites {
+			names := make([]string, 0, len(site))
+			for _, n := range site {
+				if n = NormalizeDomain(n); n != "" && !slices.Contains(names, n) {
+					names = append(names, n)
+				}
+			}
+			r := s.result(s.firstMatchAny(sub, names))
 			if i == 0 {
 				first = r
 			} else if r.Action != first.Action || r.Profile != first.Profile || !slices.Equal(r.Fallback, first.Fallback) {
 				agree = false
 				break
 			}
+			for _, n := range names {
+				if !slices.Contains(all, n) {
+					all = append(all, n)
+				}
+			}
 		}
 		if agree {
-			if len(dnsNames) > 1 {
-				first.Domain = strings.Join(dnsNames, ",")
-			}
+			first.Domain, first.DomainSrc = strings.Join(all, ","), SrcDNS
 			return first
 		}
 	}
-	// Unknown domain: collect every outcome reachable depending on which
-	// domain rules would match.
+	// Unknown domain: final when every outcome gives the same action.
+	outcomes := s.unknownOutcomes(sub)
+	terminal := outcomes[len(outcomes)-1]
+	act := s.routeOf(terminal)
+	for _, r := range outcomes {
+		if s.routeOf(r) != act {
+			return Result{NeedsDomain: true}
+		}
+	}
+	return s.result(terminal)
+}
+
+// unknownOutcomes collects every rule that may decide the flow sub
+// depending on which domain rules its unknown domain would match, in
+// order. The last one ends the evaluation; nil there is the default
+// route. Evaluate and MayTunnel share it.
+func (s *Set) unknownOutcomes(sub Subject) []*compiled {
 	var outcomes []*compiled
-	terminal := (*compiled)(nil)
-	ended := false
 	for i := range s.rules {
 		r := &s.rules[i]
 		if !r.base(sub) {
@@ -673,20 +729,9 @@ func (s *Set) Evaluate(sub Subject, dnsNames []string) Result {
 			}
 			continue
 		}
-		outcomes = append(outcomes, r)
-		terminal, ended = r, true
-		break
+		return append(outcomes, r)
 	}
-	act := s.routeOf(nil)
-	if ended {
-		act = s.routeOf(terminal)
-	}
-	for _, r := range outcomes {
-		if s.routeOf(r) != act {
-			return Result{NeedsDomain: true}
-		}
-	}
-	return s.result(terminal)
+	return append(outcomes, nil)
 }
 
 // Store holds the active set; swaps are atomic and apply to new flows only.

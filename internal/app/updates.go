@@ -126,13 +126,19 @@ func (c *Controller) CheckUpdates() UpdatesState {
 			if err != nil {
 				s.AppError = err.Error()
 			}
+			// A download under way finishes (DownloadAppUpdate drops
+			// it if the offer changed meanwhile): no second one starts.
+			busy := s.AppStage == "downloading"
 			if ok {
-				if s.App == nil || s.App.Version != a.Version {
+				if (s.App == nil || s.App.Version != a.Version) && !busy {
 					s.AppStage, s.AppProgress = "", 0
 				}
 				s.App = &a
 			} else if err == nil {
-				s.App, s.AppStage = nil, ""
+				s.App = nil
+				if !busy {
+					s.AppStage = ""
+				}
 			}
 		})
 		if ok {
@@ -189,9 +195,9 @@ func (c *Controller) InstallCore() error {
 	u.state.CoreBusy, u.state.CoreProgress, u.state.CoreError = true, 0, ""
 	u.mu.Unlock()
 	c.changed()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	err := u.Core.Install(ctx, *cu, func(done, total int64) {
+	// No overall limit: a slow line takes long, and the download gives up
+	// only when no data comes for a while (release.Client.Download).
+	err := u.Core.Install(context.Background(), *cu, func(done, total int64) {
 		if total > 0 {
 			u.set(func(s *UpdatesState) { s.CoreProgress = float64(done) / float64(total) })
 		}
@@ -239,7 +245,9 @@ func (c *Controller) RollbackCore() error {
 // refreshKillSwitchApps: the block lets HyRoute's programs through, and a
 // core update or rollback moves hysteria.exe. An installed block (armed or
 // blocking) lets the new core through now, not only after the next Arm:
-// a server check or a new profile starts it at once.
+// a server check or a new profile starts it at once. The DNS servers the
+// block lets Windows reach are renewed too (see InitKillSwitch and
+// startLocked).
 func (c *Controller) refreshKillSwitchApps() {
 	ks, ok := c.KillSwitch.(interface{ RefreshApps() error })
 	if !ok {
@@ -251,7 +259,7 @@ func (c *Controller) refreshKillSwitchApps() {
 		return
 	}
 	if err := ks.RefreshApps(); err != nil {
-		c.Log.Error("kill switch: the new Hysteria core is not let through while the internet is closed", "err", err)
+		c.Log.Error("kill switch: exceptions not renewed (HyRoute, Hysteria, DNS servers)", "err", err)
 	}
 }
 
@@ -275,16 +283,20 @@ func (c *Controller) DownloadAppUpdate() error {
 		c.changed()
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-	defer cancel()
-	dir, err := update.Stage(ctx, u.Client, *a, u.Dir, func(done, total int64) {
+	// No overall limit, as for the core (InstallCore).
+	dir, err := update.Stage(context.Background(), u.Client, *a, u.Dir, func(done, total int64) {
 		if total > 0 {
 			u.set(func(s *UpdatesState) { s.AppProgress = float64(done) / float64(total) })
 		}
 	})
 	u.set(func(s *UpdatesState) {
+		if err == nil && (s.App == nil || s.App.Version != a.Version) {
+			// A check meanwhile found another version (or none): this
+			// package is not what the UI offers.
+			err = fmt.Errorf("пока шла загрузка %s, предложение обновления изменилось: повторите", a.Version)
+		}
 		if err != nil {
-			s.AppStage, s.AppError = "", err.Error()
+			s.AppStage, s.AppProgress, s.AppError = "", 0, err.Error()
 			return
 		}
 		s.AppStage, s.staging = "ready", dir
@@ -309,9 +321,14 @@ func (c *Controller) ReadyUpdate() (dir, version string, err error) {
 	if u.state.AppStage != "ready" || u.state.App == nil {
 		return "", "", errors.New("обновление ещё не скачано")
 	}
-	if _, err := update.Verify(u.state.staging); err != nil {
+	m, err := update.Verify(u.state.staging)
+	if err != nil {
 		u.state.AppStage = ""
 		return "", "", fmt.Errorf("скачанное обновление повреждено: %w", err)
+	}
+	if release.Compare(m.Version, u.state.App.Version) != 0 {
+		u.state.AppStage = ""
+		return "", "", fmt.Errorf("скачана версия %s, а предлагается %s: скачайте заново", m.Version, u.state.App.Version)
 	}
 	return u.state.staging, u.state.App.Version, nil
 }

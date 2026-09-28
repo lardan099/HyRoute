@@ -322,12 +322,15 @@ type task struct {
 	user    string // the principal: a SID or an account name
 }
 
+// queryTask reads the task named name through COM (taskDefinition), not
+// schtasks /Query /XML: that prints in the console code page, and a path
+// outside ASCII would not come back as valid XML.
 func queryTask(name string) (task, error) {
-	out, err := schtasks("/Query", "/TN", name, "/XML", "ONE")
+	def, err := taskDefinition(name)
 	if err != nil {
-		return task{}, ErrNoTask
+		return task{}, err
 	}
-	return parseTask(name, decode(out))
+	return parseTask(name, def)
 }
 
 func parseTask(name, s string) (task, error) {
@@ -343,8 +346,8 @@ func parseTask(name, s string) (task, error) {
 			} `xml:"Exec"`
 		} `xml:"Actions"`
 	}
-	// The XML declares UTF-16 but schtasks prints it in the console code
-	// page; the declaration is dropped before parsing.
+	// The XML declares UTF-16 but arrives as a Go string; the declaration
+	// is dropped before parsing.
 	if i := strings.Index(s, "?>"); i >= 0 && strings.HasPrefix(strings.TrimSpace(s), "<?xml") {
 		s = s[i+2:]
 	}

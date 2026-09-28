@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/lardan099/hyroute/internal/procinfo"
@@ -26,9 +27,12 @@ type Query struct {
 	// App is an exe name ("discord.exe") or a full path.
 	App string `json:"app"`
 	// Domain may be empty; Names are other known names of the address
-	// (DNS cache) used when Domain is empty.
-	Domain string   `json:"domain"`
-	Names  []string `json:"names"`
+	// (DNS cache) used when Domain is empty, each its own site. Sites are
+	// such names grouped by site, as dnscache.Cache.Sites gives them: the
+	// queried name first, then its CNAMEs.
+	Domain string     `json:"domain"`
+	Names  []string   `json:"names"`
+	Sites  [][]string `json:"sites"`
 	// IP is the destination address when known (for IP and geoip rules).
 	IP    netip.Addr `json:"ip"`
 	Proto uint8      `json:"proto"` // 6 or 17
@@ -54,15 +58,41 @@ func Explain(c Config, main string, q Query) Explanation {
 		proc = &procinfo.Info{Name: strings.ToLower(filepath.Base(strings.ReplaceAll(app, `\`, "/")))}
 		if pathKnown {
 			proc.Path = app
+		} else if !strings.ContainsAny(proc.Name, ".*?") && !nameRule(c, proc.Name) {
+			// "chrome" is chrome.exe, as in rules text and the editor; a
+			// rule for this very name ("app:vmmem", System) keeps it.
+			proc.Name += ".exe"
+			ex.Notes = append(ex.Notes, "Программа указана без расширения: проверена как "+proc.Name+".")
 		}
 	}
 	domain := NormalizeDomain(q.Domain)
 	names := []string{domain}
+	// siteOf maps the label of a cached site (in names) to all its names:
+	// a rule matches the site when it matches any of them.
+	siteOf := map[string][]string{}
 	if domain == "" {
 		names = nil
+		sites := slices.Clone(q.Sites)
 		for _, n := range q.Names {
-			if n = NormalizeDomain(n); n != "" {
-				names = append(names, n)
+			sites = append(sites, []string{n})
+		}
+		for _, site := range sites {
+			var all []string
+			for _, n := range site {
+				if n = NormalizeDomain(n); n != "" && !slices.Contains(all, n) {
+					all = append(all, n)
+				}
+			}
+			if len(all) == 0 {
+				continue
+			}
+			label := all[0]
+			if len(all) > 1 {
+				label += " (CNAME: " + strings.Join(all[1:], ", ") + ")"
+			}
+			if _, dup := siteOf[label]; !dup {
+				siteOf[label] = all
+				names = append(names, label)
 			}
 		}
 	}
@@ -87,8 +117,12 @@ func Explain(c Config, main string, q Query) Explanation {
 	for i, r := range c.Rules {
 		crs[i], errs[i] = compileRule(i, r)
 	}
-	// trace runs the rules for one domain ("" = not known).
+	// trace runs the rules for one domain or cached site ("" = not known).
 	trace := func(dom string) (steps []Step, winner Step) {
+		site := siteOf[dom]
+		if site == nil {
+			site = []string{dom}
+		}
 		won := false
 		for i, r := range c.Rules {
 			st := Step{Index: i, Name: ruleName(i, r), Enabled: r.Enabled == nil || *r.Enabled}
@@ -97,7 +131,7 @@ func Explain(c Config, main string, q Query) Explanation {
 			case errs[i] != nil:
 				st.Reason = "ошибка в правиле: " + errs[i].Error()
 			default:
-				st.Matched, st.Reason = crs[i].explain(proc, pathKnown, q.Proto, dom, q.IP.Unmap())
+				st.Matched, st.Reason = crs[i].explainSite(proc, pathKnown, q.Proto, site, q.IP.Unmap())
 			}
 			if !st.Enabled {
 				if st.Matched {
@@ -125,10 +159,17 @@ func Explain(c Config, main string, q Query) Explanation {
 		return append(steps, def), winner
 	}
 	ex.Steps, ex.Winner = trace(dom)
+	for _, n := range names {
+		if len(siteOf[n]) > 1 {
+			ex.Notes = append(ex.Notes, "Имена одной цепочки CNAME считаются одним сайтом: доменное правило срабатывает, если подходит любое из них.")
+			break
+		}
+	}
 	if len(names) > 1 {
-		// Like Set.Evaluate: when the names of the address lead to different
-		// routes, the engine needs the exact name (SNI/Host) and without it
-		// decides as if no domain rule matched (always so for UDP).
+		// Like Set.EvaluateSites: when the sites of the address lead to
+		// different routes, the engine needs the exact name (SNI/Host) and
+		// without it decides as if no domain rule matched (always so for
+		// UDP). The names of one CNAME chain are one site and never split.
 		s := &Set{Main: main}
 		fallback := func(st Step) string {
 			if st.Action != Tunnel {
@@ -141,10 +182,12 @@ func Explain(c Config, main string, q Query) Explanation {
 			return strings.Join(s.resolveFallback(st.Profile, fb), ",")
 		}
 		split := false
+		byName := []string{names[0] + " — «" + ex.Winner.Name + "»"}
 		for _, n := range names[1:] {
-			if _, w := trace(n); w.Action != ex.Winner.Action || w.Profile != ex.Winner.Profile || fallback(w) != fallback(ex.Winner) {
+			_, w := trace(n)
+			byName = append(byName, n+" — «"+w.Name+"»")
+			if w.Action != ex.Winner.Action || w.Profile != ex.Winner.Profile || fallback(w) != fallback(ex.Winner) {
 				split = true
-				break
 			}
 		}
 		all := strings.Join(names, ", ")
@@ -156,9 +199,14 @@ func Explain(c Config, main string, q Query) Explanation {
 			ex.Notes = append(ex.Notes, "У адреса несколько имён в DNS-кэше ("+all+"), и правила для них расходятся. В UDP имя сайта не видно, поэтому HyRoute решает без имени: доменные правила не срабатывают. "+
 				"QUIC (UDP 443) при «Блокировать QUIC с неизвестным сайтом» отбрасывается, и браузер переходит на TCP.")
 		default:
-			_, w := trace("")
-			ex.Notes = append(ex.Notes, "У адреса несколько имён в DNS-кэше ("+all+"), и правила для них расходятся; показан результат для первого: "+names[0]+
-				". Для HTTPS и HTTP HyRoute возьмёт точное имя из SNI/Host, а без него доменные правила не срабатывают и сработает «"+w.Name+"».")
+			// As the engine decides when SNI/Host gives no name; with a name
+			// it decides by that name.
+			ex.Steps, ex.Winner = trace("")
+			if len(byName) > 10 {
+				byName = append(byName[:10], "…")
+			}
+			ex.Notes = append(ex.Notes, "У адреса несколько имён в DNS-кэше ("+all+"), и правила для них расходятся. Показан результат без имени: так HyRoute решает, если имени сайта нет в SNI/Host. "+
+				"Для HTTPS и HTTP он возьмёт точное имя и решит по нему: "+strings.Join(byName, "; ")+".")
 		}
 	}
 	for _, r := range c.Rules {
@@ -175,6 +223,24 @@ func Explain(c Config, main string, q Query) Explanation {
 		ex.Notes = []string{}
 	}
 	return ex
+}
+
+// nameRule reports whether a rule has a program given by this very file
+// name (lower-case).
+func nameRule(c Config, name string) bool {
+	for _, r := range c.Rules {
+		for _, a := range r.AllApps() {
+			p := strings.TrimSpace(a.Pattern)
+			kind := strings.ToLower(a.Kind)
+			if kind == "" {
+				kind = AppKind(p)
+			}
+			if kind == "name" && normPath(p) == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r *compiled) explain(p *procinfo.Info, pathKnown bool, proto uint8, domain string, ip netip.Addr) (bool, string) {
@@ -263,6 +329,22 @@ func (r *compiled) explain(p *procinfo.Info, pathKnown bool, proto uint8, domain
 	return true, strings.Join(why, ", ")
 }
 
+// explainSite is explain for a site known by several names (a CNAME
+// chain): the rule matches when any name does.
+func (r *compiled) explainSite(p *procinfo.Info, pathKnown bool, proto uint8, site []string, ip netip.Addr) (bool, string) {
+	var why []string
+	for _, n := range site {
+		ok, reason := r.explain(p, pathKnown, proto, n, ip)
+		if ok {
+			return true, reason
+		}
+		if !slices.Contains(why, reason) {
+			why = append(why, reason)
+		}
+	}
+	return false, strings.Join(why, "; ")
+}
+
 func protoName(p uint8) string {
 	if p == 6 {
 		return "TCP"
@@ -316,6 +398,13 @@ func Lint(c Config) []Issue {
 		}
 		for _, w := range cr.warns {
 			out = append(out, Issue{Index: i, Severity: "warn", Text: w})
+		}
+		// Kept by Compile (settings saved before must still load), but
+		// such a site never matches.
+		for _, d := range r.AllDomains() {
+			if w := SiteProblem(d); w != "" {
+				out = append(out, Issue{Index: i, Severity: "warn", Text: w})
+			}
 		}
 		for _, e := range prev {
 			if e.cr.covers(&cr) {

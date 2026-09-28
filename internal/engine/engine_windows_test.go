@@ -15,6 +15,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 
 	"github.com/lardan099/hyroute/internal/divert"
 	"github.com/lardan099/hyroute/internal/engine/nat"
@@ -166,9 +169,24 @@ func TestAllStacks(t *testing.T) {
 	}
 }
 
+// currentUser is the SID of the user the tests run as.
+func currentUser(t *testing.T) *windows.SID {
+	t.Helper()
+	u, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.User.Sid
+}
+
 func TestLockMachine(t *testing.T) {
-	defer func(name string, wait time.Duration) { machineLock, slotWait = name, wait }(machineLock, slotWait)
+	defer func(name string, wait time.Duration, owner func(*windows.SID) bool) {
+		machineLock, slotWait, lockOwner = name, wait, owner
+	}(machineLock, slotWait, lockOwner)
 	machineLock = fmt.Sprintf(`Local\HyRoute-engine-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
+	// Not elevated, the test's own lock belongs to its user.
+	me, admins := currentUser(t), lockOwner
+	lockOwner = func(sid *windows.SID) bool { return sid.Equals(me) || admins(sid) }
 	release, err := LockMachine()
 	if err != nil {
 		t.Fatal(err)
@@ -203,6 +221,101 @@ func TestLockMachine(t *testing.T) {
 		t.Fatalf("after the last release: %v", err)
 	}
 	unlock()
+}
+
+// An object of the lock's name that no elevated process created (any
+// program may create one in Global\), or one of another type, does not
+// stop the engine.
+func TestLockMachineIgnoresSquatter(t *testing.T) {
+	defer func(name string) { machineLock = name }(machineLock)
+	me := currentUser(t).String()
+	mutex := func(sddl string) func(*uint16) (windows.Handle, error) {
+		return func(name *uint16) (windows.Handle, error) {
+			sd, err := windows.SecurityDescriptorFromString(sddl)
+			if err != nil {
+				return 0, err
+			}
+			sa := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+			return windows.CreateMutex(sa, false, name)
+		}
+	}
+	for _, c := range []struct {
+		what   string
+		create func(*uint16) (windows.Handle, error)
+	}{
+		{"mutex open to everyone", mutex("O:" + me + "D:P(A;;GA;;;WD)")},
+		{"mutex open to no one", mutex("O:" + me + "D:P")}, // but its owner's READ_CONTROL
+		{"event", func(name *uint16) (windows.Handle, error) { return windows.CreateEvent(nil, 0, 0, name) }},
+	} {
+		machineLock = fmt.Sprintf(`Local\HyRoute-engine-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
+		name, err := windows.UTF16PtrFromString(machineLock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		squat, err := c.create(name)
+		if err != nil {
+			t.Fatalf("%s: %v", c.what, err)
+		}
+		unlock, err := lockGlobal()
+		windows.CloseHandle(squat)
+		if err != nil {
+			t.Fatalf("%s: %v", c.what, err)
+		}
+		unlock()
+	}
+}
+
+// The first handle is opened once more when the driver is unloading
+// (ERROR_SERVICE_MARKED_FOR_DELETE), and only then.
+func TestOpenFirstRetriesWhileUnloading(t *testing.T) {
+	defer func(d time.Duration) { openRetry = d }(openRetry)
+	openRetry = time.Millisecond
+	e := testEngine()
+	for _, c := range []struct {
+		code  uint32
+		calls int
+	}{{1072, 2}, {5, 1}, {654, 1}} {
+		calls := 0
+		_, err := e.openFirst(func() (*divert.Handle, error) {
+			calls++
+			return nil, &divert.OpenError{Code: c.code}
+		})
+		if err == nil || calls != c.calls {
+			t.Fatalf("code %d: %d calls, err %v", c.code, calls, err)
+		}
+	}
+}
+
+// Two failures at once (two packet loops after a hot swap, or the watchdog
+// and a loop): the second must not remove the filters while the first is
+// still closing the kill switch (OnFail), or traffic would go direct past
+// it.
+func TestSecondFailWaitsForKillSwitch(t *testing.T) {
+	e := testEngine()
+	e.send = &divert.Handle{} // stands for the open main handles
+	entered, release := make(chan struct{}), make(chan struct{})
+	e.cfg.OnFail = func() {
+		close(entered)
+		<-release
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.fail()
+	}()
+	<-entered
+	e.fail()
+	e.sendMu.RLock()
+	open := e.send != nil
+	e.sendMu.RUnlock()
+	if !open {
+		t.Fatal("second fail removed the filters before the kill switch closed")
+	}
+	close(release)
+	<-done
+	if e.send != nil {
+		t.Fatal("filters not removed")
+	}
 }
 
 // The main filter must compile with maxServerIPs server addresses: WinDivert

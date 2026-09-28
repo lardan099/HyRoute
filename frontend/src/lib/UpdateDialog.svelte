@@ -10,6 +10,10 @@
   // busy is set at once: updates.appStage reaches "downloading" only with
   // the next poll, and until then «Позже» and «Обновить» must be off.
   let busy = $state(false);
+  // The download may take long (slow network, up to 20 minutes): «Скрыть»
+  // closes the dialog and it goes on. A closed dialog never installs; the
+  // package waits for «Установить…» in Settings.
+  const downloading = $derived(!applying && (busy || updates.appStage === 'downloading'));
   let closed = false;
   onDestroy(() => (closed = true));
 
@@ -48,7 +52,7 @@
       <div class="notes">{updates.app.notes || 'Описание изменений не приложено.'}</div>
       {#if updates.appStage === 'downloading' || (busy && !applying)}
         <div class="bar"><div style="width: {Math.round(updates.appProgress * 100)}%"></div></div>
-        <p class="muted">Загрузка и проверка SHA256…</p>
+        <p class="muted">Загрузка и проверка SHA256… Окно можно скрыть: загрузка продолжится, установить обновление можно будет в «Настройках».</p>
       {:else if applying}
         <p class="muted">Установка: HyRoute отключит маршрутизацию, закроется и запустится заново.</p>
       {:else}
@@ -58,7 +62,11 @@
       {/if}
       {#if error}<div class="note error">{error}</div>{/if}
       <div class="row end">
-        <button onclick={later} disabled={busy || applying || updates.appStage === 'downloading'}>Позже</button>
+        {#if downloading}
+          <button onclick={onclose}>Скрыть</button>
+        {:else}
+          <button onclick={later} disabled={busy || applying}>Позже</button>
+        {/if}
         <button class="primary" onclick={start} disabled={busy || applying || updates.appStage === 'downloading'}>Обновить</button>
       </div>
     </div>
@@ -66,7 +74,9 @@
 {/if}
 
 <style>
-  .backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); display: grid; place-items: center; z-index: 30; }
+  /* Above the other dialogs (global .backdrop, z-index 40): it opens by
+     itself and may come up over an open editor. */
+  .backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); display: grid; place-items: center; z-index: 50; }
   .dialog { width: min(640px, 92vw); max-height: 88vh; overflow: auto; }
   .notes { white-space: pre-wrap; background: var(--panel-2); border-radius: 6px; padding: 10px 12px; max-height: 280px; overflow: auto; font-size: 13px; user-select: text; margin-bottom: 10px; }
   .bar { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }

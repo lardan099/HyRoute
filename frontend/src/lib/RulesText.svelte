@@ -29,7 +29,7 @@
   const shownError = $derived(masked ? hide(error) : error);
 
   function reveal() {
-    menu = null;
+    closeMenu();
     revealed = true;
   }
 
@@ -86,13 +86,15 @@ instagram.com -> vpn`);
   // ---- autocomplete after "->": servers, vpn, напрямую, блок ----
   type Opt = { label: string; insert: string; hint: string };
   let ta = $state<HTMLTextAreaElement>();
-  let menu = $state<{ items: Opt[]; sel: number; x: number; y: number; from: number; to: number; raw?: boolean; q?: string } | null>(null);
+  // v is the text the menu was made for: from and to point into it.
+  let menu = $state<{ items: Opt[]; sel: number; x: number; y: number; from: number; to: number; v: string; raw?: boolean; q?: string } | null>(null);
   let geoSeq = 0;
 
   // Autocomplete for "geosite:…" / "geoip:…": popular categories with
   // titles first, then every matching category of the database.
   function geoMenu(el: HTMLTextAreaElement, kind: 'site' | 'ip', q: string, from: number, to: number) {
     const my = ++geoSeq;
+    const v = el.value;
     const pop = geo.popular
       .filter((c) => c.kind === kind && (!q || c.name.includes(q) || c.title.toLowerCase().includes(q)))
       .map((c) => ({ label: c.name, insert: c.name, hint: missingText(c) ? `${c.title} · нет в ${geo.sourceName}` : c.title }));
@@ -100,7 +102,7 @@ instagram.com -> vpn`);
       .GeoCategories(kind, q)
       .catch(() => [] as string[])
       .then((names) => {
-        if (my !== geoSeq) return;
+        if (my !== geoSeq || el.value !== v) return;
         const seen = new Set(pop.map((o) => o.insert));
         const items = [...pop, ...names.filter((n) => !seen.has(n)).map((n) => ({ label: n, insert: n, hint: kind === 'ip' ? 'IP' : 'сайты' }))].slice(0, 40);
         if (!items.length || (items.length === 1 && items[0].insert === q)) {
@@ -108,7 +110,7 @@ instagram.com -> vpn`);
           return;
         }
         const xy = caretXY(el, from);
-        menu = { items, sel: 0, x: el.offsetLeft + Math.min(xy.x, el.clientWidth - 260), y: el.offsetTop + xy.y, from, to, raw: true };
+        menu = { items, sel: 0, x: el.offsetLeft + Math.min(xy.x, el.clientWidth - 260), y: el.offsetTop + xy.y, from, to, v, raw: true };
       });
   }
 
@@ -116,11 +118,12 @@ instagram.com -> vpn`);
   let appSeq = 0;
   function appMenu(el: HTMLTextAreaElement, q: string, from: number, to: number) {
     const my = ++appSeq;
+    const v = el.value;
     api
       .RunningApps(q, false, 10)
       .catch(() => [])
       .then((list) => {
-        if (my !== appSeq) return;
+        if (my !== appSeq || el.value !== v) return;
         const items = list.map((a) => ({ label: a.name.toLowerCase(), insert: a.name.toLowerCase(), hint: a.description || 'программа' }));
         // The program named exactly as typed comes first: "java" is
         // java.exe, not javaw.exe.
@@ -131,8 +134,16 @@ instagram.com -> vpn`);
           return;
         }
         const xy = caretXY(el, from);
-        menu = { items, sel: 0, x: el.offsetLeft + Math.min(xy.x, el.clientWidth - 260), y: el.offsetTop + xy.y, from, to, raw: true };
+        menu = { items, sel: 0, x: el.offsetLeft + Math.min(xy.x, el.clientWidth - 260), y: el.offsetTop + xy.y, from, to, v, raw: true };
       });
+  }
+
+  // closeMenu also drops the answers still on their way: a late one would
+  // open the menu again for the text it was asked for.
+  function closeMenu() {
+    menu = null;
+    geoSeq++;
+    appSeq++;
   }
 
   function setText(v: string) {
@@ -191,7 +202,7 @@ instagram.com -> vpn`);
   function updateMenu() {
     const el = ta;
     if (!el || el.selectionStart !== el.selectionEnd) {
-      menu = null;
+      closeMenu();
       return;
     }
     const v = el.value;
@@ -248,13 +259,17 @@ instagram.com -> vpn`);
     items.sort((a, b) => exact(a) - exact(b));
     const xy = caretXY(el, from);
     const sel = menu && !menu.raw && menu.q === q ? Math.min(menu.sel, items.length - 1) : 0;
-    menu = { items, sel, x: el.offsetLeft + Math.min(xy.x, el.clientWidth - 260), y: el.offsetTop + xy.y, from, to, q };
+    menu = { items, sel, x: el.offsetLeft + Math.min(xy.x, el.clientWidth - 260), y: el.offsetTop + xy.y, from, to, v, q };
   }
 
   function pick(o: Opt) {
     const el = ta;
     if (!el || !menu) return;
     const v = el.value;
+    if (menu.v !== v) {
+      closeMenu();
+      return;
+    }
     const lead = menu.raw || v[menu.from - 1] === ' ' ? '' : ' ';
     const next = v.slice(0, menu.from) + lead + o.insert + v.slice(menu.to);
     const caret = menu.from + lead.length + o.insert.length;
@@ -263,7 +278,7 @@ instagram.com -> vpn`);
     el.value = next;
     el.setSelectionRange(caret, caret);
     setText(next);
-    menu = null;
+    closeMenu();
     el.focus();
   }
 
@@ -280,17 +295,34 @@ instagram.com -> vpn`);
       const n = menu.items.length;
       menu.sel = (menu.sel + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
     } else if (e.key === 'Enter' || e.key === 'Tab') {
+      // The menu is still for the text before the last keys (the answer
+      // for the new text is on its way): the key works as usual rather
+      // than put the item over the wrong part.
+      if (menu.v !== ta?.value) {
+        closeMenu();
+        return;
+      }
       e.preventDefault();
       pick(menu.items[menu.sel]);
     } else if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      menu = null;
+      closeMenu();
     }
   }
+
+  // Only a click that starts on the backdrop closes the dialog: selecting
+  // text and letting go outside it also ends in a click on the backdrop,
+  // and every unsaved edit would be lost.
+  let downOnBackdrop = false;
 </script>
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div
+  class="backdrop"
+  role="presentation"
+  onmousedown={(e) => (downOnBackdrop = e.target === e.currentTarget)}
+  onclick={(e) => downOnBackdrop && e.target === e.currentTarget && onclose()}
+>
   <div class="dialog big">
     <div class="row head">
       <h2 class="grow">Правила текстом</h2>
@@ -331,7 +363,7 @@ instagram.com -> vpn`);
               onkeyup={(e) => ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key) && updateMenu()}
               onclick={updateMenu}
               onscroll={() => (menu = null)}
-              onblur={() => setTimeout(() => (menu = null), 150)}
+              onblur={() => setTimeout(closeMenu, 150)}
             ></textarea>
             {#if menu}
               <div class="ac" style="left: {menu.x}px; top: {menu.y}px">

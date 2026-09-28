@@ -11,7 +11,29 @@ import (
 
 // NewCache returns a cache backed by OpenProcess/QueryFullProcessImageName
 // and Toolhelp snapshots.
-func NewCache() *Cache { return NewCacheWith(System{Query: query, Snapshot: snapshot}) }
+func NewCache() *Cache {
+	return NewCacheWith(System{Query: query, Snapshot: snapshot, Created: createdTime})
+}
+
+// createdTime is query without the image path, for checking a cached
+// entry on every lookup. OpenProcess fails with ERROR_INVALID_PARAMETER
+// only when no process (not even an exited one still held open) has the
+// PID; any other error says nothing about who has it.
+func createdTime(pid uint32) (created int64, ok, gone bool) {
+	if pid == 0 || pid == 4 {
+		return 0, true, false
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return 0, false, err == windows.ERROR_INVALID_PARAMETER
+	}
+	defer windows.CloseHandle(h)
+	var creation, exit, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(h, &creation, &exit, &kernel, &user); err != nil {
+		return 0, false, false
+	}
+	return creation.Nanoseconds(), true, false
+}
 
 func query(pid uint32) (string, int64, bool) {
 	if pid == 0 || pid == 4 {

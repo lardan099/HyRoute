@@ -89,7 +89,9 @@ export function itemLabel(d: string): ItemLabel | null {
     return { text: v, kind: '+ поддомены', tip: `${v} и все поддомены`, ...plain };
   }
   if (ipv4.test(d) || ipv6.test(d)) {
-    const net = d.includes('/') && !/\/(32|128)$/.test(d);
+    // One address is /32 for IPv4 and /128 for IPv6: 2001:db8::/32 is a
+    // whole provider's network.
+    const net = d.includes('/') && !(ipv4.test(d) ? /\/32$/ : /\/128$/).test(d);
     return { text: d, kind: net ? 'сеть' : 'IP', tip: net ? `Все адреса сети ${d}` : `Адрес ${d}`, geo: false, missing: '' };
   }
   return null;

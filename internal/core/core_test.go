@@ -5,14 +5,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/lardan099/hyroute/internal/release"
+	"github.com/lardan099/hyroute/internal/update"
 )
 
 // Fake binaries contain their version as text.
@@ -161,5 +164,170 @@ func TestNewerBundledCoreWins(t *testing.T) {
 	}}
 	if m.Path() != filepath.Join(coreDir, "v2.99.0", "hysteria.exe") {
 		t.Fatalf("path %s", m.Path())
+	}
+}
+
+// While a HyRoute update is on trial the updater may still restore the
+// previous HyRoute with its older bundled core: the downloads stay.
+func TestRetireWaitsForHyRouteUpdate(t *testing.T) {
+	dir := t.TempDir()
+	bundled := filepath.Join(dir, "hysteria.exe")
+	coreDir := filepath.Join(dir, "core")
+	installed(t, coreDir, "v2.12.5", "v2.12.4")
+	os.WriteFile(bundled, []byte("v2.12.5"), 0o755)
+	journal := filepath.Join(dir, update.JournalName)
+	os.WriteFile(journal, []byte("{}"), 0o600)
+
+	m := &Manager{Dir: coreDir, Bundled: bundled, Version: fakeVersion}
+	if m.Path() != bundled {
+		t.Fatalf("path %s", m.Path())
+	}
+	if in := m.Info(); in.Updated || in.Previous != "" || in.Error != "" {
+		t.Fatalf("%+v", in)
+	}
+	for _, v := range []string{"v2.12.5", "v2.12.4"} {
+		if _, err := os.Stat(filepath.Join(coreDir, v, "hysteria.exe")); err != nil {
+			t.Fatalf("core %s removed during the trial: %v", v, err)
+		}
+	}
+	// The previous HyRoute (bundled v2.12.3) still finds its download.
+	os.WriteFile(bundled, []byte("v2.12.3"), 0o755)
+	old := &Manager{Dir: coreDir, Bundled: bundled, Version: fakeVersion}
+	if want := filepath.Join(coreDir, "v2.12.5", "hysteria.exe"); old.Path() != want {
+		t.Fatalf("rolled-back HyRoute: path %s", old.Path())
+	}
+
+	// Confirmed (no journal): the next start retires them for good.
+	os.Remove(journal)
+	os.WriteFile(bundled, []byte("v2.12.5"), 0o755)
+	m = &Manager{Dir: coreDir, Bundled: bundled, Version: fakeVersion}
+	if m.Path() != bundled {
+		t.Fatalf("path %s", m.Path())
+	}
+	if _, err := os.Stat(filepath.Join(coreDir, "v2.12.5")); err == nil {
+		t.Fatal("retired core kept")
+	}
+}
+
+// After a rollback to the bundled core there is nothing to roll back to,
+// so no rollback is offered.
+func TestNoRollbackOfferedOnBundledCore(t *testing.T) {
+	dir := t.TempDir()
+	bundled := filepath.Join(dir, "hysteria.exe")
+	coreDir := filepath.Join(dir, "core")
+	installed(t, coreDir, "v2.12.4", "")
+	os.WriteFile(bundled, []byte("v2.12.3"), 0o755)
+	m := &Manager{Dir: coreDir, Bundled: bundled, Version: fakeVersion}
+	if in := m.Info(); in.Previous != "встроенное v2.12.3" {
+		t.Fatalf("%+v", in)
+	}
+	if err := m.Rollback(); err != nil || m.Path() != bundled {
+		t.Fatalf("rollback: %v %s", err, m.Path())
+	}
+	if in := m.Info(); in.Updated || in.Previous != "" {
+		t.Fatalf("rollback offered on the bundled core: %+v", in)
+	}
+}
+
+// A failing "hysteria version" is tried again later, and until then no
+// release is offered as an update over a core of unknown version.
+func TestVersionFailureNotKept(t *testing.T) {
+	old := verRetry
+	verRetry = 0
+	t.Cleanup(func() { verRetry = old })
+	dir := t.TempDir()
+	bundled := filepath.Join(dir, "hysteria.exe")
+	os.WriteFile(bundled, []byte("v2.12.3"), 0o755)
+	fail := true
+	m := &Manager{Dir: filepath.Join(dir, "core"), Bundled: bundled, Version: func(p string) (string, error) {
+		if fail {
+			return "", context.DeadlineExceeded
+		}
+		return fakeVersion(p)
+	}}
+	if v := m.Info().Version; !strings.HasPrefix(v, "не запускается") {
+		t.Fatalf("version %q", v)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]release.Release{{Tag: "app/v2.12.3", Assets: []release.Asset{
+			{Name: AssetName, URL: "http://127.0.0.1/bin", Digest: "sha256:" + strings.Repeat("0", 64)},
+		}}})
+	}))
+	defer srv.Close()
+	m.Client = &release.Client{API: srv.URL}
+	if _, ok, err := m.Check(context.Background()); ok || err == nil {
+		t.Fatalf("offered over an unknown version: %v %v", ok, err)
+	}
+	fail = false
+	if v := m.Info().Version; v != "v2.12.3" {
+		t.Fatalf("failure kept: %q", v)
+	}
+	if _, ok, err := m.Check(context.Background()); ok || err != nil {
+		t.Fatalf("the core in use offered: %v %v", ok, err)
+	}
+}
+
+// A core.json that cannot be saved leaves the state as it was: the
+// rollback target stays.
+func TestSaveFailureKeepsState(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Install protects the folder: without elevation it is then read-only")
+	}
+	bin := []byte("v2.12.6")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write(bin) }))
+	defer srv.Close()
+	dir := t.TempDir()
+	bundled := filepath.Join(dir, "hysteria.exe")
+	coreDir := filepath.Join(dir, "core")
+	installed(t, coreDir, "v2.12.5", "v2.12.4")
+	os.WriteFile(bundled, []byte("v2.12.3"), 0o755)
+	m := &Manager{Dir: coreDir, Bundled: bundled, Client: &release.Client{}, Version: fakeVersion}
+	// core.json.tmp cannot be written.
+	if err := os.Mkdir(filepath.Join(coreDir, "core.json.tmp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := sha256.Sum256(bin)
+	u := Update{Version: "v2.12.6", url: srv.URL, sha256: []string{hex.EncodeToString(s[:])}}
+	if err := m.Install(context.Background(), u, nil); err == nil {
+		t.Fatal("install without a saved core.json")
+	}
+	if in := m.Info(); in.Version != "v2.12.5" || in.Previous != "v2.12.4" {
+		t.Fatalf("state after a failed install: %+v", in)
+	}
+	if _, err := os.Stat(filepath.Join(coreDir, "v2.12.6")); err == nil {
+		t.Fatal("the new core's folder kept")
+	}
+	if err := m.Rollback(); err == nil {
+		t.Fatal("rollback without a saved core.json")
+	}
+	if in := m.Info(); in.Version != "v2.12.5" || in.Previous != "v2.12.4" {
+		t.Fatalf("state after a failed rollback: %+v", in)
+	}
+}
+
+// A core folder a normal process may have made (see CheckOwner) is not
+// trusted: its core.json could name any hysteria.exe.
+func TestForeignCoreFolderIgnored(t *testing.T) {
+	dir := t.TempDir()
+	bundled := filepath.Join(dir, "hysteria.exe")
+	coreDir := filepath.Join(dir, "core")
+	installed(t, coreDir, "v2.99.0", "")
+	os.WriteFile(bundled, []byte("v2.12.3"), 0o755)
+	ownerOK = func(p string) error {
+		if p == coreDir {
+			return errors.New("not an administrator's")
+		}
+		return nil
+	}
+	t.Cleanup(func() { ownerOK = CheckOwner })
+	m := &Manager{Dir: coreDir, Bundled: bundled, Version: fakeVersion}
+	if m.Path() != bundled {
+		t.Fatalf("started from a foreign folder: %s", m.Path())
+	}
+	if p := m.Paths(); len(p) != 2 {
+		t.Fatalf("paths %v", p)
+	}
+	if in := m.Info(); in.Updated || in.Error == "" {
+		t.Fatalf("%+v", in)
 	}
 }

@@ -188,9 +188,9 @@ func (c *Controller) Explain(q ExplainQuery, st *settings.Settings) Explanation 
 	if ip, err := netip.ParseAddr(strings.Trim(target, "[]")); err == nil {
 		rq.IP = ip.Unmap()
 		if sess != nil {
-			rq.Names = sess.DNSNames(ip.Unmap())
+			rq.Sites = sess.DNSSites(ip.Unmap())
 		}
-		if len(rq.Names) == 0 {
+		if len(rq.Sites) == 0 {
 			notes = append(notes, "Для IP без имени в DNS-кэше доменные правила не срабатывают; для HTTPS/HTTP HyRoute увидит домен в SNI/Host.")
 		}
 	} else {

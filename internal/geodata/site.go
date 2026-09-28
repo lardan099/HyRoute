@@ -1,6 +1,7 @@
 package geodata
 
 import (
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -64,32 +65,66 @@ func has(sorted []string, s string) bool {
 	return ok
 }
 
-// decodeSite decodes a GeoSite message. attr keeps only entries with that
-// attribute ("google@cn"); "" keeps everything.
-func decodeSite(b []byte, attr string) (_ *DomainSet, err error) {
+// splitAttrs splits "google@cn@ads" into the category and the attributes
+// an entry must all have, as in v2ray/Xray.
+func splitAttrs(name string) (string, []string) {
+	cat, rest, _ := strings.Cut(name, "@")
+	var attrs []string
+	for _, a := range strings.Split(rest, "@") {
+		if a = strings.TrimSpace(a); a != "" {
+			attrs = append(attrs, a)
+		}
+	}
+	return strings.TrimSpace(cat), attrs
+}
+
+// hasAttrs reports whether an entry has every attribute of want.
+func hasAttrs(attrs, want []string) bool {
+	for _, a := range want {
+		if !slices.Contains(attrs, a) {
+			return false
+		}
+	}
+	return true
+}
+
+// attrsError: no entry of a category has the attributes asked for (a typo,
+// or attributes the list does not use), so the item would never match.
+func attrsError(cat string, attrs []string) error {
+	if len(attrs) == 1 {
+		return fmt.Errorf("в geosite:%s нет записей с атрибутом @%s", cat, attrs[0])
+	}
+	return fmt.Errorf("в geosite:%s нет записей со всеми атрибутами @%s", cat, strings.Join(attrs, " @"))
+}
+
+// decodeSite decodes a GeoSite message. attrs keeps only entries with all
+// of these attributes ("google@cn"); none keeps everything. total counts
+// the entries before the filter.
+func decodeSite(b []byte, want []string) (_ *DomainSet, total int, err error) {
 	defer recoverDecode(&err)
 	d := &DomainSet{}
 	p := pb{b}
 	for !p.done() {
 		num, wire, err := p.field()
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if num != 2 || wire != 2 {
 			if err := p.skip(wire); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			continue
 		}
 		raw, err := p.bytes()
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		typ, val, attrs, err := decodeDomain(raw)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		if attr != "" && !slices.Contains(attrs, attr) {
+		total++
+		if !hasAttrs(attrs, want) {
 			continue
 		}
 		val = normValue(typ, val)
@@ -112,7 +147,7 @@ func decodeSite(b []byte, attr string) (_ *DomainSet, err error) {
 	d.full = slices.Compact(d.full)
 	slices.Sort(d.suffix)
 	d.suffix = slices.Compact(d.suffix)
-	return d, nil
+	return d, total, nil
 }
 
 // normValue lower-cases an entry for matching against normalized names.

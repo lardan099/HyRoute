@@ -122,31 +122,47 @@ func resumeProcess(pid uint32) error {
 	return nil
 }
 
-// writeSecretFile creates the file with a protected DACL: SYSTEM,
-// Administrators and the current user only (the config holds auth and obfs
-// passwords).
-func writeSecretFile(path string, data []byte) error {
-	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
-	if err != nil {
-		return err
+// writeSecretFile creates the file with a protected DACL (the config holds
+// auth and obfs passwords) and returns it still open; the caller closes it
+// once Hysteria has read the config. RunDir is in the user's profile, where
+// the user's non-elevated programs may delete any file, and Hysteria runs
+// with HyRoute's elevated token: until then the handle, shared for reading
+// only, keeps the file from being written, deleted or renamed. An elevated
+// HyRoute leaves the user out of the DACL (its Hysteria reads the file as
+// Administrators); a non-elevated one, whose Hysteria has no more rights
+// than the user's other programs, keeps the user in.
+func writeSecretFile(path string, data []byte) (release func(), err error) {
+	dacl := "D:P(A;;FA;;;SY)(A;;FA;;;BA)"
+	if !windows.GetCurrentProcessToken().IsElevated() {
+		tu, err := windows.GetCurrentProcessToken().GetTokenUser()
+		if err != nil {
+			return nil, err
+		}
+		dacl += "(A;;FA;;;" + tu.User.Sid.String() + ")"
 	}
-	sd, err := windows.SecurityDescriptorFromString("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;" + tu.User.Sid.String() + ")")
+	sd, err := windows.SecurityDescriptorFromString(dacl)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	sa := windows.SecurityAttributes{SecurityDescriptor: sd}
 	sa.Length = uint32(unsafe.Sizeof(sa))
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	h, err := windows.CreateFile(p, windows.GENERIC_WRITE, 0, &sa, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	// Hysteria (Go's os.Open) shares read and write, so it can open the
+	// file while this handle is held for writing.
+	h, err := windows.CreateFile(p, windows.GENERIC_WRITE, windows.FILE_SHARE_READ, &sa, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer windows.CloseHandle(h)
 	var n uint32
-	return windows.WriteFile(h, data, &n, nil)
+	if err := windows.WriteFile(h, data, &n, nil); err != nil {
+		windows.CloseHandle(h)
+		windows.DeleteFile(p)
+		return nil, err
+	}
+	return func() { windows.CloseHandle(h) }, nil
 }
 
 func hideWindow(cmd *exec.Cmd) {

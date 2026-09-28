@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
+	"unicode"
 
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/rules"
@@ -186,13 +188,77 @@ func (c *Controller) saveProfilesLocked(next *store.Profiles) error {
 	return nil
 }
 
+// editorHost splits the editor's address field: a host, "host:port" or
+// "[IPv6]:port" (the port then goes to the port field, which the editor
+// fills with 443). What is neither an IP address (IPv6 with a zone too:
+// link import keeps one) nor a valid name (a link, a path, spaces, empty
+// labels) is refused: the server would never connect.
+func editorHost(host, ports string) (string, string, error) {
+	h, port := strings.TrimSpace(host), ""
+	bad := fmt.Errorf("адрес сервера %q: укажите имя или IP-адрес без схемы и пути, например vpn.example.com, 203.0.113.5 или 2001:db8::1", h)
+	if strings.ContainsFunc(h, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r) || strings.ContainsRune(`/\@?#`, r)
+	}) {
+		return "", "", bad
+	}
+	if rest, ok := strings.CutPrefix(h, "["); ok {
+		inner, after, ok := strings.Cut(rest, "]")
+		if !ok {
+			return "", "", bad
+		}
+		if after != "" {
+			if port, ok = strings.CutPrefix(after, ":"); !ok {
+				return "", "", bad
+			}
+		}
+		if a, err := netip.ParseAddr(inner); err != nil || !a.Is6() {
+			return "", "", bad
+		}
+		h = inner
+	} else if strings.Count(h, ":") == 1 {
+		h, port, _ = strings.Cut(h, ":")
+	} else if strings.Contains(h, ":") {
+		if _, err := netip.ParseAddr(h); err != nil {
+			return "", "", bad
+		}
+	}
+	if _, err := netip.ParseAddr(h); err != nil && h != "" && !hostName(h) {
+		return "", "", bad // "" is Validate's
+	}
+	ports = strings.TrimSpace(ports)
+	switch {
+	case port == "":
+	case ports == "" || ports == "443" || ports == port:
+		ports = port
+	default:
+		return "", "", fmt.Errorf("порт указан дважды: %s в адресе и %s в поле порта", port, ports)
+	}
+	if ports == "" {
+		ports = "443"
+	}
+	return h, ports, nil
+}
+
+// hostName reports whether h is a valid DNS name: labels of letters,
+// digits, "-" and "_" (up to 63 bytes each), a final dot allowed.
+func hostName(h string) bool {
+	for _, l := range strings.Split(strings.TrimSuffix(h, "."), ".") {
+		if l == "" || len(l) > 63 || strings.ContainsFunc(l, func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '_'
+		}) {
+			return false
+		}
+	}
+	return true
+}
+
 // SaveProfile creates (empty ID) or replaces a profile.
 func (c *Controller) SaveProfile(p hysteria.Profile) (ProfileSummary, error) {
-	p.Host = strings.Trim(strings.TrimSpace(p.Host), "[]")
-	p.Ports = strings.TrimSpace(p.Ports)
-	if p.Ports == "" {
-		p.Ports = "443"
+	host, ports, err := editorHost(p.Host, p.Ports)
+	if err != nil {
+		return ProfileSummary{}, err
 	}
+	p.Host, p.Ports = host, ports
 	if err := p.Validate(); err != nil {
 		return ProfileSummary{}, err
 	}
@@ -216,17 +282,34 @@ func (c *Controller) SaveProfile(p hysteria.Profile) (ProfileSummary, error) {
 	if next.Active == "" {
 		next.Active = p.ID
 	}
-	err := c.saveProfilesLocked(next)
+	err = c.saveProfilesLocked(next)
 	sum := c.summaryLocked(&p)
 	c.mu.Unlock()
 	c.changed()
 	return sum, err
 }
 
+// refsUnknownLocked: settings.json or proxies.json did not load, so the
+// rules and proxies that name a profile are not known (the defaults are
+// in memory): every profile counts as used.
+func (c *Controller) refsUnknownLocked() error {
+	if c.settingsBroken != nil {
+		return fmt.Errorf("settings.json не загружен: неизвестно, какие правила используют сервер. Исправьте или удалите файл и перезапустите HyRoute. Ошибка: %v", c.settingsBroken)
+	}
+	if c.proxiesBroken != nil {
+		return fmt.Errorf("proxies.json не загружен: неизвестно, какие прокси используют сервер. Исправьте или удалите файл и перезапустите HyRoute. Ошибка: %v", c.proxiesBroken)
+	}
+	return nil
+}
+
 // DeleteProfile refuses while a rule or a local proxy names the profile:
 // it would otherwise silently refuse its traffic.
 func (c *Controller) DeleteProfile(id string) error {
 	c.mu.Lock()
+	if err := c.refsUnknownLocked(); err != nil {
+		c.mu.Unlock()
+		return err
+	}
 	if refs := c.explicitRefsLocked(id); len(refs) > 0 {
 		c.mu.Unlock()
 		return fmt.Errorf("профиль используется: %s. Выберите в этих правилах другой профиль", strings.Join(refs, ", "))

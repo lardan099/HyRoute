@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 
@@ -134,35 +135,83 @@ func LockMachine() (release func(), err error) {
 	}, nil
 }
 
+// lockSDDL secures the machine-wide object: owned by Administrators, which
+// only an elevated process can set, and open to them and SYSTEM only.
+const lockSDDL = "O:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)"
+
+// lockOwner reports whether sid, the owner of an existing object of that
+// name, makes it another HyRoute's. Any process can create an object in
+// Global\ (mutexes need no privilege), so a program without elevation
+// could otherwise keep every Connect failing with ErrOtherEngine; it can
+// not make Administrators or SYSTEM the owner. A variable for tests, which
+// run without elevation.
+var lockOwner = func(sid *windows.SID) bool {
+	return sid.IsWellKnown(windows.WinBuiltinAdministratorsSid) || sid.IsWellKnown(windows.WinLocalSystemSid)
+}
+
 // lockGlobal creates the machine-wide object. Only its existence matters:
 // it lives while a handle to it is open, so a crashed process gives it
-// back too.
+// back too. An object of that name that no elevated process created, or
+// one that is no mutex, is ignored: the engine runs without the
+// machine-wide lock then.
 func lockGlobal() (release func(), err error) {
 	name, err := windows.UTF16PtrFromString(machineLock)
 	if err != nil {
 		return nil, err
 	}
-	h, err := windows.CreateMutex(nil, false, name)
+	sd, err := windows.SecurityDescriptorFromString(lockSDDL)
+	if err != nil {
+		return nil, err
+	}
+	sa := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+	h, err := windows.CreateMutex(sa, false, name)
+	if errors.Is(err, windows.ERROR_INVALID_OWNER) {
+		// Not elevated (tests): Administrators cannot be the owner.
+		h, err = windows.CreateMutex(nil, false, name)
+	}
 	switch {
 	case err == nil:
 		return func() { windows.CloseHandle(h) }, nil
 	case errors.Is(err, windows.ERROR_ALREADY_EXISTS):
-		windows.CloseHandle(h)
-		return nil, ErrOtherEngine
-	case errors.Is(err, windows.ERROR_ACCESS_DENIED):
-		// Another user's object we may not open, or no right to create
-		// global objects (not elevated, WinDivert fails anyway); in the
-		// latter case there is none to find.
-		o, oerr := windows.OpenMutex(windows.SYNCHRONIZE, false, name)
-		if oerr == nil {
-			windows.CloseHandle(o)
+		defer windows.CloseHandle(h)
+		if engineLock(h) {
+			return nil, ErrOtherEngine
 		}
-		if errors.Is(oerr, windows.ERROR_FILE_NOT_FOUND) {
+		return func() {}, nil
+	case errors.Is(err, windows.ERROR_ACCESS_DENIED):
+		// An object we may not open fully, or no right to create global
+		// objects (not elevated, WinDivert fails anyway); in the latter
+		// case there is none to find. Another HyRoute's lock lets
+		// Administrators read its owner, so one we cannot read is not.
+		o, oerr := windows.OpenMutex(windows.READ_CONTROL, false, name)
+		if oerr != nil {
 			return func() {}, nil
 		}
-		return nil, ErrOtherEngine
+		defer windows.CloseHandle(o)
+		if engineLock(o) {
+			return nil, ErrOtherEngine
+		}
+		return func() {}, nil
+	case errors.Is(err, windows.ERROR_INVALID_HANDLE):
+		// An object of another type (event, semaphore, ...) has the name:
+		// HyRoute creates only mutexes, so another program's.
+		return func() {}, nil
 	}
 	return nil, fmt.Errorf("engine lock: %w", err)
+}
+
+// engineLock reports whether the existing object h is another HyRoute's
+// lock (see lockOwner). An owner that cannot be read counts as one.
+func engineLock(h windows.Handle) bool {
+	sd, err := windows.GetSecurityInfo(h, windows.SE_KERNEL_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return true
+	}
+	owner, _, err := sd.Owner()
+	if err != nil || owner == nil {
+		return true
+	}
+	return lockOwner(owner)
 }
 
 func New(cfg Config) *Engine {
@@ -174,6 +223,7 @@ func New(cfg Config) *Engine {
 	e.Core.Log = cfg.Log
 	e.Core.SelfPID = uint32(os.Getpid())
 	e.Core.SystemDNS = (&systemDNS{}).Has
+	e.Core.IPv4Route = (&ipv4Route{}).Has
 	e.Core.OwnerFallback = func(proto uint8, local, remote netip.AddrPort) (uint32, bool) {
 		if proto == packet.ProtoTCP {
 			return attrib.LookupTCPOwner(local, remote)
@@ -196,13 +246,17 @@ func (e *Engine) Failed() bool { return e.failed.Load() }
 // the applications would keep them open and send their segments direct.
 // That happens while the kill switch still lets them through (its block
 // could drop the resets). OnFail comes next, so with the kill switch the
-// block is in place before diverting stops.
+// block is in place before diverting stops. Only the first call does all
+// this: a second one (another loop failing at the same time) must not
+// remove the filters while the first still resets or closes the kill
+// switch.
 func (e *Engine) fail() {
-	if e.failed.CompareAndSwap(false, true) {
-		e.resetReflected()
-		if e.cfg.OnFail != nil {
-			e.cfg.OnFail()
-		}
+	if !e.failed.CompareAndSwap(false, true) {
+		return
+	}
+	e.resetReflected()
+	if e.cfg.OnFail != nil {
+		e.cfg.OnFail()
 	}
 	e.closeMains()
 }
@@ -241,6 +295,25 @@ func (e *Engine) openError(err error) error {
 	return err
 }
 
+// openRetry is how long Start waits before it opens the first handle again
+// when the driver is unloading. A variable for tests.
+var openRetry = 2 * time.Second
+
+// openFirst opens the first handle, which loads the driver. When another
+// program that used WinDivert has just stopped, its driver may still be
+// unloading (the service is marked for deletion): one more try a moment
+// later loads it again.
+func (e *Engine) openFirst(open func() (*divert.Handle, error)) (*divert.Handle, error) {
+	h, err := open()
+	var oe *divert.OpenError
+	if errors.As(err, &oe) && oe.Unloading() {
+		e.log.Info("WinDivert driver is unloading; opening again", "after", openRetry)
+		time.Sleep(openRetry)
+		h, err = open()
+	}
+	return h, err
+}
+
 // Start loads WinDivert and opens the handles.
 func (e *Engine) Start() error {
 	if err := divert.Load(e.cfg.DLLDir); err != nil {
@@ -273,7 +346,9 @@ func (e *Engine) Start() error {
 		e.DnscachePID.Store(pid)
 	}
 
-	sock, err := divert.Open(divert.SocketFilter, divert.LayerSocket, PrioSocket, divert.FlagSniff|divert.FlagRecvOnly)
+	sock, err := e.openFirst(func() (*divert.Handle, error) {
+		return divert.Open(divert.SocketFilter, divert.LayerSocket, PrioSocket, divert.FlagSniff|divert.FlagRecvOnly)
+	})
 	if err != nil {
 		return e.openError(err)
 	}

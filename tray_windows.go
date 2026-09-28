@@ -35,6 +35,14 @@ type trayState struct {
 	// restartTray. Lock order: build, then mu.
 	gen   uint64
 	build sync.Mutex
+	// thread runs systray, started: it did (both set under mu). closed:
+	// HyRoute exits, no run of systray begins (set under mu, see quitTray).
+	thread  uint32
+	started bool
+	closed  atomic.Bool
+	// The icons as files (see trayIconPaths).
+	iconsOnce       sync.Once
+	iconOn, iconOff string
 }
 
 // taskbarWait: how long the tray waits for Explorer's taskbar (HyRoute
@@ -81,7 +89,11 @@ func (g *GUI) startTray() {
 			// The new number before restart is cleared: a trayReady of the
 			// run before, late, finds one or the other (see trayCurrent).
 			g.tray.mu.Lock()
-			g.tray.gen = gen
+			if g.tray.closed.Load() {
+				g.tray.mu.Unlock()
+				return
+			}
+			g.tray.gen, g.tray.thread, g.tray.started = gen, thread, true
 			g.tray.mu.Unlock()
 			g.tray.restart.Store(false)
 			systray.Run(func() { g.trayReady(gen) }, g.trayExit)
@@ -214,9 +226,18 @@ func (g *GUI) checkTray() {
 // program refused it and the user chose Cancel) and removes the icon
 // either way. A HyRoute still running a while later, once Windows no
 // longer reports the session ending, takes the kill switch back and keeps
-// the window in the taskbar until watchTray brings the icon back.
+// the window in the taskbar until the icon is back.
+//
+// systray calls this once per run: after it, a real end of the session
+// would not reach HyRoute until the next run. So the run is replaced at
+// once (renewTray), before the block comes back; also when the cancelled
+// end came once Windows no longer reported it (neither HyRoute's exit nor
+// restartTray's).
 func (g *GUI) trayExit() {
 	if !killswitch.SessionEnding() {
+		if !g.tray.restart.Load() && !g.tray.closed.Load() {
+			go g.renewTray()
+		}
 		return
 	}
 	g.ctl.EndSession()
@@ -225,12 +246,47 @@ func (g *GUI) trayExit() {
 		for killswitch.SessionEnding() {
 			time.Sleep(5 * time.Second)
 		}
+		g.renewTray()
 		g.ctl.SessionResumed()
-		g.tray.mu.Lock()
-		g.tray.ready = false
-		g.tray.mu.Unlock()
 		g.checkTray()
 	}()
+}
+
+// renewTray starts a new run of systray now (see restartTray), not at
+// watchTray's next look, and waits a while for it to begin. If it cannot,
+// watchTray tries again.
+func (g *GUI) renewTray() {
+	g.tray.mu.Lock()
+	g.tray.ready = false
+	gen, thread := g.tray.gen, g.tray.thread
+	g.tray.mu.Unlock()
+	if !g.restartTray(thread) {
+		return
+	}
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		g.tray.mu.Lock()
+		begun := g.tray.gen != gen
+		g.tray.mu.Unlock()
+		if begun {
+			return
+		}
+	}
+}
+
+// quitTray removes the tray icon when HyRoute exits, and no run of
+// systray begins after it. systray.Quit calls the exit function that the
+// first systray.Run registers and panics before it, and the tray may wait
+// for Explorer's taskbar that long (see startTray). A run that has not
+// made its window yet quits in trayReady.
+func (g *GUI) quitTray() {
+	g.tray.mu.Lock()
+	g.tray.closed.Store(true)
+	started, thread := g.tray.started, g.tray.thread
+	g.tray.mu.Unlock()
+	// systray.Run registers first, then makes the window.
+	if started && trayWindow(thread) != 0 {
+		systray.Quit()
+	}
 }
 
 // sessionEndWait: Windows ends a process soon after its WM_ENDSESSION;
@@ -240,14 +296,18 @@ const sessionEndWait = 30 * time.Second
 // trayReady builds the menu of run gen of systray (see startTray), once
 // its icon is up.
 func (g *GUI) trayReady(gen uint64) {
+	if g.tray.closed.Load() {
+		// quitTray came before this run's window: its icon must not stay.
+		systray.Quit()
+		return
+	}
 	g.tray.build.Lock()
 	defer g.tray.build.Unlock()
 	if !g.trayCurrent(gen) {
 		return
 	}
-	_, off := trayIcons()
-	if off != nil {
-		systray.SetIcon(off)
+	if _, off := g.trayIconPaths(); off != "" {
+		systray.SetIconFromFilePath(off)
 	}
 	systray.SetTooltip("HyRoute")
 	open := systray.AddMenuItem("Открыть HyRoute", "")
@@ -351,11 +411,11 @@ func (g *GUI) updateTray() {
 		return
 	}
 	g.tray.state, g.tray.on = text, on
-	iconOn, iconOff := trayIcons()
-	if on && iconOn != nil {
-		systray.SetIcon(iconOn)
-	} else if iconOff != nil {
-		systray.SetIcon(iconOff)
+	iconOn, iconOff := g.trayIconPaths()
+	if on && iconOn != "" {
+		systray.SetIconFromFilePath(iconOn)
+	} else if iconOff != "" {
+		systray.SetIconFromFilePath(iconOff)
 	}
 	systray.SetTooltip("HyRoute — " + text)
 	g.tray.status.SetTitle(text)
@@ -366,11 +426,35 @@ func (g *GUI) updateTray() {
 	}
 }
 
+// trayIconPaths returns the tray icons as files in the runtime folder
+// ("" if they could not be written): systray loads an icon from a file.
+// Not systray.SetIcon: it writes the file to %TEMP% under a name known in
+// advance and loads whatever is there, and that folder is the user's, so
+// any program could hand this elevated process a file of its own to parse,
+// or a link that makes it create one anywhere. Only administrators can
+// write to the runtime folder.
+func (g *GUI) trayIconPaths() (on, off string) {
+	g.tray.iconsOnce.Do(func() {
+		iconOn, iconOff := trayIcons()
+		var err error
+		if g.tray.iconOn, err = writeIcon(g.runtimeDir, iconOn); err == nil {
+			g.tray.iconOff, err = writeIcon(g.runtimeDir, iconOff)
+		}
+		if err != nil {
+			g.tray.iconOn, g.tray.iconOff = "", ""
+			g.ctl.Log.Warn("tray icon files not written: the tray icon stays blank", "err", err)
+		}
+	})
+	return g.tray.iconOn, g.tray.iconOff
+}
+
+// showWindow brings the window up as it was: Wails restores it only if it
+// is minimized (WindowUnminimise would also take a maximized one back to
+// its normal size).
 func (g *GUI) showWindow() {
 	if ctx := g.context(); ctx != nil {
 		g.tray.hidden.Store(false)
 		runtime.WindowShow(ctx)
-		runtime.WindowUnminimise(ctx)
 	}
 }
 

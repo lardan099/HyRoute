@@ -32,8 +32,17 @@ try {
     if (-not $rev) { $rev = 'unknown' }
     if (git status --porcelain 2>$null) { $rev += '-dirty' }
     # Release version from the nearest v* tag; untagged builds are dev
-    # builds (no automatic update checks).
-    $ver = (git describe --tags --match 'v[0-9]*' 2>$null)
+    # builds (no automatic update checks). The release workflow names the
+    # tag it builds in HYROUTE_VERSION: with two tags on one commit, git
+    # describe may pick the other one.
+    $ver = $env:HYROUTE_VERSION
+    if ($ver) {
+        if ((git rev-parse -q --verify "refs/tags/$ver^{commit}" 2>$null) -ne (git rev-parse HEAD)) {
+            throw "HEAD is not tag $ver (HYROUTE_VERSION)"
+        }
+    } else {
+        $ver = (git describe --tags --match 'v[0-9]*' 2>$null)
+    }
     if (-not $ver) { $ver = 'v0.0.0-dev' }
     $ld = "-X main.build=$rev -X main.version=$ver"
 

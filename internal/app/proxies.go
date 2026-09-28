@@ -307,6 +307,9 @@ func (c *Controller) syncProxies() {
 		srv.OnLimit = func(refused int64) {
 			c.Log.Warn("local proxy full: new connections closed", "name", p.Name, "port", p.Port, "limit", srv.MaxConns, "refused", refused)
 		}
+		srv.OnAcceptError = func(err error) {
+			c.Log.Error("local proxy accept failed", "name", p.Name, "port", p.Port, "err", err)
+		}
 		r := &proxyRun{cfg: p}
 		if err := srv.Listen(fmt.Sprintf("%s:%d", host, p.Port)); err != nil {
 			r.err = fmt.Sprintf("порт %d не открылся: %v (занят другой программой?)", p.Port, err)
@@ -395,6 +398,9 @@ func (t *tunnelConn) CloseWrite() error {
 	}
 	return t.Conn.Close()
 }
+
+// NetConn returns the wrapped connection (socks5.Abort resets through it).
+func (t *tunnelConn) NetConn() net.Conn { return t.Conn }
 
 // stopProxies closes every port (Disconnect).
 func (c *Controller) stopProxies() {

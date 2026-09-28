@@ -32,6 +32,9 @@ type Journal struct {
 	Added      []string  `json:"added"`
 	UpdaterPID int       `json:"updaterPID"`
 	Started    time.Time `json:"started"`
+	// Reconnect: HyRoute was connected before the update, so the version
+	// a recovery restores connects again (as after the updater's rollback).
+	Reconnect bool `json:"reconnect,omitempty"`
 }
 
 func writeJournal(path string, j *Journal) error {
@@ -104,8 +107,9 @@ func plainName(n string) bool {
 // ApplyJournaled is Apply with a journal at journalPath: the plan is on
 // disk before any file changes. exe is the name HyRoute's executable has
 // in target ("" = MainExe): the package's MainExe replaces that file, so
-// a renamed copy is updated in place.
-func ApplyJournaled(staging, target, exe, journalPath, from, to string) (*Swap, error) {
+// a renamed copy is updated in place. reconnect is recorded for a
+// recovery (see Journal.Reconnect).
+func ApplyJournaled(staging, target, exe, journalPath, from, to string, reconnect bool) (*Swap, error) {
 	m, err := Verify(staging)
 	if err != nil {
 		return nil, err
@@ -124,7 +128,7 @@ func ApplyJournaled(staging, target, exe, journalPath, from, to string) (*Swap, 
 			return nil, fmt.Errorf("программа названа как файл пакета %s", name)
 		}
 	}
-	j := &Journal{Target: target, Exe: exe, From: from, To: to, UpdaterPID: os.Getpid(), Started: time.Now()}
+	j := &Journal{Target: target, Exe: exe, From: from, To: to, UpdaterPID: os.Getpid(), Started: time.Now(), Reconnect: reconnect}
 	type step struct{ src, dst string }
 	var todo []step
 	for name, sum := range m.Files {
@@ -146,7 +150,7 @@ func ApplyJournaled(staging, target, exe, journalPath, from, to string) (*Swap, 
 	if err := writeJournal(journalPath, j); err != nil {
 		return nil, fmt.Errorf("журнал обновления: %w", err)
 	}
-	sw := &Swap{Target: target, journal: journalPath}
+	sw := &Swap{Target: target, To: to, journal: journalPath}
 	for _, s := range todo {
 		if err := sw.put(filepath.Join(staging, s.src), filepath.Join(target, s.dst), s.dst); err != nil {
 			sw.Undo()
@@ -199,12 +203,33 @@ func removeOrSetAside(p string) error {
 	return nil
 }
 
-// CleanAside removes files set aside by an undo in dir.
+// CleanAside removes files set aside by an undo in dir: only the names
+// removeOrSetAside gives them, not anything else ending in .bad (a copy
+// of HyRoute may run from the user's Downloads).
 func CleanAside(dir string) {
 	ents, _ := os.ReadDir(dir)
 	for _, e := range ents {
-		if strings.HasSuffix(e.Name(), ".bad") {
+		if e.Type().IsRegular() && setAside(e.Name()) {
 			os.Remove(filepath.Join(dir, e.Name()))
 		}
 	}
+}
+
+// setAside reports a name of the form <name>.<UnixNano>.bad.
+func setAside(n string) bool {
+	rest, ok := strings.CutSuffix(n, ".bad")
+	i := strings.LastIndexByte(rest, '.')
+	if !ok || i <= 0 {
+		return false
+	}
+	ts := rest[i+1:]
+	if len(ts) < 18 { // nanoseconds since 1970: 19 digits nowadays
+		return false
+	}
+	for _, c := range ts {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

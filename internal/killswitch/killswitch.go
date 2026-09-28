@@ -11,7 +11,7 @@
 //     keeps the filter engine as it was. A block left anyway (HyRoute
 //     ended first) is found at sign-in (Leftover).
 //   - exceptions: loopback, the local network, DNS and DHCP of Windows'
-//     own clients (encrypted DNS to the adapters' DNS servers too), and
+//     own clients (DNS, encrypted too, to the adapters' DNS servers), and
 //     HyRoute's own programs (HyRoute.exe, hysteria.exe), so HyRoute can
 //     reconnect. The port of HyRoute's relay stays closed to other hosts
 //     all the same: its connections have the real remote hosts for peers.
@@ -45,13 +45,16 @@ var LAN = []netip.Prefix{
 	netip.MustParsePrefix("ff00::/8"),
 }
 
-// Ports are remote ports the block leaves open to Windows' DNS and DHCP
-// clients (svchost.exe), not to other programs: DNS (HyRoute resolves the
-// server name through the Windows resolver, so the query leaves from the
-// DNS client service, not from hysteria.exe) and DHCP (v4 and v6).
+// Ports are the remote ports of DNS and DHCP (v4 and v6) the block leaves
+// open to Windows' DNS and DHCP clients (svchost.exe), not to other
+// programs: HyRoute resolves the server name through the Windows
+// resolver, so the query leaves from the DNS client service, not from
+// hysteria.exe. With svchost's app ID known, DHCP goes from the client's
+// port to the server's only and DNS to the adapters' DNS servers only
+// (while none is known, outbound to port 53 of any host).
 var Ports = []uint16{53, 67, 68, 546, 547}
 
-// SecureDNSPorts are the TCP ports of encrypted DNS (DoH, DoT) the block
+// SecureDNSPorts are the ports of encrypted DNS (DoH, DoT) the block
 // leaves open to Windows' DNS client towards the adapters' DNS servers
 // only: when Windows requires encrypted DNS, nothing goes to port 53.
 var SecureDNSPorts = []uint16{443, 853}

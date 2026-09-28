@@ -166,8 +166,9 @@
 
   const sentence = $derived.by(() => {
     const apps = r.apps!.map((a) => appLabel(a.pattern));
-    // Lists from the database read as «YouTube», plain sites as is.
-    const sites = r.domains!.map((d) => (itemLabel(d)?.geo ? `«${shortLabel(d)}»` : itemLabel(d) ? shortLabel(d) : siteLabel(d).host));
+    // Lists from the database read as «YouTube», plain sites as is (masked
+    // in Privacy mode, as in the chips).
+    const sites = r.domains!.map((d) => (itemLabel(d)?.geo ? `«${shortLabel(d)}»` : hide(itemLabel(d) ? shortLabel(d) : siteLabel(d).host)));
     let who = '';
     if (apps.length && sites.length) who = `${apps.join(', ')}, когда открывает ${sites.join(', ')}`;
     else if (apps.length) who = `Всё от ${apps.join(', ')}`;
@@ -197,9 +198,19 @@
     }
     saving = false;
   }
+
+  // Only a click that starts on the backdrop closes the editor: selecting
+  // text in a field and letting go outside the dialog also ends in a click
+  // on it, and the rule would be lost unsaved.
+  let downOnBackdrop = false;
 </script>
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div
+  class="backdrop"
+  role="presentation"
+  onmousedown={(e) => (downOnBackdrop = e.target === e.currentTarget)}
+  onclick={(e) => downOnBackdrop && e.target === e.currentTarget && onclose()}
+>
   <div class="dialog editor">
     <div class="row head">
       <h2 class="grow">{title}</h2>
@@ -216,17 +227,17 @@
         {#each r.domains! as d, i (d + i)}
           {@const il = itemLabel(d)}
           {#if il}
-            <span class="chip" class:geo={il.geo} class:miss={!!il.missing} title={il.tip}>
+            <span class="chip" class:geo={il.geo} class:miss={!!il.missing} title={il.geo ? il.tip : hide(il.tip)}>
               {#if il.geo}<Icon name={il.missing ? 'alert' : 'database'} size={13} />{/if}
-              <span class="ellipsis">{il.text}</span>
+              <span class="ellipsis">{il.geo ? il.text : hide(il.text)}</span>
               <span class="mode static">{il.kind}</span>
               <button class="x" onclick={() => r.domains!.splice(i, 1)} title="Убрать"><Icon name="x" size={13} /></button>
             </span>
           {:else}
             {@const l = siteLabel(d)}
             <span class="chip">
-              <span class="ellipsis">{l.host}</span>
-              <button class="mode" title={l.tip + ' — нажмите, чтобы изменить'} onclick={() => cycleSite(i)}>{l.mode}</button>
+              <span class="ellipsis">{hide(l.host)}</span>
+              <button class="mode" title={hide(l.tip) + ' — нажмите, чтобы изменить'} onclick={() => cycleSite(i)}>{l.mode}</button>
               <button class="x" onclick={() => r.domains!.splice(i, 1)} title="Убрать"><Icon name="x" size={13} /></button>
             </span>
           {/if}
@@ -245,7 +256,12 @@
             const t = e.clipboardData?.getData('text') ?? '';
             if (/[\s,;]/.test(t.trim())) {
               e.preventDefault();
-              addSites(t);
+              // The list takes the selection's place: a site typed but not
+              // yet added stays, as a site of its own.
+              const el = e.currentTarget;
+              const from = el.selectionStart ?? siteInput.length;
+              const to = el.selectionEnd ?? from;
+              addSites([siteInput.slice(0, from), t, siteInput.slice(to)].join(' '));
             }
           }}
           onblur={() => siteInput.trim() && addSites(siteInput)}

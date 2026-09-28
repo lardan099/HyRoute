@@ -2,11 +2,17 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/binary"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -69,4 +75,27 @@ func icoFromPNG(p []byte) []byte {
 	binary.Write(&b, binary.LittleEndian, [2]uint32{uint32(len(p)), 6 + 16})
 	b.Write(p)
 	return b.Bytes()
+}
+
+// writeIcon puts ico into dir as a file named after its content (copies
+// of HyRoute of other versions may share dir) and returns its path. A file
+// there already is kept only if it holds exactly ico.
+func writeIcon(dir string, ico []byte) (string, error) {
+	if dir == "" || len(ico) == 0 {
+		return "", errors.New("no icon, or no folder for it")
+	}
+	sum := sha256.Sum256(ico)
+	path := filepath.Join(dir, "tray-"+hex.EncodeToString(sum[:8])+".ico")
+	if b, err := os.ReadFile(path); err == nil && bytes.Equal(b, ico) {
+		return path, nil
+	}
+	tmp := fmt.Sprintf("%s.%d.new", path, os.Getpid())
+	if err := os.WriteFile(tmp, ico, 0o644); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return "", err
+	}
+	return path, nil
 }

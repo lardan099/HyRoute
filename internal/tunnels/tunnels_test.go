@@ -207,3 +207,57 @@ func TestAcquireReplacesChangedProfile(t *testing.T) {
 		t.Fatal("temporary endpoint left running")
 	}
 }
+
+// slowStopRunner reports when its Stop begins and finishes it only once
+// told to: Hysteria takes a moment to die.
+type slowStopRunner struct {
+	*fakeRunner
+	stopping, proceed chan struct{}
+}
+
+func (f *slowStopRunner) Stop() {
+	close(f.stopping)
+	<-f.proceed
+	f.fakeRunner.Stop()
+}
+
+// A check that starts while the previous check's temporary Hysteria is
+// still stopping keeps its server exclusion when that stop completes.
+func TestReleaseWhileNewCheckStarts(t *testing.T) {
+	var mu sync.Mutex
+	var ips []netip.Addr
+	stopping, proceed := make(chan struct{}), make(chan struct{})
+	n := 0
+	m := &Manager{
+		New: func(p hysteria.Profile, h Hooks) Runner {
+			n++
+			f := &fakeRunner{p: p, h: h, starts: new(int)}
+			if n == 1 {
+				return &slowStopRunner{fakeRunner: f, stopping: stopping, proceed: proceed}
+			}
+			return f
+		},
+		SetServerIPs: func(l []netip.Addr) error { mu.Lock(); ips = l; mu.Unlock(); return nil },
+		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	us := prof("us", "198.51.100.9")
+	_, rel1 := m.Acquire(us)
+	released := make(chan struct{})
+	go func() { rel1(); close(released) }()
+	<-stopping // the first Hysteria is going away, its key is free
+	e2, rel2 := m.Acquire(us)
+	close(proceed)
+	<-released
+	mu.Lock()
+	got := ips
+	mu.Unlock()
+	if !slices.Equal(got, ipList("198.51.100.9")) || !e2.Available() {
+		t.Fatalf("the stopped check removed the running one's exclusion: %v", got)
+	}
+	rel2()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ips) != 0 {
+		t.Fatalf("exclusion left after the last check: %v", ips)
+	}
+}

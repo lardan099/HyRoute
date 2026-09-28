@@ -50,6 +50,10 @@ const (
 	DefaultMaxConns = 1024
 	// limitReport: OnLimit is called at most this often.
 	limitReport = time.Minute
+	// acceptRetry: the first pause after a failed Accept; it doubles up to
+	// acceptRetryMax while Accept keeps failing.
+	acceptRetry    = 50 * time.Millisecond
+	acceptRetryMax = time.Second
 )
 
 type Server struct {
@@ -59,6 +63,9 @@ type Server struct {
 	Dial               Dialer
 	// OnError reports failed dials (logging); may be nil.
 	OnError func(dst string, err error)
+	// OnAcceptError reports a failed Accept (logging), at most once per
+	// limitReport; the server goes on accepting after a pause. May be nil.
+	OnAcceptError func(err error)
 	// MaxConns caps simultaneous client connections (0: DefaultMaxConns).
 	// Each one costs the elevated process a goroutine and buffers, and
 	// anyone who can reach the port may open them, before the password:
@@ -95,12 +102,17 @@ func (s *Server) Listen(addr string) error {
 	if err != nil {
 		return err
 	}
+	s.start(ln)
+	return nil
+}
+
+// start serves on ln (tests pass their own listener).
+func (s *Server) start(ln net.Listener) {
 	s.ln = ln
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.conn = map[net.Conn]struct{}{}
 	s.wg.Add(1)
 	go s.serve()
-	return nil
 }
 
 func network(addr string) string {
@@ -117,14 +129,16 @@ func network(addr string) string {
 func (s *Server) Addr() string { return s.ln.Addr().String() }
 
 // Close stops listening and drops every connection, tunnel side included,
-// and every dial in progress, so it does not wait for slow servers.
+// and every dial in progress, so it does not wait for slow servers. The
+// connections are reset, not closed with a FIN: a download cut short must
+// not look complete to the program.
 func (s *Server) Close() error {
 	err := s.ln.Close()
 	s.cancel()
 	s.mu.Lock()
 	s.closed = true
 	for c := range s.conn {
-		c.Close()
+		socks5.Abort(c)
 	}
 	s.mu.Unlock()
 	s.wg.Wait()
@@ -152,6 +166,8 @@ func (s *Server) drop(c net.Conn) {
 
 func (s *Server) serve() {
 	defer s.wg.Done()
+	var retry time.Duration // 0: the last Accept succeeded
+	var reported time.Time
 	for {
 		c, err := s.ln.Accept()
 		if err != nil {
@@ -159,8 +175,24 @@ func (s *Server) serve() {
 			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
-			return
+			if errors.Is(err, net.ErrClosed) || s.ctx.Err() != nil {
+				return // Close
+			}
+			// Out of sockets or memory for a moment: the port is still
+			// open, so give up only on Close.
+			if s.OnAcceptError != nil && (reported.IsZero() || time.Since(reported) >= limitReport) {
+				reported = time.Now()
+				s.OnAcceptError(err)
+			}
+			retry = min(max(2*retry, acceptRetry), acceptRetryMax)
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-time.After(retry):
+			}
+			continue
 		}
+		retry = 0
 		// Only this loop adds to Active, so the cap holds.
 		if s.Active.Load() >= int64(s.maxConns()) {
 			s.refuse()
@@ -222,6 +254,9 @@ func (b *bufConn) CloseWrite() error {
 	}
 	return b.Conn.Close()
 }
+
+// NetConn returns the wrapped connection (socks5.Abort resets through it).
+func (b *bufConn) NetConn() net.Conn { return b.Conn }
 
 // limitReader caps what a header read may take from a connection (left <
 // 0: no cap) and notes when the cap was reached.
@@ -356,6 +391,9 @@ func (s *Server) socks(c net.Conn) {
 	if err != nil {
 		return
 	}
+	// The handshake is over: the dial has its own timeout, and the reply
+	// must not fail on the handshake deadline (it covers writes too).
+	c.SetDeadline(time.Time{})
 	if r[1] != socks5.CmdConnect {
 		socksReply(c, 7) // command not supported (UDP ASSOCIATE, BIND)
 		return
@@ -386,6 +424,49 @@ func replyCode(err error) byte {
 // ---- HTTP ----
 
 var hopHeaders = []string{"Proxy-Authorization", "Proxy-Connection", "Proxy-Authenticate", "Connection", "Keep-Alive", "Te", "Trailer", "Upgrade"}
+
+// connectionTokens returns the options of every Connection header: each
+// is a comma-separated list (RFC 9110, 7.6.1).
+func connectionTokens(h http.Header) []string {
+	var out []string
+	for _, v := range h["Connection"] {
+		for _, t := range strings.Split(v, ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				out = append(out, t)
+			}
+		}
+	}
+	return out
+}
+
+// isUpgrade reports a request to switch protocols (WebSocket, h2c).
+func isUpgrade(h http.Header) bool {
+	for _, t := range connectionTokens(h) {
+		if strings.EqualFold(t, "upgrade") {
+			return true
+		}
+	}
+	return false
+}
+
+// dropHop removes the hop-by-hop headers: the fixed ones and the ones
+// Connection lists. With upgrade, Upgrade stays and Connection says
+// "Upgrade" to the next hop.
+func dropHop(h http.Header, upgrade bool) {
+	for _, t := range connectionTokens(h) {
+		if !(upgrade && strings.EqualFold(t, "upgrade")) {
+			h.Del(t)
+		}
+	}
+	for _, name := range hopHeaders {
+		if !(upgrade && name == "Upgrade") {
+			h.Del(name)
+		}
+	}
+	if upgrade {
+		h.Set("Connection", "Upgrade")
+	}
+}
 
 func (s *Server) httpAuth(req *http.Request) bool {
 	if s.Username == "" {
@@ -515,9 +596,7 @@ func replayable(req *http.Request) bool {
 // interim passes on a 1xx response (100 Continue, 103 Early Hints): the
 // final one follows. Response.Write would add a Content-Length.
 func interim(w io.Writer, resp *http.Response) error {
-	for _, h := range hopHeaders {
-		resp.Header.Del(h)
-	}
+	dropHop(resp.Header, false)
 	var b strings.Builder
 	b.WriteString("HTTP/1.1 " + itoa(resp.StatusCode) + " " + http.StatusText(resp.StatusCode) + "\r\n")
 	resp.Header.Write(&b)
@@ -573,14 +652,15 @@ func (s *Server) http(c net.Conn, br *bufio.Reader, lim *limitReader) {
 			respond(c, http.StatusBadRequest, "")
 			return
 		}
-		upgrade := strings.EqualFold(req.Header.Get("Connection"), "upgrade")
-		for _, h := range hopHeaders {
-			if h == "Connection" || h == "Upgrade" {
-				if upgrade {
-					continue
-				}
-			}
-			req.Header.Del(h)
+		dropHop(req.Header, isUpgrade(req.Header))
+		// A client that expects 100 Continue holds the body back until it
+		// comes, but req.Write sends the body at once instead of waiting
+		// for the server's 100: the proxy answers the expectation itself
+		// (HTTP/1.0 clients may not ask it, RFC 9110, 10.1.1).
+		cont := req.ProtoAtLeast(1, 1) && req.Body != nil && req.Body != http.NoBody &&
+			strings.EqualFold(strings.TrimSpace(req.Header.Get("Expect")), "100-continue")
+		if cont {
+			req.Header.Del("Expect")
 		}
 		req.RequestURI = ""
 		if up != nil && (up.host != target || up.stale()) {
@@ -595,6 +675,12 @@ func (s *Server) http(c net.Conn, br *bufio.Reader, lim *limitReader) {
 			if up == nil {
 				if up, err = s.dialUpstream(dst, target); err != nil {
 					respond(c, http.StatusBadGateway, "")
+					return
+				}
+			}
+			if cont {
+				cont = false
+				if _, err := io.WriteString(c, "HTTP/1.1 100 Continue\r\n\r\n"); err != nil {
 					return
 				}
 			}
@@ -631,14 +717,32 @@ func (s *Server) http(c net.Conn, br *bufio.Reader, lim *limitReader) {
 			s.pipe(&bufConn{Conn: c, r: br}, &bufConn{Conn: up.Conn, r: up.r})
 			return
 		}
-		closeAfter := resp.Close || req.Close
-		for _, h := range hopHeaders {
-			resp.Header.Del(h)
+		// An HTTP/1.0 client cannot read chunked (RFC 9112, 6.1): the body
+		// goes as it is, ended by closing the connection.
+		if !req.ProtoAtLeast(1, 1) && len(resp.TransferEncoding) > 0 {
+			resp.TransferEncoding = nil
+			resp.ContentLength = -1
+			resp.Close = true
 		}
+		closeAfter := resp.Close || req.Close
+		dropHop(resp.Header, false)
+		// A body cut short must not end like a complete one, on either
+		// side (as in pipe). A client that breaks off resets the tunnel
+		// at once: resp.Write then closes the body, which would first
+		// read the rest of it from the server.
+		reset := func() {
+			socks5.Abort(c)
+			socks5.Abort(up.Conn)
+		}
+		rw.fail = reset
 		err = resp.Write(rw)
 		resp.Body.Close()
 		s.Recv.Add(rw.n)
-		if err != nil || closeAfter {
+		if err != nil {
+			reset() // the server's side broke
+			return
+		}
+		if closeAfter {
 			return
 		}
 	}
@@ -647,10 +751,16 @@ func (s *Server) http(c net.Conn, br *bufio.Reader, lim *limitReader) {
 type countWriter struct {
 	w io.Writer
 	n int64
+	// fail, if set, runs on the first failed write.
+	fail func()
 }
 
 func (c *countWriter) Write(p []byte) (int, error) {
 	n, err := c.w.Write(p)
 	c.n += int64(n)
+	if err != nil && c.fail != nil {
+		c.fail()
+		c.fail = nil
+	}
 	return n, err
 }

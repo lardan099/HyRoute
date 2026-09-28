@@ -15,7 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"fyne.io/systray"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/sys/windows"
@@ -68,7 +67,7 @@ func (g *GUI) startup(ctx context.Context) {
 // closed until HyRoute connects again or the user opens it.
 func (g *GUI) shutdown(context.Context) {
 	g.ctl.Shutdown()
-	systray.Quit()
+	g.quitTray()
 }
 
 // domReady: the window works. After an update this tells hyroute-updater
@@ -140,12 +139,7 @@ func (g *GUI) context() context.Context {
 	return nil
 }
 
-func (g *GUI) secondInstance(options.SecondInstanceData) {
-	if ctx := g.context(); ctx != nil {
-		runtime.WindowUnminimise(ctx)
-		runtime.WindowShow(ctx)
-	}
-}
+func (g *GUI) secondInstance(options.SecondInstanceData) { g.showWindow() }
 
 func (g *GUI) emitStatus() {
 	if ctx := g.context(); ctx != nil {

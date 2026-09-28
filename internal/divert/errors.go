@@ -36,9 +36,10 @@ func Explain(code uint32, driver *DriverInfo) string {
 	case errAccessDenied:
 		return "Нет прав администратора. Запустите HyRoute от имени администратора."
 	case errInvalidParameter:
-		// The driver version is checked separately, so this is our filter
-		// string or parameters, not the other program's driver.
-		return "WinDivert отклонил фильтр или параметры хэндла (внутренняя ошибка HyRoute)."
+		// Usually our filter string or parameters. The driver version is
+		// checked only once a handle is open, so an older driver of another
+		// program that rejects them fails here: name it.
+		return "WinDivert отклонил фильтр или параметры хэндла (внутренняя ошибка HyRoute)." + other
 	case errInvalidImageHash:
 		return "Windows отклонила подпись драйвера WinDivert. Проверьте, что файлы не повреждены, и что не включён режим, запрещающий сторонние драйверы (HVCI/Memory Integrity обычно не мешает)."
 	case errDriverFailedPriorUnload:

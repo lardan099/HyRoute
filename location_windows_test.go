@@ -207,7 +207,7 @@ func TestCopyProgramTakesFolderPermissions(t *testing.T) {
 		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := copyProgram(src, self, target); err != nil {
+	if err := copyProgram(src, self, src, target); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(old); string(b) != "new HyRoute (1).exe" {
@@ -222,5 +222,41 @@ func TestCopyProgramTakesFolderPermissions(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(target, "LICENSE.txt")); err == nil {
 		t.Fatal("a file the program folder lacks appeared")
+	}
+}
+
+// Only HyRoute.exe is needed: hysteria.exe and WinDivert run from their
+// verified copies in the runtime folder, which are the ones copied (the
+// program folder may lack them, or hold others), and an update brings
+// its own updater.
+func TestCopyProgramNeedsOnlyHyRoute(t *testing.T) {
+	src, runtimeDir, target := t.TempDir(), t.TempDir(), t.TempDir()
+	self := filepath.Join(src, "HyRoute.exe")
+	if err := os.WriteFile(self, []byte("main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "WinDivert.dll"), []byte("replaced"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"hysteria.exe", "WinDivert.dll"} {
+		if err := os.WriteFile(filepath.Join(runtimeDir, name), []byte("verified "+name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := copyProgram(src, self, runtimeDir, target); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"HyRoute.exe": "main", "hysteria.exe": "verified hysteria.exe",
+		"WinDivert.dll": "verified WinDivert.dll", "WinDivert64.sys": "", "hyroute-updater.exe": ""} {
+		b, err := os.ReadFile(filepath.Join(target, name))
+		if want == "" {
+			if err == nil {
+				t.Errorf("%s appeared", name)
+			}
+			continue
+		}
+		if string(b) != want {
+			t.Errorf("%s holds %q (%v), want %q", name, b, err, want)
+		}
 	}
 }

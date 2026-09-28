@@ -186,7 +186,13 @@ func (c *Client) Download(ctx context.Context, url, path string, maxBytes int64,
 		n, rerr := body.Read(buf)
 		if n > 0 {
 			stall.Reset(stallTimeout)
-			f.Write(buf[:n])
+			// The hash is of what reached the file: a failed write
+			// (disk full) is the error, not a "damaged" download.
+			if _, err := f.Write(buf[:n]); err != nil {
+				f.Close()
+				os.Remove(part)
+				return "", fmt.Errorf("не удалось записать файл: %w", err)
+			}
 			h.Write(buf[:n])
 			done += int64(n)
 			if done > maxBytes {
@@ -332,7 +338,9 @@ func Compare(a, b string) int {
 }
 
 // comparePre: no prerelease > prerelease; git-describe suffixes ("3-gabc")
-// are builds after the tag, so they rank above the plain tag.
+// are builds after the tag, so they rank above the plain tag. Prereleases
+// compare as in semver: numeric identifiers by value (beta.10 > beta.9)
+// and below alphanumeric ones, a longer list above its own prefix.
 func comparePre(a, b string) int {
 	desc := func(s string) bool {
 		n, _, ok := strings.Cut(s, "-g")
@@ -351,5 +359,29 @@ func comparePre(a, b string) int {
 	if ra, rb := rank(a), rank(b); ra != rb {
 		return ra - rb
 	}
-	return strings.Compare(a, b)
+	// "3-gabc": the commit count is a number too.
+	pa := strings.FieldsFunc(a, func(r rune) bool { return r == '.' || r == '-' })
+	pb := strings.FieldsFunc(b, func(r rune) bool { return r == '.' || r == '-' })
+	for i := 0; i < len(pa) && i < len(pb); i++ {
+		na, ea := strconv.ParseUint(pa[i], 10, 64)
+		nb, eb := strconv.ParseUint(pb[i], 10, 64)
+		switch {
+		case ea == nil && eb == nil:
+			if na != nb {
+				if na < nb {
+					return -1
+				}
+				return 1
+			}
+		case ea == nil:
+			return -1
+		case eb == nil:
+			return 1
+		default:
+			if c := strings.Compare(pa[i], pb[i]); c != 0 {
+				return c
+			}
+		}
+	}
+	return len(pa) - len(pb)
 }

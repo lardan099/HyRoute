@@ -64,6 +64,12 @@ func (c *Core) udpSend(uf *udpFlow, payload []byte, addr *divert.Address, key na
 		c.UDPDropped.Add(1)
 		return
 	}
+	if key.Dst.Port() == 53 {
+		// The answer comes back through the tunnel and is taken only if
+		// it answers this query (udpSession.read). The DNS sniff sees the
+		// query too, but on another handle: it could come in late.
+		c.DNS.AddQuery(false, key.Src, key.Dst, payload)
+	}
 	now := time.Now()
 	sk := sessKey{key.Src, uf.profile}
 	c.mu.Lock()
@@ -180,6 +186,15 @@ func (s *udpSession) read(a *socks5.UDPAssoc) {
 			continue
 		}
 		payload := buf[:n]
+		if src.Port() == 53 {
+			// Tunneled DNS answers never pass the DNS sniff handle (it sits
+			// above the handle that injects them), so feed the cache here,
+			// before the application gets the answer and connects, but
+			// only with the answer to a query this socket sent: the tunnel
+			// delivers datagrams from any sender to the association, and a
+			// forged "answer" would steer the routing of its names.
+			s.c.DNS.AddAnswer(false, s.local, src, payload)
+		}
 		pkt := packet.BuildUDP(src, s.local, payload)
 		s.mu.Lock()
 		addr := s.addr
@@ -200,11 +215,6 @@ func (s *udpSession) read(a *socks5.UDPAssoc) {
 		}
 		if cnt, ok := s.tun.(counting); ok {
 			cnt.NoteTraffic(0, int64(n))
-		}
-		if src.Port() == 53 {
-			// Tunneled DNS answers never pass the DNS sniff handle (it sits
-			// above the handle that injects them), so feed the cache here.
-			s.c.DNS.AddResponse(payload)
 		}
 	}
 }

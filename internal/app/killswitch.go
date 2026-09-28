@@ -14,7 +14,8 @@ type KillSwitch interface {
 	Close() error
 	// Release removes everything.
 	Release() error
-	// Engaged: the block is installed (maybe left by a crashed run).
+	// Engaged: the block is installed (maybe left by a crashed run). An
+	// error with true: it is installed, but another HyRoute looks after it.
 	Engaged() (bool, error)
 }
 
@@ -23,6 +24,8 @@ type ksState struct {
 	armed  bool   // pass filters on (engine up)
 	hold   bool   // keep the block over the coming exit (update)
 	ending bool   // Windows is ending the session: nothing arms (EndSession)
+	resume bool   // EndSession removed a block: SessionResumed puts it back
+	relay  uint16 // the relay port of the last Arm (see restoreBlock)
 	err    string // last failure, shown in the status
 }
 
@@ -35,6 +38,14 @@ func (c *Controller) InitKillSwitch() {
 	on, err := c.KillSwitch.Engaged()
 	if err != nil {
 		c.Log.Error("kill switch state unknown", "err", err)
+		// Another HyRoute (another Windows user's) owns an installed
+		// block: the internet may be closed for this user too, whatever
+		// the setting. Otherwise it matters only with the kill switch on.
+		if set, known := c.killSwitchSetting(); on || set || !known {
+			c.ksMu.Lock()
+			c.ks.err = err.Error()
+			c.ksMu.Unlock()
+		}
 		return
 	}
 	if on {
@@ -42,6 +53,10 @@ func (c *Controller) InitKillSwitch() {
 		c.ks.blocks = true
 		c.ksMu.Unlock()
 		c.Log.Warn("kill switch: the internet is blocked, the previous run ended without disconnecting; connect or unblock")
+		// The block may be another copy's (the one this copy was moved or
+		// updated from): its exception lets that copy's program through,
+		// not this one's.
+		c.refreshKillSwitchApps()
 	}
 }
 
@@ -77,7 +92,7 @@ func (c *Controller) armKillSwitch(s Session) {
 		c.undoArmLocked(err)
 		return
 	}
-	c.ks.blocks, c.ks.armed, c.ks.err = true, true, ""
+	c.ks.blocks, c.ks.armed, c.ks.err, c.ks.relay = true, true, "", relayPort
 	// The engine may have failed before the pass went in: engineFailed
 	// then found nothing armed to close. The engine marks itself failed
 	// before it reports, so either this sees it or engineFailed sees armed.
@@ -139,6 +154,9 @@ func (c *Controller) routingStopped(release bool) {
 	}
 	c.ksMu.Lock()
 	defer c.ksMu.Unlock()
+	if release && !c.ks.hold {
+		c.ks.resume = false // a Disconnect while Windows ends the session
+	}
 	if !c.ks.blocks {
 		return
 	}
@@ -160,18 +178,47 @@ func (c *Controller) releaseLocked() error {
 		c.Log.Error("kill switch not released", "err", err)
 		return err
 	}
-	c.ks.blocks, c.ks.armed, c.ks.err = false, false, ""
+	c.ks.blocks, c.ks.armed, c.ks.err, c.ks.resume = false, false, "", false
 	c.Log.Info("kill switch released: the internet is open")
 	return nil
 }
 
-// ReleaseKillSwitch opens the internet (the user's "unblock").
+// blockLocked installs the block without the pass while routing is down:
+// the internet closes.
+func (c *Controller) blockLocked(relayPort uint16) {
+	err := c.KillSwitch.Arm(relayPort)
+	if cerr := c.KillSwitch.Close(); cerr != nil {
+		c.Log.Error("kill switch: pass filters not removed", "err", cerr)
+	}
+	c.ks.armed = false
+	if err != nil {
+		c.ks.err = err.Error()
+		c.Log.Error("kill switch: the block not installed", "err", err)
+		if on, eerr := c.KillSwitch.Engaged(); eerr == nil {
+			c.ks.blocks = on
+		}
+		return
+	}
+	c.ks.blocks, c.ks.err = true, ""
+	c.Log.Warn("kill switch: routing is down, the internet is closed until routing is back or you unblock")
+}
+
+// ReleaseKillSwitch opens the internet (the user's "unblock"). Once
+// routing is back (an automatic reconnect armed the kill switch again
+// while the button was still shown) the internet is open already: the
+// kill switch keeps guarding the session rather than go until the next
+// Connect.
 func (c *Controller) ReleaseKillSwitch() error {
 	if c.KillSwitch == nil {
 		return errors.New("kill switch недоступен")
 	}
 	c.ksMu.Lock()
-	err := c.releaseLocked()
+	var err error
+	if c.ks.armed {
+		c.Log.Info("unblock: routing is back already, the kill switch stays armed")
+	} else {
+		err = c.releaseLocked()
+	}
 	c.ksMu.Unlock()
 	c.changed()
 	return err
@@ -202,13 +249,16 @@ func (c *Controller) EndSession() {
 	if c.ks.blocks {
 		c.Log.Info("Windows is ending the session: removing the kill switch block")
 		c.releaseLocked()
+		c.ks.resume = true
 	}
 	c.ksMu.Unlock()
 }
 
 // SessionResumed: the end of the session was cancelled (another program
 // refused it) and HyRoute goes on. The kill switch follows the setting
-// again.
+// again: a working session is armed, and a block EndSession removed
+// closes the internet again while routing is down (the engine failed, a
+// block a crash left, a reconnect that failed).
 func (c *Controller) SessionResumed() {
 	if c.KillSwitch == nil {
 		return
@@ -222,7 +272,43 @@ func (c *Controller) SessionResumed() {
 	}
 	c.Log.Info("the end of the Windows session was cancelled: the kill switch follows the setting again")
 	c.applyKillSwitch()
+	c.restoreBlock()
 	c.changed()
+}
+
+// restoreBlock puts back the block EndSession removed, unless routing
+// works, the user opened the internet meanwhile (Disconnect, unblock,
+// the setting turned off) or something installed it again.
+func (c *Controller) restoreBlock() {
+	c.lifeMu.Lock()
+	defer c.lifeMu.Unlock()
+	on, known := c.killSwitchSetting()
+	c.mu.Lock()
+	s := c.sess
+	c.mu.Unlock()
+	c.ksMu.Lock()
+	defer c.ksMu.Unlock()
+	if c.ks.ending {
+		return // Windows is ending the session again: resume stays for its SessionResumed
+	}
+	resume := c.ks.resume
+	c.ks.resume = false
+	switch {
+	case !resume || c.ks.blocks:
+		return
+	case !on && known:
+		return
+	case s != nil && !s.EngineFailed():
+		return // armed by applyKillSwitch, or its Arm failed and said so
+	}
+	// The failed session's relay port as its Arm left it: s.Stats would
+	// take the engine's locks, which a packet loop the watchdog gave up on
+	// may hold for good (lifeMu and ksMu are held here).
+	var relayPort uint16
+	if s != nil {
+		relayPort = c.ks.relay
+	}
+	c.blockLocked(relayPort)
 }
 
 // applyKillSwitch follows a settings change while connected.
@@ -241,6 +327,7 @@ func (c *Controller) applyKillSwitch() {
 		c.armKillSwitch(s)
 	case !on && known:
 		c.ksMu.Lock()
+		c.ks.resume = false
 		if c.ks.blocks {
 			c.releaseLocked()
 		}

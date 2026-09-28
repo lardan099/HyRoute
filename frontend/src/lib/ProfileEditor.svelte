@@ -1,7 +1,15 @@
 <script lang="ts">
   import { api, errText, type Profile } from '../api';
+  import { hide } from '../state.svelte';
 
-  let { profile, onclose, onsaved }: { profile: Profile; onclose: () => void; onsaved: () => void } = $props();
+  // sourceName is the subscription the server comes from ('' for a server
+  // added by hand).
+  let {
+    profile,
+    sourceName = '',
+    onclose,
+    onsaved,
+  }: { profile: Profile; sourceName?: string; onclose: () => void; onsaved: () => void } = $props();
 
   // Edit a deep copy of the initial value; untouched advanced fields
   // (quic, congestion, ...) are kept.
@@ -11,9 +19,25 @@
   let error = $state('');
   let saving = $state(false);
 
+  // validPin mirrors hysteria.ValidPin: a hex SHA-256, with the ':' or '-'
+  // separators Hysteria strips. Any other value never matches a
+  // certificate, and the server would never connect.
+  function validPin(s: string): boolean {
+    return /^[0-9a-f]{64}$/i.test(s.replace(/[:-]/g, ''));
+  }
+  const pinBad = $derived(!!p.tls.pinSHA256?.trim() && !validPin(p.tls.pinSHA256.trim()));
+
   async function save() {
-    saving = true;
     error = '';
+    // A pasted value often brings a space along: Hysteria compares the SNI
+    // and the pin as they are, and the backend trims only the address.
+    if (p.tls.sni) p.tls.sni = p.tls.sni.trim();
+    if (p.tls.pinSHA256) p.tls.pinSHA256 = p.tls.pinSHA256.trim();
+    if (pinBad) {
+      error = 'Отпечаток (pinSHA256) должен быть SHA-256 сертификата: 64 шестнадцатеричных символа (можно через «:»). С другим значением сервер не подключится.';
+      return;
+    }
+    saving = true;
     try {
       if (!p.obfs.type) p.obfs = {};
       await api.SaveProfile(p);
@@ -28,6 +52,13 @@
 <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div class="dialog" role="dialog" aria-modal="true">
     <h2>{p.id ? 'Сервер' : 'Новый сервер'}</h2>
+    {#if sourceName}
+      <div class="note warn">
+        Сервер из подписки «{hide(sourceName)}». При её обновлении название, адрес, пароль, обфускация, SNI, отпечаток и
+        «insecure» снова возьмутся из ссылки подписки, так что их правки здесь временные. Сохраняются только скорость, port
+        hopping и «Резолвить адрес». Чтобы изменить их насовсем, скопируйте ссылку сервера и добавьте его как отдельный.
+      </div>
+    {/if}
     <div class="grid">
       <label for="pe-name">Название</label>
       <input id="pe-name" bind:value={p.name} placeholder="например, 🇳🇱 Нидерланды" />
@@ -64,7 +95,7 @@
         <input id="pe-sni" bind:value={p.tls.sni} placeholder="по умолчанию — адрес сервера" />
 
         <label for="pe-pin">Отпечаток (pinSHA256)</label>
-        <input id="pe-pin" bind:value={p.tls.pinSHA256} class="mono" placeholder="если задан, сертификат проверяется только по нему" />
+        <input id="pe-pin" bind:value={p.tls.pinSHA256} class="mono" class:bad={pinBad} aria-invalid={pinBad} placeholder="если задан, сертификат проверяется только по нему" />
 
         <span></span>
         <label class="check"><input type="checkbox" bind:checked={p.tls.insecure} /> Не проверять сертификат (insecure)</label>
@@ -101,4 +132,5 @@
   .adv { margin-top: 14px; }
   .adv summary { cursor: pointer; color: var(--muted); margin-bottom: 10px; }
   p.small { margin: 12px 0 0; }
+  input.bad { border-color: var(--block); }
 </style>

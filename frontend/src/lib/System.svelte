@@ -1,11 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, errText, fmtDateTime, type SystemInfo, type Prefs, type Updates, type Settings, type AutostartInfo } from '../api';
-  import { ui, setTheme, setAccent, settle, type Theme, type Accent } from '../state.svelte';
+  import { ui, hide, setTheme, setAccent, settle, type Theme, type Accent } from '../state.svelte';
   import Icon from './Icon.svelte';
   import GeoSettings from './GeoSettings.svelte';
 
-  let { updates, onupdates, oninstall }: { updates: Updates | null; onupdates: () => void; oninstall: () => void } = $props();
+  let {
+    updates,
+    onupdates,
+    oninstall,
+    installCore,
+    coreInstalling,
+  }: { updates: Updates | null; onupdates: () => void; oninstall: () => void; installCore: () => Promise<void>; coreInstalling: boolean } = $props();
 
   const status = $derived(ui.status);
   let routing = $state<Settings | null>(null);
@@ -30,18 +36,35 @@
     return v ?? true;
   }
 
+  // Each switch sends the whole object, so a quick second click must build
+  // on the first one: the change is shown at once, saves go one after
+  // another in click order (as on the Rules page), and the saved copy is
+  // read back after the last of them.
+  let routingSaving: Promise<unknown> = Promise.resolve();
+  let routingPending = 0;
   async function saveRouting(patch: Partial<Settings>) {
     if (!routing) return;
     const next = { ...JSON.parse(JSON.stringify(routing)), ...patch };
+    routing = next;
     error = '';
     ok = '';
+    routingPending++;
+    const job = routingSaving.then(() => api.SaveSettings(next));
+    routingSaving = job.catch(() => {});
     try {
-      const res = await api.SaveSettings(next);
-      routing = await api.Settings();
+      const res = await job;
       needsReconnect = res.needsReconnect;
       ok = 'Сохранено';
     } catch (e) {
       error = errText(e);
+    }
+    if (--routingPending === 0) {
+      try {
+        const r = await api.Settings();
+        if (routingPending === 0) routing = r;
+      } catch (e) {
+        error = errText(e);
+      }
     }
   }
 
@@ -52,12 +75,16 @@
   let diag = $state('');
   let autostart = $state<AutostartInfo | null>(null);
 
+  // A copy read while a save is queued is older than what is on screen and
+  // would undo the click, so it is dropped: the save reads its own back.
   async function load() {
     try {
       info = await api.System();
-      prefs = await api.Prefs();
+      const p = await api.Prefs();
+      if (prefsPending === 0) prefs = p;
       autostart = await api.Autostart();
-      routing = await api.Settings();
+      const r = await api.Settings();
+      if (routingPending === 0) routing = r;
     } catch (e) {
       error = errText(e);
     }
@@ -78,9 +105,33 @@
     }
   }
 
+  // Like saveRouting: shown at once, saved in click order, read back after
+  // the last save.
+  let prefsSaving: Promise<unknown> = Promise.resolve();
+  let prefsPending = 0;
   async function savePrefs(patch: Partial<Prefs>) {
     const next = { ...prefs, ...patch };
-    await run(() => api.SavePrefs(next), 'Настройки сохранены');
+    prefs = next;
+    error = '';
+    ok = '';
+    prefsPending++;
+    const job = prefsSaving.then(() => api.SavePrefs(next));
+    prefsSaving = job.catch(() => {});
+    try {
+      await job;
+      ok = 'Настройки сохранены';
+    } catch (e) {
+      error = errText(e);
+    }
+    if (--prefsPending === 0) {
+      try {
+        const p = await api.Prefs();
+        if (prefsPending === 0) prefs = p;
+      } catch (e) {
+        error = errText(e);
+      }
+      onupdates();
+    }
   }
 
   let diagMasked = false; // diag was made in Privacy mode
@@ -113,7 +164,7 @@
   <header>
     <h1>Настройки</h1>
   </header>
-  {#if error}<div class="note error">{error}</div>{/if}
+  {#if error}<div class="note error">{hide(error)}</div>{/if}
   {#if ok}<div class="note ok">{ok}</div>{/if}
 
   <section class="card">
@@ -172,7 +223,7 @@
           <button onclick={oninstall}>Установить HyRoute {updates.app.version}…</button>
         {/if}
         {#if updates.coreUpdate}
-          <button onclick={() => run(() => api.InstallCore(), 'Ядро Hysteria обновлено')} disabled={updates.coreBusy}>Обновить ядро Hysteria</button>
+          <button onclick={() => run(installCore, 'Ядро Hysteria обновлено')} disabled={updates.coreBusy || coreInstalling}>Обновить ядро Hysteria</button>
         {/if}
         {#if updates.core.previous}
           <button onclick={() => confirm(`Вернуть ядро ${updates!.core.previous}?`) && run(() => api.RollbackCore(), 'Ядро возвращено')}>
@@ -205,7 +256,7 @@
       </label>
       <p class="muted small">
         HyRoute запустится в трее (или свёрнутым, если трей выключен ниже). Windows не спрашивает разрешения администратора: запуск идёт через
-        задачу «HyRoute» в Планировщике заданий.
+        задачу «HyRoute (&lt;SID&gt;)» в Планировщике заданий, у каждого пользователя Windows своя.
       </p>
       {#if !autostart.allowed}
         <div class="note warn small">
@@ -244,9 +295,11 @@
       <p class="muted small">
         Если HyRoute закроется во время подключения (окно закрыто, «Снять задачу» в диспетчере задач, сбой) или откажет драйвер перехвата,
         трафик не пойдёт напрямую: Windows заблокирует соединения, пока вы снова не подключитесь или не нажмёте «Открыть интернет». Если отказал
-        движок перехвата, HyRoute через 5 секунд переподключится сам (не больше 3 раз за 10 минут), блокировка держится всё это время. Интернет
-        открывают только кнопка «Отключить» и перезагрузка Windows. Во время блокировки работают локальная сеть, DNS-запросы Windows (и
-        зашифрованный DNS к DNS-серверам адаптеров на момент подключения), сам HyRoute и Hysteria.
+        движок перехвата, HyRoute через 5 секунд переподключится сам (не больше 3 раз за 10 минут), блокировка держится всё это время.
+        Блокировку снимают кнопки «Отключить» и «Открыть интернет», выключение этой настройки и перезагрузка Windows, а завершение работы и
+        выход из Windows — если HyRoute в этот момент запущен. Если он уже закрыт, при быстром запуске Windows блокировка переживёт выключение.
+        Во время блокировки работают локальная сеть, DNS-запросы Windows (и зашифрованный DNS к DNS-серверам адаптеров на момент подключения),
+        сам HyRoute и Hysteria.
       </p>
       {#if routing.killSwitch && info && !info.protectedLocation}
         <div class="note warn small">
@@ -264,7 +317,7 @@
       {:else if routing.killSwitch && !offline}
         <p class="muted small">Включится при следующем подключении.</p>
       {/if}
-      {#if status?.killSwitchError}<div class="note error">Kill switch: {status.killSwitchError}</div>{/if}
+      {#if status?.killSwitchError}<div class="note error">Kill switch: {hide(status.killSwitchError)}</div>{/if}
     </section>
   {/if}
 

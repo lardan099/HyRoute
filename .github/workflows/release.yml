@@ -14,6 +14,10 @@ concurrency:
 jobs:
   release:
     runs-on: windows-latest
+    env:
+      # build.ps1 and package.ps1 use this tag, not whichever git describe
+      # picks when the commit has several.
+      HYROUTE_VERSION: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -62,4 +66,4 @@ jobs:
           fi
           pre=""
           case "$tag" in *-*) pre="--prerelease";; esac
-          gh release create "$tag" dist/HyRoute-*.zip dist/SHA256SUMS --title "HyRoute $tag" --notes-file notes.md $pre
+          gh release create "$tag" "dist/HyRoute-${tag#v}-windows-amd64.zip" dist/SHA256SUMS --title "HyRoute $tag" --notes-file notes.md $pre

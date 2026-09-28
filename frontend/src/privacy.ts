@@ -52,13 +52,27 @@ export function maskHosts(s: string, hosts: string[]): string {
 }
 
 // maskDomains keeps only the top-level domain (***.com): visited sites and
-// SNI give away as much as addresses. File names are left alone.
+// SNI give away as much as addresses. Labels may be Unicode
+// (мой-магазин.рф): rule sites are kept as typed, not punycode. File names
+// are left alone. Some extensions are real top-level domains too (999.md,
+// example.zip): such a name counts as a file only right after another
+// extension (geosite.dat.new, not go.md). logx.MaskDomains does the same.
 const fileExt = new Set(['exe', 'dll', 'sys', 'dat', 'json', 'yaml', 'yml', 'log', 'txt', 'zip', 'ps1', 'md', 'go', 'tmp', 'old', 'new', 'part', 'ini', 'conf', 'html', 'js', 'css', 'png', 'svg']);
-const domRe = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:xn--[a-z0-9-]{2,59}|[a-z]{2,63})\b/gi;
+// tldExt are the extensions in fileExt that are top-level domains too.
+const tldExt = new Set(['md', 'zip', 'new']);
+const domRe = /(?<![\p{L}\p{N}_])(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+(?:xn--[a-z0-9-]{2,59}|\p{L}{2,63})(?![\p{L}\p{N}_])/giu;
+
+// fileName reports whether the name m is a file name.
+function fileName(m: string): boolean {
+  const dot = m.lastIndexOf('.');
+  const tld = m.slice(dot + 1).toLowerCase();
+  if (!fileExt.has(tld)) return false;
+  if (!tldExt.has(tld)) return true;
+  const rest = m.slice(0, dot);
+  const j = rest.lastIndexOf('.');
+  return j >= 0 && fileExt.has(rest.slice(j + 1).toLowerCase());
+}
 
 export function maskDomains(s: string): string {
-  return s.replace(domRe, (m) => {
-    const tld = m.slice(m.lastIndexOf('.') + 1);
-    return fileExt.has(tld.toLowerCase()) ? m : `***.${tld}`;
-  });
+  return s.replace(domRe, (m: string) => (fileName(m) ? m : `***.${m.slice(m.lastIndexOf('.') + 1)}`));
 }

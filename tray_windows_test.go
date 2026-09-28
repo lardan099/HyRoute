@@ -26,7 +26,7 @@ func (s *traySession) SetRules(*rules.Set, []hysteria.Profile)              {}
 func (s *traySession) Flows() *flows.Registry                               { return flows.NewRegistry(10) }
 func (s *traySession) EngineFailed() bool                                   { return s.failed }
 func (s *traySession) Tunnels() []tunnels.Status                            { return nil }
-func (s *traySession) DNSNames(netip.Addr) []string                         { return nil }
+func (s *traySession) DNSSites(netip.Addr) [][]string                       { return nil }
 func (s *traySession) Endpoint(string) *tunnels.Endpoint                    { return nil }
 func (s *traySession) Stats() session.Stats                                 { return session.Stats{} }
 func (s *traySession) Acquire(hysteria.Profile) (*tunnels.Endpoint, func()) { return nil, func() {} }
@@ -174,5 +174,16 @@ func TestStaleTrayReady(t *testing.T) {
 	}
 	if g.tray.restart.Store(false); !g.trayCurrent(1) {
 		t.Fatal("the run going on taken for a closed one")
+	}
+}
+
+// HyRoute exits before the tray started (it waits up to a minute for
+// Explorer's taskbar): systray.Quit would panic then, and no run of
+// systray begins afterwards.
+func TestQuitTrayBeforeStart(t *testing.T) {
+	g, _ := trayGUI(t)
+	g.quitTray()
+	if !g.tray.closed.Load() {
+		t.Fatal("the tray may still start after the exit")
 	}
 }

@@ -18,8 +18,11 @@ import (
 )
 
 type Cache struct {
-	// TTLs from responses are clamped to [MinTTL, MaxTTL]: the OS cache may
-	// keep an answer a little longer than the record says.
+	// TTLs from responses are clamped to [MinTTL, MaxTTL]. MinTTL is a grace
+	// for very short records. MaxTTL is not below the DNS client service's
+	// default MaxCacheTtl (a day): Windows answers applications from its own
+	// cache for the whole TTL without a query on the wire, so a pair dropped
+	// earlier would stay unknown until then.
 	MinTTL, MaxTTL time.Duration
 	// MaxEntries bounds memory; the oldest-expiring pairs go first.
 	MaxEntries int
@@ -29,13 +32,27 @@ type Cache struct {
 	MaxQueries int
 
 	mu     sync.RWMutex
-	byIP   map[netip.Addr]map[string]time.Time
-	byName map[string]map[netip.Addr]time.Time
+	byIP   map[netip.Addr]map[siteName]time.Time
+	byName map[string]map[siteIP]time.Time
 	pairs  int
 	now    func() time.Time
+	// public: ECH public names learned from HTTPS/SVCB answers (PublicName).
+	public map[string]time.Time
 
 	qmu     sync.Mutex
 	queries map[queryKey]time.Time
+}
+
+// siteName is one name of a site learned for an address. The site is the
+// name the application asked for; the name is the site itself or a CNAME on
+// the way from it to the address. All names of a site are one destination:
+// a rule on either the queried name or its CDN name applies to it.
+type siteName struct{ site, name string }
+
+// siteIP is the byName side of a siteName entry.
+type siteIP struct {
+	site string
+	ip   netip.Addr
 }
 
 // queryKey is everything a response must repeat to answer a query: the
@@ -51,10 +68,10 @@ type queryKey struct {
 
 func New() *Cache {
 	return &Cache{
-		MinTTL: time.Minute, MaxTTL: time.Hour, MaxEntries: 200000,
+		MinTTL: time.Minute, MaxTTL: 24 * time.Hour, MaxEntries: 200000,
 		QueryTTL: 30 * time.Second, MaxQueries: 16384,
-		byIP:    make(map[netip.Addr]map[string]time.Time),
-		byName:  make(map[string]map[netip.Addr]time.Time),
+		byIP:    make(map[netip.Addr]map[siteName]time.Time),
+		byName:  make(map[string]map[siteIP]time.Time),
 		queries: make(map[queryKey]time.Time),
 		now:     time.Now,
 	}
@@ -108,8 +125,8 @@ func (c *Cache) AddQuery(tcp bool, client, server netip.AddrPort, msg []byte) (e
 		c.queries = make(map[queryKey]time.Time)
 	}
 	if _, ok := c.queries[k]; !ok && len(c.queries) >= c.MaxQueries {
-		// Full (a query flood, or answers that come back through the tunnel
-		// and never pass the sniff handle): drop an arbitrary query.
+		// Full (a query flood, or queries that got no answer): drop an
+		// arbitrary query.
 		for old := range c.queries {
 			delete(c.queries, old)
 			break
@@ -176,9 +193,10 @@ func unframe(payload []byte) ([]byte, bool) {
 
 // AddResponse parses a DNS message (UDP payload) and records its A/AAAA
 // answers. CNAME chains are followed so an address is linked both to the
-// queried name and to every name along the chain. Returns pairs added.
-// It is not matched to a query: packets sniffed off the wire go through
-// AddAnswer.
+// queried name and to every name along the chain, all as one site (see
+// Sites). The ECH public names of HTTPS/SVCB answers are kept too
+// (PublicName). Returns pairs added. It is not matched to a query: every
+// DNS answer from the network goes through AddAnswer.
 func (c *Cache) AddResponse(msg []byte) (n int, err error) {
 	// The message comes from the network: a parser bug (such as
 	// GO-2026-5942) must cost this message, not the process.
@@ -208,6 +226,11 @@ func (c *Cache) AddResponse(msg []byte) (n int, err error) {
 		ttl  uint32
 	}
 	var addrs []rec
+	type pubName struct {
+		name string
+		ttl  uint32
+	}
+	var pub []pubName
 	for _, a := range answers {
 		name := rules.NormalizeDomain(a.Header.Name.String())
 		switch b := a.Body.(type) {
@@ -218,9 +241,17 @@ func (c *Cache) AddResponse(msg []byte) (n int, err error) {
 			addrs = append(addrs, rec{name, netip.AddrFrom4(b.A), a.Header.TTL})
 		case *dnsmessage.AAAAResource:
 			addrs = append(addrs, rec{name, netip.AddrFrom16(b.AAAA).Unmap(), a.Header.TTL})
+		case *dnsmessage.HTTPSResource:
+			for _, n := range echPublicNames(&b.SVCBResource) {
+				pub = append(pub, pubName{n, a.Header.TTL})
+			}
+		case *dnsmessage.SVCBResource:
+			for _, n := range echPublicNames(b) {
+				pub = append(pub, pubName{n, a.Header.TTL})
+			}
 		}
 	}
-	if len(addrs) == 0 {
+	if len(addrs) == 0 && len(pub) == 0 {
 		return 0, nil
 	}
 	query := ""
@@ -230,16 +261,25 @@ func (c *Cache) AddResponse(msg []byte) (n int, err error) {
 	now := c.now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	for _, p := range pub[:min(len(pub), 16)] {
+		c.addPublicLocked(p.name, now.Add(min(c.clamp(p.ttl), maxPublicTTL)))
+	}
 	n = 0
 	tried := 0
 add:
 	for _, r := range addrs {
 		exp := now.Add(c.clamp(r.ttl))
-		for _, name := range chain(r.name, aliases, query) {
+		names := chain(r.name, aliases, query)
+		// The chain is one site, named after the query when it leads there.
+		site := r.name
+		if slices.Contains(names, query) {
+			site = query
+		}
+		for _, name := range names {
 			if tried++; tried > maxMsgPairs {
 				break add
 			}
-			if c.addLocked(name, r.ip, exp) {
+			if c.addLocked(siteName{site, name}, r.ip, exp) {
 				n++
 			}
 		}
@@ -275,44 +315,70 @@ func (c *Cache) clamp(ttl uint32) time.Duration {
 	return max(c.MinTTL, min(d, c.MaxTTL))
 }
 
-func (c *Cache) addLocked(name string, ip netip.Addr, exp time.Time) bool {
-	if name == "" {
+func (c *Cache) addLocked(k siteName, ip netip.Addr, exp time.Time) bool {
+	if k.name == "" || k.site == "" {
 		return false
 	}
 	m := c.byIP[ip]
 	if m == nil {
-		m = make(map[string]time.Time)
+		m = make(map[siteName]time.Time)
 		c.byIP[ip] = m
 	}
-	old, existed := m[name]
+	old, existed := m[k]
 	if !existed {
 		c.pairs++
 	}
 	if exp.After(old) {
-		m[name] = exp
-		n := c.byName[name]
+		m[k] = exp
+		n := c.byName[k.name]
 		if n == nil {
-			n = make(map[netip.Addr]time.Time)
-			c.byName[name] = n
+			n = make(map[siteIP]time.Time)
+			c.byName[k.name] = n
 		}
-		n[ip] = exp
+		n[siteIP{k.site, ip}] = exp
 	}
 	return !existed
 }
 
 // Names returns the unexpired names for ip, sorted.
 func (c *Cache) Names(ip netip.Addr) []string {
+	var out []string
+	for _, site := range c.Sites(ip) {
+		out = append(out, site...)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// Sites returns the unexpired names for ip grouped by site: the queried
+// name first, then the CNAMEs that led from it to ip, sorted; sites are
+// sorted by their first name. Different sites on one address are CDN
+// neighbours; a rule matches a site when it matches any of its names
+// (rules.Set.EvaluateSites).
+func (c *Cache) Sites(ip netip.Addr) [][]string {
 	ip = ip.Unmap()
 	now := c.now()
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	var out []string
-	for name, exp := range c.byIP[ip] {
+	var bySite map[string][]string
+	for k, exp := range c.byIP[ip] {
 		if now.Before(exp) {
-			out = append(out, name)
+			if bySite == nil {
+				bySite = map[string][]string{}
+			}
+			bySite[k.site] = append(bySite[k.site], k.name)
 		}
 	}
-	slices.Sort(out)
+	c.mu.RUnlock()
+	var out [][]string
+	for site, names := range bySite {
+		slices.Sort(names)
+		if i := slices.Index(names, site); i > 0 {
+			copy(names[1:i+1], names[:i])
+			names[0] = site
+		}
+		out = append(out, names)
+	}
+	slices.SortFunc(out, slices.Compare)
 	return out
 }
 
@@ -323,20 +389,27 @@ func (c *Cache) IPs(name string) []netip.Addr {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	var out []netip.Addr
-	for ip, exp := range c.byName[name] {
+	for k, exp := range c.byName[name] {
 		if now.Before(exp) {
-			out = append(out, ip)
+			out = append(out, k.ip)
 		}
 	}
 	slices.SortFunc(out, netip.Addr.Compare)
-	return out
+	return slices.Compact(out)
 }
 
-// Sweep drops expired pairs and queries that got no answer.
+// Sweep drops expired pairs and queries that got no answer. It looks at no
+// more than sweepBudget pairs, so the lock it holds does not stall the
+// lookups of new connections even when the cache is full.
 func (c *Cache) Sweep() {
 	now := c.now()
 	c.mu.Lock()
 	c.sweepLocked(now)
+	for name, exp := range c.public {
+		if !exp.After(now) {
+			delete(c.public, name)
+		}
+	}
 	c.mu.Unlock()
 	c.qmu.Lock()
 	for k, exp := range c.queries {
@@ -347,11 +420,21 @@ func (c *Cache) Sweep() {
 	c.qmu.Unlock()
 }
 
+// sweepBudget bounds the pairs one Sweep looks at (about a millisecond).
+// Map iteration starts at a random place, so successive sweeps cover the
+// whole cache; an expired pair waiting for its turn is invisible to lookups
+// and among the first to go on eviction.
+const sweepBudget = 4096
+
 func (c *Cache) sweepLocked(now time.Time) {
+	seen := 0
 	for ip, m := range c.byIP {
-		for name, exp := range m {
+		for k, exp := range m {
 			if !exp.After(now) {
-				c.deleteLocked(ip, name)
+				c.deleteLocked(ip, k)
+			}
+			if seen++; seen >= sweepBudget {
+				return
 			}
 		}
 	}
@@ -367,7 +450,7 @@ const evictSamples = 8
 func (c *Cache) evictLocked(target int) {
 	for c.pairs > max(target, 0) {
 		var vip netip.Addr
-		var vname string
+		var vname siteName
 		var vexp time.Time
 		for i := range evictSamples {
 			ip, name, exp, ok := c.randomLocked()
@@ -383,34 +466,36 @@ func (c *Cache) evictLocked(target int) {
 }
 
 // randomLocked returns an arbitrary pair.
-func (c *Cache) randomLocked() (netip.Addr, string, time.Time, bool) {
+func (c *Cache) randomLocked() (netip.Addr, siteName, time.Time, bool) {
 	for ip, m := range c.byIP {
-		for name, exp := range m {
-			return ip, name, exp, true
+		for k, exp := range m {
+			return ip, k, exp, true
 		}
 	}
-	return netip.Addr{}, "", time.Time{}, false
+	return netip.Addr{}, siteName{}, time.Time{}, false
 }
 
-func (c *Cache) deleteLocked(ip netip.Addr, name string) {
+func (c *Cache) deleteLocked(ip netip.Addr, k siteName) {
 	m := c.byIP[ip]
-	if _, ok := m[name]; !ok {
+	if _, ok := m[k]; !ok {
 		return
 	}
-	delete(m, name)
+	delete(m, k)
 	if len(m) == 0 {
 		delete(c.byIP, ip)
 	}
 	c.pairs--
-	if n := c.byName[name]; n != nil {
-		delete(n, ip)
+	if n := c.byName[k.name]; n != nil {
+		delete(n, siteIP{k.site, ip})
 		if len(n) == 0 {
-			delete(c.byName, name)
+			delete(c.byName, k.name)
 		}
 	}
 }
 
-// Len returns the number of name/IP pairs.
+// Len returns the number of name/IP pairs (a CDN name shared by two
+// queried names is counted once for each), expired pairs that the next
+// sweeps have yet to drop included.
 func (c *Cache) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

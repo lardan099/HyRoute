@@ -4,9 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // stagingDir writes a verified staging directory (files + manifest).
@@ -41,14 +43,14 @@ func TestJournalRecoverAfterCrash(t *testing.T) {
 	jp := filepath.Join(t.TempDir(), "journal.json")
 
 	// Applied, then the updater "died" before commit.
-	if _, err := ApplyJournaled(staging, target, "", jp, "v0.5.0", "v0.6.0"); err != nil {
+	if _, err := ApplyJournaled(staging, target, "", jp, "v0.5.0", "v0.6.0", true); err != nil {
 		t.Fatal(err)
 	}
 	if read(t, filepath.Join(target, MainExe)) != "new main" {
 		t.Fatal("not applied")
 	}
 	j, err := ReadJournal(jp)
-	if err != nil || j == nil || len(j.Replaced) != 2 || len(j.Added) != 1 || j.To != "v0.6.0" {
+	if err != nil || j == nil || len(j.Replaced) != 2 || len(j.Added) != 1 || j.To != "v0.6.0" || !j.Reconnect {
 		t.Fatalf("%v %+v", err, j)
 	}
 	if _, err := Recover(jp); err != nil {
@@ -90,7 +92,7 @@ func TestJournalCommit(t *testing.T) {
 	target := t.TempDir()
 	os.WriteFile(filepath.Join(target, MainExe), []byte("old"), 0o755)
 	jp := filepath.Join(t.TempDir(), "journal.json")
-	sw, err := ApplyJournaled(staging, target, "", jp, "a", "b")
+	sw, err := ApplyJournaled(staging, target, "", jp, "a", "b", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +114,7 @@ func TestJournalRenamedExe(t *testing.T) {
 	const exe = "HyRoute-0.5.exe"
 	os.WriteFile(filepath.Join(target, exe), []byte("old main"), 0o755)
 	jp := filepath.Join(t.TempDir(), "journal.json")
-	if _, err := ApplyJournaled(staging, target, exe, jp, "v0.5.0", ""); err != nil {
+	if _, err := ApplyJournaled(staging, target, exe, jp, "v0.5.0", "", false); err != nil {
 		t.Fatal(err)
 	}
 	if read(t, filepath.Join(target, exe)) != "new main" || read(t, filepath.Join(target, MainExe)) != "<missing>" {
@@ -129,7 +131,7 @@ func TestJournalRenamedExe(t *testing.T) {
 		t.Fatal("renamed exe not restored")
 	}
 	// Two package files never land on one name.
-	if _, err := ApplyJournaled(staging, target, "HYROUTE-UPDATER.exe", jp, "", ""); err == nil {
+	if _, err := ApplyJournaled(staging, target, "HYROUTE-UPDATER.exe", jp, "", "", false); err == nil {
 		t.Fatal("exe named like the updater accepted")
 	}
 }
@@ -166,5 +168,37 @@ func TestReadJournalRejectsOtherFiles(t *testing.T) {
 	j := &Journal{Target: target}
 	if !j.For(filepath.Join(root, "APP", ".")) || j.For(root) {
 		t.Fatal("For")
+	}
+}
+
+// CleanAside removes what an undo set aside, and nothing else of the
+// folder's .bad files.
+func TestCleanAsideOnlyOwnFiles(t *testing.T) {
+	dir := t.TempDir()
+	own := fmt.Sprintf("%s.%d.bad", MainExe, time.Now().UnixNano())
+	for _, n := range []string{own, "dump.bad", "disk.2024.bad", "x.123456789012345678a.bad", MainExe} {
+		os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644)
+	}
+	CleanAside(dir)
+	if read(t, filepath.Join(dir, own)) != "<missing>" {
+		t.Fatal("set-aside file kept")
+	}
+	for _, n := range []string{"dump.bad", "disk.2024.bad", "x.123456789012345678a.bad", MainExe} {
+		if read(t, filepath.Join(dir, n)) != "x" {
+			t.Fatalf("%s removed", n)
+		}
+	}
+}
+
+// The swap knows the version it installs (for --update-failed).
+func TestApplyJournaledTarget(t *testing.T) {
+	staging := stagingDir(t, map[string]string{MainExe: "new main", UpdaterExe: "new upd"})
+	jp := filepath.Join(t.TempDir(), "journal.json")
+	sw, err := ApplyJournaled(staging, t.TempDir(), "", jp, "v0.5.0", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sw.To != "v0.6.0" {
+		t.Fatalf("to %q", sw.To)
 	}
 }

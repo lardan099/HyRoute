@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sync"
 	"syscall"
+	"unsafe"
 
 	"github.com/tailscale/wf"
 	"golang.org/x/sys/windows"
@@ -43,15 +44,16 @@ const (
 	kindApps
 	kindSecureDNS
 	kindRelay
+	kindDNS
 	kindPass byte = 0xf0
 )
 
 // blockKinds are the filters of the normal session: Release removes them
-// all (the sublayer cannot go while one is left). Arm replaces the
-// refreshedKinds every time (see exceptions.rules).
+// all (the sublayer cannot go while one is left). Arm and RefreshApps
+// replace the refreshedKinds every time (see exceptions.rules).
 var (
-	blockKinds     = []byte{kindBlock, kindLoopback, kindLAN, kindPorts, kindApps, kindSecureDNS, kindRelay}
-	refreshedKinds = []byte{kindPorts, kindSecureDNS, kindApps, kindRelay}
+	blockKinds     = []byte{kindBlock, kindLoopback, kindLAN, kindPorts, kindApps, kindSecureDNS, kindRelay, kindDNS}
+	refreshedKinds = []byte{kindPorts, kindDNS, kindSecureDNS, kindApps, kindRelay}
 )
 
 // Weights inside the sublayer: the highest matching filter decides.
@@ -67,11 +69,12 @@ const (
 var layers = []struct {
 	id wf.LayerID
 	v6 bool
+	in bool // inbound connections
 }{
-	{wf.LayerALEAuthConnectV4, false},
-	{wf.LayerALEAuthConnectV6, true},
-	{wf.LayerALEAuthRecvAcceptV4, false},
-	{wf.LayerALEAuthRecvAcceptV6, true},
+	{wf.LayerALEAuthConnectV4, false, false},
+	{wf.LayerALEAuthConnectV6, true, false},
+	{wf.LayerALEAuthRecvAcceptV4, false, true},
+	{wf.LayerALEAuthRecvAcceptV6, true, true},
 }
 
 const name = "HyRoute kill switch"
@@ -79,19 +82,31 @@ const name = "HyRoute kill switch"
 // ownerName: the fixed GUIDs are shared by every HyRoute on the machine.
 // Another one running at the same time in another Windows session (fast
 // user switching) would remove this one's block with its Disconnect, so
-// the first to use the filters owns them while it runs; the others leave
-// them alone. The named object goes when its process exits.
-const ownerName = `Global\HyRoute-kill-switch-7a1d4c62`
+// the first to install the filters owns them while they are there (Arm,
+// or Engaged finding a block); the others leave them alone. Release gives
+// them up; the named object goes when its process exits too.
+var ownerName = `Global\HyRoute-kill-switch-7a1d4c62`
 
 var owner struct {
 	sync.Mutex
 	h windows.Handle
 }
 
+// ownerSDDL: the owner's mutex belongs to Administrators, with the DACL
+// of an elevated token, whatever the policy "System objects: Default owner
+// for objects created by members of the Administrators group" says: with
+// "Object creator" an elevated process's objects are its user's, and
+// another HyRoute's would pass for an ordinary program's (see elevated).
+const ownerSDDL = "O:BAD:(A;;GA;;;BA)(A;;GA;;;SY)"
+
 var errNotOwner = errors.New("kill switch занят другим запущенным HyRoute (например, у другого пользователя Windows)")
 
 // claim makes this process the owner of the filters, or reports that
-// another HyRoute is.
+// another HyRoute is. Any program may create a mutex in Global\: only one
+// an elevated process made (see elevated) stands for another HyRoute.
+// Another program's object under the name, or one of another type, is
+// ignored rather than let it turn the kill switch off: the filters then
+// have no owner, as in versions before.
 func claim() error {
 	owner.Lock()
 	defer owner.Unlock()
@@ -102,27 +117,63 @@ func claim() error {
 	if err != nil {
 		return err
 	}
-	h, err := windows.CreateMutex(nil, false, n)
+	var sa *windows.SecurityAttributes
+	if sd, err := windows.SecurityDescriptorFromString(ownerSDDL); err == nil {
+		sa = &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+	}
+	h, err := windows.CreateMutex(sa, false, n)
+	if sa != nil && errors.Is(err, windows.ERROR_INVALID_OWNER) {
+		// Not elevated (tests): Administrators cannot own its objects.
+		h, err = windows.CreateMutex(nil, false, n)
+	}
 	switch {
 	case err == nil:
 		owner.h = h
 		return nil
 	case errors.Is(err, windows.ERROR_ALREADY_EXISTS):
+		theirs := elevated(h)
 		windows.CloseHandle(h)
-		return errNotOwner
-	case errors.Is(err, windows.ERROR_ACCESS_DENIED):
-		// Another user's object we may not open, or no right to create
-		// global objects; in the latter case there is none to find.
-		o, oerr := windows.OpenMutex(windows.SYNCHRONIZE, false, n)
-		if oerr == nil {
-			windows.CloseHandle(o)
+		if theirs {
+			return errNotOwner
 		}
-		if errors.Is(oerr, windows.ERROR_FILE_NOT_FOUND) {
-			return nil
-		}
-		return errNotOwner
+		return nil
+	case errors.Is(err, windows.ERROR_ACCESS_DENIED), errors.Is(err, windows.ERROR_INVALID_HANDLE):
+		// An elevated HyRoute's mutex lets Administrators in (the default
+		// DACL of an elevated token), so one that does not is another
+		// program's; an object of another type holds the name otherwise.
+		return nil
 	}
 	return fmt.Errorf("kill switch: %w", err)
+}
+
+// disown gives the filters up once none is left: another HyRoute may use
+// them then.
+func disown() {
+	owner.Lock()
+	defer owner.Unlock()
+	if owner.h != 0 {
+		windows.CloseHandle(owner.h)
+		owner.h = 0
+	}
+}
+
+// elevated reports whether the named object h was made by an elevated
+// process: its owner is Administrators (claim sets it; also the default
+// owner of an elevated token's objects) or SYSTEM, which an ordinary
+// program cannot give its objects. Unknown counts as elevated, as before
+// owners were checked. A HyRoute before claim set the owner, under the
+// policy "Object creator", passes for another program: the filters then
+// have no owner, as in versions before.
+func elevated(h windows.Handle) bool {
+	sd, err := windows.GetSecurityInfo(h, windows.SE_KERNEL_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return true
+	}
+	o, _, err := sd.Owner()
+	if err != nil || o == nil {
+		return true
+	}
+	return o.IsWellKnown(windows.WinBuiltinAdministratorsSid) || o.IsWellKnown(windows.WinLocalSystemSid)
 }
 
 // Switch installs and removes the filters. The zero value is ready.
@@ -134,8 +185,9 @@ type Switch struct {
 	// Apps lets the program through (see Arm).
 	Self string
 
-	mu   sync.Mutex
-	pass *wf.Session // dynamic session holding the pass filters
+	mu    sync.Mutex
+	pass  *wf.Session // dynamic session holding the pass filters
+	relay uint16      // the relay's port of the last Arm (0: none)
 }
 
 func open(dynamic bool) (*wf.Session, error) {
@@ -244,38 +296,62 @@ func fixedRules(i int) []*wf.Rule {
 // ports open to every program.
 func (e exceptions) rules(i int) []*wf.Rule {
 	l := layers[i]
-	// Only Windows' own DNS and DHCP clients get through on their ports:
-	// another program could reach any server on port 53. Without the app
-	// ID the ports stay open to all, as in versions before.
-	var ports []*wf.Match
-	for _, p := range Ports {
-		ports = append(ports, &wf.Match{Field: wf.FieldIPRemotePort, Op: wf.MatchTypeEqual, Value: p})
-	}
-	if e.svc != "" {
-		ports = append(ports, &wf.Match{Field: wf.FieldALEAppID, Op: wf.MatchTypeEqual, Value: e.svc})
-	}
-	rules := []*wf.Rule{{ID: ruleID(i, kindPorts), Name: name + ": DNS and DHCP", Weight: weightException,
-		Action: wf.ActionPermit, Conditions: ports}}
-	// With encrypted DNS only (DoH, DoT) the DNS client resolves nothing
-	// on port 53, and HyRoute could not find its servers to reconnect: the
-	// client also reaches the adapters' DNS servers on the ports of DoH
-	// and DoT (only the client, and only these servers).
 	var dns []*wf.Match
 	for _, a := range e.dns {
 		if a.Is6() == l.v6 {
 			dns = append(dns, &wf.Match{Field: wf.FieldIPRemoteAddress, Op: wf.MatchTypeEqual, Value: a})
 		}
 	}
-	if e.svc != "" && len(dns) > 0 {
-		m := []*wf.Match{
-			{Field: wf.FieldALEAppID, Op: wf.MatchTypeEqual, Value: e.svc},
+	var rules []*wf.Rule
+	if e.svc != "" {
+		// svchost.exe hosts many services besides the DNS and DHCP clients
+		// (BITS and WebDAV reach any host and port for any program), and
+		// these layers see inbound connections too: DHCP is the client's
+		// UDP port to the server's, DNS goes to the adapters' DNS servers
+		// only, on port 53, or over TCP on the ports of DoH and DoT (with
+		// encrypted DNS only nothing goes to port 53, and HyRoute could
+		// not find its servers to reconnect).
+		client, server := uint16(68), uint16(67)
+		if l.v6 {
+			client, server = 546, 547
+		}
+		svc := &wf.Match{Field: wf.FieldALEAppID, Op: wf.MatchTypeEqual, Value: e.svc}
+		rules = append(rules, &wf.Rule{ID: ruleID(i, kindPorts), Name: name + ": DHCP", Weight: weightException,
+			Action: wf.ActionPermit, Conditions: []*wf.Match{svc,
+				{Field: wf.FieldIPProtocol, Op: wf.MatchTypeEqual, Value: wf.IPProtoUDP},
+				{Field: wf.FieldIPLocalPort, Op: wf.MatchTypeEqual, Value: client},
+				{Field: wf.FieldIPRemotePort, Op: wf.MatchTypeEqual, Value: server},
+			}})
+		port53 := []*wf.Match{svc,
+			{Field: wf.FieldIPProtocol, Op: wf.MatchTypeEqual, Value: wf.IPProtoUDP},
 			{Field: wf.FieldIPProtocol, Op: wf.MatchTypeEqual, Value: wf.IPProtoTCP},
+			{Field: wf.FieldIPRemotePort, Op: wf.MatchTypeEqual, Value: uint16(53)},
 		}
-		for _, p := range SecureDNSPorts {
-			m = append(m, &wf.Match{Field: wf.FieldIPRemotePort, Op: wf.MatchTypeEqual, Value: p})
+		switch {
+		case len(dns) > 0:
+			rules = append(rules, &wf.Rule{ID: ruleID(i, kindDNS), Name: name + ": DNS", Weight: weightException,
+				Action: wf.ActionPermit, Conditions: append(port53, dns...)})
+			m := []*wf.Match{svc, {Field: wf.FieldIPProtocol, Op: wf.MatchTypeEqual, Value: wf.IPProtoTCP}}
+			for _, p := range SecureDNSPorts {
+				m = append(m, &wf.Match{Field: wf.FieldIPRemotePort, Op: wf.MatchTypeEqual, Value: p})
+			}
+			rules = append(rules, &wf.Rule{ID: ruleID(i, kindSecureDNS), Name: name + ": encrypted DNS", Weight: weightException,
+				Action: wf.ActionPermit, Conditions: append(m, dns...)})
+		case len(e.dns) == 0 && !l.in:
+			// The DNS servers unknown (no adapter up yet): queries to port
+			// 53 of any host, outbound only.
+			rules = append(rules, &wf.Rule{ID: ruleID(i, kindDNS), Name: name + ": DNS", Weight: weightException,
+				Action: wf.ActionPermit, Conditions: port53})
 		}
-		rules = append(rules, &wf.Rule{ID: ruleID(i, kindSecureDNS), Name: name + ": encrypted DNS", Weight: weightException,
-			Action: wf.ActionPermit, Conditions: append(m, dns...)})
+	} else {
+		// svchost's app ID unknown: the ports stay open to every program,
+		// as in versions before.
+		var ports []*wf.Match
+		for _, p := range Ports {
+			ports = append(ports, &wf.Match{Field: wf.FieldIPRemotePort, Op: wf.MatchTypeEqual, Value: p})
+		}
+		rules = append(rules, &wf.Rule{ID: ruleID(i, kindPorts), Name: name + ": DNS and DHCP", Weight: weightException,
+			Action: wf.ActionPermit, Conditions: ports})
 	}
 	if r := appsRule(i, e.apps); r != nil {
 		rules = append(rules, r)
@@ -317,11 +393,11 @@ func appsRule(i int, apps []string) *wf.Rule {
 // the DNS servers and the relay's port are refreshed). relay is the port
 // the session's relay listens on (0: none).
 func (k *Switch) Arm(relay uint16) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := claim(); err != nil {
 		return err
 	}
-	k.mu.Lock()
-	defer k.mu.Unlock()
 	s, err := open(false)
 	if err != nil {
 		return err
@@ -335,13 +411,22 @@ func (k *Switch) Arm(relay uint16) error {
 	if err := k.setPassLocked(true); err != nil {
 		return err
 	}
-	e := exceptions{apps: k.apps(), svc: serviceHost(), dns: dnsServers(), self: appID(k.Self), relay: relay}
+	k.relay = relay
 	for i := range layers {
 		for _, r := range fixedRules(i) {
 			if err := s.AddRule(r); err != nil && !errors.Is(err, errAlreadyExists) {
 				return fmt.Errorf("kill switch: %s: %w", r.Name, err)
 			}
 		}
+	}
+	return k.replaceLocked(s)
+}
+
+// replaceLocked replaces the exceptions with fresh ones: the programs, the
+// DNS servers and the relay's port of the last Arm.
+func (k *Switch) replaceLocked(s *wf.Session) error {
+	e := exceptions{apps: k.apps(), svc: serviceHost(), dns: dnsServers(), self: appID(k.Self), relay: k.relay}
+	for i := range layers {
 		for _, kind := range refreshedKinds {
 			if err := s.DeleteRule(ruleID(i, kind)); err != nil && !errors.Is(err, errFilterNotFound) {
 				return fmt.Errorf("kill switch: %w", err)
@@ -356,31 +441,22 @@ func (k *Switch) Arm(relay uint16) error {
 	return nil
 }
 
-// RefreshApps renews the program exceptions of an installed block (a
-// Hysteria core update or rollback moves hysteria.exe); the pass filters
-// stay as they are.
+// RefreshApps renews the exceptions of an installed block: a Hysteria
+// core update or rollback moves hysteria.exe, a block found at start may
+// let another copy's HyRoute.exe through, and the adapters' DNS servers
+// change with the network. The pass filters stay as they are.
 func (k *Switch) RefreshApps() error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if err := claim(); err != nil {
+		return err
+	}
 	s, err := open(false)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
-	apps := k.apps()
-	for i := range layers {
-		if err := s.DeleteRule(ruleID(i, kindApps)); err != nil && !errors.Is(err, errFilterNotFound) {
-			return fmt.Errorf("kill switch: %w", err)
-		}
-		r := appsRule(i, apps)
-		if r == nil {
-			continue
-		}
-		if err := s.AddRule(r); err != nil {
-			return fmt.Errorf("kill switch: %s: %w", r.Name, err)
-		}
-	}
-	return nil
+	return k.replaceLocked(s)
 }
 
 // Close removes the pass filters: the block takes effect. Called when the
@@ -427,11 +503,11 @@ func passRule(i int) *wf.Rule {
 
 // Release removes everything: the internet opens.
 func (k *Switch) Release() error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := claim(); err != nil {
 		return err
 	}
-	k.mu.Lock()
-	defer k.mu.Unlock()
 	s, err := open(false)
 	if err != nil {
 		return err
@@ -452,18 +528,26 @@ func (k *Switch) Release() error {
 	if len(errs) > 0 {
 		return fmt.Errorf("kill switch: не все фильтры удалены: %w", errors.Join(errs...))
 	}
+	disown()
 	return nil
 }
 
 // Engaged reports whether the block is installed (possibly left by a
-// previous run that crashed).
+// previous run that crashed). Only a block it finds makes this process
+// the owner: a HyRoute that merely runs, with the kill switch off, must
+// not keep another one's kill switch (another Windows user's) from
+// working. A block another running HyRoute owns: true and errNotOwner.
 func (k *Switch) Engaged() (bool, error) {
-	if err := claim(); err != nil {
-		return false, err
-	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	return installed()
+	on, err := installed()
+	if err != nil || !on {
+		return false, err
+	}
+	if err := claim(); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 func installed() (bool, error) {
@@ -493,14 +577,18 @@ func Leftover() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	h, err := windows.OpenMutex(windows.SYNCHRONIZE, false, n)
+	h, err := windows.OpenMutex(windows.SYNCHRONIZE|windows.READ_CONTROL, false, n)
 	switch {
 	case err == nil:
+		theirs := elevated(h)
 		windows.CloseHandle(h)
-		return false, nil // a running HyRoute shows its block itself
-	case errors.Is(err, windows.ERROR_ACCESS_DENIED):
-		return false, nil // one of another user's
-	case !errors.Is(err, windows.ERROR_FILE_NOT_FOUND):
+		if theirs {
+			return false, nil // a running HyRoute shows its block itself
+		}
+	case errors.Is(err, windows.ERROR_FILE_NOT_FOUND):
+	case errors.Is(err, windows.ERROR_ACCESS_DENIED), errors.Is(err, windows.ERROR_INVALID_HANDLE):
+		// Another program's object under the name (see claim).
+	default:
 		return false, fmt.Errorf("kill switch: %w", err)
 	}
 	return installed()

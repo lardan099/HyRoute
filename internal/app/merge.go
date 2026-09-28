@@ -1,6 +1,7 @@
 package app
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/lardan099/hyroute/internal/hysteria"
@@ -19,6 +20,21 @@ type MergeStats struct {
 func connKey(p hysteria.Profile) string {
 	p.Name, p.ID, p.Source, p.Missing = "", "", "", false
 	return p.URI()
+}
+
+// sameServers reports whether a and b are the same servers: the same
+// connections, whatever their names and order (a panel may put the
+// traffic left into every name).
+func sameServers(a, b []hysteria.Profile) bool {
+	set := func(ps []hysteria.Profile) []string {
+		out := make([]string, 0, len(ps))
+		for _, p := range ps {
+			out = append(out, connKey(p))
+		}
+		slices.Sort(out)
+		return slices.Compact(out)
+	}
+	return len(a) > 0 && slices.Equal(set(a), set(b))
 }
 
 func endpointKey(p hysteria.Profile) string {

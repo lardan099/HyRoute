@@ -3,6 +3,7 @@
 package core
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,5 +30,67 @@ func TestDefaultDirIgnoresEnv(t *testing.T) {
 func TestCheckOwnerOwnFolder(t *testing.T) {
 	if err := checkOwner(t.TempDir()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// New folders get the protected DACL as they are created; existing ones
+// are protected too, a file in the way is refused.
+func TestProtectDirCreates(t *testing.T) {
+	root := t.TempDir()
+	fresh := filepath.Join(root, "fresh", "core")
+	existing := filepath.Join(root, "existing", "core")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dirs := []string{fresh, filepath.Dir(fresh), existing, filepath.Dir(existing)}
+	t.Cleanup(func() {
+		// Without elevation the protected folders are read-only for this
+		// user, who still owns them: give them back for the cleanup.
+		tu, err := windows.GetCurrentProcessToken().GetTokenUser()
+		if err != nil {
+			return
+		}
+		sd, err := windows.SecurityDescriptorFromString("D:(A;OICI;FA;;;" + tu.User.Sid.String() + ")")
+		if err != nil {
+			return
+		}
+		dacl, _, _ := sd.DACL()
+		for _, d := range dirs {
+			windows.SetNamedSecurityInfo(d, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+		}
+	})
+	protected := func(d string) {
+		t.Helper()
+		sd, err := windows.GetNamedSecurityInfo(d, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctl, _, err := sd.Control()
+		if err != nil || ctl&windows.SE_DACL_PROTECTED == 0 {
+			t.Fatalf("%s: DACL not protected (%v)", d, err)
+		}
+		if s := sd.String(); strings.Contains(s, ";ID;") || !strings.Contains(s, "0x1200a9;;;BU") {
+			t.Fatalf("%s: %s", d, s)
+		}
+	}
+	// Without elevation the protected parent does not let this user create
+	// the folder in it: only the parent is checked then.
+	err := ProtectDir(fresh)
+	if windows.GetCurrentProcessToken().IsElevated() {
+		if err != nil {
+			t.Fatal(err)
+		}
+		protected(fresh)
+	}
+	protected(filepath.Dir(fresh))
+	if err := ProtectDir(existing); err != nil {
+		t.Fatal(err)
+	}
+	protected(existing)
+	protected(filepath.Dir(existing))
+	file := filepath.Join(root, "file")
+	os.WriteFile(file, nil, 0o644)
+	if err := ProtectDir(filepath.Join(file, "core")); err == nil {
+		t.Fatal("a file accepted as a folder")
 	}
 }

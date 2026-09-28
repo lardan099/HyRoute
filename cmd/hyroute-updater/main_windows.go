@@ -45,11 +45,15 @@ func main() {
 	}
 	log("start: pid=%d staging=%s target=%s exe=%s from=%s", *pid, *staging, *target, *exe, *from)
 	mainExe := filepath.Join(*target, *exe)
+	// to is the version that failed to install, for --update-failed: the
+	// staging directory is updates\<version>\files (update.Stage) until
+	// the verified manifest names it.
+	to := filepath.Base(filepath.Dir(*staging))
 	// restartOld starts the previous version again, connected if it was.
 	// If it does not start, nothing runs and with the kill switch on the
 	// internet stays closed: the user is told.
 	restartOld := func(reason string) {
-		args := []string{"--update-failed", *from, "--update-error", reason}
+		args := []string{"--update-failed", to, "--update-error", reason}
 		if *reconnect {
 			args = append(args, "--reconnect")
 		}
@@ -67,12 +71,13 @@ func main() {
 		log("HyRoute did not exit: %v", err)
 		fail("HyRoute не завершился, обновление отменено. Файлы не изменены.")
 	}
-	sw, err := update.ApplyJournaled(*staging, *target, *exe, core.DefaultDir(update.JournalName), *from, "")
+	sw, err := update.ApplyJournaled(*staging, *target, *exe, core.DefaultDir(update.JournalName), *from, "", *reconnect)
 	if err != nil {
 		log("apply failed: %v", err)
 		restartOld("не удалось заменить файлы: " + err.Error())
 		return
 	}
+	to = sw.To
 	log("files replaced: %v added: %v", sw.Replaced, sw.Added)
 
 	name, _ := windows.UTF16PtrFromString(*event)

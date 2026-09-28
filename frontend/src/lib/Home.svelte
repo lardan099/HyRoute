@@ -161,7 +161,7 @@
       <h1>{title}</h1>
       <p class="muted">{hide(subtitle)}</p>
       {#if online && since > 0}<p class="faint small">Работает {fmtDuration(since * 1e6)}{st?.killSwitch === 'armed' ? ' · kill switch включён' : ''}</p>{/if}
-      {#if error}<div class="note error">{error}</div>{/if}
+      {#if error}<div class="note error">{hide(error)}</div>{/if}
     </div>
   </section>
 
@@ -175,11 +175,13 @@
           напрямую. Работают только локальная сеть и сам HyRoute. Подключитесь снова или откройте интернет.
         </p>
       </div>
-      <button class="primary" onclick={reconnect} disabled={busy || ui.profiles.length === 0}>Подключиться</button>
+      <!-- Off while a start is under way (autoconnect at logon): Reconnect
+           would wait for it and then tear the new session down. -->
+      <button class="primary" onclick={reconnect} disabled={busy || st.state === 'starting' || ui.profiles.length === 0}>Подключиться</button>
       <button onclick={unblock}>Открыть интернет</button>
     </section>
   {:else if st?.killSwitchError}
-    <div class="note warn">Kill switch не включился: {st.killSwitchError}</div>
+    <div class="note warn">Kill switch не включился: {hide(st.killSwitchError)}</div>
   {/if}
 
   {#if sys && !sys.protectedLocation && inMoveTarget}
@@ -278,7 +280,7 @@
     {#if st?.warnings?.length}
       <section class="card">
         <h2>Требует внимания</h2>
-        {#each st.warnings as w}<div class="note warn">Правило «{w.rule}»: {w.text}</div>{/each}
+        {#each st.warnings as w}<div class="note warn">Правило «{hide(w.rule)}»: {hide(w.text)}</div>{/each}
         <button onclick={() => go('rules')}>Открыть правила</button>
       </section>
     {/if}

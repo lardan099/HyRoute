@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/release"
+	"github.com/lardan099/hyroute/internal/update"
 )
 
 const (
@@ -53,19 +54,44 @@ type Manager struct {
 	mu       sync.Mutex
 	st       state
 	loaded   bool
-	verCache map[string]string // path|mtime -> version
-	hashOK   map[string]string // path|mtime|size -> sha256 verified
+	loadErr  string               // core.json refused (see load)
+	verCache map[string]verResult // path|mtime -> version
+	hashOK   map[string]string    // path|mtime|size -> sha256 verified
 }
 
+type verResult struct {
+	v     string
+	retry time.Time // zero: final; else a failure, run again after it
+}
+
+// verRetry is how long a failed "hysteria version" is not repeated: the
+// UI asks often, and a core that hangs takes seconds each time.
+var verRetry = time.Minute
+
+// ownerOK is CheckOwner (tests replace it).
+var ownerOK = CheckOwner
+
+// load reads core.json. The file and its folder must be ones only an
+// administrator could have written: a folder a normal process created
+// first (and still owns) would name its own hysteria.exe and hash, and
+// HyRoute would start it elevated.
 func (m *Manager) load() {
 	if m.loaded {
 		return
 	}
 	m.loaded = true
-	b, err := os.ReadFile(filepath.Join(m.Dir, "core.json"))
-	if err == nil {
-		json.Unmarshal(b, &m.st)
+	p := filepath.Join(m.Dir, "core.json")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return
 	}
+	for _, f := range []string{m.Dir, p} {
+		if err := ownerOK(f); err != nil {
+			m.loadErr = "обновление ядра не используется: " + err.Error()
+			return
+		}
+	}
+	json.Unmarshal(b, &m.st)
 }
 
 func (m *Manager) save() error {
@@ -126,7 +152,11 @@ func (m *Manager) Path() string {
 
 // retire goes back to the bundled core for good once it has caught up
 // with cur (unless an install or rollback changed the state meanwhile):
-// the downloaded cores are older, so neither is a rollback target.
+// the downloaded cores are older, so neither is a rollback target. While
+// a HyRoute update is still on trial (its journal exists until the new
+// version reports healthy), the updater may yet bring back the previous
+// HyRoute with its older bundled core: the downloads are then only left
+// unused by this run, and retired for good on a later start.
 func (m *Manager) retire(cur *entry) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -134,9 +164,19 @@ func (m *Manager) retire(cur *entry) {
 		return
 	}
 	m.st = state{}
+	if m.updateOnTrial() {
+		return
+	}
 	if m.save() == nil {
 		m.prune()
 	}
+}
+
+// updateOnTrial reports whether hyroute-updater's journal exists: it lies
+// in %ProgramData%\HyRoute next to Dir (core.DefaultDir).
+func (m *Manager) updateOnTrial() bool {
+	_, err := os.Lstat(filepath.Join(filepath.Dir(m.Dir), update.JournalName))
+	return err == nil
 }
 
 // Paths lists the cores that may be running: the one Path picks, the
@@ -172,9 +212,13 @@ func (m *Manager) Info() Info {
 	if m.st.Current != nil && !in.Updated {
 		in.Error = "установленное обновление ядра повреждено или изменено, используется встроенное"
 	}
+	if m.loadErr != "" {
+		in.Error = m.loadErr
+	}
 	// A previous core no newer than the bundled one is never started (see
-	// Path): a rollback lands on the bundled core.
-	if m.st.Previous != nil && m.verified(m.st.Previous) && release.Compare(m.st.Previous.Version, in.Bundled) > 0 {
+	// Path): a rollback lands on the bundled core. On the bundled core
+	// (Current nil, e.g. after a rollback) there is nothing to roll back.
+	if m.st.Current != nil && m.st.Previous != nil && m.verified(m.st.Previous) && release.Compare(m.st.Previous.Version, in.Bundled) > 0 {
 		in.Previous = m.st.Previous.Version
 	} else if in.Updated {
 		in.Previous = "встроенное " + in.Bundled
@@ -189,22 +233,25 @@ func (m *Manager) version(p string) string {
 	}
 	key := fmt.Sprintf("%s|%d", p, fi.ModTime().UnixNano())
 	m.mu.Lock()
-	v, ok := m.verCache[key]
+	c, ok := m.verCache[key]
 	m.mu.Unlock()
-	if ok {
-		return v
+	if ok && (c.retry.IsZero() || time.Now().Before(c.retry)) {
+		return c.v
 	}
-	v, err = m.Version(p)
+	// A failure may be passing (a slow start at sign-in, an antivirus
+	// scan): it is remembered only for a while.
+	c = verResult{}
+	c.v, err = m.Version(p)
 	if err != nil {
-		v = "не запускается: " + err.Error()
+		c.v, c.retry = "не запускается: "+err.Error(), time.Now().Add(verRetry)
 	}
 	m.mu.Lock()
 	if m.verCache == nil {
-		m.verCache = map[string]string{}
+		m.verCache = map[string]verResult{}
 	}
-	m.verCache[key] = v
+	m.verCache[key] = c
 	m.mu.Unlock()
-	return v
+	return c.v
 }
 
 // Update is an available core release.
@@ -233,6 +280,10 @@ func (m *Manager) Check(ctx context.Context) (u Update, ok bool, err error) {
 		return u, false, errors.New("стабильных релизов Hysteria 2 не найдено")
 	}
 	cur := m.version(m.Path())
+	if _, err := release.Parse(cur); err != nil {
+		// Unknown is not older: the release may be the very core in use.
+		return u, false, fmt.Errorf("версия текущего ядра неизвестна (%s)", cur)
+	}
 	if release.Compare(r.Tag, cur) <= 0 {
 		return u, false, nil
 	}
@@ -288,10 +339,15 @@ func (m *Manager) Install(ctx context.Context, u Update, progress func(done, tot
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.load()
-	old := m.st.Current
-	m.st.Previous, m.st.Current = old, &entry{Version: u.Version, SHA256: sum}
+	old := m.st
+	m.st.Previous, m.st.Current = old.Current, &entry{Version: u.Version, SHA256: sum}
 	if err := m.save(); err != nil {
-		m.st.Current, m.st.Previous = old, nil
+		// core.json is unchanged: so is the state, and the new core's
+		// folder goes unless it is one of the kept ones.
+		m.st = old
+		if (old.Current == nil || old.Current.Version != u.Version) && (old.Previous == nil || old.Previous.Version != u.Version) {
+			os.RemoveAll(dir)
+		}
 		return err
 	}
 	m.prune()
@@ -306,11 +362,16 @@ func (m *Manager) Rollback() error {
 	if m.st.Current == nil {
 		return errors.New("используется встроенное ядро, откатываться некуда")
 	}
+	old := m.st
 	if m.st.Previous != nil && !m.verified(m.st.Previous) {
 		m.st.Previous = nil
 	}
 	m.st.Current, m.st.Previous = m.st.Previous, m.st.Current
-	return m.save()
+	if err := m.save(); err != nil {
+		m.st = old // core.json is unchanged
+		return err
+	}
+	return nil
 }
 
 // prune removes version directories other than current and previous.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,29 @@ func TestPlanCheck(t *testing.T) {
 	} {
 		if got := planCheck(tc.on, tc.known, tc.protected, tc.autostart, tc.exists, tc.current, exe); got != tc.want {
 			t.Errorf("%s: %v, want %v", tc.what, got, tc.want)
+		}
+	}
+}
+
+// The autostart task starts its program elevated without asking: one that
+// starts a program other programs could replace goes, whatever the
+// settings say. Only a task that starts this copy stands in for its
+// kill switch check.
+func TestPlanAutostart(t *testing.T) {
+	const exe = `C:\Program Files\HyRoute\HyRoute.exe`
+	safe := map[string]bool{`c:\program files\hyroute`: true, `c:\program files (x86)\hyroute`: true}
+	protected := func(dir, _ string) bool { return safe[strings.ToLower(dir)] }
+	for _, tc := range []struct {
+		what, cmd    string
+		remove, mine bool
+	}{
+		{"this copy", `c:\program files\hyroute\HyRoute.exe`, false, true},
+		{"another copy in Program Files", `C:\Program Files (x86)\HyRoute\HyRoute.exe`, false, false},
+		{"folder opened to users since", `C:\Users\u\Downloads\HyRoute\HyRoute.exe`, true, false},
+		{"unreadable", "", false, false},
+	} {
+		if remove, mine := planAutostart(tc.cmd, exe, protected); remove != tc.remove || mine != tc.mine {
+			t.Errorf("%s: remove %v, mine %v; want %v, %v", tc.what, remove, mine, tc.remove, tc.mine)
 		}
 	}
 }

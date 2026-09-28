@@ -198,6 +198,7 @@ func FileSHA256(p string) (string, error) {
 // Swap is an applied update that can still be undone.
 type Swap struct {
 	Target   string
+	To       string   // version being installed (ApplyJournaled)
 	Replaced []string // names whose old version is <name>.old
 	Added    []string // names that did not exist before
 	journal  string   // removed on Commit and Undo (ApplyJournaled)

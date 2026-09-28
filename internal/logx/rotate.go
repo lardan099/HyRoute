@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -64,7 +65,11 @@ func (r *RotatingFile) rotate() bool {
 	r.f = nil
 	keep := max(r.Keep, 0)
 	if keep == 0 {
-		return os.Remove(r.Path) == nil
+		if os.Remove(r.Path) != nil {
+			return false
+		}
+		r.removeCopies(0)
+		return true
 	}
 	aside := r.Path + ".rotating"
 	if err := os.Rename(r.Path, aside); err != nil {
@@ -90,8 +95,38 @@ func (r *RotatingFile) rotate() bool {
 			return false
 		}
 	}
-	os.Remove(name(keep + 1))
+	r.removeCopies(keep)
 	return true
+}
+
+// removeCopies deletes the rotated copies numbered past keep: Path.<keep+1>
+// shifted out just now and those left from when Keep was larger.
+func (r *RotatingFile) removeCopies(keep int) {
+	dir, base := filepath.Split(r.Path)
+	entries, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		n, ok := strings.CutPrefix(e.Name(), base+".")
+		if !ok {
+			continue
+		}
+		if i, err := strconv.Atoi(n); err == nil && i > keep && n == strconv.Itoa(i) {
+			os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
+// SetLimits changes MaxBytes and Keep of a file that may be in use. The
+// copies past a lowered Keep go at once, not at the next rotation.
+func (r *RotatingFile) SetLimits(maxBytes int64, keep int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if keep < r.Keep {
+		r.removeCopies(max(keep, 0))
+	}
+	r.MaxBytes, r.Keep = maxBytes, keep
 }
 
 func (r *RotatingFile) Write(b []byte) (int, error) {

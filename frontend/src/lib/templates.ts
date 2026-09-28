@@ -135,27 +135,35 @@ export function schemeTemplates(sc: Scheme): Template[] {
   return sc.rules.map((r) => (typeof r === 'string' ? templates.find((t) => t.id === r)! : r));
 }
 
-// applyScheme puts the scheme's rules on top (skipping ones already
-// present) and sets "everything else". Only a rule that works the same
-// way counts as present: enabled, for every program and protocol, and not
-// cut off by an enabled rule above it that sends some of the same traffic
-// elsewhere: one with another action and a common item or no sites at all
-// (a program's rule). A turned off, narrowed (chrome.exe + geoip:private)
-// or cut off copy stays as it is, and the scheme's rule goes on top. The
-// scheme's own rules share no items, so the ones added on top cut off
-// nothing.
+// applyScheme puts the scheme's rules on top and sets "everything else".
+// Rules are checked top to bottom, and lists overlap by content, not by
+// name (geosite:microsoft holds github.com, category-ru holds ad domains),
+// so a scheme works only as a whole and in its own order. It counts as
+// applied, and nothing is added, only when all its rules are there in that
+// order, each working the same way (enabled, for every program and
+// protocol) and with no enabled rule of another action above it but the
+// scheme's own: such a rule may send some of the same traffic elsewhere
+// (*.ru or geosite:yandex above category-ru), which item names cannot
+// tell. Otherwise the whole scheme goes on top; old copies below stay as
+// they are, and the lint marks the ones left with nothing to do.
 export function applyScheme(s: Settings, sc: Scheme): Settings {
   const next: Settings = JSON.parse(JSON.stringify(s));
   const sites = (r: Rule) => [...(r.domains ?? []), ...(r.domain?.pattern ? [r.domain.pattern] : [])];
   const key = (r: Rule) => JSON.stringify(sites(r).sort()) + r.action;
   const general = (r: Rule) => r.enabled !== false && !r.apps?.length && !r.app?.pattern && !r.protocol;
-  const cuts = (above: Rule, r: Rule) =>
-    above.enabled !== false && above.action !== r.action && (!sites(above).length || sites(above).some((d) => sites(r).includes(d)));
-  const present = (r: Rule) => next.rules.some((x, i) => general(x) && key(x) === key(r) && !next.rules.slice(0, i).some((a) => cuts(a, r)));
-  const add = schemeTemplates(sc)
-    .map(ruleFromTemplate)
-    .filter((r) => !present(r));
-  next.rules = [...add, ...next.rules];
+  const want = schemeTemplates(sc).map(ruleFromTemplate);
+  // The earliest copy of each rule after the previous one's: the fewest
+  // rules above it and the most room for the rest.
+  const own = new Set<number>();
+  let from = 0;
+  const applied = want.every((r) => {
+    const i = next.rules.findIndex((x, j) => j >= from && general(x) && key(x) === key(r));
+    if (i < 0 || next.rules.slice(0, i).some((a, j) => !own.has(j) && a.enabled !== false && a.action !== r.action)) return false;
+    own.add(i);
+    from = i + 1;
+    return true;
+  });
+  if (!applied) next.rules = [...want, ...next.rules];
   next.defaultAction = sc.rest;
   if (sc.rest !== 'tunnel') next.defaultProfile = '';
   return next;

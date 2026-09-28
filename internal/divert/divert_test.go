@@ -119,6 +119,11 @@ func TestExplain(t *testing.T) {
 	if m := Explain(2, nil); !strings.Contains(m, "WinDivert64.sys") {
 		t.Fatal(m)
 	}
+	// An older driver of another program may reject our parameters before
+	// the version check: the message names it.
+	if m := Explain(87, d); !strings.Contains(m, `C:\zapret`) {
+		t.Fatal(m)
+	}
 	if err := CheckVersion(2, 2, nil); err != nil {
 		t.Fatal(err)
 	}

@@ -8,6 +8,7 @@
   const journal = $derived(source);
   $effect(() => {
     journal;
+    gen++;
     lines = [];
     last = 0;
     poll();
@@ -26,13 +27,17 @@
   const rank: Record<string, number> = { debug: 0, info: 1, warn: 2, warning: 2, error: 3, fatal: 4 };
 
   let polling = false;
+  // gen counts source switches. An answer asked for before a switch is
+  // dropped even if the source is back (A→B→A): it continues the old last,
+  // and taking it would skip everything the new view has not loaded yet.
+  let gen = 0;
   async function poll() {
     if (polling) return;
     polling = true;
     try {
-      const j = journal;
-      const add = (await api.Logs(j, last)) ?? [];
-      if (j !== journal) return;
+      const g = gen;
+      const add = (await api.Logs(journal, last)) ?? [];
+      if (g !== gen) return;
       if (add.length) {
         last = add[add.length - 1].seq;
         const next = lines.concat(add);
@@ -67,7 +72,7 @@
 
   // Ctrl+A inside the log selects the log only, not the whole window.
   function onKey(e: KeyboardEvent) {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && box) {
+    if ((e.ctrlKey || e.metaKey) && (e.code === 'KeyA' || e.key.toLowerCase() === 'a') && box) {
       e.preventDefault();
       e.stopPropagation();
       const r = document.createRange();

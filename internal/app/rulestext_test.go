@@ -264,6 +264,11 @@ func TestRulesTextRoundTripOdd(t *testing.T) {
 		{Apps: []rules.AppMatch{{Pattern: "*", InheritChildren: true}}, Domains: []string{".g.com"}, Action: rules.Direct},
 		// Quotes inside a quoted item.
 		{Name: "Q", Domains: []string{`regexp:"q" "r"`, `keyword:a"b`}, Action: rules.Block},
+		// Paths not to an .exe before another program: quoted, not read
+		// as a path with spaces.
+		{Apps: []rules.AppMatch{{Pattern: `C:\Tools\runner`, InheritChildren: true}, {Pattern: "discord.exe", InheritChildren: true}}, Action: rules.Tunnel},
+		{Apps: []rules.AppMatch{{Pattern: `D:\Tools\run.cmd`, InheritChildren: true}, {Pattern: "Steam.old/steam.exe", InheritChildren: true}}, Action: rules.Tunnel},
+		{Apps: []rules.AppMatch{{Pattern: `C:\Tools\runner`}, {Pattern: "discord.exe", InheritChildren: true}}, Action: rules.Direct},
 		{Domains: []string{".setup.exe", "run.exe"}, Action: rules.Block},
 	}}
 	text := formatRulesText(cfg, profiles)
@@ -406,5 +411,156 @@ func TestTargetWordReserved(t *testing.T) {
 	}
 	if a, id, _, err := parseTargets("FI", profiles); err != nil || a != rules.Tunnel || id != "sp" {
 		t.Errorf("FI: %v %q %v", a, id, err)
+	}
+}
+
+// Text that could be read two ways is read as written or refused with a
+// line number, never silently turned into another rule.
+func TestParseRulesTextAmbiguous(t *testing.T) {
+	ok := func(text string) RulesTextResult {
+		t.Helper()
+		res := parseRulesText(text, textProfiles)
+		if len(res.Errors) != 0 {
+			t.Fatalf("%q: %+v", text, res.Errors)
+		}
+		return res
+	}
+	bad := func(text string, line int, want string) {
+		t.Helper()
+		res := parseRulesText(text, textProfiles)
+		for _, e := range res.Errors {
+			if e.Line == line && strings.Contains(e.Text, want) {
+				return
+			}
+		}
+		t.Errorf("%q: %+v, want an error at line %d with %q", text, res.Errors, line, want)
+	}
+	// An IPv6 address ending with "::" (and an item ending with ":") is
+	// not a rule name.
+	for text, want := range map[string][]string{
+		"2001:db8:: 1.2.3.4 -> напрямую":        {"2001:db8::", "1.2.3.4"},
+		"fe80:: 10.0.0.0/8 -> напрямую":         {"fe80::", "10.0.0.0/8"},
+		":: -> блок":                            {"::"},
+		"2001:db8:: -> блок":                    {"2001:db8::"},
+		`regexp:^a: b.com -> блок`:              {"regexp:^a:", ".b.com"},
+		"https://a.com/x: b.com -> vpn":         {".a.com", ".b.com"},
+		"LAN: 2001:db8:: 1.2.3.4 -> vpn":        {"2001:db8::", "1.2.3.4"},
+		"[chrome.exe]\n2001:db8:: a.com -> vpn": {"2001:db8::", ".a.com"},
+	} {
+		r := ok(text).Rules
+		if len(r) != 1 || !slices.Equal(r[0].Domains, want) || (r[0].Name != "") != strings.HasPrefix(text, "LAN") {
+			t.Errorf("%q: %+v", text, r)
+		}
+	}
+	cfg := rules.Config{Rules: []rules.Rule{
+		{Domains: []string{"2001:db8::", "1.2.3.4"}, Action: rules.Direct},
+		{Apps: []rules.AppMatch{{Pattern: "chrome.exe", InheritChildren: true}}, Domains: []string{"2001:db8::", ".a.com"}, Action: rules.Tunnel},
+		{Domains: []string{"regexp:a:", ".b.com"}, Action: rules.Block},
+	}}
+	back := ok(formatRulesText(cfg, textProfiles))
+	for i, r := range back.Rules {
+		if r.Name != "" || !slices.Equal(r.Domains, cfg.Rules[i].Domains) {
+			t.Errorf("round trip %d: %+v", i, r)
+		}
+	}
+	// A name with . / \ * would be read as a site or a program: quotes.
+	bad("Google/YouTube: youtube.com -> vpn", 1, "в кавычках")
+	bad("Всё*: youtube.com -> vpn", 1, "в кавычках")
+	bad("Яндекс.Музыка: music.yandex.ru -> vpn", 1, `"Яндекс.Музыка": …`)
+	bad("chrome.exe discord.exe: a.com -> vpn", 1, "в кавычках")
+	if r := ok(`"Google/YouTube": youtube.com -> vpn`).Rules[0]; r.Name != "Google/YouTube" || len(r.Apps) != 0 {
+		t.Errorf("%+v", r)
+	}
+	// A name without items is a rule without items, not a program.
+	bad("Discord: -> vpn", 1, "не указано")
+	if r := ok("[chrome.exe]\nChrome: -> vpn").Rules[0]; r.Name != "Chrome" || !slices.Equal(r.Apps, []rules.AppMatch{{Pattern: "chrome.exe", InheritChildren: true}}) {
+		t.Errorf("%+v", r)
+	}
+	// Under [program] a program would widen the rule, not narrow it.
+	bad("[chrome.exe]\ninstagram.com -> vpn\ndiscord -> напрямую\n[*]\n* -> vpn", 3, "только сайты")
+	bad("[chrome.exe]\napp:vmmem a.com -> vpn", 2, "только сайты")
+	// [всё] is every program, as [все].
+	if r := ok("[chrome.exe]\n[всё]\na.com -> vpn").Rules[0]; len(r.Apps) != 0 {
+		t.Errorf("[всё]: %+v", r)
+	}
+	// Repeats that would silently override.
+	bad("* -> vpn\na.com -> блок\n* -> напрямую", 3, "строке 1")
+	bad("a.com -> vpn | tcp | udp", 1, "tcp и udp")
+	if res := parseRulesText("a.com -> vpn | tcp | udp | tcp", textProfiles); len(res.Errors) != 1 {
+		t.Errorf("tcp|udp|tcp: %+v", res.Errors)
+	}
+	if r := ok("a.com -> vpn | udp | udp").Rules[0]; r.Protocol != "udp" {
+		t.Errorf("%+v", r)
+	}
+	// A link to www.site is the site, as in the rule editor.
+	for text, want := range map[string]string{
+		"https://www.instagram.com/p/xyz -> vpn": ".instagram.com",
+		"www.youtube.com/watch?v=1 -> vpn":       ".youtube.com",
+		"https://www.com/ -> vpn":                ".www.com",
+		"www.youtube.com -> vpn":                 ".www.youtube.com", // not a link: as written
+	} {
+		if r := ok(text).Rules[0]; !slices.Equal(r.Domains, []string{want}) {
+			t.Errorf("%q: %+v", text, r.Domains)
+		}
+	}
+	// Sites no name can be.
+	for _, text := range []string{"«youtube.com» -> vpn", "(youtube.com) -> vpn", "youtube.com! -> vpn", "..example.com -> vpn",
+		"example..com -> vpn", "domain:.example.com -> vpn", "full:a..b -> vpn", "=a.com, 'b.com' -> vpn", "https://www.a..com/ -> vpn"} {
+		bad(text, 1, "в имени сайта")
+	}
+	// A refused item is the only error of its line.
+	for _, text := range []string{"domain:.a.com -> vpn", "(a.com) -> vpn"} {
+		if res := parseRulesText(text, textProfiles); len(res.Errors) != 1 {
+			t.Errorf("%q: %+v", text, res.Errors)
+		}
+	}
+	// Characters IDNA allows by context.
+	ok("col·legi.cat ab\u200ccd.com a\u30fbb.jp -> vpn")
+	ok("пример.рф _dmarc.example.com *.ru .lan localhost example.com. xn--p1ai -> vpn")
+	// A disabled line is checked too, without warnings.
+	bad("regexp:( -> блок | выкл", 1, "регулярное")
+	bad("a.com:443 -> vpn | выкл", 1, "шаблон")
+	if res := ok("geosite:youtube -> vpn | выкл"); len(res.Warnings) != 0 {
+		t.Errorf("%+v", res.Warnings)
+	}
+	// A path with spaces without quotes is cut into pieces: refused.
+	bad(`C:\Program Files\Mozilla Firefox\firefox.exe -> vpn`, 1, "в кавычках")
+	bad(`C:\My Games\x.exe -> vpn`, 1, "в кавычках")
+	bad(`C:\Apps\v1.2 beta\x.exe -> vpn`, 1, "в кавычках")
+	bad(`C:\x\My App.exe -> vpn`, 1, "в кавычках")
+	bad(`[C:\Program Files\x.exe]`+"\na.com -> vpn", 1, "в кавычках")
+	bad(`C:\Program Files (x86)\Steam\steam.exe -> vpn`, 1, "в кавычках")
+	bad(`[C:\Program Files (x86)\Steam\steam.exe]`+"\na.com -> vpn", 1, "в кавычках")
+	bad(`C:\Program Files -> vpn`, 1, "в кавычках")
+	bad(`C:\Games\old.v2 My Game (2019)\x.exe -> vpn`, 1, "в кавычках")
+	for _, text := range []string{`C:\a.exe b.exe -> vpn`, `C:\Games\* x.exe -> vpn`, `C:\tools\app.com x.exe -> vpn`,
+		`"C:\Program Files\x.exe" y.exe -> vpn`, `\srv\share\x.exe a.com -> vpn`,
+		`C:\tools\app.bin youtube.com/page 10.0.0.0/8 -> vpn`, `C:\tools\app.bin discord -> vpn`,
+		// Quoted, the path is whole, whatever follows it.
+		`"C:\Program Files\App\app" x.exe -> vpn`, `"C:\Tools\runner" discord.exe -> vpn`,
+		`"=C:\Tools\runner" Steam.old/steam.exe -> vpn`, `C:\Tools\runner "sub\x.exe" -> vpn`} {
+		ok(text)
+	}
+	if r := ok(`"C:\Program Files\App\app" x.exe -> vpn`).Rules[0]; !slices.Equal(r.Apps, []rules.AppMatch{
+		{Pattern: `C:\Program Files\App\app`, InheritChildren: true}, {Pattern: "x.exe", InheritChildren: true}}) {
+		t.Errorf("%+v", r.Apps)
+	}
+}
+
+// A server name with a line break (a link's %0A) is written as id:, so the
+// exported line stays one line.
+func TestTargetWordLineBreak(t *testing.T) {
+	for _, name := range []string{"DE\nfast", "DE\rfast", "DE\u2028fast", "DE\x00"} {
+		profiles := append(slices.Clone(textProfiles), hysteria.Profile{ID: "p1", Name: name})
+		if w := targetWord(rules.Tunnel, "p1", profiles); w != "id:p1" {
+			t.Errorf("%q written as %q", name, w)
+		}
+		cfg := rules.Config{DefaultAction: rules.Tunnel, DefaultFallback: []string{"p1"}, Rules: []rules.Rule{
+			{Name: "Y", Domains: []string{".youtube.com"}, Action: rules.Tunnel, Profile: "p1"},
+		}}
+		res := parseRulesText(formatRulesText(cfg, profiles), profiles)
+		if len(res.Errors) != 0 || len(res.Rules) != 1 || res.Rules[0].Profile != "p1" || !slices.Equal(res.DefaultFallback, []string{"p1"}) {
+			t.Errorf("%q: %+v", name, res)
+		}
 	}
 }

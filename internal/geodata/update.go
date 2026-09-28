@@ -99,6 +99,18 @@ type FileState struct {
 	Updated    time.Time `json:"updated"` // when this content was installed
 	URL        string    `json:"url"`
 	Verified   bool      `json:"verified"` // matched the published .sha256sum
+	// A rollback put this file in place while the source delivered
+	// HeldFor (a URL): scheduled updates leave it and never put back
+	// RolledBackFrom (the SHA-256 of the version rolled back from); a
+	// manual update or another source ends the hold.
+	HeldFor        string `json:"heldFor,omitempty"`
+	RolledBackFrom string `json:"rolledBackFrom,omitempty"`
+}
+
+// unheld is fs without the rollback hold.
+func (fs FileState) unheld() FileState {
+	fs.HeldFor, fs.RolledBackFrom = "", ""
+	return fs
 }
 
 // State is stored in Dir/geo.json.
@@ -125,6 +137,17 @@ func (st State) From(k Kind, url string) bool {
 	return url != "" && fs != nil && fs.URL == url
 }
 
+// Held reports whether the file of k was restored by a rollback while the
+// source delivered url: it is not missing for that source, and scheduled
+// updates do not undo the rollback.
+func (st State) Held(k Kind, url string) bool {
+	fs := st.Site
+	if k == IP {
+		fs = st.IP
+	}
+	return url != "" && fs != nil && fs.HeldFor == url && fs.RolledBackFrom != ""
+}
+
 // Downloader fetches URLs; the default is a plain HTTP client. attempt is
 // 0 for the first try and 1 for the retry after a failed download (the app
 // retries through the VPN).
@@ -147,7 +170,7 @@ func (u *Updater) statePath() string { return filepath.Join(u.DB.Dir, "geo.json"
 // State reads geo.json.
 func (u *Updater) State() State {
 	var st State
-	b, err := os.ReadFile(u.statePath())
+	b, err := readSmall(u.statePath())
 	if err == nil {
 		_ = json.Unmarshal(b, &st)
 	}
@@ -159,11 +182,89 @@ func (u *Updater) saveState(st State) error {
 	if err != nil {
 		return err
 	}
-	tmp := u.statePath() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	return writeFile(u.statePath(), b)
+}
+
+// readSmall reads a state file through openRead: it refuses links, and
+// it shares delete access, so writeFile can replace the file under it.
+func readSmall(path string) ([]byte, error) {
+	f, err := openRead(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, 1<<20))
+}
+
+// writeFile replaces path with b. The folder is writable by every program
+// of the user and HyRoute runs elevated, so the data goes to a new file
+// with a random name (a fixed one could be a planted link to a file the
+// user cannot write), and the rename replaces whatever is at path itself,
+// never the target of a link.
+func writeFile(path string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, u.statePath())
+	tmp := f.Name()
+	_, err = f.Write(b)
+	if serr := f.Sync(); err == nil {
+		err = serr
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = renameRetry(tmp, path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
+}
+
+// renameRetry replaces to with from (a file in the same folder), retrying
+// for most of a second: an antivirus or an indexer may hold a file open
+// without delete sharing for a moment.
+func renameRetry(from, to string) error {
+	var err error
+	for i := range 5 {
+		if i > 0 {
+			time.Sleep(time.Duration(25<<i) * time.Millisecond)
+		}
+		if err = replaceFile(from, to); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+// replaceFile renames from over to, both in the same folder. os.Rename
+// (MoveFileEx) cannot replace a file that is open even in a reader that
+// shares delete access, as State does all the time (the settings page
+// polls it); os.Root renames with POSIX semantics on Windows 10 1709+ and
+// NTFS, which can, and falls back to a plain rename elsewhere.
+func replaceFile(from, to string) error {
+	r, err := os.OpenRoot(filepath.Dir(to))
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	return r.Rename(filepath.Base(from), filepath.Base(to))
+}
+
+// fileSum returns the SHA-256 of a file on disk.
+func fileSum(path string) (string, error) {
+	f, err := openRead(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // HasPrevious reports whether a rollback is possible.
@@ -185,13 +286,25 @@ type Result struct {
 // Update checks the databases of src that have a URL and installs the
 // ones whose published checksum differs from the installed file (force:
 // always download). A file is replaced only after its checksum and format
-// are verified; the replaced file is kept as .prev for Rollback.
+// are verified; the replaced file is kept as .prev for Rollback. It is
+// the user's own request: a file held by a rollback is updated too.
 func (u *Updater) Update(ctx context.Context, src Source, force bool) (Result, error) {
+	return u.update(ctx, src, force, false)
+}
+
+// UpdateScheduled is Update for the background schedule: a file restored
+// by Rollback is not replaced by the version rolled back from.
+func (u *Updater) UpdateScheduled(ctx context.Context, src Source) (Result, error) {
+	return u.update(ctx, src, false, true)
+}
+
+func (u *Updater) update(ctx context.Context, src Source, force, scheduled bool) (Result, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if err := os.MkdirAll(u.DB.Dir, 0o700); err != nil {
 		return Result{}, err
 	}
+	u.removeLeftovers()
 	st := u.State()
 	var res Result
 	var errs []string
@@ -205,8 +318,10 @@ func (u *Updater) Update(ctx context.Context, src Source, force bool) (Result, e
 			continue
 		}
 		// A file of another source (or of changed custom links) is
-		// downloaded again: never keep files of the old one.
-		fs, changed, err := u.updateFile(ctx, k, url, *cur, force || !st.From(k, url))
+		// downloaded again: never keep files of the old one, unless the
+		// user rolled back to it.
+		held := scheduled && st.Held(k, url)
+		fs, changed, err := u.updateFile(ctx, k, url, *cur, force || (!held && !st.From(k, url)), held)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", k.File(), err))
 			continue
@@ -234,7 +349,36 @@ func (u *Updater) Update(ctx context.Context, src Source, force bool) (Result, e
 	return res, nil
 }
 
-func (u *Updater) updateFile(ctx context.Context, k Kind, url string, cur *FileState, force bool) (FileState, bool, error) {
+// leftovers are the temporary files of an update (see download and
+// writeFile), and the fixed names older versions used.
+var leftovers = []string{"*.dat.*.new", "geo.json.*.tmp", "*.prev.json.*.tmp", "*.dat.new", "geo.json.tmp"}
+
+// removeLeftovers deletes the temporary files an interrupted update left
+// (a crash, or a shutdown during a download): their random names are
+// never used again. os.Remove deletes the entry itself, a planted link
+// too, never the file it points to. u.mu must be held.
+func (u *Updater) removeLeftovers() {
+	ents, err := os.ReadDir(u.DB.Dir)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		for _, pat := range leftovers {
+			if ok, _ := filepath.Match(pat, e.Name()); ok {
+				_ = os.Remove(filepath.Join(u.DB.Dir, e.Name()))
+				break
+			}
+		}
+	}
+}
+
+// updateFile installs the file of k from url when it differs from the file
+// on disk. held: a scheduled update of a file restored by Rollback, which
+// keeps it rather than put back the version rolled back from.
+func (u *Updater) updateFile(ctx context.Context, k Kind, url string, cur *FileState, force, held bool) (FileState, bool, error) {
 	dst := u.DB.path(k)
 	sum := sumURL(url)
 	want, sumErr := u.fetchSum(ctx, sum, 0)
@@ -245,19 +389,38 @@ func (u *Updater) updateFile(ctx context.Context, k Kind, url string, cur *FileS
 		// The file itself would be unverified: do not install it.
 		return FileState{}, false, fmt.Errorf("не удалось получить контрольную сумму: %v", sumErr)
 	}
+	// The file on disk decides, not geo.json: a damaged file (a power cut,
+	// a disk error) or one the state does not describe is replaced even by
+	// the same version.
 	_, statErr := os.Stat(dst)
-	if !force && statErr == nil && cur != nil && want != "" && strings.EqualFold(want, cur.SHA256) {
-		return *cur, false, nil
+	disk := ""
+	if statErr == nil {
+		disk, _ = fileSum(dst)
 	}
-	tmp := dst + ".new"
-	defer os.Remove(tmp)
-	got, size, err := u.download(ctx, k, url, tmp, 0)
+	described := cur != nil && disk != "" && strings.EqualFold(disk, cur.SHA256)
+	// A held file is kept only while it is intact.
+	held = held && described
+	var keep FileState
+	if cur != nil {
+		keep = *cur
+		if !held {
+			keep = keep.unheld()
+		}
+	}
+	if held && want != "" && strings.EqualFold(want, cur.RolledBackFrom) {
+		return keep, false, nil // still the version the user rolled back from
+	}
+	if !force && described && want != "" && strings.EqualFold(want, disk) {
+		return keep, false, nil
+	}
+	tmp, got, size, err := u.download(ctx, k, url, 0)
 	if err != nil && ctx.Err() == nil {
-		got, size, err = u.download(ctx, k, url, tmp, 1)
+		tmp, got, size, err = u.download(ctx, k, url, 1)
 	}
 	if err != nil {
 		return FileState{}, false, err
 	}
+	defer os.Remove(tmp)
 	if want != "" && !strings.EqualFold(got, want) {
 		return FileState{}, false, fmt.Errorf("контрольная сумма не совпала (ожидалась %s…, получена %s…): файл не установлен", want[:12], got[:12])
 	}
@@ -265,36 +428,63 @@ func (u *Updater) updateFile(ctx context.Context, k Kind, url string, cur *FileS
 	if err != nil {
 		return FileState{}, false, fmt.Errorf("скачанный файл не похож на базу правил: %v", err)
 	}
-	if statErr == nil && cur != nil && strings.EqualFold(got, cur.SHA256) {
+	if held && strings.EqualFold(got, cur.RolledBackFrom) {
+		return keep, false, nil
+	}
+	if disk != "" && strings.EqualFold(got, disk) {
 		// Same content (no .sha256sum published, or the same file at a
 		// new URL): keep it, now as the file of url.
-		fs := *cur
+		fs := keep
+		if !described {
+			fs = FileState{SHA256: got, Size: size, Categories: n, Updated: time.Now()}
+		}
 		fs.URL = url
 		fs.Verified = want != ""
 		return fs, false, nil
 	}
-	if statErr == nil {
-		// The rename replaces the old .prev: removing it first would lose
-		// it when the rename fails (the file is open in another program).
-		if err := os.Rename(dst, dst+".prev"); err != nil {
+	// The file replaced is kept as .prev for Rollback, unless it is not a
+	// database (damaged, or planted): then it is simply replaced, and the
+	// .prev there stays the previous version.
+	keepPrev := statErr == nil
+	if keepPrev && !described {
+		_, cerr := Check(dst)
+		keepPrev = cerr == nil
+	}
+	if statErr == nil && !keepPrev {
+		if err := renameRetry(tmp, dst); err != nil {
+			return FileState{}, false, err
+		}
+	} else {
+		if keepPrev {
+			// The rename replaces the old .prev: removing it first would
+			// lose it when the rename fails (the file is open in another
+			// program).
+			if err := os.Rename(dst, dst+".prev"); err != nil {
+				return FileState{}, false, err
+			}
+		}
+		if err := os.Rename(tmp, dst); err != nil {
+			if keepPrev {
+				_ = os.Rename(dst+".prev", dst)
+			}
 			return FileState{}, false, err
 		}
 	}
-	if err := os.Rename(tmp, dst); err != nil {
-		if statErr == nil {
-			_ = os.Rename(dst+".prev", dst)
+	if keepPrev {
+		// .prev.json describes the file now in .prev, or nothing: a stale
+		// one would make Rollback describe the restored file wrongly.
+		if described {
+			writePrevState(dst, *cur)
+		} else {
+			_ = os.Remove(dst + ".prev.json")
 		}
-		return FileState{}, false, err
-	}
-	if cur != nil {
-		writePrevState(dst, *cur)
 	}
 	return FileState{SHA256: got, Size: size, Categories: n, Updated: time.Now(), URL: url, Verified: want != "" && sumErr == nil}, true, nil
 }
 
 func writePrevState(dst string, fs FileState) {
-	if b, err := json.Marshal(fs); err == nil {
-		_ = os.WriteFile(dst+".prev.json", b, 0o600)
+	if b, err := json.Marshal(fs.unheld()); err == nil {
+		_ = writeFile(dst+".prev.json", b)
 	}
 }
 
@@ -307,7 +497,22 @@ func (u *Updater) get(ctx context.Context, url string, attempt int) (*http.Respo
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "HyRoute")
-	return http.DefaultClient.Do(req)
+	return defaultClient.Do(req)
+}
+
+var defaultClient = &http.Client{CheckRedirect: NoDowngrade}
+
+// NoDowngrade is an http.Client CheckRedirect that refuses a redirect from
+// https:// to anything else: the checksum comes the same way as the
+// database, so over http anyone on the network could swap both.
+func NoDowngrade(req *http.Request, via []*http.Request) error {
+	if len(via) > 0 && via[0].URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return fmt.Errorf("сервер перенаправил на незащищённый адрес %s://%s, нужна https://…", req.URL.Scheme, req.URL.Host)
+	}
+	if len(via) >= 10 {
+		return errors.New("слишком много перенаправлений")
+	}
+	return nil
 }
 
 var errNoSum = errors.New("контрольная сумма не опубликована")
@@ -361,26 +566,35 @@ func (u *Updater) fetchSum(ctx context.Context, url string, attempt int) (string
 	return h, nil
 }
 
-func (u *Updater) download(ctx context.Context, k Kind, url, path string, attempt int) (string, int64, error) {
+// download fetches url into a new file next to the database and returns
+// its path, SHA-256 and size. The file gets a random name that did not
+// exist (see writeFile) and reaches the disk before it is renamed into
+// place: after a power cut the database is not left full of zeros.
+func (u *Updater) download(ctx context.Context, k Kind, url string, attempt int) (path, sum string, size int64, err error) {
 	resp, err := u.get(ctx, url, attempt)
 	if err != nil {
-		return "", 0, fmt.Errorf("не удалось скачать: %v", err)
+		return "", "", 0, fmt.Errorf("не удалось скачать: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", 0, fmt.Errorf("сервер ответил %s", resp.Status)
+		return "", "", 0, fmt.Errorf("сервер ответил %s", resp.Status)
 	}
 	limit := u.MaxSize
 	if limit <= 0 {
 		limit = 300 << 20
 	}
 	if resp.ContentLength > limit {
-		return "", 0, fmt.Errorf("файл больше %d МБ", limit>>20)
+		return "", "", 0, fmt.Errorf("файл больше %d МБ", limit>>20)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	f, err := os.CreateTemp(u.DB.Dir, k.File()+".*.new")
 	if err != nil {
-		return "", 0, err
+		return "", "", 0, err
 	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(f.Name())
+		}
+	}()
 	h := sha256.New()
 	pw := &progressWriter{total: resp.ContentLength, f: func(done, total int64) {
 		if u.Progress != nil {
@@ -388,19 +602,22 @@ func (u *Updater) download(ctx context.Context, k Kind, url, path string, attemp
 		}
 	}}
 	n, err := io.Copy(io.MultiWriter(f, h, pw), io.LimitReader(resp.Body, limit+1))
+	if err == nil {
+		err = f.Sync()
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
-		return "", 0, fmt.Errorf("загрузка оборвалась: %v", err)
+		return "", "", 0, fmt.Errorf("загрузка оборвалась: %v", err)
 	}
 	if n > limit {
-		return "", 0, fmt.Errorf("файл больше %d МБ", limit>>20)
+		return "", "", 0, fmt.Errorf("файл больше %d МБ", limit>>20)
 	}
 	if resp.ContentLength > 0 && n != resp.ContentLength {
-		return "", 0, fmt.Errorf("загрузка оборвалась: %d из %d байт", n, resp.ContentLength)
+		return "", "", 0, fmt.Errorf("загрузка оборвалась: %d из %d байт", n, resp.ContentLength)
 	}
-	return hex.EncodeToString(h.Sum(nil)), n, nil
+	return f.Name(), hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
 type progressWriter struct {
@@ -425,6 +642,17 @@ func (u *Updater) Rollback() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	st := u.State()
+	// A damaged previous version is not restored: the rules would stop
+	// working, and the hold would keep it until a new version comes out.
+	for _, k := range []Kind{Site, IP} {
+		prev := u.DB.path(k) + ".prev"
+		if _, serr := os.Stat(prev); serr != nil {
+			continue
+		}
+		if _, cerr := Check(prev); cerr != nil {
+			return fmt.Errorf("предыдущая версия %s повреждена, откат невозможен: %v", k.File(), cerr)
+		}
+	}
 	var done []Kind
 	var err error
 	for _, k := range []Kind{Site, IP} {
@@ -454,16 +682,33 @@ func (u *Updater) Rollback() error {
 }
 
 // swapPrev swaps a database with its .prev, and their states (st and
-// .prev.json), so a second swap returns to the newer file.
+// .prev.json), so a second swap returns to the newer file. The restored
+// file is held: scheduled updates do not put back the file it replaced.
 func (u *Updater) swapPrev(k Kind, st *State) error {
 	dst := u.DB.path(k)
 	var prev FileState
-	if b, err := os.ReadFile(dst + ".prev.json"); err == nil {
+	if b, err := readSmall(dst + ".prev.json"); err == nil {
 		_ = json.Unmarshal(b, &prev)
+	}
+	if sum, err := fileSum(dst + ".prev"); err == nil && !strings.EqualFold(sum, prev.SHA256) {
+		// .prev.json describes another file (or is gone): describe the
+		// file itself, of unknown origin (the hold below keeps it for the
+		// source in use).
+		prev = FileState{SHA256: sum}
+		if fi, err := os.Stat(dst + ".prev"); err == nil {
+			prev.Size, prev.Updated = fi.Size(), fi.ModTime()
+		}
+		prev.Categories, _ = Check(dst + ".prev")
 	}
 	cur := &st.Site
 	if k == IP {
 		cur = &st.IP
+	}
+	if *cur != nil && prev.SHA256 != "" {
+		prev.HeldFor, prev.RolledBackFrom = (*cur).HeldFor, (*cur).SHA256
+		if prev.HeldFor == "" {
+			prev.HeldFor = (*cur).URL
+		}
 	}
 	tmp := dst + ".swap"
 	if err := os.Rename(dst, tmp); err != nil && !errors.Is(err, os.ErrNotExist) {

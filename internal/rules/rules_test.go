@@ -233,6 +233,68 @@ func TestTriStateEvaluate(t *testing.T) {
 	}
 }
 
+// The names of one CNAME chain are one site: the first rule that matches
+// any of them decides it. Only different sites on an address can disagree.
+func TestEvaluateSites(t *testing.T) {
+	chrome := proc(`C:\Chrome\chrome.exe`, nil)
+	s := mustCompile(t, Config{DefaultAction: Direct, Rules: []Rule{
+		{Name: "yt", Domain: &DomainMatch{".youtube.com"}, Action: Tunnel},
+		{Name: "cdn", Domain: &DomainMatch{".cdn.test"}, Action: Block},
+		{Name: "chrome direct", App: &AppMatch{Pattern: "chrome.exe"}, Action: Direct},
+	}})
+	chain := []string{"www.youtube.com", "youtube-ui.l.google.com"}
+	if r := s.EvaluateSites(sub(chrome, 17), [][]string{chain}); r.NeedsDomain || r.Rule != "yt" || r.DomainSrc != SrcDNS || r.Domain != "www.youtube.com,youtube-ui.l.google.com" {
+		t.Fatalf("chain: %+v", r)
+	}
+	// As separate names they disagree.
+	if r := s.Evaluate(sub(chrome, 17), chain); !r.NeedsDomain {
+		t.Fatalf("names: %+v", r)
+	}
+	// A rule on the CDN name applies too; the earlier rule wins.
+	if r := s.EvaluateSites(sub(chrome, 6), [][]string{{"a.example", "edge.cdn.test"}}); r.Rule != "cdn" {
+		t.Fatalf("cdn name: %+v", r)
+	}
+	if r := s.EvaluateSites(sub(chrome, 6), [][]string{{"edge.cdn.test", "www.youtube.com"}}); r.Rule != "yt" {
+		t.Fatalf("rule order: %+v", r)
+	}
+	// Two sites on one address with different routes: NeedsDomain.
+	if r := s.EvaluateSites(sub(chrome, 6), [][]string{chain, {"other.example"}}); !r.NeedsDomain {
+		t.Fatalf("neighbours: %+v", r)
+	}
+	if r := s.EvaluateSites(sub(chrome, 6), [][]string{chain, {"m.youtube.com"}}); r.NeedsDomain || r.Action != Tunnel {
+		t.Fatalf("agreeing neighbours: %+v", r)
+	}
+}
+
+// Explain agrees with EvaluateSites: a CNAME chain is one site, matched by
+// a rule on any of its names; only different sites can split.
+func TestExplainSites(t *testing.T) {
+	c := Config{DefaultAction: Direct, Rules: []Rule{
+		{Name: "yt", Domains: []string{".youtube.com"}, Action: Tunnel},
+	}}
+	s := mustCompile(t, c)
+	ip := netip.MustParseAddr("142.250.1.2")
+	chain := []string{"www.youtube.com", "youtube-ui.l.google.com"}
+	for _, proto := range []uint8{6, 17} {
+		sub := Subject{Proto: proto, Dst: netip.AddrPortFrom(ip, 443)}
+		want := s.EvaluateSites(sub, [][]string{chain})
+		ex := Explain(c, "main", Query{IP: ip, Sites: [][]string{chain}, Proto: proto})
+		if want.Rule != "yt" || ex.Winner.Name != want.Rule || !strings.Contains(ex.Winner.Reason, "www.youtube.com") ||
+			!strings.Contains(strings.Join(ex.Notes, " "), "CNAME") || strings.Contains(strings.Join(ex.Notes, " "), "расходятся") {
+			t.Fatalf("proto %d: engine %+v, explain %+v %v", proto, want, ex.Winner, ex.Notes)
+		}
+		// Another site with another route on the address: a split.
+		sites := [][]string{chain, {"other.example"}}
+		if !s.EvaluateSites(sub, sites).NeedsDomain {
+			t.Fatal("neighbours agree")
+		}
+		ex = Explain(c, "main", Query{IP: ip, Sites: sites, Proto: proto})
+		if !strings.Contains(strings.Join(ex.Notes, " "), "расходятся") {
+			t.Fatalf("proto %d: split not reported: %v", proto, ex.Notes)
+		}
+	}
+}
+
 func TestCompileErrors(t *testing.T) {
 	for _, r := range []Rule{
 		{Name: "empty"},

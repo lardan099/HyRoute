@@ -36,7 +36,9 @@ type Session interface {
 	EngineFailed() bool
 	Tunnels() []tunnels.Status
 	Acquire(hysteria.Profile) (*tunnels.Endpoint, func())
-	DNSNames(netip.Addr) []string
+	// DNSSites are the DNS cache names of an address grouped by site
+	// (dnscache.Cache.Sites).
+	DNSSites(netip.Addr) [][]string
 	Stats() session.Stats
 	// Endpoint is a running profile's tunnel (nil when not running).
 	Endpoint(profile string) *tunnels.Endpoint
@@ -138,6 +140,10 @@ type Controller struct {
 	recoverDelay time.Duration
 	recMu        sync.Mutex // guards rec; innermost: nothing is taken or called with it held
 	rec          recoverState
+
+	// failedStop: the last session stopped after its engine failed, and
+	// routing did not come back since (see startLocked). Guarded by mu.
+	failedStop bool
 }
 
 // New builds a controller with journals and a logger.
@@ -180,6 +186,11 @@ func (c *Controller) Load() error {
 	prefs, err4 := c.Store.LoadPrefs()
 	if err4 != nil {
 		errs = append(errs, err4.Error())
+		// The user's choices are unknown: logs stay in memory (log files
+		// may have been turned off), and the rule databases are left as
+		// they are (geoDue).
+		off := false
+		prefs = store.Prefs{LogsToDisk: &off}
 	}
 	proxies, err5 := c.Store.LoadProxies()
 	if err5 != nil {

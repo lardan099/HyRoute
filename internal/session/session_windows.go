@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/lardan099/hyroute/internal/engine"
 	"github.com/lardan099/hyroute/internal/engine/nat"
@@ -20,6 +22,13 @@ import (
 	"github.com/lardan099/hyroute/internal/socks5"
 	"github.com/lardan099/hyroute/internal/tunnels"
 )
+
+// relayWait bounds how long stopping waits for the relay's connection
+// handlers. Once their connections are reset they finish at once, unless
+// one waits for the NAT table's lock held by a packet loop the watchdog
+// gave up on: the engine does not hang on that loop (see engine.Stop), so
+// neither does the session.
+const relayWait = 500 * time.Millisecond
 
 type Session struct {
 	eng  *engine.Engine
@@ -66,13 +75,21 @@ func Start(cfg Config) (_ *Session, err error) {
 		s.mgr.New = RunnerFactory(cfg)
 	}
 
+	// The relay listens before the engine exists (the engine needs its
+	// port): a connection that comes first has no NAT entry. Decide and
+	// OnDone only follow an entry Lookup found.
+	var engp atomic.Pointer[engine.Engine]
 	s.rel = &relay.Server{
 		Log: log,
 		Lookup: func(peer netip.AddrPort) *nat.Entry {
-			return s.eng.NAT.LookupReflect(peer.Addr(), peer.Port())
+			eng := engp.Load()
+			if eng == nil {
+				return nil
+			}
+			return eng.NAT.LookupReflect(peer.Addr(), peer.Port())
 		},
 		Decide: func(e *nat.Entry, domain string, src rules.DomainSource) rules.Result {
-			return s.eng.RelayDecide(e, domain, src)
+			return engp.Load().RelayDecide(e, domain, src)
 		},
 		Tunnel: func(profile string) relay.Tunnel {
 			if e := s.mgr.Get(profile); e != nil {
@@ -80,7 +97,7 @@ func Start(cfg Config) (_ *Session, err error) {
 			}
 			return nil
 		},
-		OnDone:          func(r relay.Result) { s.eng.RelayDone(r) },
+		OnDone:          func(r relay.Result) { engp.Load().RelayDone(r) },
 		PreferRemoteDNS: cfg.Settings.RemoteDNS(),
 		SniffTimeout:    cfg.Settings.SniffTimeout(),
 	}
@@ -118,7 +135,8 @@ func Start(cfg Config) (_ *Session, err error) {
 	eng.Rules.Swap(cfg.Rules)
 	eng.OnDecision = cfg.OnDecision
 	eng.Flows.OnClose = cfg.OnClose
-	s.eng = eng // the relay may see a stray connection before Start returns
+	s.eng = eng
+	engp.Store(eng)
 	if err := eng.Start(); err != nil {
 		return nil, err
 	}
@@ -134,10 +152,11 @@ func Start(cfg Config) (_ *Session, err error) {
 // direct at once) and stops every Hysteria. Closing the relay after the
 // filters would send its FINs and queued data to the real remotes,
 // outside the kill switch. The relay closes quickly: its dials are
-// canceled and its connections reset.
+// canceled and its connections reset; a handler stuck on the engine's
+// locks is not waited for past relayWait.
 func (s *Session) Stop() {
 	if s.rel != nil {
-		s.rel.Close()
+		s.rel.CloseWait(relayWait)
 	}
 	if s.eng != nil {
 		s.eng.Stop()
@@ -159,7 +178,7 @@ func (s *Session) Stop() {
 // goes: the block could drop them. Stop resets whatever came since.
 func (s *Session) ResetConnections() {
 	if s.rel != nil {
-		s.rel.Close()
+		s.rel.CloseWait(relayWait)
 	}
 	if s.eng != nil {
 		s.eng.ResetConnections()
@@ -184,8 +203,8 @@ func (s *Session) Tunnels() []tunnels.Status { return s.mgr.Statuses() }
 // Acquire returns a running endpoint for p (see tunnels.Manager.Acquire).
 func (s *Session) Acquire(p hysteria.Profile) (*tunnels.Endpoint, func()) { return s.mgr.Acquire(p) }
 
-// DNSNames returns the DNS cache names of an address.
-func (s *Session) DNSNames(ip netip.Addr) []string { return s.eng.DNS.Names(ip) }
+// DNSSites returns the DNS cache names of an address grouped by site.
+func (s *Session) DNSSites(ip netip.Addr) [][]string { return s.eng.DNS.Sites(ip) }
 
 // Endpoint is a running profile's tunnel, or nil.
 func (s *Session) Endpoint(profile string) *tunnels.Endpoint { return s.mgr.Get(profile) }

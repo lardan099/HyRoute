@@ -194,6 +194,18 @@ func (t *Table) Close(endpoint uint64) {
 
 // Lookup returns the PID owning the connection.
 func (t *Table) Lookup(k Key5) (uint32, bool) {
+	return t.lookup(k, true)
+}
+
+// LookupConn is Lookup without the bind: only what the events recorded for
+// this connection. A bind is keyed by the local port alone, so for a
+// connection the events never saw (one opened before start) it names
+// whichever socket took that port number since.
+func (t *Table) LookupConn(k Key5) (uint32, bool) {
+	return t.lookup(k, false)
+}
+
+func (t *Table) lookup(k Key5, bind bool) (uint32, bool) {
 	k.Local, k.Remote = norm(k.Local), norm(k.Remote)
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -202,6 +214,9 @@ func (t *Table) Lookup(k Key5) (uint32, bool) {
 	}
 	if r := t.byPort[portKey{k.Proto, k.Local.Port(), k.Remote}]; r != nil {
 		return r.pid, true
+	}
+	if !bind {
+		return 0, false
 	}
 	if r := t.bind[bindMarker{Proto: k.Proto, Port: k.Local.Port()}]; r != nil {
 		return r.pid, true

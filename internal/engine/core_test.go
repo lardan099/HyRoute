@@ -322,6 +322,72 @@ func TestTCPNeedsDomainGoesToSniff(t *testing.T) {
 	}
 }
 
+// An IPv6 connection that some domain would send through the tunnel is
+// refused at its SYN, so the application falls back to IPv4 (where the
+// relay sees its domain), instead of being reset once it is up, which it
+// would not retry over IPv4.
+func TestIPv6NeedsDomainRefusedAtSYN(t *testing.T) {
+	h := newHarness(t, appRules, Options{BlockIPv6Tunnel: true})
+	h.own(6, L6, R6, 200) // chrome: "yt" may send it through the tunnel
+	h.sendTCP(L6, R6, packet.FlagSYN, "")
+	i := h.next(t)
+	if i.addr.Outbound() || i.pkt.TCPFlags()&packet.FlagRST == 0 || i.pkt.Src() != netip.MustParseAddrPort(R6) {
+		t.Fatalf("want RST from remote, got %v -> %v flags %x outbound=%v", i.pkt.Src(), i.pkt.Dst(), i.pkt.TCPFlags(), i.addr.Outbound())
+	}
+	if h.c.NAT.LookupFlow(flowKey(L6, R6)) != nil {
+		t.Fatal("reflected for sniffing")
+	}
+	if v := lastRecord(t, h.c); v.Route != "block" || v.Outcome != "rst: IPv6 blocked for tunnel" || h.c.Blocked.Load() != 1 {
+		t.Fatalf("%+v blocked %d", v, h.c.Blocked.Load())
+	}
+	// Without IPv6 blocking it goes to the relay as usual.
+	h = newHarness(t, appRules, Options{})
+	h.own(6, L6, R6, 200)
+	h.sendTCP(L6, R6, packet.FlagSYN, "")
+	if i := h.next(t); i.pkt.DstPort() != relayPort {
+		t.Fatal("not reflected for sniffing")
+	}
+	// Nor without an IPv4 route (an IPv6-only network): there is no IPv4
+	// to fall back to, the relay decides by the domain.
+	h = newHarness(t, appRules, Options{BlockIPv6Tunnel: true})
+	h.c.IPv4Route = func() bool { return false }
+	h.own(6, L6, R6, 200)
+	h.sendTCP(L6, R6, packet.FlagSYN, "")
+	if i := h.next(t); i.pkt.DstPort() != relayPort {
+		t.Fatal("IPv6-only network: not reflected for sniffing")
+	}
+	// Nor is a connection no domain sends through the tunnel refused.
+	h = newHarness(t, rules.Config{DefaultAction: rules.Direct, Rules: []rules.Rule{
+		{Name: "block site", Domain: &rules.DomainMatch{Pattern: ".blocked.test"}, Action: rules.Block},
+	}}, Options{BlockIPv6Tunnel: true})
+	h.own(6, L6, R6, 200)
+	h.sendTCP(L6, R6, packet.FlagSYN, "")
+	if i := h.next(t); i.pkt.DstPort() != relayPort {
+		t.Fatal("Direct/Block domain rules: not reflected for sniffing")
+	}
+	// With ExactWeb the DNS cache still hints: when none of its names for
+	// the address goes through the tunnel, the connection is sniffed (an
+	// IPv6-only site sent Direct stays reachable); one that does is refused.
+	set, err := rules.Compile(appRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.ExactWeb = true
+	for _, c := range []struct {
+		name    string
+		refused bool
+	}{{"www.blocked.test.", false}, {"example.org.", false}, {"www.youtube.com.", true}} {
+		h = newHarness(t, appRules, Options{BlockIPv6Tunnel: true})
+		h.c.Rules.Swap(set)
+		h.c.DNS.AddResponse(dnsResponse(t, c.name, netip.MustParseAddrPort(R6).Addr().String()))
+		h.own(6, L6, R6, 200)
+		h.sendTCP(L6, R6, packet.FlagSYN, "")
+		if i := h.next(t); (i.pkt.TCPFlags()&packet.FlagRST != 0) != c.refused || (i.pkt.DstPort() == relayPort) == c.refused {
+			t.Fatalf("cached %s: refused=%v wanted, got flags %x to port %d", c.name, c.refused, i.pkt.TCPFlags(), i.pkt.DstPort())
+		}
+	}
+}
+
 func TestPendingOwnerAndTimeout(t *testing.T) {
 	h := newHarness(t, appRules, Options{PendingTimeout: 150 * time.Millisecond})
 	// SOCKET event arrives after the SYN.
@@ -530,10 +596,18 @@ func dnsResponse(t *testing.T, name, ip string) []byte {
 	t.Helper()
 	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{Response: true})
 	b.StartQuestions()
-	b.Question(dnsmessage.Question{Name: dnsmessage.MustNewName(name), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET})
+	addr, typ := netip.MustParseAddr(ip), dnsmessage.TypeA
+	if addr.Is6() {
+		typ = dnsmessage.TypeAAAA
+	}
+	b.Question(dnsmessage.Question{Name: dnsmessage.MustNewName(name), Type: typ, Class: dnsmessage.ClassINET})
 	b.StartAnswers()
-	b.AResource(dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(name), Class: dnsmessage.ClassINET, TTL: 300},
-		dnsmessage.AResource{A: netip.MustParseAddr(ip).As4()})
+	hdr := dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(name), Class: dnsmessage.ClassINET, TTL: 300}
+	if addr.Is6() {
+		b.AAAAResource(hdr, dnsmessage.AAAAResource{AAAA: addr.As16()})
+	} else {
+		b.AResource(hdr, dnsmessage.AResource{A: addr.As4()})
+	}
 	m, err := b.Finish()
 	if err != nil {
 		t.Fatal(err)

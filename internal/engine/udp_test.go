@@ -116,6 +116,37 @@ func TestUDPFlowMovesToFallback(t *testing.T) {
 	}
 }
 
+// A flow whose tunnel cannot carry UDP is recorded and counted as refused,
+// as a TCP one is, and shows as tunneled once its datagrams go.
+func TestUDPTunnelDownRefused(t *testing.T) {
+	dst, client := udpEcho(t, 0)
+	cfg := rules.Config{DefaultAction: rules.Direct, Rules: []rules.Rule{
+		{Name: "game", App: &rules.AppMatch{Pattern: "game.exe"}, Protocol: "udp", Action: rules.Tunnel, Profile: "a"},
+	}}
+	h := newHarness(t, cfg, Options{NoDefaultExclusions: true})
+	a := &fakeTunnel{client: client}
+	a.up.Store(true) // Hysteria up, UDP not (yet)
+	h.extra["a"] = a
+	const app = "10.0.0.2:5000"
+	h.own(17, app, dst.String(), 400)
+	h.sendUDP(app, dst.String(), []byte("1"))
+	h.none(t)
+	if v := lastRecord(t, h.c); v.Route != "tunnel" || v.Outcome != "dropped: tunnel unavailable" {
+		t.Fatalf("%+v", v)
+	}
+	if h.c.Rejected.Load() != 1 || a.rejected.Load() != 1 {
+		t.Fatalf("rejected %d, profile %d", h.c.Rejected.Load(), a.rejected.Load())
+	}
+	a.udp.Store(true)
+	h.sendUDP(app, dst.String(), []byte("2"))
+	if i := h.next(t); i.addr.Outbound() || string(i.pkt.Payload()) != "re:2" {
+		t.Fatalf("reply: outbound=%v %q", i.addr.Outbound(), i.pkt.Payload())
+	}
+	if v := lastRecord(t, h.c); v.Outcome != "tunneled" || h.c.Rejected.Load() != 1 {
+		t.Fatalf("%+v rejected %d", v, h.c.Rejected.Load())
+	}
+}
+
 // Replies keep a tunnel UDP association alive: a socket that only
 // receives must not lose it after the idle timeout.
 func TestUDPSessionIdleCountsReplies(t *testing.T) {

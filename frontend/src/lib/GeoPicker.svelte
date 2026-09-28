@@ -20,14 +20,23 @@
     } catch {}
   });
 
+  // The search as written in a rule ("geosite:youtube", "geoip:ru") looks
+  // for lists of that kind only.
+  const search = $derived.by(() => {
+    const t = q.trim().toLowerCase();
+    const m = /^geo(site|ip):/.exec(t);
+    return { kind: m?.[1] ?? '', query: m ? t.slice(m[0].length) : t };
+  });
+
   $effect(() => {
-    const query = q.trim().toLowerCase().replace(/^geo(site|ip):/, '');
+    const { kind, query } = search;
     const my = ++seq;
     if (!query) {
       found = { site: [], ip: [] };
       return;
     }
-    Promise.all([api.GeoCategories('site', query), api.GeoCategories('ip', query)])
+    const none = Promise.resolve([] as string[]);
+    Promise.all([kind !== 'ip' ? api.GeoCategories('site', query) : none, kind !== 'site' ? api.GeoCategories('ip', query) : none])
       .then(([site, ip]) => {
         if (my === seq) found = { site, ip };
       })
@@ -38,9 +47,11 @@
   const has = (s: string) => chosen.some((x) => x.toLowerCase() === s);
 
   const groups = $derived.by(() => {
-    const query = q.trim().toLowerCase();
+    const { kind, query } = search;
     const list = geo.popular.filter(
-      (c) => !query || c.name.includes(query) || c.title.toLowerCase().includes(query) || c.hint.toLowerCase().includes(query),
+      (c) =>
+        (!kind || c.kind === kind) &&
+        (!query || c.name.includes(query) || c.title.toLowerCase().includes(query) || c.hint.toLowerCase().includes(query)),
     );
     const out: { name: string; items: GeoCategory[] }[] = [];
     for (const c of list) {
@@ -60,9 +71,18 @@
   });
 
   const noData = $derived(info && !info.site && !info.ip);
+
+  // Only a click that starts on the backdrop closes the picker: selecting
+  // text and letting go outside the dialog also ends in a click on it.
+  let downOnBackdrop = false;
 </script>
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div
+  class="backdrop"
+  role="presentation"
+  onmousedown={(e) => (downOnBackdrop = e.target === e.currentTarget)}
+  onclick={(e) => downOnBackdrop && e.target === e.currentTarget && onclose()}
+>
   <div class="dialog picker">
     <div class="row">
       <h2 class="grow">Готовые списки сайтов и адресов</h2>

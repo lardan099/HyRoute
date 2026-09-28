@@ -195,6 +195,57 @@ func TestProxyRequestKeepsProxyAddress(t *testing.T) {
 	}
 }
 
+// echHello is a minimal ClientHello with SNI name and an
+// encrypted_client_hello extension, as Chrome and Firefox send (GREASE ECH)
+// to sites without an ECH config.
+func echHello(name string) []byte {
+	sni := binary.BigEndian.AppendUint16([]byte{0}, uint16(len(name)))
+	sni = append(sni, name...)
+	sni = append(binary.BigEndian.AppendUint16(nil, uint16(len(sni))), sni...)
+	ext := binary.BigEndian.AppendUint16([]byte{0, 0}, uint16(len(sni)))
+	ext = append(ext, sni...)
+	ext = append(ext, 0xfe, 0x0d, 0, 1, 0)
+	body := append([]byte{3, 3}, make([]byte, 32)...)
+	body = append(body, 0, 0, 2, 0x13, 1, 1, 0) // session id, cipher suites, compression
+	body = binary.BigEndian.AppendUint16(body, uint16(len(ext)))
+	body = append(body, ext...)
+	hs := append([]byte{1, 0, byte(len(body) >> 8), byte(len(body))}, body...)
+	return append([]byte{0x16, 3, 1, byte(len(hs) >> 8), byte(len(hs))}, hs...)
+}
+
+// The outer SNI of an ECH hello reaches the decider as SrcECH. The tunnel
+// connects by that name only when the decider took it for the site
+// (GREASE ECH, SrcSNI); a public name (the site from the DNS cache, or the
+// public name itself) keeps the address.
+func TestSniffECHOuterName(t *testing.T) {
+	for _, decided := range []rules.DomainSource{rules.SrcSNI, rules.SrcDNS, rules.SrcECH} {
+		f, ch := sniffFixture(t, rules.Tunnel)
+		f.relay.PreferRemoteDNS = true
+		decide := f.relay.Decide
+		f.relay.Decide = func(e *nat.Entry, domain string, src rules.DomainSource) rules.Result {
+			r := decide(e, domain, src)
+			r.DomainSrc = decided
+			if decided == rules.SrcDNS {
+				r.Domain = "site.example"
+			}
+			return r
+		}
+		c := f.dialEntry(t, &nat.Entry{Mode: nat.Sniff})
+		c.Write(echHello("localhost"))
+		if d := <-ch; d.domain != "localhost" || d.src != rules.SrcECH {
+			t.Fatalf("%v: decision input %+v", decided, d)
+		}
+		a := <-f.seen
+		if decided == rules.SrcSNI && a.Host != "localhost" {
+			t.Fatalf("%v: socks target %+v, want the outer name", decided, a)
+		}
+		if decided != rules.SrcSNI && a != socks5.AddrFromAddrPort(f.echo.Addr().(*net.TCPAddr).AddrPort()) {
+			t.Fatalf("%v: socks target %+v, want the address", decided, a)
+		}
+		c.Close()
+	}
+}
+
 func TestProxyRequest(t *testing.T) {
 	for req, want := range map[string]bool{
 		"CONNECT example.com:443 HTTP/1.1\r\n":    true,

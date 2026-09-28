@@ -487,3 +487,201 @@ func TestSubscriptionUpdatesOneAtATime(t *testing.T) {
 		t.Fatalf("%d subscription locks left", left)
 	}
 }
+
+// profileNames lists the names of the profiles, marking missing ones.
+func profileNames(c *Controller) string {
+	var names []string
+	for _, p := range c.Profiles() {
+		n := p.Name
+		if p.Missing {
+			n += "?"
+		}
+		names = append(names, n)
+	}
+	return strings.Join(names, ",")
+}
+
+// An update whose profiles cannot be saved is the subscription's last
+// error, is retried at the scheduler's pace rather than every minute, and
+// shifts no snapshot: there is nothing to roll back to.
+func TestSubscriptionUpdateSaveErrorIsRecorded(t *testing.T) {
+	c, _ := newCtl(t)
+	body := "hy2://a@one.example:443#ONE\n"
+	v := addSub(t, c, &body)
+	c.mu.Lock()
+	c.subs[0].Interval = "6h"
+	c.profilesBroken = errors.New("broken")
+	c.mu.Unlock()
+	body = "hy2://a@two.example:443#TWO\n"
+	before := time.Now()
+	if _, err := c.UpdateSubscription(v.ID); err == nil {
+		t.Fatal("want error")
+	}
+	s := c.Subscriptions()[0]
+	if s.LastError == "" || s.LastAttempt.Before(before) || s.HasPrevious {
+		t.Fatalf("%+v", s)
+	}
+	if c.due(s.Subscription, time.Now().Add(time.Minute), before) {
+		t.Fatal("failed update is due again a minute later")
+	}
+	c.mu.Lock()
+	c.profilesBroken = nil
+	c.mu.Unlock()
+	if _, err := c.RollbackSubscription(v.ID); err == nil {
+		t.Fatal("snapshot shifted by an update that was not applied")
+	}
+}
+
+// A rollback that fails leaves the snapshots as they were: the next one
+// returns to the previous version, not to the current one.
+func TestFailedRollbackKeepsSnapshots(t *testing.T) {
+	c, _ := newCtl(t)
+	body := "hy2://a@a.example:443#A\n"
+	v := addSub(t, c, &body)
+	body = "hy2://a@b.example:443#B\n"
+	if _, err := c.UpdateSubscription(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.profilesBroken = errors.New("broken")
+	c.mu.Unlock()
+	if _, err := c.RollbackSubscription(v.ID); err == nil {
+		t.Fatal("want error")
+	}
+	c.mu.Lock()
+	c.profilesBroken = nil
+	c.mu.Unlock()
+	if _, err := c.RollbackSubscription(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := profileNames(c); n != "A" {
+		t.Fatalf("after rollback: %s", n)
+	}
+}
+
+// A panel that writes the traffic left into every name sends a different
+// body each time: the same servers again still keep the version a rollback
+// returns to, and take the new names.
+func TestSubscriptionRollbackAfterRenamedRepeat(t *testing.T) {
+	c, _ := newCtl(t)
+	body := "hy2://a@g1.example:443#G1\nhy2://a@g2.example:443#G2\n"
+	v := addSub(t, c, &body)
+	for _, b := range []string{
+		"hy2://a@bad.example:443#BAD%204.3GB\nhy2://a@bad2.example:443#BAD2\n",
+		"hy2://a@bad2.example:443#BAD2\nhy2://a@bad.example:443#BAD%204.1GB\n",
+	} {
+		body = b
+		if _, err := c.UpdateSubscription(v.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := profileNames(c); n != "BAD2,BAD 4.1GB,G1?" { // G1 is the main one
+		t.Fatalf("after updates: %s", n)
+	}
+	if _, err := c.RollbackSubscription(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := profileNames(c); n != "G1,G2" {
+		t.Fatalf("after rollback: %s", n)
+	}
+}
+
+// While settings.json or proxies.json is not loaded, the servers their
+// rules and proxies name are unknown: an update keeps every server gone
+// from the subscription, and a deletion keeps them all as manual ones.
+func TestSubscriptionKeepsServersWhileRefsUnknown(t *testing.T) {
+	for _, broken := range []string{"settings", "proxies"} {
+		t.Run(broken, func(t *testing.T) {
+			c, _ := newCtl(t)
+			body := "hy2://a@one.example:443#ONE\nhy2://a@two.example:443#TWO\n"
+			v := addSub(t, c, &body)
+			two := c.Profiles()[1].ID
+			// What Load leaves when the file does not load.
+			c.mu.Lock()
+			if broken == "settings" {
+				c.settings, c.settingsBroken = store.DefaultSettings(), errors.New("broken")
+			} else {
+				c.proxies, c.proxiesBroken = nil, errors.New("broken")
+			}
+			c.mu.Unlock()
+			body = "hy2://a@one.example:443#ONE\n"
+			if ms, err := c.UpdateSubscription(v.ID); err != nil || ms.MissingKept != 1 || ms.Removed != 0 {
+				t.Fatalf("%+v %v", ms, err)
+			}
+			if err := c.DeleteSubscription(v.ID); err != nil {
+				t.Fatal(err)
+			}
+			ps := c.Profiles()
+			if len(ps) != 2 || ps[1].ID != two || ps[0].Source != "" || ps[1].Source != "" {
+				t.Fatalf("%+v", ps)
+			}
+		})
+	}
+}
+
+// A deletion that cannot save subscriptions.json changes nothing: the
+// subscription keeps its profiles and snapshots.
+func TestDeleteSubscriptionSaveErrorChangesNothing(t *testing.T) {
+	c, _ := newCtl(t)
+	body := "hy2://a@a.example:443#A\n"
+	v := addSub(t, c, &body)
+	body = "hy2://a@b.example:443#B\n"
+	if _, err := c.UpdateSubscription(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.subsBroken = errors.New("broken")
+	c.mu.Unlock()
+	if err := c.DeleteSubscription(v.ID); err == nil {
+		t.Fatal("want error")
+	}
+	c.mu.Lock()
+	c.subsBroken = nil
+	c.mu.Unlock()
+	if n := profileNames(c); n != "B,A?" { // A is the main one
+		t.Fatalf("%s", n)
+	}
+	for _, p := range c.Profiles() {
+		if p.Source != "sub:"+v.ID {
+			t.Fatalf("%+v", p)
+		}
+	}
+	if _, err := c.RollbackSubscription(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Profiles that cannot be saved put the subscription back.
+	c.mu.Lock()
+	c.profilesBroken = errors.New("broken")
+	c.mu.Unlock()
+	if err := c.DeleteSubscription(v.ID); err == nil {
+		t.Fatal("want error")
+	}
+	if l, err := c.Store.LoadSubscriptions(); err != nil || len(l) != 1 || len(c.Subscriptions()) != 1 {
+		t.Fatalf("%+v %v", l, err)
+	}
+}
+
+// A try stamped while the clock was ahead does not stop the updates until
+// that time comes.
+func TestSubscriptionDueAfterClockWasAhead(t *testing.T) {
+	c, _ := newCtl(t)
+	now := time.Now()
+	s := store.Subscription{Enabled: true, Interval: "24h", LastUpdate: now.Add(-48 * time.Hour),
+		LastAttempt: now.AddDate(1, 0, 0), LastError: "x509: certificate has expired"}
+	if !c.due(s, now, now) {
+		t.Fatal("not due until the clock reaches the stamped try")
+	}
+	// A tick read late, a little older than a try made meanwhile.
+	s.LastAttempt, s.LastUpdate, s.LastError = now.Add(time.Minute), now.Add(time.Minute), ""
+	if c.due(s, now, now) {
+		t.Fatal("updated again right after a try")
+	}
+}
+
+// Subscriptions are downloaded directly, never through a proxy from the
+// environment.
+func TestSubscriptionFetchIgnoresEnvProxy(t *testing.T) {
+	if directTransport.Proxy != nil {
+		t.Fatal("subscription downloads use the environment's proxy")
+	}
+}

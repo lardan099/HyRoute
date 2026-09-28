@@ -4,6 +4,8 @@ import (
 	"net/netip"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Sanitize is Privacy mode for text that leaves the program (exported
@@ -48,24 +50,91 @@ func Sanitize(s string, hosts []string) string {
 	return s
 }
 
-// MaskDomains replaces domain names with "***.<tld>". File names
-// (hysteria.exe, rules.json) are left alone.
+// MaskDomains replaces domain names with "***.<tld>". Labels may be
+// Unicode (пример.рф): rule sites are kept as typed, not punycode. File
+// names (hysteria.exe, rules.json) are left alone. Some extensions are real
+// top-level domains too (999.md, example.zip): such a name counts as a file
+// only right after another extension (geosite.dat.new, not go.md).
 func MaskDomains(s string) string {
-	return domre.ReplaceAllStringFunc(s, func(m string) string {
-		i := strings.LastIndexByte(m, '.')
-		tld := strings.ToLower(m[i+1:])
-		if fileExt[tld] {
-			return m
+	var b strings.Builder
+	last := 0
+	for pos := 0; pos < len(s); {
+		loc := domre.FindStringIndex(s[pos:])
+		if loc == nil {
+			break
 		}
-		return "***." + m[i+1:]
-	})
+		start, end := pos+loc[0], pos+loc[1]
+		if r, _ := utf8.DecodeLastRuneInString(s[:start]); start > 0 && wordRune(r) {
+			// Inside a word (x_example.com): so is every start up to the
+			// first "." or "-".
+			pos = start + strings.IndexAny(s[start:end], ".-")
+			continue
+		}
+		if e := domainEnd(s, start, end); e >= 0 {
+			pos, end = e, e
+		} else {
+			// Part of a longer word (example.com2). A name starting later in
+			// s[start:end] could only end where this one could, so skip it all.
+			pos = end
+			continue
+		}
+		m := s[start:end]
+		i := strings.LastIndexByte(m, '.')
+		if tld := strings.ToLower(m[i+1:]); fileExt[tld] {
+			rest := m[:i]
+			j := strings.LastIndexByte(rest, '.')
+			if !tldExt[tld] || j >= 0 && fileExt[strings.ToLower(rest[j+1:])] {
+				continue
+			}
+		}
+		b.WriteString(s[last:start])
+		b.WriteString("***.")
+		b.WriteString(m[i+1:])
+		last = end
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
 }
 
+// domainEnd is where the name found at s[start:end] ends, given that it
+// must not be followed by a letter, digit or "_" (the lookahead of
+// privacy.ts domRe, which RE2 lacks): end itself or, as the JS
+// backtracking finds, the longest shorter name ending at a "." or "-";
+// -1 if there is none. s[start:end] is a match, so a prefix of it is a name
+// when it has a "." and the part after the last one is a top-level domain:
+// only that part is checked, which keeps this linear in the match.
+func domainEnd(s string, start, end int) int {
+	if r, _ := utf8.DecodeRuneInString(s[end:]); end == len(s) || !wordRune(r) {
+		return end
+	}
+	for e := end - 1; e > start; e-- {
+		if s[e] != '.' && s[e] != '-' {
+			continue
+		}
+		if i := strings.LastIndexByte(s[start:e], '.'); i >= 0 && tldre.MatchString(s[start+i+1:e]) {
+			return e
+		}
+	}
+	return -1
+}
+
+func wordRune(r rune) bool { return r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r) }
+
+const tldPattern = `(?:xn--[a-z0-9-]{2,59}|\p{L}{2,63})`
+
 var (
-	domre   = regexp.MustCompile(`(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:xn--[a-z0-9-]{2,59}|[a-z]{2,63})\b`)
+	// domre is privacy.ts domRe without the lookarounds, which MaskDomains
+	// does by hand; tldre is its last label.
+	domre   = regexp.MustCompile(`(?i)(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+` + tldPattern)
+	tldre   = regexp.MustCompile(`(?i)^` + tldPattern + `$`)
 	fileExt = map[string]bool{"exe": true, "dll": true, "sys": true, "dat": true, "json": true, "yaml": true, "yml": true, "log": true,
 		"txt": true, "zip": true, "ps1": true, "md": true, "go": true, "tmp": true, "old": true, "new": true, "part": true,
 		"ini": true, "conf": true, "html": true, "js": true, "css": true, "png": true, "svg": true}
+	// tldExt are the extensions in fileExt that are top-level domains too.
+	tldExt = map[string]bool{"md": true, "zip": true, "new": true}
 )
 
 var (

@@ -23,6 +23,11 @@
       const c = await api.Connections(2000);
       active = c.active;
       closed = c.closed;
+      // The details show the selected flow as it is now (a pending route
+      // gets decided, the flow closes); the last seen state once it is
+      // gone from both lists.
+      const id = selected?.id;
+      if (id !== undefined) selected = c.active.find((f) => f.id === id) ?? c.closed.find((f) => f.id === id) ?? selected;
       error = '';
     } catch (e) {
       error = errText(e);

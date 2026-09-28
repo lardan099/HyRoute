@@ -45,6 +45,14 @@ func fakeHysteria(mode string) {
 	if !strings.HasPrefix(c.SOCKS5.Listen, "127.0.0.1:") {
 		os.Exit(2) // never listen beyond loopback (a firewall prompt)
 	}
+	if mode == "pin" {
+		// One of the server's addresses does not answer.
+		if strings.HasPrefix(c.Server, "198.51.100.10:") {
+			fmt.Fprintf(os.Stderr, `{"level":"fatal","time":1726480000000,"msg":"failed to initialize client","error":"timeout: no recent network activity"}`+"\n")
+			os.Exit(1)
+		}
+		mode = "ok"
+	}
 	switch mode {
 	case "auth":
 		fmt.Fprintf(os.Stderr, `{"level":"fatal","time":1726480000000,"msg":"failed to initialize client","error":"authentication error, HTTP status code: 404 (auth=%s)"}`+"\n", c.Auth)
@@ -567,5 +575,38 @@ func TestRedactLine(t *testing.T) {
 	if l.Msg != "x ***" || l.Str("error") != "auth ***" || strings.Contains(l.Raw, "hunter22") ||
 		!reflect.DeepEqual(nested["a"], []any{"***", 7.0}) || l.Fields["n"] != 5.0 || l.Level != "warn" {
 		t.Fatalf("%+v", l)
+	}
+}
+
+// A pinned address that never connects is not pinned again: the next run
+// takes the next address (IPv4 first, then IPv6, then around again).
+func TestPickPinnedRotatesAfterFailure(t *testing.T) {
+	a, b, v6 := netip.MustParseAddr("198.51.100.10"), netip.MustParseAddr("198.51.100.20"), netip.MustParseAddr("2001:db8::1")
+	ips := []netip.Addr{a, b, v6}
+	for failed, want := range map[netip.Addr]netip.Addr{{}: a, a: b, b: v6, v6: a, netip.MustParseAddr("192.0.2.1"): a} {
+		if got := pickPinned(ips, failed); got != want {
+			t.Errorf("after %v: pinned %v, want %v", failed, got, want)
+		}
+	}
+	if got := pickPinned([]netip.Addr{v6}, v6); got != v6 {
+		t.Errorf("single address: %v", got)
+	}
+}
+
+func TestSupervisorPinsNextAddressAfterTimeout(t *testing.T) {
+	p := Profile{Host: "hy.example", Ports: "443", Auth: "x", PinServerIP: true}
+	s, ch, _ := newSupervisor(t, "pin", p)
+	s.Resolve = func(ctx context.Context, host string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("198.51.100.20"), netip.MustParseAddr("198.51.100.10")}, nil
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+	if st := waitState(t, ch, Failed); st.Kind != ErrTimeout || st.PinnedIP != netip.MustParseAddr("198.51.100.10") {
+		t.Fatalf("%+v", st)
+	}
+	if st := waitState(t, ch, Connected); st.PinnedIP != netip.MustParseAddr("198.51.100.20") {
+		t.Fatalf("%+v", st)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"unicode"
 
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/rules"
@@ -17,7 +18,7 @@ import (
 //	*.ru -> напрямую
 //	ads.example.com -> блок | tcp
 //
-//	[chrome.exe]                 rules below apply to Chrome only
+//	[chrome.exe]                 rules below apply to Chrome only (sites only)
 //	instagram.com -> 🇩🇪 DE
 //	=example.org -> vpn          "=" = only this address, no subdomains
 //
@@ -68,6 +69,7 @@ func (c *Controller) ParseRulesText(text string) RulesTextResult {
 func parseRulesText(text string, profiles []hysteria.Profile) RulesTextResult {
 	res := RulesTextResult{Rules: []rules.Rule{}, Errors: []RuleLine{}, Warnings: []RuleLine{}}
 	var section []rules.AppMatch // current [program] block; nil = every program
+	sectionText, defaultLine := "", 0
 	fail := func(n int, f string, a ...any) { res.Errors = append(res.Errors, RuleLine{n, fmt.Sprintf(f, a...)}) }
 
 	for i, raw := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
@@ -79,10 +81,16 @@ func parseRulesText(text string, profiles []hysteria.Profile) RulesTextResult {
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			section = nil
 			inner := strings.TrimSpace(line[1 : len(line)-1])
-			if inner == "" || inner == "*" || strings.EqualFold(inner, "все") || strings.EqualFold(inner, "all") {
+			if inner == "" || inner == "*" || strings.EqualFold(inner, "все") || strings.EqualFold(inner, "всё") || strings.EqualFold(inner, "all") {
 				continue
 			}
-			for _, it := range splitItems(inner) {
+			sectionText = line
+			items, quoted := splitQuoted(inner)
+			if msg := splitPath(items, quoted); msg != "" {
+				fail(n, "%s", msg)
+				continue
+			}
+			for _, it := range items {
 				a, warn, ok := sectionApp(it)
 				if !ok {
 					fail(n, "в [ ] пишутся программы (discord, chrome.exe, путь или маска папки), а «%s» — не программа", it)
@@ -124,24 +132,31 @@ func parseRulesText(text string, profiles []hysteria.Profile) RulesTextResult {
 				fail(n, "у «* -> …» (всё остальное) нет опций: tcp, udp, выкл и без дочерних пишутся у отдельных правил")
 				continue
 			}
+			if defaultLine > 0 {
+				// A second one would silently replace the first.
+				fail(n, "«* -> …» (всё остальное) уже есть в строке %d: оставьте одну такую строку", defaultLine)
+				continue
+			}
+			defaultLine = n
 			res.HasDefault, res.DefaultAction, res.DefaultProfile, res.DefaultFallback = true, act, profile, fallback
 			continue
 		}
 		r := rules.Rule{Action: act, Profile: profile, Fallback: fallback}
 		if name, rest, ok := quotedName(lhs); ok {
 			r.Name, lhs = name, rest
-		} else if i := indexOutside(lhs, ": "); i >= 0 && !strings.ContainsAny(lhs[:i], `.\/*`) {
-			// Outside quotes: in `"regexp:a: b" x.com` there is no name.
-			r.Name, lhs = strings.TrimSpace(lhs[:i]), lhs[i+2:]
+		} else if name, rest, found, msg := unquotedName(lhs); msg != "" {
+			fail(n, "%s", msg)
+			continue
+		} else if found {
+			r.Name, lhs = name, rest
 		}
-		inherit := true
+		inherit, both := true, false
 		for _, o := range strings.Split(opts, "|") {
-			switch strings.ToLower(strings.TrimSpace(o)) {
+			switch o := strings.ToLower(strings.TrimSpace(o)); o {
 			case "":
-			case "tcp":
-				r.Protocol = "tcp"
-			case "udp":
-				r.Protocol = "udp"
+			case "tcp", "udp":
+				both = both || r.Protocol != "" && r.Protocol != o
+				r.Protocol = o
 			case "выкл", "off", "disabled":
 				off := false
 				r.Enabled = &off
@@ -151,49 +166,77 @@ func parseRulesText(text string, profiles []hysteria.Profile) RulesTextResult {
 				fail(n, "непонятная опция %q (есть: tcp, udp, выкл, без дочерних)", strings.TrimSpace(o))
 			}
 		}
+		if both {
+			fail(n, "tcp и udp вместе — это любой протокол: уберите обе опции")
+		}
 		for _, a := range section {
 			a.InheritChildren = a.InheritChildren && inherit
 			r.Apps = append(r.Apps, a)
 		}
-		for _, it := range splitItems(lhs) {
+		items, quoted := splitQuoted(lhs)
+		if msg := splitPath(items, quoted); msg != "" {
+			fail(n, "%s", msg)
+			continue
+		}
+		errsBefore := len(res.Errors)
+		for _, it := range items {
 			if a, ok := lineApp(it); ok {
+				if section != nil {
+					// The programs of a rule are "any of": this one would be
+					// added to the block's program, not narrow it.
+					fail(n, "в строках под %s пишутся только сайты, а «%s» — программа: правило для неё пишите после [*]", sectionText, it)
+					continue
+				}
 				a.InheritChildren = a.InheritChildren && inherit
 				r.Apps = append(r.Apps, a)
 				continue
 			}
-			if rules.IsSpecialItem(it) {
-				r.Domains = append(r.Domains, typedItem(it))
-				continue
-			}
-			if host, ok := linkHost(it); ok {
+			d := ""
+			if host, link := linkHost(it); rules.IsSpecialItem(it) {
+				d = typedItem(it)
+			} else if link {
 				switch {
 				case host == "":
 					fail(n, "в ссылке «%s» нет имени сайта", it)
+					continue
 				case rules.IsAddressItem(host):
 					r.Domains = append(r.Domains, host)
-				default:
-					r.Domains = append(r.Domains, "."+strings.ToLower(host))
+					continue
 				}
-				continue
-			}
-			d := strings.ToLower(it)
-			switch {
-			case strings.HasPrefix(d, "="):
-				d = d[1:]
-			case strings.HasPrefix(d, "*.") || strings.HasPrefix(d, "."):
-			default:
+				// As in the rule editor: a link to www.site is the site.
+				d = strings.ToLower(host)
+				if h, ok := strings.CutPrefix(d, "www."); ok && strings.Contains(h, ".") {
+					d = h
+				}
 				d = "." + d
+			} else {
+				d = strings.ToLower(it)
+				switch {
+				case strings.HasPrefix(d, "="):
+					d = d[1:]
+				case strings.HasPrefix(d, "*.") || strings.HasPrefix(d, "."):
+				default:
+					d = "." + d
+				}
+			}
+			// A name no site has matches nothing: say so rather than save it.
+			if msg := rules.SiteProblem(d); msg != "" {
+				fail(n, "%s", msg)
+				continue
 			}
 			r.Domains = append(r.Domains, d)
 		}
 		if len(r.Apps) == 0 && len(r.Domains) == 0 {
-			fail(n, "не указано, что направлять")
+			if len(res.Errors) == errsBefore { // not when its items were refused
+				fail(n, "не указано, что направлять")
+			}
 			continue
 		}
 		// Messages start with the rule name, cut below; a quoted name may
-		// have ": " in it.
+		// have ": " in it. A line with "выкл" is checked as well (Compile
+		// skips disabled rules), without warnings: it matches nothing yet.
 		rc := r
-		rc.Name = "-"
+		rc.Name, rc.Enabled = "-", nil
 		set, err := rules.Compile(rules.Config{Rules: []rules.Rule{rc}})
 		if err != nil {
 			msg := err.Error()
@@ -202,6 +245,9 @@ func parseRulesText(text string, profiles []hysteria.Profile) RulesTextResult {
 			}
 			fail(n, "%s", msg)
 			continue
+		}
+		if r.Enabled != nil && !*r.Enabled {
+			set.Warnings = nil
 		}
 		for _, w := range set.Warnings {
 			if _, after, ok := strings.Cut(w, ": "); ok {
@@ -278,10 +324,88 @@ func quotedName(s string) (name, rest string, ok bool) {
 	return "", "", false
 }
 
+// unquotedName reads a rule name without quotes: "YouTube: youtube.com",
+// or "YouTube:" alone (a rule without items: an error below). The text
+// before ": " is items, not a name, when its last item itself ends with
+// ":" (2001:db8::, regexp:a:) or is a link. A name with . \ / * would be
+// read as a site or a program, so msg asks for quotes instead.
+func unquotedName(lhs string) (name, rest string, found bool, msg string) {
+	s := lhs + " "
+	i := indexOutside(s, ": ")
+	if i < 0 {
+		return "", "", false, ""
+	}
+	head := lhs[:i]
+	if items := splitItems(head); len(items) > 0 {
+		last := items[len(items)-1]
+		if strings.Contains(last, "://") || strings.Contains(last, ":") && rules.IsSpecialItem(last+":") {
+			return "", "", false, ""
+		}
+	}
+	name = strings.TrimSpace(head)
+	if strings.ContainsAny(name, `.\/*`) {
+		return "", "", false, fmt.Sprintf("«%s:» — это название? Название с точкой, слешем или «*» пишется в кавычках: %s: …", name, nameText(name))
+	}
+	return name, s[i+2:], true, ""
+}
+
+// splitPath finds a path with spaces written without quotes: the spaces
+// cut it into pieces that never match ("C:\Program Files (x86)\x.exe"
+// gives C:\Program, Files.exe and (x86)\x.exe). That is an absolute path,
+// not to an .exe, followed anywhere on the line by a relative path, or,
+// when it has no extension, followed by a program or a bare word ("Files"
+// would be Files.exe). Quoted items (quoted[i]) are whole: neither such a
+// path nor a piece of one.
+func splitPath(items []string, quoted []bool) string {
+	// A relative item that is not a link or an address (10.0.0.0/8).
+	rel := func(j int) (string, bool) {
+		b := strings.TrimPrefix(items[j], "=")
+		_, link := linkHost(b)
+		return b, !quoted[j] && !absPath(b) && !link && !rules.IsSpecialItem(b)
+	}
+	for i, a := range items {
+		a = strings.TrimPrefix(a, "=")
+		if quoted[i] || !pathPiece(a) {
+			continue
+		}
+		msg := func(j int) string {
+			return fmt.Sprintf("«%s» — путь с пробелами? Такой путь пишется в кавычках целиком: \"C:\\Program Files\\…\\app.exe\"", strings.Join(items[i:j+1], " "))
+		}
+		if i+1 < len(items) && !strings.Contains(a[strings.LastIndexAny(a, `\/`)+1:], ".") {
+			if b, ok := rel(i + 1); ok && (isProgram(b) || !strings.ContainsAny(b, `.\/*?=:`)) {
+				return msg(i + 1)
+			}
+		}
+		for j := i + 1; j < len(items); j++ {
+			if b, ok := rel(j); ok && strings.ContainsAny(b, `\/`) {
+				return msg(j)
+			}
+		}
+	}
+	return ""
+}
+
+// absPath: C:\x, C:/x or \\server\share.
+func absPath(p string) bool {
+	return strings.HasPrefix(p, `\\`) ||
+		len(p) >= 3 && (p[0]|0x20 >= 'a' && p[0]|0x20 <= 'z') && p[1] == ':' && (p[2] == '\\' || p[2] == '/')
+}
+
+// pathPiece: p may be the first piece of a path cut at its spaces (see
+// splitPath): an absolute path, not to an .exe, without a mask.
+func pathPiece(p string) bool {
+	return absPath(p) && !strings.ContainsAny(p, "*?") && !strings.HasSuffix(strings.ToLower(p), ".exe")
+}
+
 // splitItems splits by spaces and commas, keeping quoted paths with spaces
 // ("C:\Program Files\X\x.exe"); "" inside quotes is a quote.
 func splitItems(s string) []string {
-	var out []string
+	out, _ := splitQuoted(s)
+	return out
+}
+
+// splitQuoted is splitItems that also reports which items were quoted.
+func splitQuoted(s string) (out []string, quoted []bool) {
 	for len(s) > 0 {
 		s = strings.TrimLeft(s, " \t,;")
 		if s == "" {
@@ -289,7 +413,7 @@ func splitItems(s string) []string {
 		}
 		if s[0] == '"' {
 			if it, rest, ok := quotedItem(s); ok {
-				out = append(out, it)
+				out, quoted = append(out, it), append(quoted, true)
 				s = rest
 				continue
 			}
@@ -298,10 +422,10 @@ func splitItems(s string) []string {
 		if end < 0 {
 			end = len(s)
 		}
-		out = append(out, s[:end])
+		out, quoted = append(out, s[:end]), append(quoted, false)
 		s = s[end:]
 	}
-	return out
+	return out, quoted
 }
 
 // quotedItem reads the quoted item at the start of s.
@@ -566,7 +690,8 @@ func targetWord(a rules.Action, profile string, profiles []hysteria.Profile) str
 			same++
 		}
 	}
-	if same > 1 || found.Name == "" || strings.ContainsAny(found.Name, "|#,→\"") ||
+	// A line break (from a link's %0A) would cut the rule line in two.
+	if same > 1 || found.Name == "" || strings.ContainsAny(found.Name, "|#,→\"") || strings.ContainsFunc(found.Name, lineBreak) ||
 		strings.Contains(found.Name, "->") || strings.Contains(found.Name, "=>") {
 		return "id:" + profile
 	}
@@ -578,6 +703,10 @@ func targetWord(a rules.Action, profile string, profiles []hysteria.Profile) str
 	}
 	return name
 }
+
+// lineBreak: characters that break a line of the text (or are not
+// visible in it): control characters and the Unicode line separators.
+func lineBreak(r rune) bool { return unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp) }
 
 // RulesText renders the saved rules in the text format. Rules that share
 // exactly one program and have sites are grouped under [program].
@@ -666,7 +795,8 @@ func inSection(p string) bool {
 // appText writes program p so that a rule line reads it back as p: as is,
 // or with "app:" when it would read as something else ("my.app" a site,
 // "vmmem" vmmem.exe). only puts "=" in front (without the processes it
-// starts).
+// starts). A path that could be a piece of one with spaces (C:\Tools\run
+// before another program) is quoted: the parser would refuse it.
 func appText(p string, only bool) string {
 	w := p
 	if a, ok := lineApp(p); !ok || a.Pattern != p || !a.InheritChildren {
@@ -674,6 +804,9 @@ func appText(p string, only bool) string {
 	}
 	if only {
 		w = "=" + w
+	}
+	if pathPiece(p) {
+		return `"` + strings.ReplaceAll(w, `"`, `""`) + `"`
 	}
 	return quoteItem(w)
 }

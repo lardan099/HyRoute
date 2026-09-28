@@ -75,8 +75,10 @@ func ParseLinks(text string) Links {
 	return res
 }
 
-// linkStart finds "scheme://" at the start of a line or after whitespace.
-var linkStart = regexp.MustCompile(`(?:^|\s)([A-Za-z][A-Za-z0-9+.\-]*://)`)
+// linkStart finds "scheme://" at the start of a line or after whitespace
+// or a byte order mark (a base64 list may encode one, and so may each
+// file of lists joined together).
+var linkStart = regexp.MustCompile(`(?:^|[\s\x{FEFF}])([A-Za-z][A-Za-z0-9+.\-]*://)`)
 
 // splitLinks returns the share links in text. A link runs to the end of
 // its line or to the next link on the same line, so names (the #fragment)

@@ -268,17 +268,37 @@ func TestUpgrade(t *testing.T) {
 	shortTimeouts(t, 200*time.Millisecond)
 	var dials atomic.Int32
 	addr := start(t, &Server{Dial: dialer(&dials)})
-	c, br := client(t, addr)
-	fmt.Fprintf(c, "GET %s/ws HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n", o.URL)
-	resp, err := http.ReadResponse(br, nil)
-	if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatal(resp, err)
+	// Connection is a list: browsers send "keep-alive, Upgrade".
+	for _, conn := range []string{"Upgrade", "keep-alive, Upgrade"} {
+		c, br := client(t, addr)
+		fmt.Fprintf(c, "GET %s/ws HTTP/1.1\r\nHost: x\r\nConnection: %s\r\nUpgrade: echo\r\n\r\n", o.URL, conn)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
+			t.Fatal(conn, resp, err)
+		}
+		time.Sleep(400 * time.Millisecond)
+		io.WriteString(c, "ping")
+		b := make([]byte, 4)
+		if _, err := io.ReadFull(br, b); err != nil || string(b) != "ping" {
+			t.Fatalf("%s: %q %v", conn, b, err)
+		}
 	}
-	time.Sleep(400 * time.Millisecond)
-	io.WriteString(c, "ping")
-	b := make([]byte, 4)
-	if _, err := io.ReadFull(br, b); err != nil || string(b) != "ping" {
-		t.Fatalf("%q %v", b, err)
+}
+
+// Headers that Connection lists are hop-by-hop, both ways.
+func TestConnectionListedHeaders(t *testing.T) {
+	o := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Connection", "X-Resp")
+		w.Header().Set("X-Resp", "1")
+		fmt.Fprintf(w, "hop=%q", r.Header.Get("X-Hop"))
+	}))
+	t.Cleanup(o.Close)
+	var dials atomic.Int32
+	addr := start(t, &Server{Dial: dialer(&dials)})
+	c, br := client(t, addr)
+	resp, b := send(t, c, br, "GET "+o.URL+"/h HTTP/1.1\r\nHost: x\r\nConnection: keep-alive, X-Hop\r\nX-Hop: 1\r\n\r\n")
+	if b != `hop=""` || resp.Header.Get("X-Resp") != "" {
+		t.Fatalf("%q, X-Resp %q", b, resp.Header.Get("X-Resp"))
 	}
 }
 
@@ -306,6 +326,58 @@ func TestExpectContinue(t *testing.T) {
 		if resp.StatusCode != http.StatusOK || string(b) != "got "+body {
 			t.Fatalf("final: %d %q", resp.StatusCode, b)
 		}
+	}
+}
+
+// A client that waits for 100 Continue before sending the body gets it
+// from the proxy: the proxy does not wait for the body first.
+func TestExpectContinueWaits(t *testing.T) {
+	o := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		fmt.Fprintf(w, "got %s", b)
+	}))
+	t.Cleanup(o.Close)
+	var dials atomic.Int32
+	addr := start(t, &Server{Dial: dialer(&dials)})
+	c, br := client(t, addr)
+	fmt.Fprintf(c, "POST %s/p HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 4\r\n\r\n", o.URL)
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil || resp.StatusCode != http.StatusContinue {
+		t.Fatalf("interim: %v %v", resp, err)
+	}
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	io.WriteString(c, "body")
+	resp, err = http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(b) != "got body" {
+		t.Fatalf("final: %d %q", resp.StatusCode, b)
+	}
+}
+
+// An HTTP/1.0 client does not get a chunked body: it would take the chunk
+// sizes for data.
+func TestHTTP10NotChunked(t *testing.T) {
+	o := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "part1")
+		w.(http.Flusher).Flush()
+		io.WriteString(w, "part2")
+	}))
+	t.Cleanup(o.Close)
+	var dials atomic.Int32
+	addr := start(t, &Server{Dial: dialer(&dials)})
+	c, _ := client(t, addr)
+	fmt.Fprintf(c, "GET %s/f HTTP/1.0\r\n\r\n", o.URL)
+	raw, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, body, _ := strings.Cut(string(raw), "\r\n\r\n")
+	if body != "part1part2" || strings.Contains(strings.ToLower(head), "transfer-encoding") {
+		t.Fatalf("%q", raw)
 	}
 }
 
@@ -564,5 +636,217 @@ func TestConnectionLimit(t *testing.T) {
 	c, br := client(t, addr)
 	if resp, b := send(t, c, br, fmt.Sprintf("GET %s/free HTTP/1.1\r\nHost: x\r\n\r\n", o.URL)); resp.StatusCode != http.StatusOK || !strings.Contains(b, "hello /free") {
 		t.Fatalf("%d %q", resp.StatusCode, b)
+	}
+}
+
+// A tunnel connection that breaks mid-stream reaches the program as a
+// reset, not as a clean end of stream (a truncated download must not look
+// complete), over SOCKS5 and HTTP CONNECT alike.
+func TestTunnelResetReachesClient(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				io.WriteString(conn, "partial")
+				time.Sleep(50 * time.Millisecond)
+				socks5.Abort(conn)
+			}()
+		}
+	}()
+	var dials atomic.Int32
+	addr := start(t, &Server{Dial: dialer(&dials)})
+	dst, _ := socks5.ParseHostPort(ln.Addr().String())
+
+	cl := socks5.Client{Server: addr}
+	c, err := cl.Connect(context.Background(), dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	if b, err := io.ReadAll(c); !isReset(err) {
+		t.Fatalf("SOCKS5: read %q, err %v: want a reset", b, err)
+	}
+
+	hc, br := client(t, addr)
+	fmt.Fprintf(hc, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", ln.Addr(), ln.Addr())
+	if b, err := io.ReadAll(br); !isReset(err) {
+		t.Fatalf("CONNECT: read %q, err %v: want a reset", b, err)
+	}
+}
+
+// A plain HTTP client that breaks off a response resets the tunnel side
+// too: the server must not see a clean close, as with CONNECT.
+func TestClientResetReachesUpstream(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	more, got := make(chan struct{}), make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			got <- err
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		if _, err := http.ReadRequest(br); err != nil {
+			got <- err
+			return
+		}
+		io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\nfirst")
+		<-more
+		// The proxy learns of the reset when it writes to the client.
+		for i := 0; i < 10; i++ {
+			if _, err := io.WriteString(conn, "more"); err != nil {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, err = br.ReadByte()
+		got <- err
+	}()
+	var dials atomic.Int32
+	c, br := client(t, start(t, &Server{Dial: dialer(&dials)}))
+	fmt.Fprintf(c, "GET http://%s/ HTTP/1.1\r\nHost: x\r\n\r\n", ln.Addr())
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(resp.Body, make([]byte, 5)); err != nil {
+		t.Fatal(err)
+	}
+	socks5.Abort(c)
+	time.Sleep(100 * time.Millisecond)
+	close(more)
+	if err := <-got; !isReset(err) {
+		t.Fatalf("the server saw %v: want a reset", err)
+	}
+}
+
+// isReset: the connection failed, as opposed to a clean end of stream or
+// the test's own deadline.
+func isReset(err error) bool {
+	var ne net.Error
+	return err != nil && !(errors.As(err, &ne) && ne.Timeout())
+}
+
+// Close resets the connections it drops (Disconnect, a changed proxy).
+func TestCloseResetsClients(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	held := make(chan net.Conn, 1) // the server side stays open, silent
+	t.Cleanup(func() {
+		select {
+		case conn := <-held:
+			conn.Close()
+		default:
+		}
+	})
+	go func() {
+		if conn, err := ln.Accept(); err == nil {
+			held <- conn
+		}
+	}()
+	var dials atomic.Int32
+	s := &Server{Dial: dialer(&dials)}
+	addr := start(t, s)
+	dst, _ := socks5.ParseHostPort(ln.Addr().String())
+	cl := socks5.Client{Server: addr}
+	c, err := cl.Connect(context.Background(), dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	s.Close()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	if b, err := io.ReadAll(c); !isReset(err) {
+		t.Fatalf("read %q, err %v: want a reset", b, err)
+	}
+}
+
+// A SOCKS5 CONNECT answered after the handshake deadline still gets its
+// reply: the deadline covers the handshake, not the dial.
+func TestSOCKSSlowDial(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		io.WriteString(conn, "hello")
+		conn.Close()
+	}()
+	shortTimeouts(t, 200*time.Millisecond)
+	addr := start(t, &Server{Dial: func(ctx context.Context, dst socks5.Addr) (net.Conn, error) {
+		time.Sleep(400 * time.Millisecond)
+		var d net.Dialer
+		return d.DialContext(ctx, "tcp", dst.String())
+	}})
+	dst, _ := socks5.ParseHostPort(ln.Addr().String())
+	cl := socks5.Client{Server: addr}
+	c, err := cl.Connect(context.Background(), dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	if b, err := io.ReadAll(c); err != nil || string(b) != "hello" {
+		t.Fatalf("%q %v", b, err)
+	}
+}
+
+// failingListener fails its first fail Accepts with an error that is not
+// a timeout (out of sockets, say).
+type failingListener struct {
+	net.Listener
+	fail  int32
+	calls atomic.Int32
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	if l.calls.Add(1) <= l.fail {
+		return nil, errors.New("accept: out of buffer space")
+	}
+	return l.Listener.Accept()
+}
+
+// A failed Accept is reported, once however often it fails in a row, and
+// the port goes on serving: only Close stops it.
+func TestAcceptErrorRetried(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := origin(t)
+	var dials atomic.Int32
+	reported := make(chan error, 10)
+	s := &Server{Dial: dialer(&dials), OnAcceptError: func(err error) { reported <- err }}
+	s.start(&failingListener{Listener: ln, fail: 3})
+	t.Cleanup(func() { s.Close() })
+	c, br := client(t, ln.Addr().String())
+	if resp, b := send(t, c, br, fmt.Sprintf("GET %s/after HTTP/1.1\r\nHost: x\r\n\r\n", o.URL)); resp.StatusCode != http.StatusOK || !strings.Contains(b, "hello /after") {
+		t.Fatalf("%d %q", resp.StatusCode, b)
+	}
+	if n := len(reported); n != 1 {
+		t.Fatalf("accept error reported %d times", n)
 	}
 }
