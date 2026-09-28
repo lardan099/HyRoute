@@ -320,11 +320,11 @@
     </section>
   {/if}
 
+  <HomeSubAlerts {go} />
+
   {#if st?.groupsNote}
     <div class="note warn">{hide(st.groupsNote)}</div>
   {/if}
-
-  <HomeSubAlerts {go} />
 
   {#if ui.profiles.length === 0 && !ui.expert}
     <section class="card start simple">

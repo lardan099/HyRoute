@@ -1,8 +1,8 @@
 <script lang="ts">
   // Live explanation of one rule: what the patterns mean and what the rule
   // will match.
-  import type { Rule } from '../api';
-  import { profileName, mainTarget } from '../state.svelte';
+  import { isGroupId, type Rule } from '../api';
+  import { profileName, targetText, mainTarget } from '../state.svelte';
 
   let { rule, onexample }: { rule: Rule; onexample: (field: 'app' | 'domain', v: string) => void } = $props();
 
@@ -34,8 +34,11 @@
     if (rule.action === 'direct') return 'напрямую, мимо туннеля';
     if (rule.action === 'block') return 'будет сброшено (Блок)';
     const main = mainTarget();
-    const name = rule.profile ? profileName(rule.profile) : main ? `основной профиль «${main.name}»` : 'основной профиль (не выбран!)';
-    return `через туннель: ${rule.profile ? '«' + name + '»' : name}`;
+    // groups: a group is named as one («группа «Авто»»).
+    if (rule.profile) return `через туннель: ${isGroupId(rule.profile) ? targetText(rule.profile) : '«' + profileName(rule.profile) + '»'}`;
+    if (!main) return 'через туннель: основной профиль (не выбран!)';
+    if (main.unloaded) return `через туннель: ${main.name}`;
+    return `через туннель: ${main.group ? `основная группа «${main.name}»` : `основной профиль «${main.name}»`}`;
   });
 
   const preview = $derived.by(() => {

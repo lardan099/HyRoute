@@ -1009,6 +1009,49 @@ func TestLoadReconcile(t *testing.T) {
 			t.Fatal("rulesets dropped")
 		}
 	})
+	// settings.json missing and rulesets.json cannot supply the active
+	// rules: the defaults in memory are not the user's rules, so nothing
+	// connects on them and no edit writes them (a later load would adopt
+	// them over the real active profile).
+	for _, tc := range []struct{ name, raw, why string }{
+		{"rules unknown: rulesets.json broken", `{"version":1`, "unexpected end"},
+		{"rules unknown: active entry newer", `{"version":1,"active":"dddddddd0004","list":[
+			{"id":"dddddddd0004","name":"D","config":{"defaultAction":"tunnel","rules":[],"future":1}}]}`, "более новой версией"},
+		{"rules unknown: active entry invalid", `{"version":1,"active":"aaaaaaaa0001","list":[
+			{"id":"aaaaaaaa0001","name":"A","config":{"defaultAction":"tunnel","rules":[{"name":"r","domains":["regexp:("],"action":"block"}]}}]}`, "не загружается"},
+	} {
+		raw := tc.raw
+		t.Run(tc.name, func(t *testing.T) {
+			c, _, _ := setup(t)
+			must(t, os.Remove(filepath.Join(c.Store.Dir, "settings.json")))
+			must(t, os.WriteFile(filepath.Join(c.Store.Dir, "rulesets.json"), []byte(raw), 0o600))
+			c2, started := newCtlAt2(t, c.Store)
+			if le := c2.Status().LoadError; c2.SettingsError() == nil || !strings.Contains(le, "settings.json нет") || !strings.Contains(le, tc.why) {
+				t.Fatalf("%v %q", c2.SettingsError(), c2.Status().LoadError)
+			}
+			if err := c2.Connect(); err == nil || !strings.Contains(err.Error(), "весь трафик пошёл бы напрямую") || len(*started) != 0 {
+				t.Fatal(err)
+			}
+			if _, err := c2.SaveRulesIn(EditGuard{}, a); err == nil || !strings.Contains(err.Error(), "settings.json не загружен") {
+				t.Fatal(err)
+			}
+			if _, known := c2.killSwitchSetting(); known {
+				t.Fatal("kill switch setting known")
+			}
+			if c2.Store.HasSettings() || string(rsBytes(t, c2)) != raw {
+				t.Fatal("a file was written")
+			}
+		})
+	}
+	t.Run("settings.json and rulesets.json missing", func(t *testing.T) {
+		c, _, _ := setup(t)
+		must(t, os.Remove(filepath.Join(c.Store.Dir, "settings.json")))
+		must(t, os.Remove(filepath.Join(c.Store.Dir, "rulesets.json")))
+		c2, _ := newCtlAt(t, c.Store) // a first start: the defaults are the rules
+		if c2.SettingsError() != nil {
+			t.Fatal(c2.SettingsError())
+		}
+	})
 	t.Run("inactive profile does not load", func(t *testing.T) {
 		c, _, work := setup(t)
 		d := rsDisk(t, c)

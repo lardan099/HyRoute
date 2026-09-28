@@ -2,7 +2,7 @@
   // Lists: which geosite/geoip lists contain a site or IP, what is inside a
   // list, and Hysteria ACL conversion.
   import { api, errText, cleanSettings, toLists, type InspectResult, type InspectHit, type ConvertResult, type Rule } from '../api';
-  import { ui, hide, profileName, mainTarget } from '../state.svelte';
+  import { ui, hide, targetText, mainTarget } from '../state.svelte';
   import { geo, loadGeo } from '../geo.svelte';
   import Icon from './Icon.svelte';
   import ListViewer from './ListViewer.svelte';
@@ -48,7 +48,7 @@
   function routeText(r: InspectResult): string {
     const w = r.route?.winner;
     if (!w) return '';
-    const to = w.action === 'direct' ? 'напрямую' : w.action === 'block' ? 'блокируется' : `через ${w.profile ? profileName(w.profile) : 'основной сервер'}`;
+    const to = w.action === 'direct' ? 'напрямую' : w.action === 'block' ? 'блокируется' : `через ${w.profile ? targetText(w.profile) : 'основной сервер'}`;
     const why = w.index < 0 ? 'ни одно правило не подошло, сработало «Всё остальное»' : `правило «${w.name}»`;
     // With port rules the answer is for one port: the site's web port.
     if (r.route?.portRules) return `Сейчас HyRoute для TCP ${r.route.port}: ${to} (${why}). На других портах может быть иначе — «Проверить адрес» покажет.`;

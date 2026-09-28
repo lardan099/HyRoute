@@ -23,7 +23,9 @@ import (
 // PortRange is an inclusive range of destination ports, 1 <= Lo <= Hi.
 type PortRange struct{ Lo, Hi uint16 }
 
-// MaxPortItems bounds the port list of one rule.
+// MaxPortItems bounds the port list of one rule as people type it
+// (ParsePortList, the rules text, the editor). Stored lists are not
+// bounded by it: v1.2.0 had no limit, and its settings.json must load.
 const MaxPortItems = 256
 
 // PortList is Rule.Ports: items "N" or "N-M". It decodes the v1.2.0
@@ -38,8 +40,14 @@ var errPortsJSON = errors.New(`ports: ожидается список порто
 // UnmarshalJSON collects the raw items: from a JSON string, its list split
 // as people type it (splitPortText); from an array, a string element as is
 // and a number made of digits only as its text. Anything else is an error.
-// The item count is checked, with the rule name, by compilePorts; memory
-// is bounded by the input like every other list in settings.json.
+// Memory is bounded by the input like every other list in settings.json.
+//
+// A string of separators only (",", " ; ") decodes to no ports, any port,
+// as v1.2.0 read it: its editor saved such a list, and the rule must keep
+// loading and meaning what it meant (ADDENDUM rule 3). Input refuses it
+// (ParsePortList, the rules text, the editor's parsePorts, PITFALLS #10),
+// and the UI only sends lists it validated. A rule left with nothing to
+// match still fails in compileRule, as in v1.2.0.
 func (p *PortList) UnmarshalJSON(b []byte) error {
 	if string(b) == "null" {
 		*p = nil
@@ -50,13 +58,10 @@ func (p *PortList) UnmarshalJSON(b []byte) error {
 		if json.Unmarshal(b, &s) != nil {
 			return errPortsJSON
 		}
-		items := splitPortText(s)
-		if len(items) == 0 && strings.TrimSpace(s) != "" {
-			// Separators only (","): one invalid item, never an empty
-			// list (= any port); compileRule rejects it.
-			items = []string{strings.TrimSpace(s)}
+		*p = nil
+		if items := splitPortText(s); len(items) > 0 {
+			*p = items
 		}
-		*p = items
 		return nil
 	}
 	var raw []json.RawMessage
@@ -160,35 +165,39 @@ func echoItem(s string) string {
 	return s
 }
 
-var errTooManyPorts = fmt.Errorf("слишком много портов в правиле (больше %d): объедините их в диапазоны", MaxPortItems)
+// ErrTooManyPorts: a list typed by people has more than MaxPortItems
+// items.
+var ErrTooManyPorts = fmt.Errorf("слишком много портов в правиле (больше %d): объедините их в диапазоны", MaxPortItems)
 
 // ParsePortList parses a list typed by people: spaced ranges become one
 // item, then items are split by commas, semicolons and/or whitespace.
 // Returns canonical items (order kept, duplicates removed); empty input
-// gives nil.
+// gives nil. Separators only and more than MaxPortItems items are errors.
 func ParsePortList(s string) ([]string, error) {
 	items := splitPortText(s)
 	if len(items) == 0 && strings.TrimSpace(s) != "" {
 		return nil, errNoPorts
 	}
+	if len(items) > MaxPortItems {
+		return nil, ErrTooManyPorts
+	}
 	return CanonPorts(items)
 }
 
 // CanonPorts validates stored items and returns them canonical (as
-// ParsePortList). The single canonicaliser: rules text export, the ACL
-// converter, rule labels.
+// ParsePortList, with no bound on the count). The single canonicaliser:
+// rules text export, the ACL converter, rule labels.
 func CanonPorts(items []string) ([]string, error) {
-	if len(items) > MaxPortItems {
-		return nil, errTooManyPorts
-	}
 	var out []string
+	seen := make(map[PortRange]bool, len(items))
 	for _, it := range items {
 		pr, err := ParsePortItem(it)
 		if err != nil {
 			return nil, err
 		}
-		if c := pr.String(); !slices.Contains(out, c) {
-			out = append(out, c)
+		if !seen[pr] {
+			seen[pr] = true
+			out = append(out, pr.String())
 		}
 	}
 	return out, nil
@@ -242,12 +251,10 @@ func SamePorts(a, b []string) bool {
 
 // compilePorts validates items and returns sorted, merged ranges (adjacent
 // ranges merge: 80, 81-90 -> 80-90). nil for an empty list (any port).
+// The count is not bounded (MaxPortItems is for input).
 func compilePorts(items []string) ([]PortRange, error) {
 	if len(items) == 0 {
 		return nil, nil
-	}
-	if len(items) > MaxPortItems {
-		return nil, errTooManyPorts
 	}
 	rs := make([]PortRange, 0, len(items))
 	for _, it := range items {

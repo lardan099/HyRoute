@@ -233,7 +233,12 @@ func (c *Controller) Load() error {
 		set.ExactWeb = st.ExactWeb()
 	}
 	rl := c.loadRulesets(st, set, err2, existed) // rulesets: the active rules may come from rulesets.json
-	if st, set = rl.Settings, rl.Set; rl.Broken != nil {
+	if st, set = rl.Settings, rl.Set; rl.RulesUnknown != nil {
+		// The defaults stand in for rules that exist: as with a
+		// settings.json that did not load, nothing connects or saves.
+		errs = append(errs, rl.RulesUnknown.Error())
+		err2 = rl.RulesUnknown
+	} else if rl.Broken != nil {
 		errs = append(errs, rl.Broken.Error())
 	}
 	c.mu.Lock()

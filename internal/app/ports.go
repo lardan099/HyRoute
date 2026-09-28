@@ -153,6 +153,10 @@ func parseLineOptions(opts string) (o lineOpts, errs []string) {
 			if o.ports != nil {
 				// v1.2.0 wrote several port options ("| порт 443 | порт
 				// 8443"): one list; the export writes one option.
+				if len(o.ports)+len(ports) > rules.MaxPortItems {
+					errs = append(errs, rules.ErrTooManyPorts.Error())
+					continue
+				}
 				if ports, err = rules.CanonPorts(append(o.ports, ports...)); err != nil {
 					errs = append(errs, err.Error())
 					continue

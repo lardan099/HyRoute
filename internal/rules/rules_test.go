@@ -2,6 +2,7 @@ package rules
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -377,8 +378,12 @@ func TestCompilePortRules(t *testing.T) {
 	for i := range many {
 		many[i] = fmt.Sprint(i + 1)
 	}
-	if _, err := Compile(Config{Rules: []Rule{{Name: "many", Ports: many, Action: Direct}}}); err == nil || !strings.HasPrefix(err.Error(), "many: слишком много портов") {
+	// A stored list is not bounded (v1.2.0 had no limit); typed input is.
+	if _, err := Compile(Config{Rules: []Rule{{Name: "many", Ports: many, Action: Direct}}}); err != nil {
 		t.Fatalf("257: %v", err)
+	}
+	if _, err := ParsePortList(strings.Join(many, ",")); !errors.Is(err, ErrTooManyPorts) {
+		t.Fatalf("257 typed: %v", err)
 	}
 }
 

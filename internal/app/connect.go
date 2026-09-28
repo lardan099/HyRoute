@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -33,6 +34,11 @@ func (c *Controller) startLocked(recovering bool) error {
 		return nil
 	}
 	// The rules in memory are the defaults, not the user's.
+	var unknown *rulesUnknownError
+	if err := c.settingsBroken; errors.As(err, &unknown) {
+		c.mu.Unlock()
+		return fmt.Errorf("%v. С правилами по умолчанию весь трафик пошёл бы напрямую. Исправьте rulesets.json и перезапустите HyRoute", err)
+	}
 	if err := c.settingsBroken; err != nil {
 		c.mu.Unlock()
 		return fmt.Errorf("settings.json не загружен: с правилами по умолчанию весь трафик пошёл бы напрямую. Исправьте или удалите файл и перезапустите HyRoute. Ошибка: %v", err)

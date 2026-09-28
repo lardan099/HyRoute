@@ -5,7 +5,7 @@
   // steps only put it into rules in a working order.
   import { onMount } from 'svelte';
   import { api, errText, plural, cleanSettings, cleanFallback, cleanRule, type Action, type Rule, type Settings, type RunningApp } from '../api';
-  import { ui, hide, mainTarget, mainText, profileName } from '../state.svelte';
+  import { ui, hide, mainTarget, mainText, targetText } from '../state.svelte';
   import { templates, ruleFromTemplate, type Template } from './templates';
   import { itemLabel, isSpecial, isAddress, shortLabel, loadGeo } from '../geo.svelte';
   import { appLabel } from '../ruletitle';
@@ -245,7 +245,7 @@
   const restAction: Action = $derived(base === 'all' ? 'tunnel' : 'direct');
 
   function serverName(id: string): string {
-    return id ? profileName(id) : main ? mainText(main) : 'основной сервер';
+    return id ? targetText(id) : main ? mainText(main) : 'основной сервер';
   }
 
   // What a rule takes, in words: a template's hint, else its items.

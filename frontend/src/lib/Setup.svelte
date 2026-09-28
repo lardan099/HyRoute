@@ -13,12 +13,14 @@
     type SystemInfo,
     type AutostartInfo,
     type Prefs,
+    type GroupView,
   } from '../api';
   // Setup reads and writes the same settings as the pages, each save built
   // on a fresh copy (its revision), so it never undoes a change made
   // elsewhere meanwhile.
-  import { ui, hide, mainProfile, mainText, setupStep, setSetupStep, finishSetup } from '../state.svelte';
+  import { ui, hide, mainTarget, mainText, setupStep, setSetupStep, finishSetup } from '../state.svelte';
   import Icon from './Icon.svelte';
+  import TargetOptions from './TargetOptions.svelte';
   import RouteWizard from './RouteWizard.svelte';
 
   let { onclose, go }: { onclose: () => void; go: (page: string) => void } = $props();
@@ -146,19 +148,30 @@
   let checking = $state(false);
   let checkedId = '';
   let details = $state(false);
-  const main = $derived(mainProfile());
+  // groups: the main may be a server group: its servers are probed
+  // instead (a group has no single server to connect to).
+  const main = $derived(mainTarget());
+  let groupCheck = $state<GroupView | null>(null);
+  const groupUp = $derived(groupCheck?.memberViews.filter((m) => !m.missing && !m.probeError && m.latencyMs > 0) ?? []);
+  const checkBad = $derived(check ? !check.ok : groupCheck ? groupUp.length === 0 : false);
 
   async function runCheck() {
-    const m = mainProfile();
-    if (!m) return;
+    const m = mainTarget();
+    if (!m || m.unloaded) return;
     checking = true;
     check = null;
+    groupCheck = null;
     error = '';
     details = false;
     checkedId = m.id;
     try {
-      const r = await api.CheckProfile(m.id);
-      if (checkedId === m.id) check = r;
+      if (m.group) {
+        const g = await api.ProbeGroup(m.id);
+        if (checkedId === m.id) groupCheck = g;
+      } else {
+        const r = await api.CheckProfile(m.id);
+        if (checkedId === m.id) check = r;
+      }
     } catch (e) {
       error = errText(e);
     }
@@ -169,6 +182,7 @@
     try {
       await api.SetMain(id);
       ui.profiles = await api.Profiles();
+      ui.status = await api.Status(); // mainTarget reads the main from it
       runCheck();
     } catch (e) {
       error = errText(e);
@@ -176,7 +190,7 @@
   }
 
   $effect(() => {
-    if (step === 'check' && !check && !checking && !error && main) runCheck();
+    if (step === 'check' && !check && !groupCheck && !checking && !error && main && !main.unloaded) runCheck();
   });
 
   function speed(ms: number): string {
@@ -377,20 +391,58 @@
       {/if}
     {:else if step === 'check'}
       <h1>Проверим, что сервер работает</h1>
-      {#if ui.profiles.length > 1}
+      {#if ui.profiles.length > 1 || ui.groups.length > 0 || main?.group}
         <p class="lead">
           У вас {ui.profiles.length} {plural(ui.profiles.length, 'сервер', 'сервера', 'серверов')}. Выберите основной: через него пойдёт трафик VPN.
           Обычно лучше всего работает ближайший к вам. Поменять его можно в любой момент на главной.
         </p>
         <select class="big-select" value={main?.id ?? ''} onchange={(e) => pickMain((e.currentTarget as HTMLSelectElement).value)} disabled={checking}>
-          {#each ui.profiles as p (p.id)}<option value={p.id}>{hide(p.name)}</option>{/each}
+          {#if main?.unloaded}<option value={main.id} disabled>основная группа не загружена</option>{/if}
+          <TargetOptions current={main?.unloaded ? '' : main?.id} />
         </select>
       {:else}
         <p class="lead">HyRoute ненадолго подключится к серверу и проверит, что через него открывается интернет.</p>
       {/if}
 
-      {#if checking}
-        <div class="verdict wait"><span class="spin"></span>Подключаюсь к серверу{main ? ` «${hide(main.name)}»` : ''}… Это может занять до 30 секунд.</div>
+      {#if main?.unloaded}
+        <div class="verdict bad">
+          <Icon name="alert" size={22} />
+          <div>
+            <b>Основная группа не загружена</b>
+            <p>groups.json не читается, поэтому проверить её нельзя. Выберите выше сервер или исправьте файл.</p>
+          </div>
+        </div>
+      {:else if checking}
+        <div class="verdict wait">
+          <span class="spin"></span>{main?.group ? `Проверяю серверы группы «${main.name}»…` : `Подключаюсь к серверу${main ? ` «${main.name}»` : ''}…`} Это может
+          занять до 30 секунд.
+        </div>
+      {:else if groupCheck}
+        {#if groupUp.length}
+          <div class="verdict ok">
+            <Icon name="check" size={22} stroke={2.6} />
+            <div>
+              <b>Группа работает</b>
+              <p>
+                Отвечают {groupUp.length} из {groupCheck.memberViews.length}
+                {plural(groupCheck.memberViews.length, 'сервера', 'серверов', 'серверов')}, самый быстрый — {Math.min(...groupUp.map((m) => m.latencyMs))} мс.
+              </p>
+            </div>
+          </div>
+        {:else}
+          <div class="verdict bad">
+            <Icon name="alert" size={22} />
+            <div>
+              <b>Ни один сервер группы «{main?.name}» не ответил</b>
+              <p>Проверьте, что интернет работает без VPN, или выберите выше один сервер: его проверка покажет, что не так.</p>
+            </div>
+          </div>
+        {/if}
+        <ul class="steps">
+          {#each groupCheck.memberViews as m (m.id)}
+            <li class:bad={!!m.probeError}>{m.probeError ? '✗' : m.latencyMs ? '✓' : '–'} {hide(m.name)}: {m.probeError ? hide(m.probeError) : m.latencyMs ? `${m.latencyMs} мс` : 'нет ответа'}</li>
+          {/each}
+        </ul>
       {:else if check?.ok}
         <div class="verdict ok">
           <Icon name="check" size={22} stroke={2.6} />
@@ -427,7 +479,7 @@
           </ul>
         {/if}
       {/if}
-      {#if check && !checking}<div class="row"><button onclick={runCheck}><Icon name="refresh" size={16} />Проверить ещё раз</button></div>{/if}
+      {#if (check || groupCheck) && !checking}<div class="row"><button onclick={runCheck}><Icon name="refresh" size={16} />Проверить ещё раз</button></div>{/if}
     {:else if step === 'launch'}
       <h1>Запуск и защита</h1>
       <p class="lead">Последние настройки. Если не уверены — оставьте как есть.</p>
@@ -475,7 +527,7 @@
     {:else if step === 'done'}
       <h1>Всё готово!</h1>
       <div class="summary">
-        <div><span class="muted">Сервер</span><b>{main ? hide(main.name) : mainText() || 'не добавлен'}</b></div>
+        <div><span class="muted">Сервер</span><b>{mainText() || 'не добавлен'}</b></div>
         <div><span class="muted">Через VPN</span><b>{modeTitle}</b></div>
         {#if auto}<div><span class="muted">Запуск с Windows</span><b>{wantAutostart && auto.allowed ? 'да' : 'нет'}</b></div>{/if}
       </div>
@@ -509,7 +561,7 @@
         >Дальше<Icon name="arrow" size={16} /></button
       >
     {:else if step === 'check'}
-      <button class="primary big" onclick={next} disabled={checking && !check}>{check && !check.ok ? 'Всё равно дальше' : 'Дальше'}<Icon name="arrow" size={16} /></button>
+      <button class="primary big" onclick={next} disabled={checking && !check && !groupCheck}>{checkBad ? 'Всё равно дальше' : 'Дальше'}<Icon name="arrow" size={16} /></button>
     {:else if step === 'launch'}
       <button class="primary big" onclick={applyLaunch} disabled={busy || !auto}>{busy ? 'Сохраняю…' : 'Дальше'}<Icon name="arrow" size={16} /></button>
     {:else if step === 'done'}

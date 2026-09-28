@@ -1342,7 +1342,22 @@ type rsLoad struct {
 	SettingsHash string
 	Lag, Marker  bool
 	Note         string // the info log line of the case taken ("" = none)
+	// RulesUnknown: settings.json is missing and rulesets.json could not
+	// supply the active rules, so the rules in memory are the defaults
+	// standing in for the user's. Load treats it as a settings.json that
+	// did not load (settingsBroken): nothing connects or saves on them.
+	RulesUnknown error
 }
+
+// rulesUnknownError is RulesUnknown: why rulesets.json could not supply
+// the active rules.
+type rulesUnknownError struct{ err error }
+
+func (e *rulesUnknownError) Error() string {
+	return "settings.json нет, а правила из rulesets.json не загрузились: " + e.err.Error()
+}
+
+func (e *rulesUnknownError) Unwrap() error { return e.err }
 
 // loadRulesets reads rulesets.json and reconciles it with the settings
 // Load read (Load, no lock held). existed: settings.json was there before
@@ -1367,6 +1382,9 @@ func reconcileRulesets(st *settings.Settings, set *rules.Set, stErr error, exist
 	l.SettingsHash = h
 	if rsErr != nil {
 		l.Broken = rsErr
+		if stErr == nil && !existed {
+			l.RulesUnknown = &rulesUnknownError{rsErr}
+		}
 		return l
 	}
 	if rs == nil {
@@ -1399,6 +1417,7 @@ func reconcileRulesets(st *settings.Settings, set *rules.Set, stErr error, exist
 	case !existed:
 		if !take("settings.json was missing") {
 			l.Marker = false
+			l.RulesUnknown = &rulesUnknownError{l.Broken}
 			return l
 		}
 		l.Lag = true

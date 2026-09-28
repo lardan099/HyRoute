@@ -57,6 +57,21 @@ func TestParseRoundTrip(t *testing.T) {
 	}
 }
 
+// A group without "members" or with null loads with an empty list: the UI
+// reads an array.
+func TestParseNilMembers(t *testing.T) {
+	for _, g := range []string{`{"id":"grp-000000000001","name":"a","strategy":"failover"}`,
+		`{"id":"grp-000000000001","name":"a","strategy":"failover","members":null}`} {
+		f, err := Parse([]byte(`{"version":1,"groups":[` + g + `]}`))
+		if err != nil || f.Groups[0].Members == nil {
+			t.Fatalf("%s: %+v %v", g, f, err)
+		}
+		if b, _ := json.Marshal(f.Groups[0]); !strings.Contains(string(b), `"members":[]`) {
+			t.Fatalf("%s", b)
+		}
+	}
+}
+
 func group(id, name string, members ...string) string {
 	b, _ := json.Marshal(Group{ID: id, Name: name, Strategy: Failover, Members: members})
 	return string(b)

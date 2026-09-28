@@ -156,6 +156,13 @@ func Parse(b []byte) (*File, error) {
 	if f.Groups == nil {
 		f.Groups = []Group{}
 	}
+	for i := range f.Groups {
+		// A hand edit may leave "members" out or null: the UI reads an
+		// array (as SaveGroups writes it).
+		if f.Groups[i].Members == nil {
+			f.Groups[i].Members = []string{}
+		}
+	}
 	if err := f.Validate(); err != nil {
 		return nil, err
 	}

@@ -136,3 +136,24 @@ func TestBackupRulesOnly(t *testing.T) {
 		}
 	}
 }
+
+// A rules-only copy made by v1.2.0 whose rule has a port list of
+// separators only (its editor saved one) restores, the rule for any port
+// as v1.2.0 ran it.
+func TestBackupV120SeparatorPorts(t *testing.T) {
+	b := []byte(`{"format":"hyroute-backup","version":1,"kind":"rules","created":"2026-09-20T10:00:00Z","app":"1.2.0","data":{"settings":
+		{"defaultAction":"direct","rules":[{"name":"Sep","apps":[{"pattern":"chrome.exe"}],"ports":",","action":"block"}]}}}`)
+	c, _ := newCtl(t)
+	if info, err := c.InspectBackup(b); err != nil || info.Rules != 1 {
+		t.Fatalf("%+v %v", info, err)
+	}
+	if r, err := c.RestoreBackup(b, ""); err != nil || r.Rules != 1 {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if got := c.Settings(); len(got.Rules) != 1 || got.Rules[0].Ports != nil {
+		t.Fatalf("%+v", got.Rules)
+	}
+	if bytes.Contains(settingsBytes(t, c), []byte(`"ports"`)) {
+		t.Fatal("ports written back")
+	}
+}

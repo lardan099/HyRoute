@@ -90,9 +90,9 @@ func TestPortListJSON(t *testing.T) {
 		// The v1.2.0 string form, and lists typed by hand into it.
 		`"80,443,27000-27200"`:   {"80", "443", "27000-27200"},
 		`"80, 443; 8000 - 8100"`: {"80", "443", "8000-8100"},
-		`""`:                     {},
-		`","`:                    {","}, // not "any port": Compile rejects it
-		`" ; "`:                  {";"},
+		`""`:                     nil,
+		`","`:                    nil, // as v1.2.0 read it (TestPortListSeparatorsOnly)
+		`" ; "`:                  nil,
 	} {
 		var p PortList
 		if err := json.Unmarshal([]byte(in), &p); err != nil || !slices.Equal(p, want) || (p == nil) != (want == nil) {
@@ -131,7 +131,10 @@ func TestPortListJSON(t *testing.T) {
 	}
 }
 
-// PITFALLS #10: a list of separators only is an error, never "any port".
+// PITFALLS #10: typed, a list of separators only is an error, never "any
+// port". Stored (v1.2.0's editor saved it), it reads as v1.2.0 read it: no
+// ports, so the rule keeps loading and meaning the same (ADDENDUM rule 3),
+// and it is written back without the key.
 func TestPortListSeparatorsOnly(t *testing.T) {
 	for _, in := range []string{",", ";", " , ", ",;"} {
 		if _, err := ParsePortList(in); err == nil || !strings.Contains(err.Error(), "не указан ни один порт") {
@@ -141,8 +144,14 @@ func TestPortListSeparatorsOnly(t *testing.T) {
 		if err := json.Unmarshal([]byte(`{"name":"x","apps":[{"pattern":"ssh.exe"}],"ports":`+fmt.Sprintf("%q", in)+`,"action":"block"}`), &r); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Compile(Config{DefaultAction: Direct, Rules: []Rule{r}}); err == nil || !strings.Contains(err.Error(), "x: неверный порт") {
+		if r.Ports != nil {
+			t.Errorf("stored %q: %q", in, r.Ports)
+		}
+		if _, err := Compile(Config{DefaultAction: Direct, Rules: []Rule{r}}); err != nil {
 			t.Errorf("compile %q: %v", in, err)
+		}
+		if b, _ := json.Marshal(r); strings.Contains(string(b), "ports") {
+			t.Errorf("written back: %s", b)
 		}
 	}
 }
@@ -213,8 +222,16 @@ func TestCompilePorts(t *testing.T) {
 	if _, err := compilePorts([]string{"80", ""}); err == nil || err.Error() != "пустой порт в списке" {
 		t.Errorf("empty: %v", err)
 	}
-	if _, err := compilePorts(make([]string, MaxPortItems+1)); err == nil || !strings.Contains(err.Error(), "слишком много") {
-		t.Errorf("many: %v", err)
+	// Stored lists are not bounded (v1.2.0 had no limit); input is.
+	many := make([]string, MaxPortItems+1)
+	for i := range many {
+		many[i] = fmt.Sprint(2*i + 1)
+	}
+	if got := ranges(t, many...); len(got) != len(many) {
+		t.Errorf("many: %d", len(got))
+	}
+	if got, err := CanonPorts(append(many, "1")); err != nil || len(got) != len(many) {
+		t.Errorf("canon many: %d %v", len(got), err)
 	}
 }
 
