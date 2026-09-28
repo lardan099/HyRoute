@@ -8,6 +8,7 @@
   import Explain from './Explain.svelte';
   import RulesText from './RulesText.svelte';
   import Help from './Help.svelte';
+  import RouteWizard from './RouteWizard.svelte';
   import { templates, ruleFromTemplate, schemes, applyScheme, schemeTemplates, type Scheme } from './templates';
   import { itemLabel, loadGeo, geo } from '../geo.svelte';
   import { ruleTitle as title, appLabel, siteLabel } from '../ruletitle';
@@ -18,6 +19,7 @@
   let editing = $state<{ index: number; rule: Rule; title: string } | null>(null);
   let picking = $state(false);
   let asText = $state(false);
+  let wizard = $state(false);
   let dragFrom = $state<number | null>(null);
   let dragOver = $state<number | null>(null);
 
@@ -62,7 +64,7 @@
   // edited here (no save in flight, no editor, no text, no drag). A save
   // from a stale list is refused and reloads by itself.
   $effect(() => {
-    if (!s || ui.settingsRev <= rev || ui.settingsRev <= triedAt || pending || editing || asText || dragFrom !== null || reloading) return;
+    if (!s || ui.settingsRev <= rev || ui.settingsRev <= triedAt || pending || editing || asText || wizard || dragFrom !== null || reloading) return;
     triedAt = ui.settingsRev;
     reloading = true;
     load().finally(() => (reloading = false));
@@ -193,6 +195,7 @@
       <p class="muted sub">Что пускать через VPN, что напрямую, а что блокировать. Проверяются сверху вниз, срабатывает первое подходящее.</p>
     </div>
     {#if ui.expert}<button onclick={() => (asText = true)} title="Много правил сразу: весь список текстом или добавить пачкой"><Icon name="log" size={16} />Текстом</button>{/if}
+    <button onclick={() => (wizard = true)} title="Все правила по шагам с объяснениями: сервисы, программы, сайты, блокировка, серверы"><Icon name="wand" size={16} />Пошагово</button>
     <button onclick={() => (picking = true)}><Icon name="sparkles" size={16} />Шаблоны</button>
     <button class="primary" onclick={() => (editing = { index: -1, rule: newRule(), title: 'Новое правило' })}><Icon name="plus" size={16} />Правило</button>
   </header>
@@ -204,8 +207,8 @@
     </p>
     <ul>
       <li>
-        Проще всего добавлять правила кнопкой <b>«Шаблоны»</b>: там готовые варианты для YouTube, Discord, Telegram, ChatGPT и других. Выберите
-        сервис и нажмите «Сохранить».
+        Проще всего настроить всё кнопкой <b>«Пошагово»</b>: HyRoute по очереди спросит про сервисы, программы, сайты, блокировку и серверы и
+        объяснит каждый шаг. Отдельный сервис можно добавить кнопкой <b>«Шаблоны»</b>.
       </li>
       <li>Правила проверяются сверху вниз, и срабатывает первое подходящее. Порядок меняется стрелками справа или перетаскиванием.</li>
       <li><b>«Всё остальное»</b> внизу решает, куда идёт всё, что не подошло ни под одно правило.</li>
@@ -290,7 +293,7 @@
           <div>
             <b>Правил пока нет.</b>
             <p class="muted">
-              Проще всего начать с кнопки «Шаблоны»: там готовые схемы («через VPN только заблокированное в России») и сервисы (YouTube, Discord,
+              Проще всего начать с кнопки «Пошагово»: HyRoute по очереди спросит, что пускать через VPN, и объяснит каждый шаг. Ещё есть «Шаблоны»: там готовые схемы («через VPN только заблокированное в России») и сервисы (YouTube, Discord,
               ChatGPT…). Или создайте правило сами{ui.expert ? ', или вставьте сразу много кнопкой «Текстом»' : ''}.
             </p>
           </div>
@@ -337,6 +340,22 @@
       load();
     }}
   />
+{/if}
+
+{#if wizard}
+  <div class="wizard">
+    <div class="wtop">
+      <b class="grow">Настройка правил по шагам</b>
+      <button class="ghost" onclick={() => (wizard = false)}><Icon name="x" size={16} />Закрыть</button>
+    </div>
+    <RouteWizard
+      onback={() => (wizard = false)}
+      ondone={() => {
+        wizard = false;
+        load();
+      }}
+    />
+  </div>
 {/if}
 
 {#if picking}
@@ -392,6 +411,8 @@
 {/if}
 
 <style>
+  .wizard { position: fixed; inset: 0; z-index: 30; background: var(--bg); display: flex; flex-direction: column; animation: fade 0.15s ease-out; }
+  .wtop { display: flex; align-items: center; gap: 10px; padding: 14px 24px; font-size: 15px; }
   .page-wrap { display: grid; gap: 16px; max-width: 1000px; }
   header { align-items: flex-start; gap: 10px; }
   .sub { margin: 4px 0 0; }

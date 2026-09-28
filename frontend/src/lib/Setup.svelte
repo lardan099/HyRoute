@@ -7,7 +7,6 @@
     api,
     errText,
     plural,
-    cleanSettings,
     optionsOf,
     type CheckResult,
     type Settings,
@@ -19,8 +18,8 @@
   // on a fresh copy (its revision), so it never undoes a change made
   // elsewhere meanwhile.
   import { ui, hide, mainProfile, setupStep, setSetupStep, finishSetup } from '../state.svelte';
-  import { templates, applyScheme, type Scheme, type Template } from './templates';
   import Icon from './Icon.svelte';
+  import RouteWizard from './RouteWizard.svelte';
 
   let { onclose, go }: { onclose: () => void; go: (page: string) => void } = $props();
 
@@ -189,86 +188,16 @@
   const failed = $derived(check?.steps.find((s) => !s.ok && !s.skip));
 
   // ---- mode ----
-  // The user picks the services that go through the VPN, and where the
-  // rest goes. Each service is the rules of its templates: a program and
-  // its sites are separate rules (a rule with both would match only that
-  // program opening those sites).
+  // What goes through the VPN is its own step-by-step (RouteWizard).
+  let modeTitle = $state('как было настроено');
   let settings = $state<Settings | null>(null);
-  let picked = $state<string[]>([]);
-  let rest = $state<'direct' | 'tunnel'>('direct');
-  let ruDirect = $state(true);
-  let modeLoaded = false;
-
-  const tpl = (id: string) => templates.find((t) => t.id === id)!;
-  const aiApps: Template = { id: 'ai-apps', name: 'Нейросети — программы', hint: '', apps: ['ChatGPT.exe', 'claude.exe'], domains: [], group: 'Сервисы' };
-  const aiSites: Template = { ...tpl('ai'), name: 'Нейросети — сайты' };
-
-  const services: { id: string; title: string; hint: string; best?: boolean; rules: Template[] }[] = [
-    { id: 'ai', title: 'Нейросети', hint: 'ChatGPT, Claude, Gemini, Copilot и другие — сайты и программы', best: true, rules: [aiSites, aiApps] },
-    { id: 'telegram', title: 'Telegram', hint: 'программа и веб-версия', best: true, rules: [tpl('telegram-app'), tpl('telegram')] },
-    { id: 'youtube', title: 'YouTube', hint: 'сайт, видео и приложение', rules: [tpl('youtube')] },
-    { id: 'discord', title: 'Discord', hint: 'программа с голосовыми и сайт', rules: [tpl('discord-app'), tpl('discord')] },
-    { id: 'meta', title: 'Instagram, Facebook, WhatsApp', hint: 'все сервисы Meta', rules: [tpl('meta')] },
-    { id: 'x', title: 'X (Twitter)', hint: 'сайт и медиа', rules: [tpl('x')] },
-    { id: 'spotify', title: 'Spotify', hint: 'программа и сайт', rules: [tpl('spotify-app'), tpl('spotify')] },
-    { id: 'netflix', title: 'Netflix', hint: 'сайт и видео', rules: [tpl('netflix')] },
-    { id: 'twitch', title: 'Twitch', hint: 'сайт и трансляции', rules: [tpl('twitch')] },
-    { id: 'linkedin', title: 'LinkedIn', hint: 'сайт', rules: [tpl('linkedin')] },
-    { id: 'ru-blocked', title: 'Всё заблокированное в России', hint: 'сайты и адреса из реестра блокировок, список обновляется сам', rules: [tpl('ru-blocked')] },
-  ];
-
-  function toggleService(id: string) {
-    picked = picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id];
-  }
-
-  async function loadSettings() {
-    try {
-      settings = await api.Settings();
-      if (!modeLoaded) {
-        modeLoaded = true;
-        rest = settings.defaultAction === 'tunnel' ? 'tunnel' : 'direct';
-      }
-    } catch (e) {
-      error = errText(e);
-    }
-  }
 
   $effect(() => {
-    if ((step === 'mode' || step === 'launch') && !settings) loadSettings();
-  });
-
-  const hasRules = $derived((settings?.rules?.length ?? 0) > 0);
-  // Nothing through the VPN at all: the setup would turn on a VPN that does nothing.
-  const nothing = $derived(!hasRules && picked.length === 0 && rest === 'direct');
-
-  async function applyMode() {
-    if (!settings) return;
-    const want: Template[] = [tpl('lan')];
-    if (rest === 'tunnel' && ruDirect) want.push(tpl('ru-inside'));
-    // With the rest through the VPN the services go there anyway.
-    if (rest === 'direct') for (const sv of services) if (picked.includes(sv.id)) want.push(...sv.rules);
-    // Existing rules, nothing picked and «всё остальное» as it was: nothing to save.
-    const unchanged = hasRules && want.length === 1 && rest === (settings.defaultAction === 'tunnel' ? 'tunnel' : 'direct');
-    if (unchanged) return next();
-    busy = true;
-    error = '';
-    try {
-      // Built on a fresh copy: it carries the revision Go checks the save against.
-      const cur = await api.Settings();
-      const sc: Scheme = { id: 'setup', name: '', hint: '', rules: want, rest };
-      await api.SaveSettings(cleanSettings(applyScheme(cur, sc), mainProfile()?.id));
-      settings = await api.Settings();
-      next();
-    } catch (e) {
-      error = errText(e);
-    }
-    busy = false;
-  }
-
-  const modeTitle = $derived.by(() => {
-    const names = services.filter((sv) => picked.includes(sv.id)).map((sv) => sv.title);
-    if (rest === 'tunnel') return 'весь интернет' + (ruDirect ? ', кроме российских банков и Госуслуг' : '');
-    return names.length ? names.join(', ') : hasRules ? 'как было настроено' : 'ничего';
+    if (step === 'launch' && !settings)
+      api
+        .Settings()
+        .then((s) => (settings = s))
+        .catch((e) => (error = errText(e)));
   });
 
   // ---- launch ----
@@ -350,6 +279,15 @@
     {/each}
   </ol>
 
+  {#if step === 'mode'}
+    <RouteWizard
+      onback={back}
+      ondone={(t) => {
+        modeTitle = t;
+        next();
+      }}
+    />
+  {:else}
   <div class="body">
     {#if step === 'hello'}
       <h1>Добро пожаловать!</h1>
@@ -485,54 +423,6 @@
         {/if}
       {/if}
       {#if check && !checking}<div class="row"><button onclick={runCheck}><Icon name="refresh" size={16} />Проверить ещё раз</button></div>{/if}
-    {:else if step === 'mode'}
-      <h1>Что пускать через VPN?</h1>
-      <p class="lead">
-        Отметьте, что должно работать через VPN. Всё неотмеченное пойдёт напрямую, как без VPN. Потом можно добавить что угодно ещё в
-        «Правилах».
-      </p>
-      {#if hasRules}
-        <div class="note info small">
-          У вас уже {settings!.rules.length} {plural(settings!.rules.length, 'правило', 'правила', 'правил')}. Отмеченное добавится к ним, а если ничего не
-          отмечать, правила останутся как есть.
-        </div>
-      {/if}
-      {#each [true, false] as best (best)}
-        <div class="group">{best ? 'Рекомендуем' : 'Ещё'}</div>
-        <div class="tiles" class:dim={rest === 'tunnel'}>
-          {#each services.filter((sv) => !!sv.best === best) as sv (sv.id)}
-            <button class="tile" class:on={picked.includes(sv.id)} onclick={() => toggleService(sv.id)} aria-pressed={picked.includes(sv.id)}>
-              <span class="box-check">{#if picked.includes(sv.id)}<Icon name="check" size={14} stroke={3} />{/if}</span>
-              <span class="ttext"><b>{sv.title}</b><span>{sv.hint}</span></span>
-            </button>
-          {/each}
-        </div>
-      {/each}
-
-      <div class="group">А всё остальное?</div>
-      <div class="seg wide">
-        <button class:on={rest === 'direct'} onclick={() => (rest = 'direct')}>Напрямую, как без VPN</button>
-        <button class:on={rest === 'tunnel'} onclick={() => (rest = 'tunnel')}>Тоже через VPN</button>
-      </div>
-      <p class="muted small">
-        {#if rest === 'direct'}
-          Через VPN пойдёт только отмеченное выше, весь остальной интернет — как обычно.
-        {:else}
-          Через VPN пойдёт весь интернет, как в обычном VPN. Домашняя сеть (роутер, принтер) останется напрямую.
-        {/if}
-      </p>
-      {#if rest === 'tunnel'}
-        <p class="muted small">Сервисы выше отмечать не нужно: они и так пойдут через VPN.</p>
-        <label class="opt">
-          <input type="checkbox" bind:checked={ruDirect} />
-          <span><b>Российские банки, Госуслуги и сайты, которые работают только из России, — напрямую</b>
-            <span>Они часто не открываются или просят подтверждение, когда видят зарубежный адрес.</span></span
-          >
-        </label>
-      {/if}
-      {#if nothing}
-        <div class="note warn small">Отметьте хотя бы один сервис или выберите «Тоже через VPN»: иначе через VPN ничего не пойдёт.</div>
-      {/if}
     {:else if step === 'launch'}
       <h1>Запуск и защита</h1>
       <p class="lead">Последние настройки. Если не уверены — оставьте как есть.</p>
@@ -615,8 +505,6 @@
       >
     {:else if step === 'check'}
       <button class="primary big" onclick={next} disabled={checking && !check}>{check && !check.ok ? 'Всё равно дальше' : 'Дальше'}<Icon name="arrow" size={16} /></button>
-    {:else if step === 'mode'}
-      <button class="primary big" onclick={applyMode} disabled={busy || !settings || nothing}>{busy ? 'Сохраняю…' : 'Дальше'}<Icon name="arrow" size={16} /></button>
     {:else if step === 'launch'}
       <button class="primary big" onclick={applyLaunch} disabled={busy || !auto}>{busy ? 'Сохраняю…' : 'Дальше'}<Icon name="arrow" size={16} /></button>
     {:else if step === 'done'}
@@ -624,6 +512,7 @@
       <button class="primary big" onclick={connect} disabled={busy || ui.profiles.length === 0}><Icon name="power" size={18} />{busy ? 'Подключаюсь…' : 'Включить VPN'}</button>
     {/if}
   </div>
+  {/if}
 </div>
 
 <style>
@@ -697,30 +586,6 @@
   .steps { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
   .steps li.bad { color: var(--block); }
   .link { justify-self: start; align-self: flex-start; }
-
-  .group { font-size: 12px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 6px; }
-  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 8px; }
-  .tile {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    padding: 12px 14px;
-    text-align: left;
-    white-space: normal;
-    justify-content: flex-start;
-    background: var(--surface);
-    border: 1.5px solid var(--border);
-    border-radius: var(--radius);
-  }
-  .tile:hover:not(:disabled) { background: var(--surface); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
-  .tile.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
-  .box-check { width: 20px; height: 20px; border-radius: 6px; border: 2px solid var(--faint); flex: none; display: grid; place-items: center; margin-top: 1px; color: #fff; }
-  .tile.on .box-check { background: var(--accent); border-color: var(--accent); }
-  .ttext { display: grid; gap: 2px; }
-  .tiles.dim { opacity: 0.45; }
-  .ttext span { color: var(--muted); font-size: 12.5px; }
-  .seg.wide { display: flex; }
-  .seg.wide button { flex: 1; padding: 9px 12px; }
 
   .opts { display: grid; gap: 10px; }
   .opt { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); cursor: pointer; }
