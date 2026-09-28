@@ -3,6 +3,7 @@
 //	profiles.json   Hysteria profiles; auth and obfs password are sealed
 //	                with DPAPI (current user) on Windows
 //	settings.json   rules and routing options (internal/settings format)
+//	rulesets.json   rule profiles (rulesets.go); only once there are two
 //
 // Files are replaced atomically (write to a temp file, then rename).
 package store
@@ -33,6 +34,11 @@ func DefaultDir() (string, error) {
 type Store struct {
 	Dir string
 	mu  sync.Mutex
+	// rulesets: TestRulesetsWrite (tests only; nil in HyRoute) runs
+	// before each write of rulesets.json with whether it carries the
+	// pending marker; an error fails that write. Exported for internal/app's
+	// tests of the pair protocol; set it before the calls it covers.
+	TestRulesetsWrite func(pending bool) error
 }
 
 // Open prepares dir and the folders in it where an elevated HyRoute
@@ -171,17 +177,42 @@ func (s *Store) LoadSettings() (*settings.Settings, *rules.Set, error) {
 
 // SaveSettings validates, then writes.
 func (s *Store) SaveSettings(st *settings.Settings) (*rules.Set, error) {
+	b, _, set, err := ValidateSettings(st)
+	if err != nil {
+		return nil, err
+	}
+	return set, s.WriteSettings(b)
+}
+
+// ValidateSettings is the check part of SaveSettings, without writing: the
+// bytes settings.json would get, the settings as parsed back from them and
+// the compiled rules.
+func ValidateSettings(st *settings.Settings) ([]byte, *settings.Settings, *rules.Set, error) {
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	_, set, err := settings.Parse(b)
+	parsed, set, err := settings.Parse(b)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
+	return b, parsed, set, nil
+}
+
+// WriteSettings writes bytes from ValidateSettings to settings.json.
+func (s *Store) WriteSettings(b []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return set, writeAtomic(s.path("settings.json"), b)
+	return writeAtomic(s.path("settings.json"), b)
+}
+
+// HasSettings reports whether settings.json exists (any error but "does
+// not exist" counts as existing: it is then broken, not missing).
+func (s *Store) HasSettings() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := os.Lstat(s.path("settings.json"))
+	return !errors.Is(err, os.ErrNotExist)
 }
 
 func writeAtomic(path string, b []byte) error {

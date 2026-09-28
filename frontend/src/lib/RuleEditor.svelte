@@ -10,7 +10,16 @@
   import FallbackPicker from './FallbackPicker.svelte';
   import { itemLabel, isSpecial, isAddress, shortLabel, loadGeo, geo } from '../geo.svelte';
 
-  let { rule, title, onsave, onclose }: { rule: Rule; title: string; onsave: (r: Rule) => Promise<void>; onclose: () => void } = $props();
+  // stale (rulesets): the rules this editor was opened for are no longer the
+  // page's (the rule profile changed meanwhile): the text says so and
+  // «Сохранить» is off.
+  let {
+    rule,
+    title,
+    stale = '',
+    onsave,
+    onclose,
+  }: { rule: Rule; title: string; stale?: string; onsave: (r: Rule) => Promise<void>; onclose: () => void } = $props();
 
   // svelte-ignore state_referenced_locally
   let r = $state<Rule>(JSON.parse(JSON.stringify(rule)));
@@ -534,12 +543,13 @@
         onclose={() => (picking = false)}
       />
     {/if}
-    {#if error}<div class="note error">{error}</div>{/if}
+    {#if error}<div class="note error">{hide(error)}</div>{/if}
     {#if widened}<div class="note warn small">Правило теперь для всех программ и сайтов на этих портах.</div>{/if}
+    {#if stale}<div class="note warn">{stale}</div>{/if}
 
     <div class="actions">
       <button onclick={onclose}>Отмена</button>
-      <button class="primary" onclick={save} disabled={saving || (empty && !siteInput.trim() && !appInput.trim() && !portText.trim())}>Сохранить</button>
+      <button class="primary" onclick={save} disabled={saving || !!stale || (empty && !siteInput.trim() && !appInput.trim() && !portText.trim())}>Сохранить</button>
     </div>
   </div>
 </div>

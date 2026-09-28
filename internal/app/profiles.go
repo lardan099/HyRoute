@@ -93,11 +93,26 @@ func fallbackHas(fb []string, id string, resolve func(string) string) bool {
 
 // explicitRefsLocked lists Tunnel rules, turned off ones too, that name
 // profile id explicitly. A direct or block route never uses its server or
-// fallbacks, so a stale one left there pins nothing.
+// fallbacks, so a stale one left there pins nothing. Every rule profile
+// counts: a reference from an inactive one is labelled with its name.
 func (c *Controller) explicitRefsLocked(id string) []string {
 	var out []string
+	c.eachRulesConfigLocked(func(label string, active bool, cfg *rules.Config) {
+		for _, r := range explicitRefsIn(cfg, id) {
+			if !active {
+				r += rulesetRefSuffix(label)
+			}
+			out = append(out, r)
+		}
+	})
+	return out
+}
+
+// explicitRefsIn is explicitRefsLocked for the rules of one profile.
+func explicitRefsIn(cfg *rules.Config, id string) []string {
+	var out []string
 	same := func(f string) string { return f }
-	for i, r := range c.settings.Rules {
+	for i, r := range cfg.Rules {
 		if r.Action != rules.Tunnel {
 			continue
 		}
@@ -111,12 +126,12 @@ func (c *Controller) explicitRefsLocked(id string) []string {
 			out = append(out, name+" (запасной сервер)")
 		}
 	}
-	if c.settings.DefaultAction != rules.Tunnel {
+	if cfg.DefaultAction != rules.Tunnel {
 		return out
 	}
-	if c.settings.DefaultProfile == id {
+	if cfg.DefaultProfile == id {
 		out = append(out, "маршрут по умолчанию")
-	} else if fallbackHas(c.settings.DefaultFallback, id, same) {
+	} else if fallbackHas(cfg.DefaultFallback, id, same) {
 		out = append(out, "маршрут по умолчанию (запасной сервер)")
 	}
 	return out
@@ -307,7 +322,7 @@ func (c *Controller) refsUnknownLocked() error {
 	if c.proxiesBroken != nil {
 		return fmt.Errorf("proxies.json не загружен: неизвестно, какие прокси используют сервер. Исправьте или удалите файл и перезапустите HyRoute. Ошибка: %v", c.proxiesBroken)
 	}
-	return nil
+	return c.rulesetsRefsUnknownLocked() // rulesets
 }
 
 // DeleteProfile refuses while a rule or a local proxy names the profile:
@@ -324,7 +339,7 @@ func (c *Controller) DeleteProfile(id string) error {
 	}
 	if refs := c.explicitRefsLocked(id); len(refs) > 0 {
 		c.mu.Unlock()
-		return fmt.Errorf("профиль используется: %s. Выберите в этих правилах другой профиль", strings.Join(refs, ", "))
+		return fmt.Errorf("профиль используется: %s. Выберите в этих правилах другой профиль%s", strings.Join(refs, ", "), rulesetRefsHint(refs))
 	}
 	if refs := c.proxyRefsLocked(id); len(refs) > 0 {
 		c.mu.Unlock()

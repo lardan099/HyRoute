@@ -31,6 +31,9 @@ func (c *Controller) Diagnostics(system []string, privacy bool) string {
 	if st.KillSwitch != "" || st.KillSwitchError != "" {
 		w("   kill switch: %s%s", orDash(st.KillSwitch), msgSuffix(st.KillSwitchError))
 	}
+	for _, l := range c.rulesetDiagLines() { // rulesets
+		w("%s", l)
+	}
 	if st.Stats != nil {
 		s := st.Stats
 		w("   WinDivert: драйвер %s; relay: порт %d", orDash(s.Driver), s.RelayPort)

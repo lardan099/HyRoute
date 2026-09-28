@@ -137,7 +137,7 @@ func Explain(c Config, main string, q Query) Explanation {
 	crs := make([]compiled, len(c.Rules))
 	errs := make([]error, len(c.Rules))
 	for i, r := range c.Rules {
-		crs[i], errs[i] = compileRule(i, r)
+		crs[i], errs[i] = compileRule(i, r, currentGeo())
 	}
 	// trace runs the rules for one domain or cached site ("" = not known).
 	trace := func(dom string) (steps []Step, winner Step) {
@@ -441,7 +441,7 @@ func LintWith(c Config, o LintOptions) []Issue {
 	}
 	var prev []entry
 	for i, r := range c.Rules {
-		cr, err := compileRule(i, r)
+		cr, err := compileRule(i, r, currentGeo())
 		if err != nil {
 			out = append(out, Issue{Index: i, Severity: "warn", Text: err.Error()})
 			continue

@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, errText, fmtBytes, fmtDuration, cleanSettings, strategyLabel, type GroupView, type Settings, type SystemInfo, type TunnelStatus } from '../api';
+  import { api, errText, fmtBytes, fmtDuration, cleanSettings, strategyLabel, type GroupView, type RulesetsView, type Settings, type SystemInfo, type TunnelStatus } from '../api';
   import { ui, hide, settle, mainTarget, profileName } from '../state.svelte';
   import Icon from './Icon.svelte';
   import CheckProfile from './CheckProfile.svelte';
   import Help from './Help.svelte';
   import TargetOptions from './TargetOptions.svelte';
+  import { showSwitchResult, showRulesetError } from './RulesetBar.svelte';
 
   let { go, onsetup }: { go: (page: string) => void; onsetup: () => void } = $props();
 
@@ -35,6 +36,50 @@
     reloading = true;
     loadSettings().finally(() => (reloading = false));
   });
+
+  // rulesets: another rule profile became active (or rulesets.json was
+  // created): the copy «Весь трафик» builds on is reloaded too.
+  let triedToken = '';
+  $effect(() => {
+    const tok = ui.status?.ruleset?.token;
+    if (!settings || !tok || tok === settings.ruleset || tok === triedToken || savingEverything || reloading) return;
+    triedToken = tok;
+    reloading = true;
+    loadSettings().finally(() => (reloading = false));
+  });
+
+  // rulesets: the profile selector (with two or more), reloaded when the
+  // list or the rules change. A failed read shows its error there and is
+  // retried with the next change.
+  let rsView = $state<RulesetsView | null>(null);
+  let rsError = $state('');
+  let rsSeen = '';
+  $effect(() => {
+    const r = ui.status?.ruleset;
+    if (!r || r.count < 2) return;
+    const key = `${r.rev}:${r.token}:${ui.settingsRev}`;
+    if (key === rsSeen) return;
+    rsSeen = key;
+    api
+      .Rulesets()
+      .then((v) => {
+        rsView = v;
+        rsError = '';
+      })
+      .catch((e) => (rsError = errText(e)));
+  });
+
+  // The select shows the result at once: the status poll reports the new
+  // profile only up to a second later.
+  async function switchTo(id: string) {
+    try {
+      const res = await api.SwitchRuleset(id);
+      if (rsView) rsView.active = res.ruleset.id;
+      showSwitchResult(res);
+    } catch (e) {
+      showRulesetError(e);
+    }
+  }
 
   let sys = $state<SystemInfo | null>(null);
   let moving = $state(false);
@@ -303,6 +348,16 @@
     <div class="grid">
       <section class="card">
         <h2>Что идёт через VPN</h2>
+        {#if (ui.status?.ruleset?.count ?? 0) >= 2 && rsView?.saved}
+          <label class="rs">
+            <span class="muted small">Профиль правил</span>
+            <select value={rsView.active} onchange={(e) => settle(e, (el) => switchTo(el.value), () => rsView?.active)}>
+              {#each rsView.list as r (r.id)}<option value={r.id} disabled={!!r.error}>{hide(r.name)}</option>{/each}
+            </select>
+          </label>
+        {:else if (ui.status?.ruleset?.count ?? 0) >= 2 && rsError}
+          <p class="note muted small">Профили правил не загрузились: {hide(rsError)}</p>
+        {/if}
         <div class="seg wide">
           <button class:on={everything} onclick={() => setEverything(true)}><Icon name="globe" size={16} />Весь трафик</button>
           <button class:on={selected} onclick={() => setEverything(false)}><Icon name="rules" size={16} />Только выбранное</button>
@@ -438,6 +493,9 @@
   .main-select { width: 100%; font-size: 15px; padding: 9px 12px; }
   .sub { margin: 8px 0 0; }
   .probe { display: grid; gap: 4px; margin-top: 10px; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--surface-2); }
+  /* rulesets */
+  .rs { display: flex; align-items: center; gap: 10px; margin: -4px 0 10px; }
+  .rs select { flex: 1; min-width: 0; }
 
   .start ol { margin: 0; padding-left: 20px; display: grid; gap: 12px; }
   .start.simple { display: flex; align-items: center; gap: 16px; }

@@ -5,7 +5,7 @@
 // rule with both matches only when those programs open those sites, and a
 // program such as Discord (voice by IP) or Telegram needs all its traffic
 // through the VPN.
-import type { Action, Rule, Settings } from '../api';
+import { cleanSettings, type Action, type Rule, type RulesConfig, type Settings } from '../api';
 
 export interface Template {
   id: string;
@@ -167,4 +167,11 @@ export function applyScheme(s: Settings, sc: Scheme): Settings {
   next.defaultAction = sc.rest;
   if (sc.rest !== 'tunnel') next.defaultProfile = '';
   return next;
+}
+
+// rulesets: schemeConfig is a scheme as the rules of a new rule profile
+// («Новым профилем»): its rules and «Всё остальное», nothing else.
+export function schemeConfig(sc: Scheme, mainId?: string): RulesConfig {
+  const s = cleanSettings(applyScheme({ defaultAction: 'direct', rules: [] }, sc), mainId);
+  return { defaultAction: s.defaultAction, defaultProfile: s.defaultProfile, defaultFallback: s.defaultFallback, rules: s.rules };
 }

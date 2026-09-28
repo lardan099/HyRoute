@@ -239,7 +239,7 @@ func TestSaveEngineOptions(t *testing.T) {
 func TestApplyRulesTextGuard(t *testing.T) {
 	c, _ := newCtl(t)
 	v, err := c.RulesTextFor("")
-	if err != nil || v.Rev != c.SettingsRev() || v.Ruleset != "" {
+	if err != nil || v.Rev != c.SettingsRev() || v.Ruleset != implicitToken { // rulesets: the token of the rules
 		t.Fatalf("%+v %v", v, err)
 	}
 	if _, err := c.RulesTextFor("other"); err == nil {

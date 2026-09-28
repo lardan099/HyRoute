@@ -316,10 +316,10 @@ func (g *GUI) CopyText(text string) error { return runtime.ClipboardSetText(g.co
 func (g *GUI) Settings() app.SettingsView      { return g.ctl.SettingsView() }
 func (g *GUI) RuleWarnings() []app.RuleWarning { return g.ctl.RuleWarnings() }
 
-// Rules as text (many at once).
-func (g *GUI) RulesText() app.RulesTextView {
-	v, _ := g.ctl.RulesTextFor("") // the active rules always render
-	return v
+// Rules as text (many at once): of the rule profile the page shows (its
+// token; "" = the active one).
+func (g *GUI) RulesText(ruleset string) (app.RulesTextView, error) {
+	return g.ctl.RulesTextFor(ruleset)
 }
 func (g *GUI) ParseRulesText(text string) app.RulesTextResult { return g.ctl.ParseRulesText(text) }
 func (g *GUI) ApplyRulesText(text string, replace bool, guard app.EditGuard) (app.RulesTextResult, error) {

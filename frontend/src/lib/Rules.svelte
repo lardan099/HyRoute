@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, errText, toLists, cleanSettings, cleanFallback, isGroupId, portsText, type Settings, type Rule, type LintIssue } from '../api';
+  import { api, errText, toLists, cleanSettings, cleanFallback, isGroupId, portsText, isEditToken, plural, tokenStale, editGone, type Settings, type Rule, type LintIssue, type RulesetsView } from '../api';
   import { ui, hide, profileName, mainTarget, mainText } from '../state.svelte';
   import Icon from './Icon.svelte';
   import TargetOptions from './TargetOptions.svelte';
@@ -10,14 +10,27 @@
   import RulesText from './RulesText.svelte';
   import Help from './Help.svelte';
   import RouteWizard from './RouteWizard.svelte';
+  import RulesetBar, { showSwitchResult, showRulesetError } from './RulesetBar.svelte';
+  import RulesetDialog from './RulesetDialog.svelte';
   import { templates, ruleFromTemplate, schemes, applyScheme, schemeTemplates, type Scheme } from './templates';
   import { itemLabel, loadGeo, geo } from '../geo.svelte';
   import { ruleTitle as title, appLabel, siteLabel } from '../ruletitle';
+  import { toast } from '../toast.svelte';
 
   let s = $state<Settings | null>(null);
   let error = $state('');
   let lint = $state<LintIssue[]>([]);
-  let editing = $state<{ index: number; rule: Rule; title: string } | null>(null);
+  // token: the rules the editor was opened for; it never follows a reload.
+  let editing = $state<{ index: number; rule: Rule; title: string; token: string } | null>(null);
+  // rulesets: edit mode (an inactive profile opened without switching to
+  // it), the profile list from the bar, and a note after edit mode ended.
+  let editId = $state<string | null>(null);
+  let rsView = $state<RulesetsView | null>(null);
+  let rsNote = $state<{ kind: 'on' | 'gone'; name: string } | null>(null);
+  let schemeDialog = $state<{ view: RulesetsView; scheme: Scheme } | null>(null);
+  const editName = $derived(rsView?.list.find((r) => r.id === editId)?.name ?? '');
+  const editError = $derived(rsView?.list.find((r) => r.id === editId)?.error ?? '');
+  const activeName = $derived(ui.status?.ruleset?.name || 'Основной');
   let picking = $state(false);
   let asText = $state(false);
   let wizard = $state(false);
@@ -32,19 +45,48 @@
   // and Go refuses one built on rules changed elsewhere meanwhile (a rule
   // from «Соединения», «Главная», the CLI…); pending counts saves in flight.
   let rev = $state(0);
-  let editRev = 0;
+  let editRev = $state(0);
   let pending = $state(0);
   let reloading = $state(false);
   // triedAt: ui.settingsRev when the last idle reload started. A change
   // reported during a reload is caught up after it; a failed reload is not
-  // retried until the revision grows again.
+  // retried until the revision grows again. triedToken, triedEditAt: the
+  // same for a change of the active profile and, in edit mode, of the
+  // profile list's revision.
   let triedAt = 0;
+  let triedToken = '';
+  let triedEditAt = 0;
 
+  // readRules is the page's copy: the active rules, or in edit mode the
+  // edited profile's. That profile may have become the active one (Go then
+  // returns the active view) or been deleted: edit mode ends with a note.
+  async function readRules(): Promise<Settings> {
+    const want = editId;
+    if (!want) return api.Settings();
+    const name = editName;
+    try {
+      const v = await api.RulesetSettings(want);
+      if (want === editId && !isEditToken(v.ruleset)) {
+        editId = null;
+        rsNote = { kind: 'on', name };
+      }
+      return v;
+    } catch (e) {
+      if (want !== editId || errText(e) !== 'Профиль правил не найден') throw e;
+      editId = null;
+      rsNote = { kind: 'gone', name };
+      return api.Settings();
+    }
+  }
+
+  // loads counts the loads: a newer one (another profile opened) wins.
+  let loads = 0;
   async function load() {
     const my = edits;
+    const seq = ++loads;
     try {
-      const v = await api.Settings();
-      if (my !== edits) return;
+      const v = await readRules();
+      if (my !== edits || seq !== loads) return;
       v.rules = (v.rules ?? []).map(toLists);
       s = v;
       rev = v.rev ?? 0;
@@ -64,12 +106,73 @@
   // The rules changed elsewhere: reload, but only while nothing is being
   // edited here (no save in flight, no editor, no text, no drag). A save
   // from a stale list is refused and reloads by itself.
+  // rulesets: the active profile changed (a switch from the tray, the CLI,
+  // a network rule) also reloads; in edit mode the profile list's revision
+  // does (the edited profile was edited elsewhere, switched to or deleted).
   $effect(() => {
-    if (!s || ui.settingsRev <= rev || ui.settingsRev <= triedAt || pending || editing || asText || wizard || dragFrom !== null || reloading) return;
-    triedAt = ui.settingsRev;
+    if (!s || pending || editing || asText || wizard || dragFrom !== null || reloading) return;
+    const r = ui.status?.ruleset;
+    if (editId) {
+      if (!r || r.rev <= editRev || r.rev <= triedEditAt) return;
+      triedEditAt = r.rev;
+    } else if (r && tokenStale(s.ruleset, r) && r.token !== triedToken) {
+      triedToken = r.token;
+    } else {
+      if (ui.settingsRev <= rev || ui.settingsRev <= triedAt) return;
+      triedAt = ui.settingsRev;
+    }
     reloading = true;
     load().finally(() => (reloading = false));
   });
+
+  // rulesets: edit mode starts or ends (the bar, the banner). The old
+  // copy goes at once: until the chosen rules load there is nothing to
+  // edit, so no click lands in the profile that was on screen.
+  function setEdit(id: string | null) {
+    rsNote = null;
+    error = '';
+    editId = id;
+    s = null;
+    lint = [];
+    load();
+  }
+
+  // «Включить его»: after the page's own queued saves.
+  async function activateEdited() {
+    const id = editId;
+    if (!id) return;
+    try {
+      await saving;
+      showSwitchResult(await api.SwitchRuleset(id));
+      setEdit(null);
+    } catch (e) {
+      showRulesetError(e);
+    }
+  }
+
+  // «Новым профилем» from «Шаблоны».
+  async function schemeAsProfile(sc: Scheme) {
+    try {
+      const view = await api.Rulesets();
+      picking = false;
+      schemeDialog = { view, scheme: sc };
+    } catch (e) {
+      error = errText(e);
+    }
+  }
+
+  // The text of a stale open editor (its rules are no longer the page's).
+  const staleText = $derived(
+    `Профиль правил сменился на «${hide(activeName)}», пока было открыто это окно: изменения сюда не сохранятся. Закройте окно и откройте заново.`,
+  );
+  // staleFor: the stale text for an editor opened with token ('' = fresh);
+  // an edited profile deleted elsewhere gets its own.
+  function staleFor(token: string): string {
+    const r = ui.status?.ruleset;
+    if (!tokenStale(token, r, rsView)) return '';
+    if (r && editGone(token, r, rsView)) return 'Этот профиль правил удалили, пока было открыто это окно: изменения сюда не сохранятся. Закройте окно.';
+    return staleText;
+  }
 
   async function useScheme(sc: Scheme) {
     if (!s) return;
@@ -120,12 +223,19 @@
     return JSON.parse(JSON.stringify(s));
   }
 
-  async function saveRule(index: number, r: Rule) {
+  // saveRule saves with the token the editor was opened with: after a
+  // switch it is refused, never written into another profile.
+  async function saveRule(index: number, r: Rule, token: string) {
     const next = clone();
+    next.ruleset = token;
     if (index < 0) next.rules.push(r);
     else next.rules[index] = r;
     await persist(next);
     editing = null;
+  }
+
+  function openEditor(index: number, rule: Rule, t: string) {
+    editing = { index, rule, title: t, token: s?.ruleset ?? '' };
   }
 
   function move(from: number, to: number) {
@@ -202,10 +312,25 @@
       <h1>Правила</h1>
       <p class="muted sub">Что пускать через VPN, что напрямую, а что блокировать. Проверяются сверху вниз, срабатывает первое подходящее.</p>
     </div>
-    {#if ui.expert}<button onclick={() => (asText = true)} title="Много правил сразу: весь список текстом или добавить пачкой"><Icon name="log" size={16} />Текстом</button>{/if}
-    <button onclick={() => (wizard = true)} title="Все правила по шагам с объяснениями: сервисы, программы, сайты, блокировка, серверы"><Icon name="wand" size={16} />Пошагово</button>
-    <button onclick={() => (picking = true)}><Icon name="sparkles" size={16} />Шаблоны</button>
-    <button class="primary" onclick={() => (editing = { index: -1, rule: newRule(), title: 'Новое правило' })}><Icon name="plus" size={16} />Правило</button>
+    {#if ui.expert || (ui.status?.ruleset?.count ?? 0) >= 2}
+      <RulesetBar
+        editing={editId}
+        beforeSwitch={() => saving.then(() => {})}
+        onedit={setEdit}
+        onchanged={load}
+        onerror={(m) => (error = m)}
+        onview={(v) => (rsView = v)}
+      />
+    {/if}
+    {#if ui.expert}<button onclick={() => (asText = true)} disabled={!s} title="Много правил сразу: весь список текстом или добавить пачкой"><Icon name="log" size={16} />Текстом</button>{/if}
+    <button
+      onclick={() => (wizard = true)}
+      disabled={!s || !!editId}
+      title={editId ? 'Пошагово настраивает включённый профиль правил: вернитесь к нему' : 'Все правила по шагам с объяснениями: сервисы, программы, сайты, блокировка, серверы'}
+      ><Icon name="wand" size={16} />Пошагово</button
+    >
+    <button onclick={() => (picking = true)} disabled={!s}><Icon name="sparkles" size={16} />Шаблоны</button>
+    <button class="primary" onclick={() => openEditor(-1, newRule(), 'Новое правило')} disabled={!s}><Icon name="plus" size={16} />Правило</button>
   </header>
 
   <Help id="rules" title="Что такое правила">
@@ -224,7 +349,28 @@
     </ul>
   </Help>
 
-  {#if error}<div class="note error">{error}</div>{/if}
+  {#if editId}
+    <div class="note warn edit-banner">
+      <Icon name="eye" size={16} />
+      <div class="grow">
+        Вы правите профиль правил «{hide(editName)}» — он не включён. Изменения сохраняются в нём; соединения идут по «{hide(activeName)}».
+      </div>
+      <button onclick={activateEdited} disabled={!!editError}>Включить его</button>
+      <button onclick={() => setEdit(null)}>Вернуться к «{hide(activeName)}»</button>
+    </div>
+    {#if editError}
+      <div class="note error">Профиль не загружается: {hide(editError)}. Исправьте правила здесь — после сохранения его можно будет включить.</div>
+    {:else if s?.warnings?.length}
+      {@const n = s.warnings.length}
+      <div class="note warn">
+        В профиле {n} {plural(n, 'правило', 'правила', 'правил')} с удалёнными или пропавшими серверами: такие соединения будут отклоняться.
+      </div>
+    {/if}
+  {:else if rsNote}
+    <div class="note info">{rsNote.kind === 'on' ? `Профиль «${hide(rsNote.name)}» включён` : `Профиль правил «${hide(rsNote.name)}» удалён`}</div>
+  {/if}
+
+  {#if error}<div class="note error">{hide(error)}</div>{/if}
 
   {#if s}
     <div class="list">
@@ -263,7 +409,7 @@
             <input type="checkbox" checked={r.enabled !== false} onchange={() => toggle(i)} />
             <span></span>
           </label>
-          <button class="body" onclick={() => (editing = { index: i, rule: JSON.parse(JSON.stringify(r)), title: 'Правило' })}>
+          <button class="body" onclick={() => openEditor(i, JSON.parse(JSON.stringify(r)), 'Правило')}>
             <span class="t ellipsis">{title(r)}</span>
             <span class="what">
               {#each (r.apps ?? []).slice(0, 3) as a}<span class="tag"><Icon name="app" size={12} />{appLabel(a.pattern)}</span>{/each}
@@ -337,11 +483,39 @@
 </div>
 
 {#if editing}
-  <RuleEditor rule={editing.rule} title={editing.title} onsave={(r) => saveRule(editing!.index, r)} onclose={() => (editing = null)} />
+  <RuleEditor
+    rule={editing.rule}
+    title={editing.title}
+    stale={staleFor(editing.token)}
+    onsave={(r) => saveRule(editing!.index, r, editing!.token)}
+    onclose={() => (editing = null)}
+  />
+{/if}
+
+{#if schemeDialog}
+  <RulesetDialog
+    mode="create"
+    view={schemeDialog.view}
+    scheme={schemeDialog.scheme}
+    beforeSwitch={() => saving.then(() => {})}
+    onclose={() => (schemeDialog = null)}
+    ondone={(res) => {
+      schemeDialog = null;
+      if (res?.switch) showSwitchResult(res.switch);
+      else if (res) {
+        const { id, name } = res.view;
+        toast({ tone: 'ok', text: () => `Создан профиль правил «${hide(name)}»`, actions: [{ label: () => 'Открыть', run: () => setEdit(id) }] });
+      }
+      load();
+    }}
+  />
 {/if}
 
 {#if asText}
   <RulesText
+    target={s?.ruleset ?? ''}
+    rulesetName={editId ? editName : activeName}
+    list={rsView}
     onclose={() => (asText = false)}
     onsaved={() => {
       asText = false;
@@ -379,15 +553,20 @@
       </div>
       <div class="tscroll">
         <div class="tgroup">Готовые схемы — одной кнопкой</div>
+        {#if ui.expert}<p class="muted small lead">Схему можно применить к текущим правилам или сохранить отдельным профилем правил, не трогая текущие.</p>{/if}
         <div class="schemes">
           {#each schemes as sc (sc.id)}
             {@const miss = missingLists(schemeTemplates(sc).flatMap((t) => t.domains))}
-            <button class="tpl scheme" onclick={() => useScheme(sc)}>
+            <div class="tpl scheme">
               <b>{sc.name}</b><span class="muted small">{sc.hint}</span>
               {#if sc.source && sc.source !== geo.sources.find((x) => x.short === geo.sourceName)?.id}
                 <span class="warn-t small"><Icon name="alert" size={12} /> рассчитана на базу {geo.sources.find((x) => x.id === sc.source)?.short ?? sc.source}: выберите её в «Настройки → Базы правил»</span>
               {:else if miss}<span class="warn-t small"><Icon name="alert" size={12} /> часть списков {miss}</span>{/if}
-            </button>
+              <span class="row scheme-acts">
+                <button onclick={() => useScheme(sc)}>Добавить к текущим</button>
+                {#if ui.expert}<button onclick={() => schemeAsProfile(sc)}>Новым профилем</button>{/if}
+              </span>
+            </div>
           {/each}
         </div>
         <p class="muted small">
@@ -403,7 +582,7 @@
                 class="tpl"
                 onclick={() => {
                   picking = false;
-                  editing = { index: -1, rule: ruleFromTemplate(t), title: `Новое правило: ${t.name}` };
+                  openEditor(-1, ruleFromTemplate(t), `Новое правило: ${t.name}`);
                 }}
               >
                 <b>{t.name}</b><span class="muted small">{t.hint}</span>
@@ -470,4 +649,13 @@
   .tag .src { font-size: 10.5px; opacity: 0.65; margin-left: 2px; }
   .tag .src::before { content: '· '; }
   .tpl { flex-direction: column; align-items: flex-start; gap: 2px; padding: 12px 14px; background: var(--surface-2); text-align: left; white-space: normal; }
+  /* rulesets */
+  div.tpl { display: flex; border-radius: var(--radius-sm); }
+  .scheme-acts { margin-top: 8px; gap: 6px; }
+  .scheme-acts button { background: var(--surface); padding: 5px 10px; font-size: 12.5px; }
+  .scheme-acts button:hover:not(:disabled) { background: var(--surface-3); }
+  .lead { margin: 0 0 8px; }
+  .edit-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .edit-banner > :global(svg) { flex: none; }
+  .edit-banner button { background: var(--surface); }
 </style>

@@ -333,7 +333,10 @@
       next.defaultAction = restAction;
       next.defaultProfile = restAction === 'tunnel' ? (server.rest ?? '') : '';
       next.defaultFallback = restAction === 'tunnel' ? reserveOf(server.rest ?? '') : [];
-      await api.SaveSettings(cleanSettings(next, main?.id));
+      // rulesets: the active rule profile, the one this window opened with
+      // (its token): Go refuses the save if another one was switched to
+      // meanwhile (the tray, the CLI, a network rule).
+      await api.SaveSettings({ ...cleanSettings(next, main?.id), ruleset: settings?.ruleset ?? cur.ruleset });
       ondone(summary());
     } catch (e) {
       error = errText(e);
@@ -583,6 +586,9 @@
             <span class="ctext"><span class="ctitle">Заменить мои правила новыми</span><span class="muted small">Старые правила удалятся.</span></span>
           </button>
         </div>
+      {/if}
+      {#if (ui.status?.ruleset?.count ?? 0) >= 2}
+        <p class="muted small">Правила сохранятся в профиль правил «{hide(ui.status?.ruleset?.name)}» — тот, что сейчас включён.</p>
       {/if}
       <p class="muted small">Потом всё можно поменять на странице «Правила»: включить или выключить правило, поменять сервер, порядок, добавить новое.</p>
     {/if}

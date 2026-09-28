@@ -11,6 +11,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/rules"
 	"github.com/lardan099/hyroute/internal/settings"
+	"github.com/lardan099/hyroute/internal/store"
 )
 
 func (c *Controller) Settings() settings.Settings {
@@ -80,7 +81,12 @@ func (c *Controller) SettingsRev() uint64 { return c.settingsRev.Load() }
 func (c *Controller) SettingsView() SettingsView {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return SettingsView{Settings: *c.settings, Rev: c.settingsRev.Load()}
+	return c.settingsViewLocked()
+}
+
+// settingsViewLocked is SettingsView with c.mu held.
+func (c *Controller) settingsViewLocked() SettingsView {
+	return SettingsView{Settings: *c.settings, Ruleset: c.tokenLocked(), Rev: c.settingsRev.Load()}
 }
 
 func (c *Controller) settingsBrokenError() error {
@@ -120,18 +126,22 @@ func (c *Controller) guardLocked(g EditGuard, cfg rules.Config) (editID string, 
 // guardTargetLocked is the part of the guard that does not depend on the
 // rules to save: which rules g addresses and whether its copy still
 // belongs to them. editRulesIn runs it before fn, so fn never edits rules
-// the guard refuses. Only the active rules exist so far: rule profiles add
-// the token check and the edit mode here.
+// the guard refuses. The rule profile token is checked first (a switch
+// gets its own message), and "edit:<id>" addresses inactive profile id.
 func (c *Controller) guardTargetLocked(g EditGuard) (editID string, err error) {
-	return "", nil
+	return c.rulesetTargetLocked(g.Ruleset)
 }
 
 // guardRevLocked is the revision rule (c.mu held): a copy of the active
 // rules read before their last change (g.Rev < rulesAt) may not replace
 // them with something else. A copy stale only because of an engine option
-// save passes, and so does one whose rules equal the current ones.
+// save passes, and so does one whose rules equal the current ones. For an
+// inactive profile the same with EditRev and that profile's rsAt.
 func (c *Controller) guardRevLocked(g EditGuard, editID string, cfg rules.Config) error {
 	if editID == "" && g.Rev != 0 && g.Rev < c.rulesAt && !sameRules(cfg, c.settings.Config) {
+		return errRulesChanged
+	}
+	if editID != "" && c.editRevStaleLocked(g, editID, cfg) {
 		return errRulesChanged
 	}
 	return nil
@@ -141,16 +151,24 @@ func (c *Controller) guardRevLocked(g EditGuard, editID string, cfg rules.Config
 // held. At install (under c.mu) it increments the settings revision and,
 // when the rules part changed, sets rulesAt to it. post runs the follow-ups
 // (log, geo, kill switch, OnChange, OnSettings) and must be called after
-// c.saveMu is released. A failed write changes nothing.
-func (c *Controller) commitSettingsLocked(st settings.Settings) (res SaveResult, post func(), err error) {
+// c.saveMu is released. A failed write changes nothing. settings.json is
+// written alone or together with rulesets.json (next, a switch; or when
+// the rule profiles' protocol needs it, see writeSettingsLocked). Rules
+// that do not compile are an invalidSettings error.
+func (c *Controller) commitSettingsLocked(st settings.Settings, next *store.Rulesets) (res SaveResult, post func(), err error) {
 	if st.Rules == nil {
 		st.Rules = []rules.Rule{}
 	}
-	set, err := c.Store.SaveSettings(&st)
+	b, parsed, set, err := validateSettings(&st)
+	if err != nil {
+		return SaveResult{}, nil, invalidSettings{err}
+	}
+	wr, err := c.writeSettingsLocked(b, parsed.Config, next)
 	if err != nil {
 		return SaveResult{}, nil, err
 	}
 	c.mu.Lock()
+	c.installWriteLocked(wr)
 	ksChanged := c.settings == nil || c.settings.KillSwitchOn() != st.KillSwitchOn()
 	rulesChanged := c.settings == nil || !sameRules(c.settings.Config, st.Config)
 	c.settings, c.set = &st, set
@@ -202,11 +220,11 @@ func (c *Controller) SaveSettingsIn(g EditGuard, st settings.Settings) (SaveResu
 	if st.Rules == nil {
 		st.Rules = []rules.Rule{}
 	}
-	return c.commitWith(func() (settings.Settings, bool, error) {
+	return c.commitWith(func() (settings.Settings, string, bool, error) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		_, err := c.guardLocked(g, st.Config)
-		return st, true, err
+		editID, err := c.guardLocked(g, st.Config)
+		return st, editID, true, err
 	})
 }
 
@@ -216,25 +234,26 @@ func (c *Controller) SaveRulesIn(g EditGuard, cfg rules.Config) (SaveResult, err
 	if cfg.Rules == nil {
 		cfg.Rules = []rules.Rule{}
 	}
-	return c.commitWith(func() (settings.Settings, bool, error) {
+	return c.commitWith(func() (settings.Settings, string, bool, error) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if _, err := c.guardLocked(g, cfg); err != nil {
-			return settings.Settings{}, false, err
+		editID, err := c.guardLocked(g, cfg)
+		if err != nil {
+			return settings.Settings{}, "", false, err
 		}
 		st := *c.settings
 		st.Config = cfg
-		return st, true, nil
+		return st, editID, true, nil
 	})
 }
 
 // SaveEngineOptions saves o as the engine options; the rules part stays
 // the current one. No guard: it cannot conflict with a rules change.
 func (c *Controller) SaveEngineOptions(o settings.EngineOptions) (SaveResult, error) {
-	return c.commitWith(func() (settings.Settings, bool, error) {
+	return c.commitWith(func() (settings.Settings, string, bool, error) {
 		st := c.Settings()
 		st.SetOptions(o)
-		return st, true, nil
+		return st, "", true, nil
 	})
 }
 
@@ -246,18 +265,21 @@ func (c *Controller) SaveEngineOptions(o settings.EngineOptions) (SaveResult, er
 // from fn never hides it); then fn; then guardRevLocked on the edited
 // rules, which the revision rule compares with the current ones.
 func (c *Controller) editRulesIn(g EditGuard, fn func(cfg *rules.Config) (bool, error)) (SaveResult, error) {
-	return c.commitWith(func() (settings.Settings, bool, error) {
+	return c.commitWith(func() (settings.Settings, string, bool, error) {
 		c.mu.Lock()
 		editID, err := c.guardTargetLocked(g)
 		st := *c.settings
+		if cfg, ok := c.configOfLocked(editID); err == nil && ok {
+			st.Config = *cfg // an inactive profile's rules with an "edit:" token
+		}
 		c.mu.Unlock()
 		if err != nil {
-			return settings.Settings{}, false, err
+			return settings.Settings{}, "", false, err
 		}
 		// A deep copy: fn may edit it in place, the live rules stay intact.
 		st.Config = st.Config.Clone()
 		if ok, err := fn(&st.Config); err != nil || !ok {
-			return settings.Settings{}, false, err
+			return settings.Settings{}, "", false, err
 		}
 		if st.Rules == nil {
 			st.Rules = []rules.Rule{}
@@ -265,7 +287,7 @@ func (c *Controller) editRulesIn(g EditGuard, fn func(cfg *rules.Config) (bool, 
 		// c.saveMu is still held: the rules and rulesAt are those fn saw.
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		return st, true, c.guardRevLocked(g, editID, st.Config)
+		return st, editID, true, c.guardRevLocked(g, editID, st.Config)
 	})
 }
 
@@ -276,20 +298,27 @@ func (c *Controller) editRules(fn func(cfg *rules.Config) (bool, error)) (SaveRe
 
 // commitWith is the one settings write path: under c.saveMu it checks that
 // settings.json loaded, builds the settings to save with next (which runs
-// the guard; save = false saves nothing) and commits them. The follow-ups
-// run after c.saveMu is released.
-func (c *Controller) commitWith(next func() (st settings.Settings, save bool, err error)) (SaveResult, error) {
+// the guard; save = false saves nothing) and commits them: the active
+// rules, or with editID the rules of that inactive rule profile. The
+// follow-ups run after c.saveMu is released.
+func (c *Controller) commitWith(next func() (st settings.Settings, editID string, save bool, err error)) (SaveResult, error) {
 	c.saveMu.Lock()
 	if err := c.settingsBrokenError(); err != nil {
 		c.saveMu.Unlock()
 		return SaveResult{}, err
 	}
-	st, save, err := next()
+	st, editID, save, err := next()
 	if err != nil || !save {
 		c.saveMu.Unlock()
 		return SaveResult{Rev: c.SettingsRev()}, err
 	}
-	res, post, err := c.commitSettingsLocked(st)
+	var res SaveResult
+	var post func()
+	if editID != "" {
+		res, post, err = c.commitInactiveLocked(editID, st.Config)
+	} else {
+		res, post, err = c.commitSettingsLocked(st, nil)
+	}
 	c.saveMu.Unlock()
 	if err != nil {
 		return SaveResult{}, err
@@ -320,7 +349,10 @@ func (c *Controller) RuleWarnings() []RuleWarning {
 	return c.ruleWarningsLocked()
 }
 
-func (c *Controller) ruleWarningsLocked() []RuleWarning {
+func (c *Controller) ruleWarningsLocked() []RuleWarning { return c.ruleWarningsFor(&c.settings.Config) }
+
+// ruleWarningsFor is RuleWarnings for the rules of any profile (c.mu held).
+func (c *Controller) ruleWarningsFor(cfg *rules.Config) []RuleWarning {
 	out := []RuleWarning{}
 	check := func(i int, name, profile string) {
 		w := RuleWarning{Index: i, Rule: name, Profile: profile}
@@ -367,7 +399,7 @@ func (c *Controller) ruleWarningsLocked() []RuleWarning {
 			}
 		}
 	}
-	for i, r := range c.settings.Rules {
+	for i, r := range cfg.Rules {
 		if r.Action != rules.Tunnel || (r.Enabled != nil && !*r.Enabled) {
 			continue
 		}
@@ -375,9 +407,9 @@ func (c *Controller) ruleWarningsLocked() []RuleWarning {
 		check(i, name, r.Profile)
 		checkFallback(i, name, r.Fallback)
 	}
-	if c.settings.DefaultAction == rules.Tunnel {
-		check(-1, "по умолчанию", c.settings.DefaultProfile)
-		checkFallback(-1, "по умолчанию", c.settings.DefaultFallback)
+	if cfg.DefaultAction == rules.Tunnel {
+		check(-1, "по умолчанию", cfg.DefaultProfile)
+		checkFallback(-1, "по умолчанию", cfg.DefaultFallback)
 	}
 	return out
 }

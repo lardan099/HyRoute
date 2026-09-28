@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -979,16 +980,27 @@ type RulesTextView struct {
 	EditRev uint64 `json:"editRev,omitempty"`
 }
 
-// RulesTextFor renders the rules the token names as text: "" = the active
-// rules (the only ones until rule profiles exist).
+// RulesTextFor renders the rules the token names as text: "" or the active
+// token = the active rules, "edit:<id>" = inactive rule profile id. The
+// view carries the token and revisions read with the rules. A token that
+// no longer names what it was read for gets a refusal that says to reopen
+// (nothing was being saved).
 func (c *Controller) RulesTextFor(token string) (RulesTextView, error) {
-	if token != "" {
-		return RulesTextView{}, fmt.Errorf("неизвестный профиль правил %q", token)
-	}
 	c.mu.Lock()
-	cfg := c.settings.Config
+	editID, err := c.rulesetTargetLocked(token)
+	if errors.Is(err, errRulesetChanged) {
+		err = rulesetChangedError("Профиль правил сменился, пока было открыто это окно: закройте его и откройте снова.")
+	}
+	cfg, _ := c.configOfLocked(editID)
+	v := RulesTextView{Ruleset: c.tokenLocked(), Rev: c.settingsRev.Load()}
+	if editID != "" {
+		v.Ruleset, v.EditRev = token, c.rsRev
+	}
 	ts := c.targetsLocked()
-	rev := c.settingsRev.Load()
 	c.mu.Unlock()
-	return RulesTextView{Text: formatRulesText(cfg, ts), Rev: rev}, nil
+	if err != nil {
+		return RulesTextView{}, err
+	}
+	v.Text = formatRulesText(*cfg, ts)
+	return v, nil
 }

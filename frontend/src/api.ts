@@ -277,6 +277,8 @@ export interface Status {
   mainUnloaded?: boolean;
   mainGroup?: GroupBrief;
   groupsNote?: string;
+  // rulesets: the active rule profile (rev and token make pages reload)
+  ruleset: RulesetRef;
 }
 
 export interface Flow {
@@ -487,7 +489,7 @@ interface GUI {
   Settings(): Promise<Settings>;
   SaveSettings(s: Settings): Promise<SaveResult>;
   RuleWarnings(): Promise<RuleWarning[]>;
-  RulesText(): Promise<RulesTextView>;
+  RulesText(ruleset: string): Promise<RulesTextView>;
   ParseRulesText(text: string): Promise<RulesTextResult>;
   ApplyRulesText(text: string, replace: boolean, guard: EditGuard): Promise<RulesTextResult>;
   LintRules(s: Settings): Promise<LintIssue[]>;
@@ -985,4 +987,105 @@ export function canonPorts(items: string[]): string[] | null {
 export function portRange(item: string): [number, number] {
   const [lo, hi] = item.split('-').map(Number);
   return [lo, hi ?? lo];
+}
+
+// ==== rulesets ====
+
+// The rules part of the settings: what a rule profile holds.
+export interface RulesConfig {
+  defaultAction: Action;
+  defaultProfile?: string;
+  defaultFallback?: string[];
+  rules: Rule[];
+}
+
+// The active rule profile (Status.ruleset). id is '' and name «Основной»
+// while there is only one; count 0 when rulesets.json did not load.
+export interface RulesetRef {
+  id: string;
+  name: string;
+  count: number;
+  token: string;
+  rev: number;
+}
+
+export interface RulesetView {
+  id: string;
+  name: string;
+  rules: number;
+  defaultAction: Action;
+  active: boolean;
+  warnings: number;
+  error?: string; // does not load: cannot be switched to
+  newer?: boolean; // saved by a newer HyRoute: no edit mode, no copy
+  usedBy: string[]; // network rules that switch to it
+}
+
+export interface RulesetsView {
+  active: string;
+  list: RulesetView[];
+  saved: boolean;
+  error?: string;
+  token: string;
+  rev: number;
+}
+
+// from: 'active', a profile ID, or '' (config).
+export interface RulesetInput {
+  name: string;
+  from: string;
+  config?: RulesConfig;
+  activate: boolean;
+  firstName?: string;
+}
+
+// The window builds its texts from the fields (each name through hide());
+// note is Go's own text with the names unmasked (CLI, log).
+export interface SwitchResult {
+  ruleset: RulesetRef;
+  warnings: RuleWarning[];
+  connected: boolean;
+  stopped: string[];
+  note: string;
+  reconnected: boolean;
+  reconnectError?: string;
+}
+
+export interface CreateResult {
+  view: RulesetView;
+  switch?: SwitchResult;
+}
+
+export const defaultLabel: Record<Action, string> = { direct: 'напрямую', tunnel: 'через VPN', block: 'блок' };
+
+// isEditToken: the copy is of an inactive profile opened without switching.
+export const isEditToken = (t?: string) => !!t && t.startsWith('edit:');
+
+// tokenStale: a copy made with token no longer belongs to what it was read
+// for (the active profile changed, or the edited one became active or, by
+// list, a profile list as new as r, was deleted). Go refuses its save
+// anyway; the page says so first. 'implicit' cannot go stale while a copy
+// is open: only this window creates a second profile.
+export function tokenStale(token: string | undefined, r: RulesetRef | undefined, list?: RulesetsView | null): boolean {
+  if (!token || !r) return false;
+  if (isEditToken(token)) return r.token === token.slice(5) || editGone(token, r, list);
+  return token !== 'implicit' && r.token !== token;
+}
+
+// editGone: the profile an "edit:<id>" token names is missing from a list
+// read at r's revision (an older list proves nothing).
+export function editGone(token: string, r: RulesetRef, list?: RulesetsView | null): boolean {
+  if (!isEditToken(token) || !list || list.error || list.rev < r.rev) return false;
+  const id = token.slice(5);
+  return !list.list.some((e) => e.id === id);
+}
+
+interface GUI {
+  RulesetSettings(id: string): Promise<Settings>;
+  Rulesets(): Promise<RulesetsView>;
+  SwitchRuleset(id: string): Promise<SwitchResult>;
+  CreateRuleset(i: RulesetInput): Promise<CreateResult>;
+  RenameRuleset(id: string, name: string): Promise<void>;
+  DeleteRuleset(id: string): Promise<void>;
+  MoveRuleset(id: string, to: number): Promise<void>;
 }

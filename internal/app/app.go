@@ -163,6 +163,7 @@ type Controller struct {
 	traffic trafficState // VPN traffic statistics (traffic.go)
 	groupsState
 	portsState
+	rulesetsState // rulesets: guarded by mu (rulesets.go)
 }
 
 // New builds a controller with journals and a logger.
@@ -222,6 +223,8 @@ func (c *Controller) Load() error {
 	}
 	c.initGeo() // categories resolve while the settings compile
 	groupsFile, groupsErr := c.loadGroups(&errs, p)
+	// rulesets: whether settings.json exists, read before LoadSettings.
+	existed := c.Store.HasSettings()
 	st, set, err2 := c.Store.LoadSettings()
 	if err2 != nil {
 		errs = append(errs, err2.Error())
@@ -229,14 +232,22 @@ func (c *Controller) Load() error {
 		set, _ = rules.Compile(st.Config)
 		set.ExactWeb = st.ExactWeb()
 	}
+	rl := c.loadRulesets(st, set, err2, existed) // rulesets: the active rules may come from rulesets.json
+	if st, set = rl.Settings, rl.Set; rl.Broken != nil {
+		errs = append(errs, rl.Broken.Error())
+	}
 	c.mu.Lock()
 	c.profiles, c.settings, c.set, c.subs, c.prefs, c.proxies = p, st, set, subs, prefs, proxies
 	c.settingsBroken, c.proxiesBroken, c.prefsBroken = err2, err5, err4
 	c.rulesAt = c.settingsRev.Add(1)
 	c.loadedGroupsLocked(groupsFile, groupsErr)
+	c.installRulesetsLoadLocked(rl)
 	c.updateNamesLocked()
 	c.loadErr = strings.Join(errs, "; ")
 	c.mu.Unlock()
+	if rl.Note != "" {
+		c.Log.Info(rl.Note)
+	}
 	c.applyLogPrefs()
 	if len(errs) > 0 {
 		return errors.New(c.loadErr)

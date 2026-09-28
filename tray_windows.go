@@ -43,6 +43,8 @@ type trayState struct {
 	// The icons as files (see trayIconPaths).
 	iconsOnce       sync.Once
 	iconOn, iconOff string
+	// rulesets: the «Профиль правил» submenu (trayrulesets_windows.go).
+	rulesets trayRulesets
 }
 
 // taskbarWait: how long the tray waits for Explorer's taskbar (HyRoute
@@ -258,6 +260,7 @@ func (g *GUI) trayExit() {
 func (g *GUI) renewTray() {
 	g.tray.mu.Lock()
 	g.tray.ready = false
+	g.tray.rulesets = trayRulesets{} // rulesets: the new run brings its own items
 	gen, thread := g.tray.gen, g.tray.thread
 	g.tray.mu.Unlock()
 	if !g.restartTray(thread) {
@@ -315,6 +318,7 @@ func (g *GUI) trayReady(gen uint64) {
 	status := systray.AddMenuItem("Отключено", "")
 	status.Disable()
 	toggle := systray.AddMenuItem("Подключить", "")
+	rs, rsSlots := trayRulesetsMenu() // rulesets: hidden until there are two profiles
 	systray.AddSeparator()
 	quit := systray.AddMenuItem("Выход", "")
 	systray.SetOnTapped(g.showWindow) // left click opens, right click shows the menu
@@ -322,6 +326,7 @@ func (g *GUI) trayReady(gen uint64) {
 	if g.trayUp(status, toggle) {
 		g.ctl.Log.Info("the tray icon appeared: the close button hides HyRoute to the tray again")
 	}
+	g.trayRulesetsUp(rs, rsSlots) // rulesets
 	g.updateTray()
 	allowTaskbarCreated()
 
@@ -404,6 +409,7 @@ func (g *GUI) updateTray() {
 	if !g.tray.ready {
 		return
 	}
+	g.trayRulesetsLocked() // rulesets: follows its own changes
 	// Read under the lock: every change runs this in a goroutine of its
 	// own, and an older reading must not be applied after a newer one.
 	text, on := trayView(g.ctl.Status())

@@ -408,7 +408,7 @@ func (c *Controller) geoDue() (geodata.Source, bool) {
 	var site, ip bool
 	c.mu.Lock()
 	if c.settings != nil {
-		site, ip = geoKinds(c.settings.Config)
+		site, ip = c.geoKindsLocked() // rulesets: every rule profile
 	}
 	broken := c.prefsBroken != nil
 	c.mu.Unlock()

@@ -282,7 +282,19 @@ func NamelessUDP(exactWeb, blockQUIC bool, proto uint8, port uint16) bool {
 }
 
 // Compile validates and normalizes a config.
-func Compile(c Config) (*Set, error) {
+func Compile(c Config) (*Set, error) { return compileWith(c, currentGeo()) }
+
+// Check validates c as Compile does, without the rule databases: the
+// syntax of every enabled rule (patterns, regexps, programs, addresses).
+// A geosite:/geoip: item only warns and no geo matcher is built, so it is
+// cheap for rules that are not in use (inactive rule profiles).
+func Check(c Config) error {
+	_, err := compileWith(c, nil)
+	return err
+}
+
+// compileWith compiles c resolving categories through g (nil: none).
+func compileWith(c Config, g Geo) (*Set, error) {
 	s := &Set{def: c.DefaultAction, defProfile: c.DefaultProfile, defFallback: c.DefaultFallback}
 	for i, r := range c.Rules {
 		if r.Enabled != nil && !*r.Enabled {
@@ -293,7 +305,7 @@ func Compile(c Config) (*Set, error) {
 			}
 			continue
 		}
-		cr, err := compileRule(i, r)
+		cr, err := compileRule(i, r, g)
 		if err != nil {
 			return nil, err
 		}
@@ -370,7 +382,9 @@ func parseDomainPattern(p string) (domPat, error) {
 	return d, nil
 }
 
-func compileRule(i int, r Rule) (compiled, error) {
+// compileRule compiles rule i; g resolves geosite:/geoip: (nil: they only
+// warn, see Check).
+func compileRule(i int, r Rule, g Geo) (compiled, error) {
 	cr := compiled{src: r, name: ruleName(i, r), action: r.Action, profile: r.Profile, fallback: r.Fallback}
 	apps, doms := r.AllApps(), r.AllDomains()
 	if len(apps) == 0 && len(doms) == 0 && len(r.Ports) == 0 {
@@ -392,7 +406,6 @@ func compileRule(i int, r Rule) (compiled, error) {
 		}
 		cr.apps = append(cr.apps, ap)
 	}
-	g := currentGeo()
 	for _, p := range doms {
 		if IsAddressItem(p) {
 			ip, warn, err := parseIPPattern(p, g)

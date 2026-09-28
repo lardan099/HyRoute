@@ -210,6 +210,8 @@ type Status struct {
 	MainUnloaded bool `json:"mainUnloaded,omitempty"`
 	// GroupsNote: groups.json is broken, what that means now.
 	GroupsNote string `json:"groupsNote,omitempty"`
+	// rulesets: the active rule profile (its rev and token make pages reload).
+	Ruleset RulesetRef `json:"ruleset"`
 }
 
 // down reports a profile that cannot carry traffic now: failed, or
@@ -229,6 +231,7 @@ func (c *Controller) Status() Status {
 	s := c.sess
 	st := Status{State: "disconnected", LoadError: c.loadErr, Tunnels: []tunnels.Status{}, Warnings: c.ruleWarningsLocked()}
 	st.SettingsRev = c.settingsRev.Load()
+	st.Ruleset = c.rulesetRefLocked()
 	if p := c.profiles.Find(c.profiles.Active); p != nil {
 		st.Main, st.MainID = p.Name, p.ID
 	}

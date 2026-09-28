@@ -1,24 +1,38 @@
 <script lang="ts">
   // Many rules at once as text: edit the whole list, or add a batch.
   import { onMount } from 'svelte';
-  import { api, errText, guardOf, isStale, plural, type RulesTextResult, type RulesTextView } from '../api';
+  import { api, errText, guardOf, isStale, plural, tokenStale, editGone, type RulesTextResult, type RulesTextView, type RulesetsView } from '../api';
   import { ui, hide } from '../state.svelte';
   import Icon from './Icon.svelte';
   import { geo, loadGeo, missingText } from '../geo.svelte';
 
-  let { onclose, onsaved }: { onclose: () => void; onsaved: () => void } = $props();
+  // target (rulesets): the token of the rules the page shows (the active
+  // profile's, or "edit:<id>" in edit mode); rulesetName names it; list is
+  // the page's profile list (an edited profile deleted elsewhere).
+  let {
+    target = '',
+    rulesetName = '',
+    list = null,
+    onclose,
+    onsaved,
+  }: { target?: string; rulesetName?: string; list?: RulesetsView | null; onclose: () => void; onsaved: () => void } = $props();
 
   let mode = $state<'all' | 'add'>('all');
   let allText = $state('');
   // view: the text «Все правила» started from, with its revision (a replace
   // sends it back; Go refuses it if the rules changed elsewhere since).
-  let view: RulesTextView | null = null;
+  let view = $state<RulesTextView | null>(null);
   let addText = $state('');
   let res = $state<RulesTextResult | null>(null);
   let error = $state('');
   let saving = $state(false);
 
   const text = $derived(mode === 'all' ? allText : addText);
+  // rulesets: the rule profile changed while this window was open (a
+  // switch from the tray, the CLI, a network rule), or the edited one was
+  // deleted: nothing is saved here.
+  const profileStale = $derived(tokenStale(view?.ruleset, ui.status?.ruleset, list));
+  const profileGone = $derived(!!view?.ruleset && !!ui.status?.ruleset && editGone(view.ruleset, ui.status.ruleset, list));
 
   // Privacy mode: the text is shown masked and read-only (no editor, hints
   // or parse results, which name sites and servers) until «Показать и
@@ -51,7 +65,7 @@ instagram.com -> vpn`);
   onMount(async () => {
     loadGeo();
     try {
-      view = await api.RulesText();
+      view = await api.RulesText(target);
       allText = view.text;
     } catch (e) {
       error = errText(e);
@@ -73,8 +87,13 @@ instagram.com -> vpn`);
     saving = true;
     error = '';
     try {
-      // Adding a batch goes after whatever the list is now: no revision.
-      const r = await api.ApplyRulesText(text, mode === 'all', guardOf(mode === 'all' && view ? view : {}));
+      // Adding a batch goes after whatever the list is now: no revision,
+      // but still into the rule profile this text is for.
+      const r = await api.ApplyRulesText(
+        text,
+        mode === 'all',
+        mode === 'all' ? guardOf(view ?? { ruleset: target }) : { ruleset: view?.ruleset ?? target, rev: 0, editRev: 0 },
+      );
       res = r;
       onsaved();
       stale = null;
@@ -86,7 +105,7 @@ instagram.com -> vpn`);
         // revision is renewed, so saving again replaces the new rules with
         // it on purpose. The current rules are one click away (swapStale).
         try {
-          const fresh = await api.RulesText();
+          const fresh = await api.RulesText(view?.ruleset ?? target);
           view = fresh;
           stale = { other: fresh.text, mine: true };
         } catch {}
@@ -379,7 +398,7 @@ instagram.com -> vpn`);
 >
   <div class="dialog big">
     <div class="row head">
-      <h2 class="grow">Правила текстом</h2>
+      <h2 class="grow">Правила текстом{#if (ui.status?.ruleset?.count ?? 0) >= 2 && rulesetName} — «{hide(rulesetName)}»{/if}</h2>
       <div class="seg">
         <button class:on={mode === 'all'} onclick={() => (mode = 'all')}>Все правила</button>
         <button class:on={mode === 'add'} onclick={() => (mode = 'add')}>Добавить пачкой</button>
@@ -488,6 +507,14 @@ instagram.com -> vpn`);
     </div>
 
     {#if error}<div class="note error">{shownError}</div>{/if}
+    {#if profileGone}
+      <div class="note warn">Этот профиль правил удалили, пока было открыто это окно: изменения сюда не сохранятся. Закройте окно.</div>
+    {:else if profileStale}
+      <div class="note warn">
+        Профиль правил сменился на «{hide(ui.status?.ruleset?.name)}», пока было открыто это окно: изменения сюда не сохранятся. Закройте окно и откройте
+        заново.
+      </div>
+    {/if}
     {#if stale && mode === 'all' && !masked}
       <div class="note info">
         {#if stale.mine}
@@ -503,7 +530,7 @@ instagram.com -> vpn`);
       {#if masked}
         <button class="primary" onclick={reveal}><Icon name="eye" size={16} />Показать и редактировать</button>
       {:else}
-        <button class="primary" onclick={save} disabled={saving || !text.trim() || !!res?.errors.length || defaultInAdd}>
+        <button class="primary" onclick={save} disabled={saving || profileStale || !text.trim() || !!res?.errors.length || defaultInAdd}>
           {mode === 'all' ? 'Сохранить список' : 'Добавить правила'}
         </button>
       {/if}
