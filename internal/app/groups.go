@@ -1156,14 +1156,18 @@ func (c *Controller) proxyGroupDial(ctx context.Context, s Session, p store.Loca
 			c.proxyWarnAt.Store(now)
 			c.Log.Warn("local proxy: no server of the group is available", "name", p.Name, "group", c.profileName(gid))
 		}
+		c.proxyRecord(p, 6, dst, refusedVia(pk, gid), gid, pk.Failover, "rst: tunnel unavailable") // stats
 		return nil, socks5.ReplyError(1)
 	}
 	conn, err := ep.Dial(ctx, dst)
 	if err != nil {
-		ep.NoteRejected()
+		if !proxyDialStopped(ctx) { // stats
+			ep.NoteRejected()
+			c.proxyRecord(p, 6, dst, pk.Member, gid, pk.Failover, "rst: socks5 connect failed")
+		}
 		return nil, err
 	}
-	return &tunnelConn{Conn: conn, ep: ep, note: c.proxyTraffic(pk.Member, p)}, nil
+	return c.newTunnelConn(conn, ep, c.proxyRecord(p, 6, dst, pk.Member, gid, pk.Failover, "proxied")), nil
 }
 
 // proxyGroupAssociate is proxyGroupDial for a SOCKS5 UDP association: the
@@ -1180,14 +1184,18 @@ func (c *Controller) proxyGroupAssociate(ctx context.Context, s Session, p store
 	}
 	if ep == nil {
 		c.groupsRT.NoteRejected(gid)
+		c.proxyRecord(p, 17, socks5.Addr{}, refusedVia(pk, gid), gid, pk.Failover, "rst: tunnel unavailable") // stats
 		return nil, socks5.ReplyError(1)
 	}
 	a, err := ep.UDPAssociate(ctx)
 	if err != nil {
-		ep.NoteRejected()
+		if !proxyDialStopped(ctx) { // stats
+			ep.NoteRejected()
+			c.proxyRecord(p, 17, socks5.Addr{}, pk.Member, gid, pk.Failover, "rst: socks5 connect failed")
+		}
 		return nil, err
 	}
-	return &tunnelUDP{UDPAssoc: a, ep: ep, note: c.proxyTraffic(pk.Member, p)}, nil
+	return c.newTunnelUDP(a, ep, c.proxyRecord(p, 17, socks5.Addr{}, pk.Member, gid, pk.Failover, "proxied")), nil
 }
 
 // groupDialer is the main group as geodata's VPN route: the member is

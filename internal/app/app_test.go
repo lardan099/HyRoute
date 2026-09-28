@@ -68,6 +68,7 @@ func newCtlAt(t *testing.T, st *store.Store) (*Controller, *[]*fakeSession) {
 	var started []*fakeSession
 	c := New(st, func(cfg session.Config) (Session, error) {
 		f := &fakeSession{reg: flows.NewRegistry(10), cfg: cfg, set: cfg.Rules, profiles: cfg.Profiles}
+		f.reg.OnClose = cfg.OnClose // stats: as session.Start does
 		started = append(started, f)
 		return f, nil
 	}, session.Config{}, slog.LevelInfo)

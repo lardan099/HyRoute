@@ -41,7 +41,7 @@ type Counting interface {
 // Result describes a finished relayed connection.
 type Result struct {
 	Entry      *nat.Entry
-	Route      string // "tunnel", "direct", "block", "rejected"
+	Route      string // "tunnel", "direct", "block", "rejected", "aborted" (stopping)
 	Reason     string
 	Err        error
 	Rule       string
@@ -436,6 +436,13 @@ func (s *Server) handle(c net.Conn) {
 	}
 	up, tun, fail, err := s.dialRoute(s.ctx, e, action, profile, remoteName)
 	switch {
+	case err != nil && fail == failStopping:
+		// stats: a Disconnect is neither a failed dial nor a server
+		// refusal; such a flow is not counted.
+		res.Route, res.Err = "aborted", err
+		s.setOutcome(e, outcomeStopping)
+		Reset(c)
+		return
 	case err != nil && action == rules.Direct:
 		res.Route, res.Err = "direct", err
 		s.setOutcome(e, "rst: "+fail)
@@ -616,6 +623,18 @@ func (s *Server) sniff(c net.Conn, e *nat.Entry) (head []byte, host string, src 
 	return buf, "", rules.SrcNone, stage
 }
 
+// outcomeStopping: the dial failed because the relay is stopping
+// (Disconnect, exit). flows.View.Settled and Failed interpret the outcome
+// strings: such a flow is never counted by the statistics.
+const outcomeStopping = "aborted: stopping"
+
+// failStopping is dialRoute's fail when the dial ended because the relay
+// is stopping.
+const failStopping = "stopping"
+
+// stopping reports that Close cancelled the relay's dials.
+func (s *Server) stopping() bool { return s.ctx.Err() != nil }
+
 func (s *Server) setOutcome(e *nat.Entry, o string) {
 	if e.Rec != nil {
 		e.Rec.Set(func(f *flows.Fields) { f.Outcome = o })
@@ -680,7 +699,7 @@ func (c *appConn) NetConn() net.Conn { return c.Conn }
 // of the address), never direct. The dial is bounded by DialTimeout and
 // canceled by Abort. The Direct and Tunnel counters are kept here; fail
 // says why a dial failed ("direct dial failed", "tunnel unavailable",
-// "socks5 connect failed").
+// "socks5 connect failed"; failStopping when the relay stops, stats).
 func (s *Server) dialRoute(parent context.Context, e *nat.Entry, action rules.Action, profile, remoteName string) (up net.Conn, tun Tunnel, fail string, err error) {
 	timeout := s.DialTimeout
 	if timeout == 0 {
@@ -695,6 +714,9 @@ func (s *Server) dialRoute(parent context.Context, e *nat.Entry, action rules.Ac
 			dial = dialFrom
 		}
 		up, err = dial(ctx, e.Flow.Src.Addr(), e.Flow.Dst)
+		if err != nil && s.stopping() {
+			return nil, nil, failStopping, err // stats
+		}
 		if err != nil {
 			return nil, nil, "direct dial failed", err
 		}
@@ -715,6 +737,10 @@ func (s *Server) dialRoute(parent context.Context, e *nat.Entry, action rules.Ac
 		dst.Host = remoteName // name from SNI/Host only
 	}
 	up, err = tun.Dial(ctx, dst)
+	if err != nil && s.stopping() {
+		// stats: a Disconnect is not a server refusal.
+		return nil, tun, failStopping, err
+	}
 	if err != nil {
 		if cnt, ok := tun.(Counting); ok {
 			cnt.NoteRejected()
@@ -753,7 +779,7 @@ func (s *Server) serveDNS(c net.Conn, e *nat.Entry, res *Result) {
 		}
 		up, _, fail, err := s.dialRoute(ctx, e, r.Action, r.Profile, "")
 		if err != nil {
-			if r.Action != rules.Direct {
+			if r.Action != rules.Direct && fail != failStopping {
 				s.Rejected.Add(1)
 			}
 			s.Log.Debug("relay: DNS pass-through dial failed", "route", r.Action.String(), "reason", fail, "err", err)

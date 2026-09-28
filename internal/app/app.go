@@ -106,7 +106,11 @@ type Controller struct {
 	// lifeMu serializes Connect, disconnect, kill switch changes, the
 	// automatic reconnect after an engine failure and the ports of local
 	// proxies, so a Disconnect during a start is not lost. Taken before
-	// mu, ksMu, proxyMu and recMu.
+	// mu, ksMu, proxyMu and recMu. stats: the statistics' lock
+	// (internal/stats) is taken after all of these. Its I/O lock
+	// (stats.ioMu) is never taken or waited for with any Controller lock
+	// held, lifeMu included; the Disconnect path only samples in memory and
+	// kicks RunStats.
 	lifeMu sync.Mutex
 	// saveMu keeps settings.json and c.settings in the same order.
 	saveMu sync.Mutex
@@ -169,11 +173,11 @@ type Controller struct {
 	rulesAt uint64
 
 	// Feature state (one line per feature, landing order).
-	traffic trafficState // VPN traffic statistics (traffic.go)
 	groupsState
 	portsState
 	rulesetsState // rulesets: guarded by mu (rulesets.go)
 	dnsState      // dns: DNS policies (dns.go)
+	statsState    // stats: traffic statistics (stats.go)
 }
 
 // New builds a controller with journals and a logger.
@@ -191,6 +195,7 @@ func New(st *store.Store, start Starter, base session.Config, level slog.Leveler
 	}
 	c.Log = slog.New(logx.NewHandler(c.EngineLog, c.Redactor, level, nil))
 	c.initGroups()
+	c.initStats() // stats
 	return c
 }
 
@@ -270,6 +275,7 @@ func (c *Controller) Load() error {
 	if dnsErr == nil && dnsCfg.Active() {
 		c.flushDNSAsync("start") // dns: answers of a run that crashed
 	}
+	c.loadStats() // stats: the collection mode (creates nothing)
 	if len(errs) > 0 {
 		return errors.New(c.loadErr)
 	}

@@ -135,6 +135,7 @@ func (c *Controller) closePassLocked() {
 // the engine's goroutine, before it removes its filters. It must not
 // wait for lifeMu or c.mu: the reconnect runs later on its own goroutine.
 func (c *Controller) engineFailed(gen uint64) {
+	c.stats.EngineFailed(c.statsNow()) // stats (a leaf lock)
 	if c.KillSwitch != nil {
 		c.ksMu.Lock()
 		if c.ks.armed {
@@ -239,19 +240,20 @@ func (c *Controller) HoldKillSwitch() {
 // and no HyRoute to say why. The engine stops with the process. Until
 // SessionResumed nothing arms the block again (a Connect or reconnect
 // under way); lifeMu is not taken: the tray's window procedure must not
-// wait for a Connect.
+// wait for a Connect. The statistics are saved last, without a Controller
+// lock and with a bounded wait (statsSessionEnd).
 func (c *Controller) EndSession() {
-	if c.KillSwitch == nil {
-		return
+	if c.KillSwitch != nil {
+		c.ksMu.Lock()
+		c.ks.ending = true
+		if c.ks.blocks {
+			c.Log.Info("Windows is ending the session: removing the kill switch block")
+			c.releaseLocked()
+			c.ks.resume = true
+		}
+		c.ksMu.Unlock()
 	}
-	c.ksMu.Lock()
-	c.ks.ending = true
-	if c.ks.blocks {
-		c.Log.Info("Windows is ending the session: removing the kill switch block")
-		c.releaseLocked()
-		c.ks.resume = true
-	}
-	c.ksMu.Unlock()
+	c.statsSessionEnd() // stats: no Controller lock, a bounded wait
 }
 
 // SessionResumed: the end of the session was cancelled (another program

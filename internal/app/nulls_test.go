@@ -51,6 +51,7 @@ func TestNoNullListsForUI(t *testing.T) {
 	c, _ := newCtl(t)
 	st := c.Settings()
 	insp, _ := c.Inspect("example.com")
+	statsRep, _ := c.Stats("today") // stats
 	for name, v := range map[string]any{
 		"Profiles":       c.Profiles(),
 		"RuleWarnings":   c.RuleWarnings(),
@@ -69,6 +70,7 @@ func TestNoNullListsForUI(t *testing.T) {
 		"Inspect":        insp,
 		"SiteLists":      c.SiteLists("example.com"),
 		"Settings":       st,
+		"Stats":          statsRep,
 	} {
 		var bad []string
 		nilSlices(reflect.ValueOf(v), name, &bad)

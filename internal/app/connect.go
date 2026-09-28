@@ -76,8 +76,7 @@ func (c *Controller) startLocked(recovering bool) error {
 	cfg.Redactor = c.Redactor
 	cfg.OnEngineFail = func() { c.engineFailed(gen) }
 	cfg.HysteriaLog = c.hysteriaLine
-	cfg.OnTraffic = c.noteTraffic
-	c.startTrafficLoop()
+	src := c.statsSource(&cfg) // stats
 	cfg.OnStatus = func(id string, s hysteria.Status) {
 		c.Log.Info("hysteria status", "profile", c.profileName(id), "state", s.State.String(), "msg", s.Message, "udp", s.UDPEnabled, "socks", s.SOCKS, "serverIPs", s.ServerIPs)
 		c.dnsTunnelUp(s) // dns
@@ -105,6 +104,7 @@ func (c *Controller) startLocked(recovering bool) error {
 		return err
 	}
 	c.sess, c.lastFlows, c.since = sess, sess.Flows(), time.Now()
+	c.statsStartedLocked(sess, src) // stats
 	c.failedStop = false
 	// Rules, profiles and servers saved while it started.
 	c.applyRoutingLocked()
@@ -135,10 +135,12 @@ func (c *Controller) Disconnect() { c.disconnect(true) }
 
 // Shutdown stops routing when HyRoute exits. Only Disconnect opens the
 // internet: the kill switch block stays over an exit (not over the end of
-// the Windows session, see EndSession).
+// the Windows session, see EndSession). The statistics are written after
+// lifeMu is released.
 func (c *Controller) Shutdown() {
 	c.disconnect(false)
-	c.dnsExitFlush() // dns: the process ends next, a waiting flush runs now
+	c.dnsExitFlush()  // dns: the process ends next, a waiting flush runs now
+	c.statsShutdown() // stats
 }
 
 // disconnect: with release unset the kill switch keeps the internet
@@ -158,7 +160,8 @@ func (c *Controller) disconnectLocked(release bool) {
 	c.mu.Lock()
 	s := c.sess
 	c.sess, c.startErr = nil, ""
-	c.dnsPause = time.Time{} // dns
+	c.dnsPause = time.Time{}     // dns
+	live := c.statLive.Swap(nil) // stats
 	// Until the next start, unless the user turns routing off: its
 	// connections have gone direct since.
 	c.failedStop = !release && (c.failedStop || s != nil && s.EngineFailed())
@@ -174,12 +177,8 @@ func (c *Controller) disconnectLocked(release bool) {
 		s.Stop()
 		c.Log.Info("disconnected: filters removed")
 		c.dnsStopped() // dns: flush the answers HyRoute gave
-		// Flows left open by the stop are not closed: count them now.
-		if reg := s.Flows(); reg != nil {
-			reg.Sample()
-		}
-		c.flushTraffic()
 	}
+	c.statsStopped(live) // stats: memory only, RunStats writes
 	c.changed()
 }
 

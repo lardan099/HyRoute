@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net"
 	"sort"
-	"strconv"
 	"strings"
 
+	"github.com/lardan099/hyroute/internal/flows"
 	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/localproxy"
 	"github.com/lardan099/hyroute/internal/relay"
@@ -366,14 +366,18 @@ func (c *Controller) proxyDialer(p store.LocalProxy) localproxy.Dialer {
 		}
 		if !ep.Available() {
 			ep.NoteRejected()
+			c.proxyRecord(p, 6, dst, id, "", false, "rst: tunnel unavailable") // stats
 			return nil, socks5.ReplyError(1)
 		}
 		conn, err := ep.Dial(ctx, dst)
 		if err != nil {
-			ep.NoteRejected()
+			if !proxyDialStopped(ctx) { // stats
+				ep.NoteRejected()
+				c.proxyRecord(p, 6, dst, id, "", false, "rst: socks5 connect failed")
+			}
 			return nil, err
 		}
-		return &tunnelConn{Conn: conn, ep: ep, note: c.proxyTraffic(id, p)}, nil
+		return c.newTunnelConn(conn, ep, c.proxyRecord(p, 6, dst, id, "", false, "proxied")), nil
 	}
 }
 
@@ -397,29 +401,39 @@ func (c *Controller) proxyAssociator(p store.LocalProxy) localproxy.Associator {
 		}
 		if !ep.Available() || !ep.UDPAvailable() {
 			ep.NoteRejected()
+			c.proxyRecord(p, 17, socks5.Addr{}, id, "", false, "rst: tunnel unavailable") // stats
 			return nil, socks5.ReplyError(1)
 		}
 		a, err := ep.UDPAssociate(ctx)
 		if err != nil {
-			ep.NoteRejected()
+			if !proxyDialStopped(ctx) { // stats
+				ep.NoteRejected()
+				c.proxyRecord(p, 17, socks5.Addr{}, id, "", false, "rst: socks5 connect failed")
+			}
 			return nil, err
 		}
-		return &tunnelUDP{UDPAssoc: a, ep: ep, note: c.proxyTraffic(id, p)}, nil
+		return c.newTunnelUDP(a, ep, c.proxyRecord(p, 17, socks5.Addr{}, id, "", false, "proxied")), nil
 	}
 }
 
-// tunnelUDP counts a proxy's UDP association like tunnelConn.
+// tunnelUDP counts a proxy's UDP association like tunnelConn: one
+// statistics record per association.
 type tunnelUDP struct {
 	*socks5.UDPAssoc
-	ep   *tunnels.Endpoint
-	note func(sent, recv int64)
+	ep  *tunnels.Endpoint
+	rec *flows.Record
+	fc  *flowCloser
+}
+
+func (c *Controller) newTunnelUDP(a *socks5.UDPAssoc, ep *tunnels.Endpoint, rec *flows.Record) *tunnelUDP {
+	return &tunnelUDP{UDPAssoc: a, ep: ep, rec: rec, fc: &flowCloser{rec: rec, reg: c.proxyFlows}}
 }
 
 func (t *tunnelUDP) WriteTo(payload []byte, dst socks5.Addr) error {
 	err := t.UDPAssoc.WriteTo(payload, dst)
 	if err == nil {
 		t.ep.NoteTraffic(int64(len(payload)), 0)
-		t.note(int64(len(payload)), 0)
+		t.rec.Sent.Add(int64(len(payload)))
 	}
 	return err
 }
@@ -428,34 +442,36 @@ func (t *tunnelUDP) ReadFrom(buf []byte) (int, socks5.Addr, error) {
 	n, from, err := t.UDPAssoc.ReadFrom(buf)
 	if n > 0 {
 		t.ep.NoteTraffic(0, int64(n))
-		t.note(0, int64(n))
+		t.rec.Recv.Add(int64(n))
 	}
 	return n, from, err
 }
 
-// proxyTraffic counts a proxy's bytes into the statistics, as a program
-// named after the proxy.
-func (c *Controller) proxyTraffic(profile string, p store.LocalProxy) func(sent, recv int64) {
-	app := "Локальный прокси :" + strconv.Itoa(p.Port)
-	if p.Name != "" {
-		app = "Локальный прокси «" + p.Name + "»"
-	}
-	return func(sent, recv int64) { c.noteTraffic(profile, app, sent, recv) }
+// Close ends the association and its record.
+func (t *tunnelUDP) Close() error {
+	t.fc.close()
+	return t.UDPAssoc.Close()
 }
 
 // tunnelConn counts a proxy connection into its server's traffic, as the
-// relay does for intercepted ones, and into the statistics.
+// relay does for intercepted ones, and into its statistics record (rec;
+// nil in tests that build one by hand).
 type tunnelConn struct {
 	net.Conn
-	ep   *tunnels.Endpoint
-	note func(sent, recv int64)
+	ep  *tunnels.Endpoint
+	rec *flows.Record
+	fc  *flowCloser
+}
+
+func (c *Controller) newTunnelConn(conn net.Conn, ep *tunnels.Endpoint, rec *flows.Record) *tunnelConn {
+	return &tunnelConn{Conn: conn, ep: ep, rec: rec, fc: &flowCloser{rec: rec, reg: c.proxyFlows}}
 }
 
 func (t *tunnelConn) Read(b []byte) (int, error) {
 	n, err := t.Conn.Read(b)
 	t.ep.NoteTraffic(0, int64(n))
-	if n > 0 && t.note != nil {
-		t.note(0, int64(n))
+	if n > 0 && t.rec != nil {
+		t.rec.Recv.Add(int64(n))
 	}
 	return n, err
 }
@@ -463,10 +479,16 @@ func (t *tunnelConn) Read(b []byte) (int, error) {
 func (t *tunnelConn) Write(b []byte) (int, error) {
 	n, err := t.Conn.Write(b)
 	t.ep.NoteTraffic(int64(n), 0)
-	if n > 0 && t.note != nil {
-		t.note(int64(n), 0)
+	if n > 0 && t.rec != nil {
+		t.rec.Sent.Add(int64(n))
 	}
 	return n, err
+}
+
+// Close closes the connection and, once, its record.
+func (t *tunnelConn) Close() error {
+	t.fc.close()
+	return t.Conn.Close()
 }
 
 // CloseWrite keeps half-close working through the wrapper (socks5.Pipe).

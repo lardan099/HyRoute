@@ -81,3 +81,91 @@ func TestTooBigView(t *testing.T) {
 		t.Fatalf("%+v", v)
 	}
 }
+
+// ---- stats ----
+
+// TestViewSettledFailed lists every outcome the engine and the relay
+// produce: a new one must be added here (Settled and Failed are the only
+// interpreters of outcome strings).
+func TestViewSettledFailed(t *testing.T) {
+	for _, c := range []struct {
+		route, outcome  string
+		closed          bool
+		settled, failed bool
+	}{
+		{"pending", "", false, false, false},
+		{"pending", "reflected: sniff", true, false, false},
+		{"", "", true, false, false},
+		{"tunnel", "reflected", false, false, false},
+		{"tunnel", "reflected", true, false, false},
+		{"tunnel", "reflected: sniff", false, false, false},
+		{"tunnel", "reflected: sniff", true, false, false},
+		{"tunnel", "aborted: stopping", true, false, false},
+		{"direct", "aborted: stopping", true, false, false},
+		{"tunnel", "relayed", false, true, false},
+		{"direct", "relayed", true, true, false},
+		{"direct", "passed", false, true, false},
+		{"tunnel", "tunneled", false, true, false},
+		{"tunnel", "proxied", true, true, false},
+		{"tunnel", "rst: tunnel unavailable", true, true, true},
+		{"tunnel", "rst: socks5 connect failed", true, true, true},
+		{"direct", "rst: direct dial failed", true, true, true},
+		{"tunnel", "rst: reflect key collision", true, true, true},
+		{"tunnel", "dropped: tunnel unavailable", false, true, true},
+		{"tunnel", OutcomeTooBig, false, true, true},
+		{"block", "rst: blocked", true, true, false},
+		{"block", "dropped: blocked", true, true, false},
+		{"block", "dropped: QUIC blocked, domain unknown", true, true, false},
+		{"block", "rst: IPv6 blocked for tunnel", true, true, false},
+		{"block", "dropped: IPv6 blocked for tunnel", true, true, false},
+	} {
+		v := View{Fields: Fields{Route: c.route, Outcome: c.outcome}, Closed: c.closed}
+		if v.Settled() != c.settled || v.Failed() != c.failed {
+			t.Errorf("%s %q closed=%v: settled %v failed %v", c.route, c.outcome, c.closed, v.Settled(), v.Failed())
+		}
+	}
+}
+
+// TestTicks: every live record with its current counters; Rev moves with
+// Set only; closed records are absent; dst is reused.
+func TestTicks(t *testing.T) {
+	g := NewRegistry(4)
+	a := g.Open(&Record{Proto: 6})
+	b := g.Open(&Record{Proto: 17})
+	a.Sent.Add(10)
+	b.Recv.Add(7)
+	ticks := g.Ticks(nil)
+	if len(ticks) != 2 {
+		t.Fatalf("%+v", ticks)
+	}
+	by := map[uint64]Tick{}
+	for _, k := range ticks {
+		by[k.ID] = k
+	}
+	if by[a.ID].Sent != 10 || by[b.ID].Recv != 7 || by[a.ID].Rec != a {
+		t.Fatalf("%+v", by)
+	}
+	rev := by[a.ID].Rev
+	a.Sent.Add(5)
+	if k := find(g.Ticks(ticks), a.ID); k.Rev != rev || k.Sent != 15 {
+		t.Fatalf("counters moved the revision: %+v", k)
+	}
+	a.Set(func(f *Fields) { f.Route = "tunnel" })
+	if k := find(g.Ticks(ticks), a.ID); k.Rev == rev {
+		t.Fatal("Set kept the revision")
+	}
+	g.Close(b, time.Now())
+	again := g.Ticks(ticks)
+	if len(again) != 1 || again[0].ID != a.ID || &again[0] != &ticks[0] {
+		t.Fatalf("closed record listed or dst not reused: %+v", again)
+	}
+}
+
+func find(ticks []Tick, id uint64) Tick {
+	for _, k := range ticks {
+		if k.ID == id {
+			return k
+		}
+	}
+	return Tick{}
+}

@@ -576,9 +576,6 @@ interface GUI {
   SaveBackup(full: boolean, password: string): Promise<string>;
   ChooseBackup(): Promise<BackupChoice>;
   RestoreBackup(password: string): Promise<RestoreResult>;
-  // VPN traffic statistics (no sites are kept).
-  TrafficReport(period: TrafficPeriod): Promise<TrafficReport>;
-  ClearTraffic(): Promise<void>;
   GeoList(kind: 'site' | 'ip', name: string, filter: string, offset: number, limit: number): Promise<GeoListing>;
   ConvertACL(text: string, mode: 'domains' | 'rules', suffix: string, actions: string): Promise<ConvertResult>;
 }
@@ -631,26 +628,6 @@ export interface RestoreResult {
   subscriptions: number;
   proxies: number;
   remapped: number;
-}
-
-export type TrafficPeriod ='day' | 'week' | 'month' | 'year';
-
-export interface TrafficItem {
-  id: string; // server ID or program name
-  name: string; // server name
-  sent: number;
-  recv: number;
-}
-
-export interface TrafficReport {
-  period: TrafficPeriod;
-  from: string;
-  total: { sent: number; recv: number };
-  servers: TrafficItem[];
-  apps: TrafficItem[];
-  series: { label: string; sent: number; recv: number }[];
-  appsFrom?: string;
-  since: string;
 }
 
 export interface ConvertResult {
@@ -1250,3 +1227,61 @@ export function dnsErrorText(kind: string, code?: number): string {
   }
   return kind;
 }
+
+// ==== stats ====
+
+// Traffic statistics («Статистика»). Counts of one day, row or period.
+export interface StatCounters {
+  tc?: number; // tunnel: connections
+  tu?: number; // tunnel: bytes up
+  td?: number; // tunnel: bytes down
+  dc?: number; // direct: connection attempts
+  du?: number; // direct: bytes up (approximate lower bound; down is not measured)
+  bc?: number; // blocked connections (rules, QUIC, IPv6 for VPN)
+  f?: number; // failed (refused) connections
+  fo?: number; // tunnel connection went to a fallback / non-preferred group member
+}
+
+export interface StatRow extends StatCounters {
+  k: string; // key: lower-case path | 'proxy:<id>' (verbatim) | site | server ID | group ID | '' (unknown / no server) | '*' (others)
+  n?: string; // stored display name
+  drops?: number; // servers only
+  gone?: boolean; // server/group/proxy deleted since
+}
+
+export interface StatDay extends StatCounters {
+  day: string;
+}
+
+export type StatsMode = '' | 'no-sites' | 'off';
+
+export interface StatsReport {
+  period: string;
+  from: string;
+  to: string;
+  total: StatCounters;
+  events: { drops?: number; engineFails?: number };
+  days: StatDay[];
+  apps: StatRow[];
+  sites: StatRow[];
+  servers: StatRow[];
+  groups: StatRow[];
+  months: string[];
+  since?: string;
+  mode: StatsMode;
+  storeError?: string;
+  // mode.json could not be read: collection is off until a mode is picked.
+  modeUnread?: boolean;
+}
+
+interface GUI {
+  // today | yesterday | 7d | 30d | YYYY-MM
+  Stats(period: string): Promise<StatsReport>;
+  ResetStats(): Promise<void>;
+  SetStatsMode(mode: StatsMode): Promise<void>;
+}
+
+// statConns: every connection of a row (VPN, direct attempts, blocked,
+// refused); statVPN: bytes through the VPN.
+export const statConns = (c: StatCounters) => (c.tc ?? 0) + (c.dc ?? 0) + (c.bc ?? 0) + (c.f ?? 0);
+export const statVPN = (c: StatCounters) => (c.tu ?? 0) + (c.td ?? 0);

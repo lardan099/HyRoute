@@ -919,8 +919,16 @@ func (c *Core) encryptedDNS(proto uint8, dst netip.AddrPort) bool {
 	return proto == packet.ProtoTCP && (port == 443 || port == 853) && c.SystemDNS != nil && c.SystemDNS(dst.Addr().Unmap())
 }
 
+// finish sets the flow's final route and outcome (flows.View.Settled and
+// Failed interpret the outcome strings). stats: a tunnel pick that ends as
+// another route (the IPv6 block) keeps no group or failover.
 func (c *Core) finish(rec *flows.Record, route rules.Action, outcome string) {
-	rec.Set(func(f *flows.Fields) { f.Route, f.Outcome = route.String(), outcome })
+	rec.Set(func(f *flows.Fields) {
+		f.Route, f.Outcome = route.String(), outcome
+		if route != rules.Tunnel {
+			f.Group, f.Failover = "", false
+		}
+	})
 }
 
 func (c *Core) applyTCP(p *packet.Packet, addr *divert.Address, key nat.FlowKey, pid uint32, proc *procinfo.Info,
@@ -1160,6 +1168,7 @@ func (c *Core) RelayDecide(e *nat.Entry, domain string, src rules.DomainSource) 
 	res, _ = c.pick(res, false, c.hint(res, proc, domain, e.Flow.Dst.Addr()))
 	if res.Action == rules.Tunnel && e.Flow.Dst.Addr().Is6() && c.Opt.BlockIPv6Tunnel {
 		res.Action, res.Profile, res.Rule = rules.Block, "", res.Rule+" (IPv6 blocked for tunnel)"
+		res.Group, res.Failover = "", false // stats
 	}
 	return res
 }

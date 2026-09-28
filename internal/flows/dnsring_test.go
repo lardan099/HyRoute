@@ -7,12 +7,11 @@ import (
 )
 
 // DNS rows (dns) close into their own ring: they never push connections
-// out, Closed merges both by close time, and they are no traffic.
+// out and Closed merges both by close time. (That they are no traffic is
+// the statistics sampler's, internal/stats.)
 func TestDNSRing(t *testing.T) {
 	g := NewRegistry(5)
 	g.SetKeepDNS(3)
-	var traffic int64
-	g.OnTraffic = func(_, _ string, s, r int64) { traffic += s + r }
 	var closedDNS int
 	g.OnClose = func(v View) {
 		if v.Stage == StageDNS {
@@ -55,9 +54,6 @@ func TestDNSRing(t *testing.T) {
 	}
 	if conns != 5 || dns != 3 || closedDNS != 10 {
 		t.Fatalf("kept %d connections, %d DNS rows (OnClose %d); want 5, 3, 10", conns, dns, closedDNS)
-	}
-	if traffic != 5*120 {
-		t.Fatalf("DNS rows counted as traffic: %d", traffic)
 	}
 	// Without DNS rows Closed is the connection ring as it was.
 	g2 := NewRegistry(2)

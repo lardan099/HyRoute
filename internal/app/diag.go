@@ -34,6 +34,9 @@ func (c *Controller) Diagnostics(system []string, privacy bool) string {
 	for _, l := range c.rulesetDiagLines() { // rulesets
 		w("%s", l)
 	}
+	for _, l := range c.statsDiagLines() { // stats
+		w("%s", l)
+	}
 	if st.Stats != nil {
 		s := st.Stats
 		w("   WinDivert: драйвер %s; relay: порт %d", orDash(s.Driver), s.RelayPort)

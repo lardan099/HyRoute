@@ -239,6 +239,7 @@ func main() {
 	go ctl.RunScheduler(schedCtx)
 	go ctl.RunUpdateChecks(schedCtx)
 	go ctl.RunGeoUpdates(schedCtx)
+	go ctl.RunStats(schedCtx) // stats
 	go gui.syncKillSwitchCheck()
 
 	switch {

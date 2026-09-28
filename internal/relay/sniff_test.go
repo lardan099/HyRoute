@@ -260,3 +260,21 @@ func TestProxyRequest(t *testing.T) {
 		}
 	}
 }
+
+// stats: the decider's failover reaches the record with the route.
+func TestSniffDecisionFailover(t *testing.T) {
+	f := newFixture(t)
+	f.relay.Decide = func(e *nat.Entry, domain string, src rules.DomainSource) rules.Result {
+		return rules.Result{Action: rules.Tunnel, Profile: "nl", Group: "grp-000000000001", Failover: true, Rule: "r", Domain: domain, DomainSrc: src}
+	}
+	rec := &flows.Record{}
+	c := f.dialEntry(t, &nat.Entry{Mode: nat.Sniff, Rec: rec})
+	defer c.Close()
+	c.Write(clientHello(t, "fo.example"))
+	<-f.seen
+	c.Close()
+	<-f.done
+	if v := rec.View(time.Now()); !v.Failover || v.Group != "grp-000000000001" || v.Profile != "nl" || v.Route != "tunnel" || !v.Settled() {
+		t.Fatalf("%+v", v)
+	}
+}

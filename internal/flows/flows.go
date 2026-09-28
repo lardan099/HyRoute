@@ -4,6 +4,7 @@ package flows
 
 import (
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,20 +36,10 @@ type Record struct {
 	f      Fields
 	end    time.Time
 	closed bool
-	// counted: Sent and Recv already passed to Registry.OnTraffic.
-	counted [2]int64
-}
-
-// take returns the tunneled bytes not counted yet (r.mu held).
-func (r *Record) take() (profile string, sent, recv int64) {
-	// DNS rows are queries HyRoute answered, not traffic (dns).
-	if r.f.Route != "tunnel" || r.f.Profile == "" || r.f.Stage == StageDNS {
-		return "", 0, 0
-	}
-	s, v := r.Sent.Load(), max(r.Recv.Load(), 0)
-	sent, recv = s-r.counted[0], v-r.counted[1]
-	r.counted = [2]int64{s, v}
-	return r.f.Profile, max(sent, 0), max(recv, 0)
+	// stats: rev changes with every Set (the fields may have changed), so
+	// the statistics sampler tells "only the counters moved" without a
+	// View.
+	rev atomic.Uint32
 }
 
 // Fields are the mutable descriptive fields.
@@ -91,6 +82,7 @@ const StageDNS = "dns"
 func (r *Record) Set(f func(*Fields)) {
 	r.mu.Lock()
 	f(&r.f)
+	r.rev.Add(1)
 	r.mu.Unlock()
 }
 
@@ -147,10 +139,6 @@ func (r *Record) View(now time.Time) View {
 type Registry struct {
 	// OnClose is called once per closed record.
 	OnClose func(View)
-	// OnTraffic receives the bytes tunneled flows moved since the last
-	// call for them: from Sample for live flows, and once more on Close.
-	// Only the server and the program are passed, never the destination.
-	OnTraffic func(profile, process string, sent, recv int64)
 
 	seq    atomic.Uint64
 	mu     sync.Mutex
@@ -198,14 +186,10 @@ func (g *Registry) Close(r *Record, now time.Time) {
 		return
 	}
 	r.closed, r.end = true, now
-	profile, sent, recv := r.take()
 	r.mu.Unlock()
 	g.mu.Lock()
 	delete(g.active, r.ID)
 	g.mu.Unlock()
-	if fn := g.OnTraffic; fn != nil && sent+recv > 0 {
-		fn(profile, r.Process, sent, recv)
-	}
 	v := r.View(now)
 	if v.Stage == StageDNS {
 		g.dnsClosed.Load().Add(v)
@@ -232,33 +216,6 @@ func (g *Registry) Active(now time.Time) []View {
 	return out
 }
 
-// Sample passes the traffic of live tunneled flows since the last call to
-// OnTraffic, so that a long download counts in the hour it happens.
-func (g *Registry) Sample() {
-	fn := g.OnTraffic
-	if fn == nil {
-		return
-	}
-	g.mu.Lock()
-	recs := make([]*Record, 0, len(g.active))
-	for _, r := range g.active {
-		recs = append(recs, r)
-	}
-	g.mu.Unlock()
-	for _, r := range recs {
-		r.mu.Lock()
-		var profile string
-		var sent, recv int64
-		if !r.closed { // Close counts the rest
-			profile, sent, recv = r.take()
-		}
-		r.mu.Unlock()
-		if sent+recv > 0 {
-			fn(profile, r.Process, sent, recv)
-		}
-	}
-}
-
 // Closed returns the retained closed flows, oldest first.
 // DNS rows (dns) come from their own ring, merged in by close time.
 func (g *Registry) Closed() []View {
@@ -282,3 +239,49 @@ func (g *Registry) Closed() []View {
 
 // end is when a closed view was closed.
 func (v *View) end() time.Time { return v.Start.Add(v.Duration) }
+
+// ---- stats ----
+
+// Tick is the part of a live record the statistics sampler reads every
+// few seconds.
+type Tick struct {
+	ID         uint64
+	Sent, Recv int64
+	Rev        uint32
+	Rec        *Record // for a full View when the sampler needs one
+}
+
+// Ticks appends a Tick of every live record to dst[:0] (reuse dst between
+// calls). Only the registry lock is held, for the map walk and atomic
+// loads: no field lock, no strings. Live DNS rows are included; the
+// sampler skips them by their stage (dns).
+func (g *Registry) Ticks(dst []Tick) []Tick {
+	dst = dst[:0]
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, r := range g.active {
+		dst = append(dst, Tick{ID: r.ID, Sent: r.Sent.Load(), Recv: r.Recv.Load(), Rev: r.rev.Load(), Rec: r})
+	}
+	return dst
+}
+
+// Settled reports that the flow's route and success are final: decided
+// and past the relay's dial. "reflected…" (the relay has not finished its
+// dial) and "aborted…" (the dial was cancelled because HyRoute stops) are
+// never settled, even when the record is closed: such flows are not
+// counted at all. Settled and Failed are the only interpreters of outcome
+// strings (the engine's finish and the relay's setOutcome point here): a
+// new outcome goes into their test table.
+func (v View) Settled() bool {
+	if v.Route == "" || v.Route == "pending" {
+		return false
+	}
+	return !strings.HasPrefix(v.Outcome, "reflected") && !strings.HasPrefix(v.Outcome, "aborted")
+}
+
+// Failed: a tunnel or direct flow that did not open (outcomes "rst: …"
+// and "dropped: …" of those routes; for block they are the block itself).
+func (v View) Failed() bool {
+	return (v.Route == "tunnel" || v.Route == "direct") &&
+		(strings.HasPrefix(v.Outcome, "rst: ") || strings.HasPrefix(v.Outcome, "dropped: "))
+}

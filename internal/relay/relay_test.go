@@ -212,11 +212,16 @@ func TestRejectOnSocksFailure(t *testing.T) {
 	f := newFixture(t)
 	f.echo.Close() // CONNECT will be refused
 	time.Sleep(20 * time.Millisecond)
-	c := f.dial(t, true)
+	rec := &flows.Record{}
+	c := f.dialEntry(t, &nat.Entry{Mode: nat.NoSniff, Rec: rec})
 	defer c.Close()
 	expectReset(t, c)
 	if r := <-f.done; r.Route != "rejected" || r.Err == nil {
 		t.Fatalf("result %+v", r)
+	}
+	// stats: a refusal while the relay runs is a failed connection.
+	if v := rec.View(time.Now()); v.Outcome != "rst: socks5 connect failed" || f.relay.Rejected.Load() != 1 {
+		t.Fatalf("%+v rejected=%d", v, f.relay.Rejected.Load())
 	}
 }
 
@@ -281,7 +286,9 @@ func TestCloseCancelsPendingDial(t *testing.T) {
 	f := newFixture(t)
 	h := hangTunnel{dialing: make(chan struct{}, 1)}
 	f.relay.Tunnel = func(string) Tunnel { return h }
-	c := f.dial(t, true)
+	rec := &flows.Record{}
+	rec.Set(func(fl *flows.Fields) { fl.Route = "tunnel" })
+	c := f.dialEntry(t, &nat.Entry{Mode: nat.NoSniff, Rec: rec})
 	defer c.Close()
 	select {
 	case <-h.dialing:
@@ -299,8 +306,48 @@ func TestCloseCancelsPendingDial(t *testing.T) {
 	if el := time.Since(start); el > time.Second {
 		t.Fatalf("Close took %v", el)
 	}
-	if r := <-f.done; r.Route != "rejected" {
+	// stats: a dial cancelled by the stop is not a server refusal, and
+	// the statistics never count it (flows.View.Settled).
+	if r := <-f.done; r.Route != "aborted" || f.relay.Rejected.Load() != 0 {
+		t.Fatalf("result %+v rejected=%d", r, f.relay.Rejected.Load())
+	}
+	if v := rec.View(time.Now()); v.Outcome != "aborted: stopping" || v.Settled() {
+		t.Fatalf("%+v", v)
+	}
+	expectReset(t, c)
+}
+
+// The same for a direct dial: cancelled by the stop, it is "aborted", not
+// a failed direct connection.
+func TestCloseCancelsPendingDirectDial(t *testing.T) {
+	f, _ := sniffFixture(t, rules.Direct)
+	dialing := make(chan struct{}, 1)
+	f.relay.DialDirect = func(ctx context.Context, _ netip.Addr, _ netip.AddrPort) (net.Conn, error) {
+		dialing <- struct{}{}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	rec := &flows.Record{}
+	c := f.dialEntry(t, &nat.Entry{Mode: nat.Sniff, Rec: rec})
+	defer c.Close()
+	c.Write([]byte("GET / HTTP/1.1\r\nHost: plain.example.org\r\n\r\n"))
+	select {
+	case <-dialing:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no dial")
+	}
+	done := make(chan struct{})
+	go func() { f.relay.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close waited for the pending dial")
+	}
+	if r := <-f.done; r.Route != "aborted" || r.Err == nil {
 		t.Fatalf("result %+v", r)
+	}
+	if v := rec.View(time.Now()); v.Outcome != "aborted: stopping" || v.Settled() {
+		t.Fatalf("%+v", v)
 	}
 	expectReset(t, c)
 }
