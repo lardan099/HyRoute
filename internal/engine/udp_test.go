@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/flows"
 	"github.com/lardan099/hyroute/internal/rules"
 	"github.com/lardan099/hyroute/internal/socks5"
 )
@@ -178,4 +179,39 @@ func mustCompile(t *testing.T, cfg rules.Config) *rules.Set {
 		t.Fatal(err)
 	}
 	return set
+}
+
+// bigudp: a tunnel datagram over Hysteria's limit for its destination
+// (4070 bytes to 93.184.216.34:443) is dropped and counted on the flow,
+// and a flow of which nothing got through shows why.
+func TestUDPTooBig(t *testing.T) {
+	relay := newSocksRelay(t, nil)
+	h := newHarness(t, appRules, Options{})
+	quiet(h)
+	h.tun.client = relay.client()
+	h.record()
+	const app, dst = "192.168.1.5:45000", "93.184.216.34:443"
+	h.own(17, app, dst, 400) // game.exe: UDP tunnel
+	h.sendUDP(app, dst, make([]byte, 4070))
+	h.sendUDP(app, dst, make([]byte, 4071))
+	if got := relay.waitRelay(t, 1); len(got[0].payload) != 4070 {
+		t.Fatalf("relay got %d bytes", len(got[0].payload))
+	}
+	if h.c.UDPTooBig.Load() != 1 || h.c.UDPDropped.Load() != 1 {
+		t.Fatalf("too big %d, dropped %d", h.c.UDPTooBig.Load(), h.c.UDPDropped.Load())
+	}
+	if v := lastRecord(t, h.c); v.TooBig != 1 || v.Outcome != "tunneled" {
+		t.Fatalf("%+v", v)
+	}
+	// Only oversize datagrams: the view says why nothing went.
+	const app2 = "192.168.1.5:45001"
+	h.own(17, app2, dst, 400)
+	h.sendUDP(app2, dst, make([]byte, 5000))
+	if v := lastRecord(t, h.c); v.TooBig != 1 || v.Sent != 0 || v.Outcome != flows.OutcomeTooBig {
+		t.Fatalf("%+v", v)
+	}
+	if a := h.tun.rejected.Load(); a != 0 {
+		t.Fatalf("too big counted against the server: %d", a)
+	}
+	relay.waitRelay(t, 1)
 }

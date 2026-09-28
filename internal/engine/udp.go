@@ -56,13 +56,14 @@ func (c *Core) udpSend(uf *udpFlow, payload []byte, addr *divert.Address, key na
 		c.UDPDropped.Add(1)
 		return
 	}
-	if len(payload) > maxSOCKSPayload {
-		if !c.bigWarn.Swap(true) {
-			c.Log.Warn("UDP datagram too large for Hysteria SOCKS5 (4 KB buffer, no fragmentation): dropped",
-				"size", len(payload), "dst", key.Dst)
+	// Hysteria carries about 4 KB (socks5.MaxUDPPayload). This check also
+	// keeps a SOCKS5 datagram over its buffer from closing the whole
+	// association.
+	if n := len(payload); n > socks5.UDPPayloadAlways {
+		if lim := socks5.MaxUDPPayload(socks5.AddrFromAddrPort(key.Dst)); n > lim {
+			c.tooBig(uf.rec, n, lim, key.Dst)
+			return
 		}
-		c.UDPDropped.Add(1)
-		return
 	}
 	if key.Dst.Port() == 53 {
 		// The answer comes back through the tunnel and is taken only if
@@ -195,6 +196,10 @@ func (s *udpSession) read(a *socks5.UDPAssoc) {
 			// forged "answer" would steer the routing of its names.
 			s.c.DNS.AddAnswer(false, s.local, src, payload)
 		}
+		// One packet even above the MTU (up to ~4.1 KB, Hysteria's bound):
+		// the receive path applies no MTU, and WinDivert re-injects
+		// reassembled inbound packets the same way. packet.FragmentIP is
+		// the fallback should Windows ever refuse them (bigudp §0.4).
 		pkt := packet.BuildUDP(src, s.local, payload)
 		s.mu.Lock()
 		addr := s.addr

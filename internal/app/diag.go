@@ -42,6 +42,9 @@ func (c *Controller) Diagnostics(system []string, privacy bool) string {
 		if s.FragDropped+s.Malformed+s.Panics > 0 {
 			w("   отброшено: IP-фрагментов %d, нераспознанных пакетов %d, пакетов с ошибкой обработки %d", s.FragDropped, s.Malformed, s.Panics)
 		}
+		if l := fragDiagLine(s); l != "" { // bigudp
+			w("%s", l)
+		}
 	}
 	for _, t := range st.Tunnels {
 		w("   профиль %q: %s, SOCKS %s, рестартов %d, отклонено %d, ↑%d ↓%d байт, сервер %s%s",

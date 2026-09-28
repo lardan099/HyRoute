@@ -240,6 +240,12 @@ func (s *Session) Stats() Stats {
 		NATEntries:  e.NAT.Len(),
 		RelayPort:   int(r.Port()),
 		Driver:      e.DriverVersion(),
+		// bigudp
+		FragReassembled: e.FragReassembled.Load(),
+		FragIncomplete:  e.FragIncomplete.Load(),
+		FragOrphan:      e.FragOrphan.Load(),
+		FragLegacy:      e.FragLegacy.Load(),
+		UDPTooBig:       e.UDPTooBig.Load(),
 	}
 }
 

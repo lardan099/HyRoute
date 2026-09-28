@@ -43,6 +43,12 @@ type Packet struct {
 	Proto uint8
 	L4    int // offset of the TCP/UDP header
 	Data  int // offset of the L4 payload
+	// bigudp: Orig is opaque here: the engine attaches the original IP
+	// fragments (and their divert addresses) of a packet it rebuilt with
+	// Assembly, so a Direct decision can send those instead of the whole.
+	// nil for a packet that arrived whole. (packet cannot import divert:
+	// divert's tests import packet.)
+	Orig any
 }
 
 // Parse parses an IPv4 or IPv6 packet carrying TCP or UDP.

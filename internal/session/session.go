@@ -105,4 +105,17 @@ type Stats struct {
 	NATEntries  int    `json:"natEntries"`
 	RelayPort   int    `json:"relayPort"`
 	Driver      string `json:"driverVersion"`
+	// bigudp
+	// FragReassembled: UDP datagrams reassembled from IP fragments and
+	// routed whole; FragIncomplete: datagrams not reassembled (incomplete,
+	// invalid, overlapping, over budget), dropped; FragOrphan: fragments
+	// whose first fragment never came; FragLegacy: datagrams dropped at
+	// their first fragment on the legacy path (TCP, IPv6 extension headers;
+	// route not Direct); UDPTooBig: tunnel datagrams larger than Hysteria
+	// carries, dropped (also in UDPDropped).
+	FragReassembled int64 `json:"fragReassembled"`
+	FragIncomplete  int64 `json:"fragIncomplete"`
+	FragOrphan      int64 `json:"fragOrphan"`
+	FragLegacy      int64 `json:"fragLegacy"`
+	UDPTooBig       int64 `json:"udpTooBig"`
 }

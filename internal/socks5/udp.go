@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strconv"
 )
 
 // UDPAssoc is an established UDP ASSOCIATE session. The association lives as
@@ -94,4 +95,51 @@ func (a *UDPAssoc) ReadFrom(buf []byte) (int, Addr, error) {
 func (a *UDPAssoc) Close() error {
 	a.ctrl.Close()
 	return a.pc.Close()
+}
+
+// hysteriaUDPBuffer: Hysteria (app/v2.x) carries a UDP datagram only if it
+// fits two 4096-byte buffers, on the client and on the server: its SOCKS5
+// relay's (app/internal/socks5 udpBufferSize, SOCKS5 header included) and
+// the QUIC UDP message's (core/internal/protocol MaxUDPSize: 8 bytes +
+// varint + "host:port" + data). Over the second one Hysteria drops the
+// datagram silently. Over the first one it is worse: udpServer's
+// ReadFromUDP fails (WSAEMSGSIZE on Windows) and Hysteria closes the whole
+// association, i.e. every tunneled destination of that socket. So
+// MaxUDPPayload must never overestimate, and nothing may send Hysteria a
+// SOCKS5 UDP datagram it has not checked. Re-check both constants when the
+// bundled Hysteria version is bumped.
+const hysteriaUDPBuffer = 4096
+
+// UDPPayloadAlways is the payload every IP destination carries (the IPv6
+// address with the longest text form); IPv4 destinations carry at least 4066.
+const UDPPayloadAlways = 4040
+
+// MaxUDPPayload is the largest payload Hysteria carries to dst; 0 when dst
+// cannot be sent at all. It counts the bytes AppendAddr puts on the wire
+// (IPv4-mapped addresses unmapped, zones dropped) and the "host:port" text
+// Hysteria makes of them.
+func MaxUDPPayload(dst Addr) int {
+	var socks, hp int
+	if dst.Host != "" {
+		if len(dst.Host) > 255 {
+			return 0
+		}
+		socks = 3 + 1 + 1 + len(dst.Host) + 2 // RSV FRAG ATYP LEN host PORT
+		hp = len(net.JoinHostPort(dst.Host, strconv.Itoa(int(dst.Port))))
+	} else {
+		ip := dst.IP.Unmap().WithZone("")
+		if !ip.IsValid() {
+			return 0
+		}
+		socks = 3 + 1 + 16 + 2
+		if ip.Is4() {
+			socks = 3 + 1 + 4 + 2
+		}
+		hp = len(Addr{IP: ip, Port: dst.Port}.String())
+	}
+	varint := 1 // QUIC variable-length integer of len(hp)
+	if hp > 63 {
+		varint = 2
+	}
+	return min(hysteriaUDPBuffer-socks, hysteriaUDPBuffer-(8+varint+hp))
 }

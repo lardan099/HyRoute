@@ -27,6 +27,9 @@ type Record struct {
 	// TCP only Sent is known (inbound is not intercepted): Recv stays -1.
 	Sent atomic.Int64
 	Recv atomic.Int64
+	// bigudp
+	// TooBig: UDP datagrams dropped as larger than Hysteria carries.
+	TooBig atomic.Int64
 
 	mu     sync.Mutex
 	f      Fields
@@ -97,7 +100,15 @@ type View struct {
 	Start    time.Time     `json:"start"`
 	Duration time.Duration `json:"duration"`
 	Closed   bool          `json:"closed"`
+	// bigudp
+	TooBig int64 `json:"tooBig,omitempty"` // UDP datagrams dropped as larger than Hysteria carries
 }
+
+// OutcomeTooBig is the outcome a view shows for a tunneled UDP flow of
+// which nothing was sent because every datagram was larger than Hysteria
+// carries (bigudp). It is derived in View, never stored: the first datagram
+// that goes through shows "tunneled" again.
+const OutcomeTooBig = "dropped: larger than Hysteria carries"
 
 func (r *Record) View(now time.Time) View {
 	r.mu.Lock()
@@ -110,12 +121,17 @@ func (r *Record) View(now time.Time) View {
 	if r.Proto == 17 {
 		p = "udp"
 	}
-	return View{
+	v := View{
 		ID: r.ID, PID: r.PID, Process: r.Process, Path: r.Path, Proto: p,
 		Src: r.Src.String(), Dst: r.Dst.String(), Fields: r.f,
 		Sent: r.Sent.Load(), Recv: r.Recv.Load(), Start: r.Start,
 		Duration: end.Sub(r.Start), Closed: r.closed,
 	}
+	v.TooBig = r.TooBig.Load()
+	if v.TooBig > 0 && v.Sent == 0 && v.Outcome == "tunneled" {
+		v.Outcome = OutcomeTooBig
+	}
+	return v
 }
 
 // Registry is safe for concurrent use.

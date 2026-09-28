@@ -156,6 +156,9 @@
         <span>{selected.proto} {hide(selected.src)} → {hide(selected.dst)}</span>
         <span>исход: {selected.outcome} · процесс найден: {selected.attrib} · решение: {selected.stage}</span>
         {#if selected.group}<span>Группа: {groupText(selected.group)}</span>{/if}
+        {#if selected.tooBig}
+          <span>датаграмм больше предела Hysteria (около 4 КБ) отброшено: {selected.tooBig}</span>
+        {/if}
       </div>
       {#if canRule(selected)}
         <div class="row">

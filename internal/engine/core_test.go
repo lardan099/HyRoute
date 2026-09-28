@@ -45,6 +45,9 @@ func (f *fakeTunnel) NoteTraffic(sent, recv int64) {
 func (f *fakeTunnel) Available() bool    { return f.up.Load() }
 func (f *fakeTunnel) UDPAvailable() bool { return f.udp.Load() }
 func (f *fakeTunnel) UDPAssociate(ctx context.Context) (*socks5.UDPAssoc, error) {
+	if f.client == nil {
+		return nil, errors.New("no SOCKS5 server in this test")
+	}
 	return f.client.UDPAssociate(ctx)
 }
 
@@ -817,9 +820,10 @@ func (h *harness) fragCount() int {
 	}
 }
 
-// Fragmented datagrams follow the route of their first fragment: direct
-// ones pass whole, Tunnel and Block ones are dropped whole (never sent
-// direct), and fragments without a known first fragment are dropped.
+// Fragmented datagrams follow the route of their flow: direct ones pass as
+// their fragments, Tunnel ones go into the tunnel whole and Block ones are
+// dropped whole (never sent direct), and fragments without a first
+// fragment are dropped.
 func TestFragmentsFollowTheRoute(t *testing.T) {
 	h := newHarness(t, appRules, Options{})
 	h.c.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -844,9 +848,10 @@ func TestFragmentsFollowTheRoute(t *testing.T) {
 		t.Fatalf("direct datagram: %d of 3 fragments passed", n)
 	}
 
-	// A later fragment without its first one is dropped.
+	// A later fragment without its first one is held, then dropped.
 	fr := fragments4(L2, R, 3000, 3)
 	h.c.HandlePacket(fr[1], outAddr())
+	h.c.Maintain(time.Now().Add(6 * time.Second))
 	if n := h.fragCount(); n != 0 || h.c.FragOrphan.Load() != 1 {
 		t.Fatalf("orphan fragment passed (%d), orphans %d", n, h.c.FragOrphan.Load())
 	}

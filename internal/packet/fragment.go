@@ -17,6 +17,16 @@ type Fragment struct {
 	HasPorts bool
 	SrcPort  uint16
 	DstPort  uint16
+	// bigudp: the geometry reassembly needs. A successful parse always has
+	// HdrLen <= Data <= Len <= len(b).
+	Data   int // offset of the fragment's data (after the IPv4 header / IPv6 fragment header)
+	Len    int // bytes of the packet that belong to it (IPv4 total length, IPv6 40+payload length)
+	HdrLen int // IPv4 header length (options included); 40 for IPv6
+	// Simple: IPv4 (options allowed), or IPv6 whose fragment header directly
+	// follows the fixed header. RFC 8200 repeats the unfragmentable part in
+	// every fragment, so this is a property of the datagram.
+	Simple bool
+	UDPLen int // UDP length field of a UDP first fragment with >= 8 bytes of UDP header, else 0
 }
 
 // FragKey identifies all fragments of one datagram.
@@ -70,12 +80,23 @@ func ParseFragment(b []byte) (Fragment, error) {
 		f.Offset = int(frag&0x1fff) * 8
 		f.More = frag&0x2000 != 0
 		l4 = ihl
+		f.Len = int(binary.BigEndian.Uint16(b[2:]))
+		if f.Len < ihl || f.Len > len(b) {
+			return f, ErrShort
+		}
+		f.Data, f.HdrLen, f.Simple = ihl, ihl, true
 	case 6:
 		if len(b) < 40 {
 			return f, ErrShort
 		}
 		f.Src = netip.AddrFrom16([16]byte(b[8:24]))
 		f.Dst = netip.AddrFrom16([16]byte(b[24:40]))
+		// Payload length 0 is the jumbogram marker: never a fragment here.
+		pl := int(binary.BigEndian.Uint16(b[4:]))
+		if pl == 0 || 40+pl > len(b) {
+			return f, ErrShort
+		}
+		f.Len, f.HdrLen = 40+pl, 40
 		next, off := b[6], 40
 		for {
 			switch next {
@@ -96,6 +117,10 @@ func ParseFragment(b []byte) (Fragment, error) {
 				f.More = fo&1 != 0
 				f.ID = binary.BigEndian.Uint32(b[off+4:])
 				l4 = off + 8
+				if f.Len < l4 {
+					return f, ErrShort // the headers end past the payload length
+				}
+				f.Data, f.Simple = l4, off == 40
 			default:
 				return f, ErrUnsupported // not a fragment
 			}
@@ -104,10 +129,17 @@ func ParseFragment(b []byte) (Fragment, error) {
 	default:
 		return f, ErrVersion
 	}
-	if f.Offset == 0 && (f.Proto == ProtoTCP || f.Proto == ProtoUDP) && len(b) >= l4+4 {
+	if f.Offset == 0 && (f.Proto == ProtoTCP || f.Proto == ProtoUDP) && f.Len >= l4+4 {
 		f.HasPorts = true
 		f.SrcPort = binary.BigEndian.Uint16(b[l4:])
 		f.DstPort = binary.BigEndian.Uint16(b[l4+2:])
+		if f.Proto == ProtoUDP && f.Len >= l4+8 {
+			f.UDPLen = int(binary.BigEndian.Uint16(b[l4+4:]))
+		}
 	}
 	return f, nil
 }
+
+// Reassemblable reports whether the datagram can be reassembled here: UDP,
+// Simple headers. Everything else keeps the per-fragment routing.
+func (f *Fragment) Reassemblable() bool { return f.Proto == ProtoUDP && f.Simple }

@@ -66,11 +66,15 @@ func TestNonTCPUDPFragmentsPass(t *testing.T) {
 		t.Fatalf("orphans %d, dropped %d", h.c.FragOrphan.Load(), h.c.FragDropped.Load())
 	}
 
-	// IPv6 UDP of a Tunnel program: dropped whole.
+	// IPv6 UDP of a Tunnel program: reassembled and tunneled whole (this
+	// harness has no SOCKS5 server: nothing leaves).
 	h.own(17, L6, R6, 400)
 	full := packet.BuildUDP(netip.MustParseAddrPort(L6), netip.MustParseAddrPort(R6), make([]byte, 3000))
 	for _, f := range fragments6("2a00::5", "2606:4700::1111", 17, full[40:], 9) {
 		h.c.HandlePacket(f, outAddr())
+	}
+	if n := h.c.FragReassembled.Load(); n != 1 {
+		t.Fatalf("IPv6 UDP: reassembled %d", n)
 	}
 	// An extension header after the fragment header may hide TCP/UDP: not
 	// passed either.
@@ -79,6 +83,20 @@ func TestNonTCPUDPFragmentsPass(t *testing.T) {
 	}
 	if n := h.fragCount(); n != 0 {
 		t.Fatalf("%d TCP/UDP fragments left directly", n)
+	}
+
+	// With «Не пускать IPv6 в VPN» the whole datagram is decided Block.
+	h = newHarness(t, appRules, Options{BlockIPv6Tunnel: true})
+	h.c.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	h.own(17, L6, R6, 400)
+	for _, f := range fragments6("2a00::5", "2606:4700::1111", 17, full[40:], 11) {
+		h.c.HandlePacket(f, outAddr())
+	}
+	if n := h.fragCount(); n != 0 {
+		t.Fatalf("IPv6 blocked for tunnel: %d fragments left", n)
+	}
+	if v := lastRecord(t, h.c); v.Outcome != "dropped: IPv6 blocked for tunnel" {
+		t.Fatalf("%+v", v)
 	}
 }
 

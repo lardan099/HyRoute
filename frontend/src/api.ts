@@ -308,6 +308,9 @@ export interface Flow {
   // could not use its preferred server
   group?: string;
   failover?: boolean;
+  // bigudp: UDP datagrams dropped as larger than Hysteria carries; a tunneled
+  // flow of which nothing got through has outcome 'dropped: larger than Hysteria carries'
+  tooBig?: number;
 }
 
 export interface Connections {

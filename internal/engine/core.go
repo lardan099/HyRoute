@@ -89,16 +89,26 @@ type Stats struct {
 	// Malformed: outbound packets that matched the filter but do not
 	// parse; dropped, never passed unrouted.
 	Malformed atomic.Int64
-	// FragDropped: fragments dropped (route not direct, or no first
-	// fragment); FragOrphan counts the latter, FragDatagrams datagrams.
-	FragDropped, FragOrphan, FragDatagrams atomic.Int64
-	PendingFull                            atomic.Int64
-	UDPTunneled                            atomic.Int64 // datagrams sent into the tunnel
-	UDPDropped                             atomic.Int64 // tunnel datagrams dropped (tunnel down, no session)
-	SYNRetries                             atomic.Int64 // OS retries of a refused SYN, reset again
+	// FragDropped: fragments dropped (route not direct, no first fragment,
+	// datagram not reassembled); FragOrphan counts those whose first
+	// fragment never came; FragLegacy: datagrams dropped at their first
+	// fragment on the legacy path (TCP, IPv6 extension headers in front of
+	// the fragment header; route not Direct).
+	FragDropped, FragOrphan, FragLegacy atomic.Int64
+	PendingFull                         atomic.Int64
+	UDPTunneled                         atomic.Int64 // datagrams sent into the tunnel
+	UDPDropped                          atomic.Int64 // tunnel datagrams dropped (tunnel down, no session)
+	SYNRetries                          atomic.Int64 // OS retries of a refused SYN, reset again
 	// UntrackedReset: connections the engine held no state for (opened
 	// before start) that the rules send through the tunnel or block, reset.
 	UntrackedReset atomic.Int64
+	// bigudp
+	// FragReassembled: UDP datagrams reassembled from fragments and routed
+	// whole. FragIncomplete: datagrams whose fragments were dropped
+	// because incomplete, invalid, overlapping, over budget or poisoned.
+	// UDPTooBig: tunnel datagrams dropped as larger than Hysteria carries
+	// (also counted in UDPDropped).
+	FragReassembled, FragIncomplete, UDPTooBig atomic.Int64
 }
 
 // Core decides routes and moves packets. It is driven by the platform layer
@@ -145,13 +155,12 @@ type Core struct {
 	udp      map[nat.FlowKey]*udpFlow
 	sessions map[sessKey]*udpSession
 	pending  map[pendKey]*pendingFlow
-	rejected map[nat.FlowKey]time.Time    // refused SYNs, until
-	gone     map[nat.FlowKey]time.Time    // reset flows the app may still use (expired reflected, untracked), until
-	frags    map[packet.FragKey]fragEntry // decided fragmented datagrams
+	rejected map[nat.FlowKey]time.Time     // refused SYNs, until
+	gone     map[nat.FlowKey]time.Time     // reset flows the app may still use (expired reflected, untracked), until
+	frags    map[packet.FragKey]*fragEntry // fragmented datagrams: held, assembling or decided (frag.go)
 	sem      chan struct{}
 	stop     chan struct{}
 	stopOnce sync.Once
-	bigWarn  atomic.Bool
 
 	// untracked: connections without state (see untrackedOut) that the
 	// rules let go direct, until.
@@ -160,6 +169,8 @@ type Core struct {
 	snapMu sync.Mutex // guards snap and snapAt; held through TCPTable
 	snap   *attrib.TCPSnapshot
 	snapAt time.Time
+
+	fragTable // bigudp: reassembly state (frag.go), under mu
 }
 
 type tcpFlow struct {
@@ -195,19 +206,21 @@ type pendKey struct {
 type pendingPkt struct {
 	raw  []byte
 	addr divert.Address
+	orig *fragOrigin // bigudp: the original fragments of a reassembled datagram
 }
 
 type pendingFlow struct {
-	pkts []pendingPkt
+	pkts  []pendingPkt
+	bytes int // bigudp: counted in pendBytes
 }
 
 const (
 	pendingMaxFlows   = 128
 	pendingMaxPackets = 8
 	sessionQueueMax   = 32
-	// maxSOCKSPayload: Hysteria's SOCKS5 UDP buffer is 4096 bytes including
-	// the SOCKS header, and it does not support fragmentation.
-	maxSOCKSPayload = 4096 - 22
+	// pendingMaxBytes bounds the parked packets (bigudp: a reassembled
+	// datagram is up to 64 KB plus its original fragments).
+	pendingMaxBytes = 8 << 20
 	// goneTTL: how long after its last segment a reflected flow whose NAT
 	// entry expired is still remembered (see Core.gone); goneMax bounds
 	// the set.
@@ -250,7 +263,7 @@ func NewCore(opt Options, tun Tunnels, procs *procinfo.Cache, inject func([]byte
 		sessions: map[sessKey]*udpSession{}, pending: map[pendKey]*pendingFlow{},
 		rejected: map[nat.FlowKey]time.Time{},
 		gone:     map[nat.FlowKey]time.Time{},
-		frags:    map[packet.FragKey]fragEntry{},
+		frags:    map[packet.FragKey]*fragEntry{},
 		sem:      make(chan struct{}, pendingMaxFlows), stop: make(chan struct{}),
 		untracked: map[nat.FlowKey]time.Time{},
 	}
@@ -568,7 +581,7 @@ func (c *Core) tcpSnapshot(now time.Time, maxAge time.Duration) *attrib.TCPSnaps
 
 func (c *Core) udpOut(p *packet.Packet, addr *divert.Address) {
 	if c.excluded(p.DstIP()) {
-		c.Inject(p.Buf, addr)
+		c.injectDirect(p, addr)
 		return
 	}
 	key := nat.FlowKey{Src: p.Src(), Dst: p.Dst()}
@@ -634,7 +647,7 @@ func (c *Core) udpApply(uf *udpFlow, p *packet.Packet, addr *divert.Address, key
 	switch uf.route {
 	case rules.Direct:
 		uf.rec.Sent.Add(int64(len(p.Payload())))
-		c.Inject(p.Buf, addr)
+		c.injectDirect(p, addr)
 	case rules.Block:
 	case rules.Tunnel:
 		if uf.refused.Load() {
@@ -650,13 +663,20 @@ func (c *Core) udpApply(uf *udpFlow, p *packet.Packet, addr *divert.Address, key
 // the owner is unknown.
 func (c *Core) newFlow(p *packet.Packet, addr *divert.Address, proto uint8, key nat.FlowKey) {
 	pk := pendKey{proto, key}
+	size, orig := pendSize(p)
 	c.mu.Lock()
 	if pf := c.pending[pk]; pf != nil {
 		// The flow is parked: this packet waits for its first one's
 		// decision even if the owner is known by now (deciding it here
 		// would open a second record and overwrite the flow's state).
 		if len(pf.pkts) < pendingMaxPackets {
-			pf.pkts = append(pf.pkts, pendingPkt{append([]byte(nil), p.Buf...), *addr})
+			if c.pendBytes+size <= pendingMaxBytes {
+				pf.pkts = append(pf.pkts, pendingPkt{append([]byte(nil), p.Buf...), *addr, orig})
+				pf.bytes += size
+				c.pendBytes += size
+			} else {
+				c.PendingFull.Add(1)
+			}
 		}
 		c.mu.Unlock()
 		return
@@ -667,9 +687,15 @@ func (c *Core) newFlow(p *packet.Packet, addr *divert.Address, proto uint8, key 
 		c.decide(p, addr, proto, key, pid, true, "packet")
 		return
 	}
-	select {
-	case c.sem <- struct{}{}:
-	default:
+	parked := false
+	if c.pendBytes+size <= pendingMaxBytes {
+		select {
+		case c.sem <- struct{}{}:
+			parked = true
+		default:
+		}
+	}
+	if !parked {
 		c.mu.Unlock()
 		c.PendingFull.Add(1)
 		// No room to wait for the SOCKET event: ask the OS tables at once,
@@ -684,8 +710,9 @@ func (c *Core) newFlow(p *packet.Packet, addr *divert.Address, proto uint8, key 
 		c.decide(p, addr, proto, key, pid, ok, stage)
 		return
 	}
-	pf := &pendingFlow{pkts: []pendingPkt{{append([]byte(nil), p.Buf...), *addr}}}
+	pf := &pendingFlow{pkts: []pendingPkt{{append([]byte(nil), p.Buf...), *addr, orig}}, bytes: size}
 	c.pending[pk] = pf
+	c.pendBytes += size
 	c.mu.Unlock()
 	go func() {
 		defer func() { <-c.sem }()
@@ -695,6 +722,7 @@ func (c *Core) newFlow(p *packet.Packet, addr *divert.Address, proto uint8, key 
 			c.mu.Lock()
 			if c.pending[pk] == pf {
 				delete(c.pending, pk)
+				c.pendBytes -= pf.bytes
 			}
 			c.mu.Unlock()
 		}()
@@ -706,14 +734,26 @@ func (c *Core) newFlow(p *packet.Packet, addr *divert.Address, proto uint8, key 
 		first := pf.pkts[0]
 		c.mu.Unlock()
 		if fp, err := packet.Parse(first.raw); err == nil {
+			if first.orig != nil {
+				fp.Orig = first.orig
+			}
 			c.decide(&fp, &first.addr, proto, key, pid, ok, stage)
 		}
 		// Tables are populated now: replay the rest through the normal path.
 		c.mu.Lock()
 		rest := pf.pkts[1:]
-		delete(c.pending, pk)
+		if c.pending[pk] == pf {
+			delete(c.pending, pk)
+			c.pendBytes -= pf.bytes
+		}
 		c.mu.Unlock()
 		for i := range rest {
+			if rest[i].orig != nil {
+				// A reassembled datagram is not fragment-shaped:
+				// HandlePacket would lose its originals.
+				c.replayWhole(&rest[i])
+				continue
+			}
 			c.HandlePacket(rest[i].raw, &rest[i].addr)
 		}
 	}()
@@ -1191,6 +1231,7 @@ func (c *Core) Maintain(now time.Time) {
 	// NAT entry in c.gone (under c.mu with the sweep, so no segment slips
 	// through in between): its later segments must not leave direct.
 	c.mu.Lock()
+	fsw := c.fragSweepLocked(now) // bigudp
 	for k, until := range c.gone {
 		if now.After(until) {
 			delete(c.gone, k)
@@ -1211,6 +1252,7 @@ func (c *Core) Maintain(now time.Time) {
 		}
 	}
 	c.mu.Unlock()
+	c.fragReport(nil, fsw)
 	for _, r := range resets {
 		a := r.Addr
 		a.SetOutbound(false)
