@@ -263,6 +263,12 @@ func (g *GUI) ImportClipboard() (app.ImportResult, error) {
 	return g.ctl.ImportURIs(text)
 }
 
+// ClipboardText reads the clipboard for the setup's «Вставить из буфера»,
+// which takes a server link or a subscription link alike.
+func (g *GUI) ClipboardText() (string, error) {
+	return runtime.ClipboardGetText(g.context())
+}
+
 func (g *GUI) SaveProfile(p hysteria.Profile) (app.ProfileSummary, error) {
 	return g.ctl.SaveProfile(p)
 }

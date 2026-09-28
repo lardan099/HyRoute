@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, errText, fmtDateTime, optionsOf, type SystemInfo, type Prefs, type Updates, type Settings, type AutostartInfo, type EngineOptions } from '../api';
-  import { ui, hide, setTheme, setAccent, settle, type Theme, type Accent } from '../state.svelte';
+  import { ui, hide, setTheme, setAccent, settle, setExpert, resetHelp, type Theme, type Accent } from '../state.svelte';
   import Icon from './Icon.svelte';
   import GeoSettings from './GeoSettings.svelte';
 
@@ -11,7 +11,15 @@
     oninstall,
     installCore,
     coreInstalling,
-  }: { updates: Updates | null; onupdates: () => void; oninstall: () => void; installCore: () => Promise<void>; coreInstalling: boolean } = $props();
+    onsetup,
+  }: {
+    updates: Updates | null;
+    onupdates: () => void;
+    oninstall: () => void;
+    installCore: () => Promise<void>;
+    coreInstalling: boolean;
+    onsetup: () => void;
+  } = $props();
 
   const status = $derived(ui.status);
   let routing = $state<Settings | null>(null);
@@ -169,6 +177,35 @@
   {#if ok}<div class="note ok">{ok}</div>{/if}
 
   <section class="card">
+    <h2><Icon name="sparkles" size={17} /> Режим интерфейса</h2>
+    <div class="seg">
+      <button class:on={!ui.expert} onclick={() => setExpert(false)}>Простой</button>
+      <button class:on={!!ui.expert} onclick={() => setExpert(true)}>Для опытных</button>
+    </div>
+    <p class="muted small mode">
+      {#if ui.expert}
+        Все страницы и настройки: локальные прокси, списки сайтов, соединения, журнал, правила текстом, базы правил и тонкая настройка
+        маршрутизации.
+      {:else}
+        Только самое нужное и подсказки простыми словами. Локальные прокси, списки сайтов, соединения, журнал и тонкие настройки спрятаны, их
+        открывает режим «Для опытных». Правила, серверы и подключение в обоих режимах одни и те же.
+      {/if}
+    </p>
+    <div class="row">
+      <button onclick={onsetup}><Icon name="wand" size={16} />Пройти настройку заново</button>
+      {#if !ui.expert}
+        <button
+          class="ghost"
+          onclick={() => {
+            resetHelp();
+            ok = 'Закрытые подсказки снова показываются';
+          }}>Вернуть закрытые подсказки</button
+        >
+      {/if}
+    </div>
+  </section>
+
+  <section class="card">
     <h2><Icon name="palette" size={17} /> Внешний вид</h2>
     <div class="opts">
       <span class="muted">Тема</span>
@@ -322,6 +359,7 @@
     </section>
   {/if}
 
+  {#if ui.expert}
   <GeoSettings />
 
   <section class="card">
@@ -343,6 +381,7 @@
       <button class="danger" onclick={() => confirm('Удалить все логи (в памяти и на диске)?') && run(() => api.ClearLogs(), 'Логи очищены')}>Очистить логи</button>
     </div>
   </section>
+  {/if}
 
   <section class="card">
     <h2><Icon name="info" size={17} /> Диагностика</h2>
@@ -357,7 +396,7 @@
     {#if diag}<textarea class="diag" readonly rows="16">{diag}</textarea>{/if}
   </section>
 
-  {#if routing}
+  {#if routing && ui.expert}
     <section class="card">
       <h2><Icon name="rules" size={17} /> Маршрутизация (для опытных)</h2>
       <div class="opts2">
@@ -386,6 +425,7 @@
       </div>
     {/if}
 
+    {#if ui.expert}
     <details class="card adv">
       <summary><Icon name="settings" size={17} /> Система: драйвер, брандмауэр, файлы</summary>
       <h3>Драйвер WinDivert</h3>
@@ -420,6 +460,7 @@
       <button onclick={() => run(() => api.OpenDataDir(), '')}>Открыть папку</button>
       <p class="muted small credits">Флаги стран — Twemoji (© Twitter, CC-BY 4.0). Иконки по мотивам Lucide (ISC).</p>
     </details>
+    {/if}
   {/if}
 </div>
 
@@ -431,6 +472,7 @@
   .opts2 { display: grid; grid-template-columns: max-content 1fr; gap: 10px 18px; align-items: center; }
   .adv summary { cursor: pointer; font-weight: 650; display: flex; align-items: center; gap: 8px; }
   .credits { margin-top: 14px; }
+  .mode { margin: 10px 0 12px; }
   p { margin: 0 0 10px; user-select: text; }
   .small { font-size: 12px; }
   .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin-bottom: 10px; user-select: text; }

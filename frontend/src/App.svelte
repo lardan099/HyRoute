@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, onEvent, errText, type Updates } from './api';
-  import { ui, hide, setPrivacy, applyTheme, noteSettingsRev } from './state.svelte';
+  import { ui, hide, setPrivacy, applyTheme, noteSettingsRev, setExpert, setupDone, setupStep } from './state.svelte';
   import Icon from './lib/Icon.svelte';
   import Home from './lib/Home.svelte';
   import Rules from './lib/Rules.svelte';
@@ -14,18 +14,21 @@
   import Proxies from './lib/Proxies.svelte';
   import UpdateDialog from './lib/UpdateDialog.svelte';
   import Toasts from './lib/Toasts.svelte';
+  import Setup from './lib/Setup.svelte';
 
+  // expert: the page is shown only in the full interface.
   const pages = [
     { id: 'home', label: 'Главная', icon: 'home' },
     { id: 'rules', label: 'Правила', icon: 'rules' },
     { id: 'servers', label: 'Серверы', icon: 'server' },
     { id: 'subs', label: 'Подписки', icon: 'rss' },
-    { id: 'proxies', label: 'Прокси', icon: 'zap' },
-    { id: 'lists', label: 'Списки', icon: 'database' },
-    { id: 'connections', label: 'Соединения', icon: 'activity' },
-    { id: 'logs', label: 'Журнал', icon: 'log' },
+    { id: 'proxies', label: 'Прокси', icon: 'zap', expert: true },
+    { id: 'lists', label: 'Списки', icon: 'database', expert: true },
+    { id: 'connections', label: 'Соединения', icon: 'activity', expert: true },
+    { id: 'logs', label: 'Журнал', icon: 'log', expert: true },
     { id: 'settings', label: 'Настройки', icon: 'settings' },
   ];
+  const shown = $derived(pages.filter((p) => ui.expert || !p.expert));
 
   function stored(): string {
     try {
@@ -36,7 +39,11 @@
     }
   }
 
-  let page = $state(stored());
+  let stay = $state(stored());
+  // A page the simple mode hides opens Главная (the stored one stays for
+  // the full interface).
+  const page = $derived(shown.some((p) => p.id === stay) ? stay : 'home');
+  let setup = $state(false);
   let actionError = $state('');
   let updates = $state<Updates | null>(null);
   let notice = $state('');
@@ -44,7 +51,7 @@
   let coreLater = $state(false);
 
   function go(id: string) {
-    page = id;
+    stay = id;
     try {
       localStorage.setItem('hyroute.page', id);
     } catch {}
@@ -59,10 +66,21 @@
     }
   }
 
+  let firstProfiles = true;
   async function refreshProfiles() {
     try {
       ui.profiles = await api.Profiles();
-    } catch {}
+    } catch {
+      return;
+    }
+    if (!firstProfiles) return;
+    firstProfiles = false;
+    // Before the simple mode there was only the full interface: a copy that
+    // already has servers keeps it. A new one starts simple.
+    if (ui.expert === null) setExpert(ui.profiles.length > 0);
+    // The setup opens by itself on the first start of the simple mode, and
+    // again after the restart «Установить» makes in the middle of it.
+    if (!ui.expert && ((!setupDone() && ui.profiles.length === 0) || setupStep() !== '')) setup = true;
   }
 
   async function refreshUpdates() {
@@ -164,14 +182,14 @@
   }
 </script>
 
-<div class="app">
+<div class="app" inert={setup}>
   <aside>
     <div class="brand">
       <span class="logo"><Icon name="shield" size={18} stroke={2.2} /></span>
       HyRoute
     </div>
     <nav>
-      {#each pages as p (p.id)}
+      {#each shown as p (p.id)}
         <button class="nav" class:active={page === p.id} onclick={() => go(p.id)}>
           <Icon name={p.icon} />
           <span>{p.label}</span>
@@ -231,7 +249,7 @@
 
     <div class="page">
       {#if page === 'home'}
-        <Home {go} />
+        <Home {go} onsetup={() => (setup = true)} />
       {:else if page === 'rules'}
         <Rules />
       {:else if page === 'servers'}
@@ -247,14 +265,16 @@
       {:else if page === 'logs'}
         <Logs />
       {:else}
-        <System {updates} onupdates={refreshUpdates} oninstall={() => (showUpdate = true)} {installCore} {coreInstalling} />
+        <System {updates} onupdates={refreshUpdates} oninstall={() => (showUpdate = true)} {installCore} {coreInstalling} onsetup={() => (setup = true)} />
       {/if}
     </div>
   </main>
   <Toasts />
 </div>
 
-{#if showUpdate && updates?.app}
+{#if setup}
+  <Setup {go} onclose={() => (setup = false)} />
+{:else if showUpdate && updates?.app}
   <UpdateDialog {updates} onclose={() => (showUpdate = false)} onchange={refreshUpdates} />
 {/if}
 

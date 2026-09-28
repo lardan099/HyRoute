@@ -7,6 +7,7 @@
   import FallbackPicker from './FallbackPicker.svelte';
   import Explain from './Explain.svelte';
   import RulesText from './RulesText.svelte';
+  import Help from './Help.svelte';
   import { templates, ruleFromTemplate, schemes, applyScheme, schemeTemplates, type Scheme } from './templates';
   import { itemLabel, loadGeo, geo } from '../geo.svelte';
   import { ruleTitle as title, appLabel, siteLabel } from '../ruletitle';
@@ -191,10 +192,26 @@
       <h1>Правила</h1>
       <p class="muted sub">Что пускать через VPN, что напрямую, а что блокировать. Проверяются сверху вниз, срабатывает первое подходящее.</p>
     </div>
-    <button onclick={() => (asText = true)} title="Много правил сразу: весь список текстом или добавить пачкой"><Icon name="log" size={16} />Текстом</button>
+    {#if ui.expert}<button onclick={() => (asText = true)} title="Много правил сразу: весь список текстом или добавить пачкой"><Icon name="log" size={16} />Текстом</button>{/if}
     <button onclick={() => (picking = true)}><Icon name="sparkles" size={16} />Шаблоны</button>
     <button class="primary" onclick={() => (editing = { index: -1, rule: newRule(), title: 'Новое правило' })}><Icon name="plus" size={16} />Правило</button>
   </header>
+
+  <Help id="rules" title="Что такое правила">
+    <p>
+      Правило говорит HyRoute, куда отправлять программу или сайт: <b>через VPN</b>, <b>напрямую</b> (как без VPN) или <b>заблокировать</b>.
+      Например: «YouTube → через VPN», «Госуслуги → напрямую», «Реклама → блок».
+    </p>
+    <ul>
+      <li>
+        Проще всего добавлять правила кнопкой <b>«Шаблоны»</b>: там готовые варианты для YouTube, Discord, Telegram, ChatGPT и других. Выберите
+        сервис и нажмите «Сохранить».
+      </li>
+      <li>Правила проверяются сверху вниз, и срабатывает первое подходящее. Порядок меняется стрелками справа или перетаскиванием.</li>
+      <li><b>«Всё остальное»</b> внизу решает, куда идёт всё, что не подошло ни под одно правило.</li>
+      <li>Сайт не открывается или идёт не туда? Внизу страницы есть <b>«Проверить адрес»</b>: введите сайт, и HyRoute покажет, какое правило сработало.</li>
+    </ul>
+  </Help>
 
   {#if error}<div class="note error">{error}</div>{/if}
 
@@ -274,7 +291,7 @@
             <b>Правил пока нет.</b>
             <p class="muted">
               Проще всего начать с кнопки «Шаблоны»: там готовые схемы («через VPN только заблокированное в России») и сервисы (YouTube, Discord,
-              ChatGPT…). Или создайте правило сами, или вставьте сразу много кнопкой «Текстом».
+              ChatGPT…). Или создайте правило сами{ui.expert ? ', или вставьте сразу много кнопкой «Текстом»' : ''}.
             </p>
           </div>
         </div>

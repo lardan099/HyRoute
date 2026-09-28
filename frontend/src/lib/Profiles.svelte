@@ -5,6 +5,7 @@
   import Icon from './Icon.svelte';
   import ProfileEditor from './ProfileEditor.svelte';
   import CheckProfile from './CheckProfile.svelte';
+  import Help from './Help.svelte';
 
   let { onchange }: { onchange: () => void } = $props();
 
@@ -139,6 +140,18 @@
     </div>
     <button class="primary" onclick={() => (adding = !adding)}><Icon name="plus" size={16} />Добавить сервер</button>
   </header>
+
+  <Help id="servers" title="Что здесь">
+    <p>
+      Сервер — это компьютер вашего VPN-сервиса, через который идёт трафик. Здесь все ваши серверы. <b>Звёздочка</b> отмечает основной: через
+      него идёт VPN, если в правиле не выбран другой сервер. Щёлкните по звёздочке, чтобы сделать сервер основным.
+    </p>
+    <ul>
+      <li><b>«Проверить»</b> покажет, работает ли сервер и насколько он быстрый (задержка: чем меньше, тем лучше).</li>
+      <li>Новый сервер: «Добавить сервер» и вставьте ссылку <code>hysteria2://…</code>. Ссылка подписки (<code>https://…</code>) добавляется на странице «Подписки».</li>
+      <li>Серверы из подписки обновляются сами, их не нужно добавлять заново.</li>
+    </ul>
+  </Help>
 
   {#if adding}
     <section class="card">

@@ -29,7 +29,53 @@ export const ui = $state({
   // "settings" event); pages holding a copy of the rules reload when it
   // passes theirs.
   settingsRev: 0,
+  // The full interface (Настройки → Режим интерфейса). Off: fewer pages,
+  // plain-words hints and the step-by-step setup. null until decided: a
+  // copy that already has servers from before the mode existed opens in
+  // the full one (App.svelte).
+  expert: (get('expert') === null ? null : get('expert') === '1') as boolean | null,
 });
+
+export function setExpert(on: boolean) {
+  ui.expert = on;
+  set('expert', on ? '1' : '0');
+}
+
+// The step-by-step setup: the step it stopped at ('' = not started) and
+// whether it was finished or skipped. The step survives the restart after
+// «Установить» (moving to Program Files): the WebView data does not depend
+// on where HyRoute.exe is.
+export function setupStep(): string {
+  return get('setup.step') ?? '';
+}
+
+export function setSetupStep(s: string) {
+  set('setup.step', s);
+}
+
+export function setupDone(): boolean {
+  return get('setup.done') === '1';
+}
+
+export function finishSetup() {
+  set('setup.done', '1');
+  set('setup.step', '');
+}
+
+// Hints (lib/Help.svelte) the user closed.
+export function helpClosed(id: string): boolean {
+  return get('help.' + id) === '1';
+}
+
+export function closeHelp(id: string) {
+  set('help.' + id, '1');
+}
+
+export function resetHelp() {
+  try {
+    for (const k of Object.keys(localStorage)) if (k.startsWith('hyroute.help.')) localStorage.removeItem(k);
+  } catch {}
+}
 
 // noteSettingsRev raises ui.settingsRev, never lowers it.
 export function noteSettingsRev(r: unknown) {

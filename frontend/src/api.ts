@@ -454,6 +454,7 @@ interface GUI {
   Profile(id: string): Promise<Profile>;
   ImportURIs(text: string): Promise<ImportResult>;
   ImportClipboard(): Promise<ImportResult>;
+  ClipboardText(): Promise<string>;
   SaveProfile(p: Profile): Promise<ProfileSummary>;
   DeleteProfile(id: string): Promise<void>;
   SetMain(id: string): Promise<void>;

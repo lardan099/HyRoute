@@ -4,8 +4,9 @@
   import { ui, hide, settle, mainProfile } from '../state.svelte';
   import Icon from './Icon.svelte';
   import CheckProfile from './CheckProfile.svelte';
+  import Help from './Help.svelte';
 
-  let { go }: { go: (page: string) => void } = $props();
+  let { go, onsetup }: { go: (page: string) => void; onsetup: () => void } = $props();
 
   let settings = $state<Settings | null>(null);
   let busy = $state(false);
@@ -229,7 +230,16 @@
     </section>
   {/if}
 
-  {#if ui.profiles.length === 0}
+  {#if ui.profiles.length === 0 && !ui.expert}
+    <section class="card start simple">
+      <Icon name="sparkles" size={26} />
+      <div class="grow">
+        <h2>Настроим HyRoute шаг за шагом</h2>
+        <p class="muted">Добавим ваш сервер, проверим его и выберем, что пускать через VPN. Каждый шаг объясняется, займёт пару минут.</p>
+      </div>
+      <button class="primary" onclick={onsetup}>Начать настройку<Icon name="arrow" size={16} /></button>
+    </section>
+  {:else if ui.profiles.length === 0}
     <section class="card start">
       <h2>С чего начать</h2>
       <ol>
@@ -302,6 +312,18 @@
         <button onclick={() => go('rules')}>Открыть правила</button>
       </section>
     {/if}
+
+    <Help id="home" title="Как пользоваться">
+      <ul>
+        <li><b>Большая кнопка</b> включает и выключает VPN. Когда он работает, кнопка цветная, а значок у часов — тоже.</li>
+        <li>
+          <b>«Весь трафик»</b> — через VPN идёт всё, кроме того, что в правилах отправлено напрямую. <b>«Только выбранное»</b> — через VPN
+          идут только программы и сайты из правил, остальное как без VPN.
+        </li>
+        <li><b>Сайт не открывается?</b> «Проверить адрес» внизу страницы «Правила» покажет, куда он идёт и почему.</li>
+        <li><b>Сервер тормозит?</b> Выберите другой основной сервер выше и нажмите «Проверить сервер».</li>
+      </ul>
+    </Help>
   {/if}
 </div>
 
@@ -345,6 +367,10 @@
   .main-select { width: 100%; font-size: 15px; padding: 9px 12px; }
 
   .start ol { margin: 0; padding-left: 20px; display: grid; gap: 12px; }
+  .start.simple { display: flex; align-items: center; gap: 16px; }
+  .start.simple > :global(svg) { color: var(--accent); flex: none; }
+  .start.simple h2 { margin-bottom: 4px; }
+  .start.simple p { margin: 0; }
   .start .row { margin-top: 8px; }
   code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
 

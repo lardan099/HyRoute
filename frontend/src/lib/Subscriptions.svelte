@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { api, errText, fmtDateTime, plural, type Subscription, type SubPreview, type MergeStats } from '../api';
   import { hide, settle, ui } from '../state.svelte';
+  import Help from './Help.svelte';
 
   let { onchange }: { onchange: () => void } = $props();
 
@@ -168,6 +169,13 @@
     <h1>Подписки</h1>
     <p class="muted sub">Ссылка от VPN-сервиса, по которой HyRoute сам получает и обновляет список серверов.</p>
   </header>
+  <Help id="subs" title="Что такое подписка">
+    <p>
+      Многие VPN-сервисы дают не ссылку на один сервер, а ссылку подписки: по ней лежит список всех их серверов. HyRoute сам скачивает этот
+      список и обновляет его, поэтому, когда сервис добавит новый сервер или сменит старый, ничего делать не нужно.
+    </p>
+    <p>Вставьте ссылку ниже и нажмите «Проверить»: HyRoute покажет, сколько серверов нашёл. Потом нажмите «Добавить».</p>
+  </Help>
   <section class="card">
     <h2>Добавить подписку</h2>
     <p class="muted small">
