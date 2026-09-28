@@ -8,7 +8,8 @@
   import Explain from './Explain.svelte';
   import RulesText from './RulesText.svelte';
   import { templates, ruleFromTemplate, schemes, applyScheme, schemeTemplates, type Scheme } from './templates';
-  import { itemLabel, shortLabel, loadGeo, geo } from '../geo.svelte';
+  import { itemLabel, loadGeo, geo } from '../geo.svelte';
+  import { ruleTitle as title, appLabel, siteLabel } from '../ruletitle';
 
   let s = $state<Settings | null>(null);
   let error = $state('');
@@ -23,6 +24,17 @@
   // bring back the list without it.
   let edits = 0;
   let saving: Promise<unknown> = Promise.resolve();
+  // rev/editRev: the revision of the rules on screen. Every save sends it,
+  // and Go refuses one built on rules changed elsewhere meanwhile (a rule
+  // from «Соединения», «Главная», the CLI…); pending counts saves in flight.
+  let rev = $state(0);
+  let editRev = 0;
+  let pending = $state(0);
+  let reloading = $state(false);
+  // triedAt: ui.settingsRev when the last idle reload started. A change
+  // reported during a reload is caught up after it; a failed reload is not
+  // retried until the revision grows again.
+  let triedAt = 0;
 
   async function load() {
     const my = edits;
@@ -31,6 +43,8 @@
       if (my !== edits) return;
       v.rules = (v.rules ?? []).map(toLists);
       s = v;
+      rev = v.rev ?? 0;
+      editRev = v.editRev ?? 0;
       const l = await api.LintRules(cleanSettings(v, mainProfile()?.id));
       if (my === edits) lint = l;
     } catch (e) {
@@ -41,6 +55,16 @@
   onMount(() => {
     load();
     loadGeo();
+  });
+
+  // The rules changed elsewhere: reload, but only while nothing is being
+  // edited here (no save in flight, no editor, no text, no drag). A save
+  // from a stale list is refused and reloads by itself.
+  $effect(() => {
+    if (!s || ui.settingsRev <= rev || ui.settingsRev <= triedAt || pending || editing || asText || dragFrom !== null || reloading) return;
+    triedAt = ui.settingsRev;
+    reloading = true;
+    load().finally(() => (reloading = false));
   });
 
   async function useScheme(sc: Scheme) {
@@ -63,12 +87,19 @@
   // Every change is saved at once: there is no separate "Save" step. The
   // list shows it right away, so a quick next click (a switch, "Ниже")
   // builds on it, and saves go one after another in click order. The saved
-  // list is reloaded after the last one.
+  // list is reloaded after the last one. Each save sends the revision the
+  // previous one produced (read when the job runs).
   async function persist(next: Settings) {
     error = '';
     s = next;
     const my = ++edits;
-    const job = saving.then(() => api.SaveSettings(cleanSettings(next, mainProfile()?.id)));
+    pending++;
+    const job = saving.then(async () => {
+      const res = await api.SaveSettings({ ...cleanSettings(next, mainProfile()?.id), rev, editRev });
+      rev = res.rev;
+      editRev = res.editRev ?? 0;
+      return res;
+    });
     saving = job.catch(() => {});
     try {
       await job;
@@ -77,6 +108,7 @@
       throw e;
     } finally {
       if (my === edits) await load();
+      pending--;
     }
   }
 
@@ -130,23 +162,6 @@
 
   function newRule(): Rule {
     return { name: '', apps: [], domains: [], action: 'tunnel', profile: '', protocol: '' };
-  }
-
-  function appLabel(p: string): string {
-    return /[*?]/.test(p) ? p : (p.split('\\').pop() ?? p);
-  }
-
-  function siteLabel(d: string): string {
-    return shortLabel(d);
-  }
-
-  // title of a rule without a name is made of its items: sites are masked in
-  // Privacy mode as in the tags below (lists from the database are not).
-  function title(r: Rule): string {
-    if (r.name) return r.name;
-    const a = (r.apps ?? []).map((x) => appLabel(x.pattern));
-    const d = (r.domains ?? []).map((x) => (itemLabel(x)?.geo ? siteLabel(x) : hide(siteLabel(x))));
-    return [...a, ...d].slice(0, 2).join(', ') + (a.length + d.length > 2 ? '…' : '') || 'Правило';
   }
 
   function routeLabel(r: { action: string; profile?: string; fallback?: string[] }): string {

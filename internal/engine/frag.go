@@ -114,7 +114,7 @@ func (c *Core) fragRoute(proto uint8, key nat.FlowKey) rules.Action {
 	if known {
 		sub.Proc = c.Procs.Get(pid)
 	}
-	if res, ok := c.exclusion(pid, known, sub.Proc, proto, key.Dst); ok {
+	if res, kind := c.exclusion(pid, known, sub.Proc, proto, key.Dst); kind != "" {
 		return res.Action
 	}
 	set := c.Rules.Load()

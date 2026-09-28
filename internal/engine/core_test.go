@@ -442,7 +442,7 @@ func TestSelfAndSystemDNSExclusions(t *testing.T) {
 	if i := h.next(t); !i.addr.Outbound() {
 		t.Fatal("Dnscache DNS must be direct")
 	}
-	if v := lastRecord(t, h.c); v.Rule != "exclusion: system DNS" {
+	if v := lastRecord(t, h.c); v.Rule != "exclusion: system DNS" || v.Excluded != "system-dns" {
 		t.Fatalf("%+v", v)
 	}
 }

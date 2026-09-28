@@ -2,34 +2,23 @@ package main
 
 import (
 	"log/slog"
-	"net/netip"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/app"
 	"github.com/lardan099/hyroute/internal/flows"
-	"github.com/lardan099/hyroute/internal/hysteria"
-	"github.com/lardan099/hyroute/internal/rules"
 	"github.com/lardan099/hyroute/internal/session"
 	"github.com/lardan099/hyroute/internal/store"
-	"github.com/lardan099/hyroute/internal/tunnels"
 )
 
 type traySession struct {
+	app.NopSession
 	failed bool
 }
 
-func (s *traySession) Stop()                                                {}
-func (s *traySession) ResetConnections()                                    {}
-func (s *traySession) SetRules(*rules.Set, []hysteria.Profile)              {}
-func (s *traySession) Flows() *flows.Registry                               { return flows.NewRegistry(10) }
-func (s *traySession) EngineFailed() bool                                   { return s.failed }
-func (s *traySession) Tunnels() []tunnels.Status                            { return nil }
-func (s *traySession) DNSSites(netip.Addr) [][]string                       { return nil }
-func (s *traySession) Endpoint(string) *tunnels.Endpoint                    { return nil }
-func (s *traySession) Stats() session.Stats                                 { return session.Stats{} }
-func (s *traySession) Acquire(hysteria.Profile) (*tunnels.Endpoint, func()) { return nil, func() {} }
+func (s *traySession) Flows() *flows.Registry { return flows.NewRegistry(10) }
+func (s *traySession) EngineFailed() bool     { return s.failed }
 
 func trayGUI(t *testing.T) (*GUI, *[]*traySession) {
 	t.Helper()

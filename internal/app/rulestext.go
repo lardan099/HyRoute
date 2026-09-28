@@ -711,11 +711,8 @@ func lineBreak(r rune) bool { return unicode.IsControl(r) || unicode.In(r, unico
 // RulesText renders the saved rules in the text format. Rules that share
 // exactly one program and have sites are grouped under [program].
 func (c *Controller) RulesText() string {
-	c.mu.Lock()
-	cfg := c.settings.Config
-	profiles := append([]hysteria.Profile(nil), c.profiles.List...)
-	c.mu.Unlock()
-	return formatRulesText(cfg, profiles)
+	v, _ := c.RulesTextFor("") // the active rules never fail
+	return v.Text
 }
 
 func formatRulesText(cfg rules.Config, profiles []hysteria.Profile) string {
@@ -862,8 +859,9 @@ func nameText(n string) string {
 // ApplyRulesText saves parsed text: replace=true makes it the whole rule
 // list (and "* ->" the default route); otherwise the rules are appended
 // and "* ->" is refused: adding rules must not change the default route.
-// Nothing is saved when any line has an error.
-func (c *Controller) ApplyRulesText(text string, replace bool) (SaveResult, RulesTextResult, error) {
+// Nothing is saved when any line has an error. g is the revision of the
+// text a replace was made from (RulesTextView); appending needs none.
+func (c *Controller) ApplyRulesText(text string, replace bool, g EditGuard) (SaveResult, RulesTextResult, error) {
 	res := c.ParseRulesText(text)
 	if len(res.Errors) > 0 {
 		return SaveResult{}, res, fmt.Errorf("в тексте ошибки (%d): ничего не сохранено", len(res.Errors))
@@ -871,15 +869,43 @@ func (c *Controller) ApplyRulesText(text string, replace bool) (SaveResult, Rule
 	if res.HasDefault && !replace {
 		return SaveResult{}, res, fmt.Errorf("строка «* -> …» меняет «Всё остальное», а «Добавить пачкой» только добавляет правила: уберите её или измените «Всё остальное» в режиме «Все правила»")
 	}
-	next := c.Settings()
-	if replace {
-		next.Rules = res.Rules
-	} else {
-		next.Rules = append(append([]rules.Rule(nil), next.Rules...), res.Rules...)
+	if !replace {
+		// Appended rules go after whatever the list is now.
+		g.Rev, g.EditRev = 0, 0
 	}
-	if res.HasDefault {
-		next.DefaultAction, next.DefaultProfile, next.DefaultFallback = res.DefaultAction, res.DefaultProfile, res.DefaultFallback
-	}
-	sr, err := c.SaveSettings(next)
+	sr, err := c.editRulesIn(g, func(cfg *rules.Config) (bool, error) {
+		if replace {
+			cfg.Rules = res.Rules
+		} else {
+			cfg.Rules = append(cfg.Rules, res.Rules...)
+		}
+		if res.HasDefault {
+			cfg.DefaultAction, cfg.DefaultProfile, cfg.DefaultFallback = res.DefaultAction, res.DefaultProfile, res.DefaultFallback
+		}
+		return true, nil
+	})
 	return sr, res, err
+}
+
+// RulesTextView is the rules as text with the revision it was read at,
+// sent back by a replace (ApplyRulesText). Wails only.
+type RulesTextView struct {
+	Text    string `json:"text"`
+	Ruleset string `json:"ruleset"`
+	Rev     uint64 `json:"rev"`
+	EditRev uint64 `json:"editRev,omitempty"`
+}
+
+// RulesTextFor renders the rules the token names as text: "" = the active
+// rules (the only ones until rule profiles exist).
+func (c *Controller) RulesTextFor(token string) (RulesTextView, error) {
+	if token != "" {
+		return RulesTextView{}, fmt.Errorf("неизвестный профиль правил %q", token)
+	}
+	c.mu.Lock()
+	cfg := c.settings.Config
+	profiles := append([]hysteria.Profile(nil), c.profiles.List...)
+	rev := c.settingsRev.Load()
+	c.mu.Unlock()
+	return RulesTextView{Text: formatRulesText(cfg, profiles), Rev: rev}, nil
 }

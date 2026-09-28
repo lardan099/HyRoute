@@ -533,7 +533,7 @@ func (c *Core) untrackedRoute(p *packet.Packet, key nat.FlowKey, now time.Time) 
 	if known {
 		proc = c.Procs.Get(pid)
 	}
-	if res, ok := c.exclusion(pid, known, proc, packet.ProtoTCP, key.Dst); ok {
+	if res, kind := c.exclusion(pid, known, proc, packet.ProtoTCP, key.Dst); kind != "" {
 		return res, proc
 	}
 	set := c.Rules.Load()
@@ -762,8 +762,8 @@ func (c *Core) decide(p *packet.Packet, addr *divert.Address, proto uint8, key n
 	}
 	sub := rules.Subject{Proc: proc, Proto: proto, Dst: key.Dst}
 	set := c.Rules.Load()
-	res, excl := c.exclusion(pid, known, proc, proto, key.Dst)
-	if !excl {
+	res, excluded := c.exclusion(pid, known, proc, proto, key.Dst)
+	if excluded == "" {
 		res = c.pick(set.EvaluateSites(sub, c.packetSites(set, proto, key.Dst)), proto == packet.ProtoUDP)
 	}
 	// Our own sockets (the relay's Direct dials, Hysteria's control
@@ -775,6 +775,7 @@ func (c *Core) decide(p *packet.Packet, addr *divert.Address, proto uint8, key n
 	rec.Set(func(f *flows.Fields) {
 		f.Attrib, f.Stage, f.Rule, f.Domain, f.DomainSrc = stage, "packet", res.Rule, res.Domain, res.DomainSrc.String()
 		f.Profile = res.Profile
+		f.Excluded = excluded
 		if res.Domain == "" {
 			f.DomainSrc = rules.SrcNone.String()
 		}
@@ -808,22 +809,25 @@ func (c *Core) decide(p *packet.Packet, addr *divert.Address, proto uint8, key n
 // TLS (TCP 853) to the system's DNS servers when Windows encrypts DNS.
 // Dnscache may share its svchost with other services, whose HTTPS to
 // anywhere else follows the rules.
-func (c *Core) exclusion(pid uint32, known bool, proc *procinfo.Info, proto uint8, dst netip.AddrPort) (rules.Result, bool) {
+//
+// The kind is "self", "hysteria" or "system-dns" ("" = none): callers test
+// it, never the Rule text, which is for display (flows.Fields.Excluded).
+func (c *Core) exclusion(pid uint32, known bool, proc *procinfo.Info, proto uint8, dst netip.AddrPort) (rules.Result, string) {
 	if !known {
-		return rules.Result{}, false
+		return rules.Result{}, ""
 	}
 	switch port := dst.Port(); {
 	case pid == c.SelfPID:
-		return rules.Result{Action: rules.Direct, Rule: "exclusion: self"}, true
+		return rules.Result{Action: rules.Direct, Rule: "exclusion: self"}, "self"
 	case c.SelfPID != 0 && proc != nil && proc.Name == "hysteria.exe" && proc.Parent != nil && proc.Parent.PID == c.SelfPID:
 		// Normally Hysteria only talks to its server, which the kernel
 		// filter already excludes; this covers an address it resolved on
 		// its own. Its traffic must never loop back into a tunnel.
-		return rules.Result{Action: rules.Direct, Rule: "exclusion: hysteria"}, true
+		return rules.Result{Action: rules.Direct, Rule: "exclusion: hysteria"}, "hysteria"
 	case pid != 0 && pid == c.DnscachePID.Load() && (port == 53 || c.encryptedDNS(proto, dst)):
-		return rules.Result{Action: rules.Direct, Rule: "exclusion: system DNS"}, true
+		return rules.Result{Action: rules.Direct, Rule: "exclusion: system DNS"}, "system-dns"
 	}
-	return rules.Result{}, false
+	return rules.Result{}, ""
 }
 
 // encryptedDNS: TCP 443 or 853 to a DNS server of the system.

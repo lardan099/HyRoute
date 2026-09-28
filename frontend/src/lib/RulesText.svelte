@@ -1,7 +1,7 @@
 <script lang="ts">
   // Many rules at once as text: edit the whole list, or add a batch.
   import { onMount } from 'svelte';
-  import { api, errText, type RulesTextResult } from '../api';
+  import { api, errText, guardOf, isStale, type RulesTextResult, type RulesTextView } from '../api';
   import { ui, hide } from '../state.svelte';
   import Icon from './Icon.svelte';
   import { geo, loadGeo, missingText } from '../geo.svelte';
@@ -10,6 +10,9 @@
 
   let mode = $state<'all' | 'add'>('all');
   let allText = $state('');
+  // view: the text «Все правила» started from, with its revision (a replace
+  // sends it back; Go refuses it if the rules changed elsewhere since).
+  let view: RulesTextView | null = null;
   let addText = $state('');
   let res = $state<RulesTextResult | null>(null);
   let error = $state('');
@@ -48,7 +51,8 @@ instagram.com -> vpn`);
   onMount(async () => {
     loadGeo();
     try {
-      allText = await api.RulesText();
+      view = await api.RulesText();
+      allText = view.text;
     } catch (e) {
       error = errText(e);
     }
@@ -69,13 +73,38 @@ instagram.com -> vpn`);
     saving = true;
     error = '';
     try {
-      const r = await api.ApplyRulesText(text, mode === 'all');
+      // Adding a batch goes after whatever the list is now: no revision.
+      const r = await api.ApplyRulesText(text, mode === 'all', guardOf(mode === 'all' && view ? view : {}));
       res = r;
       onsaved();
+      stale = null;
     } catch (e) {
       error = errText(e);
+      if (isStale(e) && mode === 'all') {
+        // The rules changed elsewhere. The text the user tried to save stays
+        // in the editor (it may be a rewrite of the whole list); only the
+        // revision is renewed, so saving again replaces the new rules with
+        // it on purpose. The current rules are one click away (swapStale).
+        try {
+          const fresh = await api.RulesText();
+          view = fresh;
+          stale = { other: fresh.text, mine: true };
+        } catch {}
+      }
     }
     saving = false;
+  }
+
+  // stale: after a refused replace, the text not shown in the editor
+  // (mine: the editor shows the text the user tried to save and other is
+  // the current rules; otherwise the other way round). Swapping loses
+  // neither.
+  let stale = $state<{ other: string; mine: boolean } | null>(null);
+  function swapStale() {
+    if (!stale) return;
+    const shown = allText;
+    allText = stale.other;
+    stale = { other: shown, mine: !stale.mine };
   }
 
   const lines = $derived(text.split('\n').length);
@@ -430,6 +459,16 @@ instagram.com -> vpn`);
     </div>
 
     {#if error}<div class="note error">{shownError}</div>{/if}
+    {#if stale && mode === 'all' && !masked}
+      <div class="note info">
+        {#if stale.mine}
+          В редакторе ваш текст, он не потерян: «Сохранить список» ещё раз заменит им правила, изменённые в другом месте.
+        {:else}
+          В редакторе текущие правила. Ваш текст можно вернуть.
+        {/if}
+        <button class="link" onclick={swapStale}>{stale.mine ? 'Показать текущие правила' : 'Вернуть мой текст'}</button>
+      </div>
+    {/if}
     <div class="actions">
       <button onclick={onclose}>Отмена</button>
       {#if masked}

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, errText, fmtDateTime, type SystemInfo, type Prefs, type Updates, type Settings, type AutostartInfo } from '../api';
+  import { api, errText, fmtDateTime, optionsOf, type SystemInfo, type Prefs, type Updates, type Settings, type AutostartInfo, type EngineOptions } from '../api';
   import { ui, hide, setTheme, setAccent, settle, type Theme, type Accent } from '../state.svelte';
   import Icon from './Icon.svelte';
   import GeoSettings from './GeoSettings.svelte';
@@ -36,20 +36,21 @@
     return v ?? true;
   }
 
-  // Each switch sends the whole object, so a quick second click must build
-  // on the first one: the change is shown at once, saves go one after
-  // another in click order (as on the Rules page), and the saved copy is
-  // read back after the last of them.
+  // Each switch sends all engine options (never the rules: a rule change
+  // made elsewhere meanwhile stays), so a quick second click must build on
+  // the first one: the change is shown at once, saves go one after another
+  // in click order (as on the Rules page), and the saved copy is read back
+  // after the last of them.
   let routingSaving: Promise<unknown> = Promise.resolve();
   let routingPending = 0;
-  async function saveRouting(patch: Partial<Settings>) {
+  async function saveRouting(patch: EngineOptions) {
     if (!routing) return;
-    const next = { ...JSON.parse(JSON.stringify(routing)), ...patch };
-    routing = next;
+    const next = { ...optionsOf(routing), ...patch };
+    routing = { ...routing, ...patch };
     error = '';
     ok = '';
     routingPending++;
-    const job = routingSaving.then(() => api.SaveSettings(next));
+    const job = routingSaving.then(() => api.SaveEngineOptions(next));
     routingSaving = job.catch(() => {});
     try {
       const res = await job;

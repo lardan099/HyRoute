@@ -35,6 +35,12 @@ export interface Settings {
   exactWebDomains?: boolean;
   sniffTimeoutMs?: number;
   killSwitch?: boolean;
+  // foundation: the Settings() view only (never stored). rev is always the
+  // settings revision the copy was read at; a save sends it back (EditGuard).
+  ruleset?: string;
+  rev?: number;
+  editRev?: number;
+  warnings?: RuleWarning[];
 }
 
 export interface Profile {
@@ -249,6 +255,8 @@ export interface Status {
   // '' = off, 'armed' = protects the connection, 'blocking' = internet closed
   killSwitch: '' | 'armed' | 'blocking';
   killSwitchError?: string;
+  // foundation: the settings revision (also the payload of the "settings" event)
+  settingsRev: number;
 }
 
 export interface Flow {
@@ -272,6 +280,8 @@ export interface Flow {
   start: string;
   duration: number; // ns
   closed: boolean;
+  // foundation: the mandatory exclusion the flow fell under (rules do not apply)
+  excluded?: string; // hysteria | system-dns
 }
 
 export interface Connections {
@@ -450,11 +460,11 @@ interface GUI {
   MoveProfile(id: string, to: number): Promise<void>;
   CopyURI(id: string): Promise<void>;
   Settings(): Promise<Settings>;
-  SaveSettings(s: Settings): Promise<{ needsReconnect: boolean }>;
+  SaveSettings(s: Settings): Promise<SaveResult>;
   RuleWarnings(): Promise<RuleWarning[]>;
-  RulesText(): Promise<string>;
+  RulesText(): Promise<RulesTextView>;
   ParseRulesText(text: string): Promise<RulesTextResult>;
-  ApplyRulesText(text: string, replace: boolean): Promise<RulesTextResult>;
+  ApplyRulesText(text: string, replace: boolean, guard: EditGuard): Promise<RulesTextResult>;
   LintRules(s: Settings): Promise<LintIssue[]>;
   Explain(q: { app: string; target: string; proto: string }, s: Settings | null): Promise<Explanation>;
   BrowseExe(): Promise<string>;
@@ -661,12 +671,73 @@ export function cleanRule(r: Rule, mainId: string | undefined): Rule {
 }
 
 // cleanSettings is what SaveSettings gets; mainId is the main server's ID
-// (mainProfile()?.id, undefined when none).
+// (mainProfile()?.id, undefined when none). The copy's ruleset, rev and
+// editRev stay: Go checks the save against them.
 export function cleanSettings(s: Settings, mainId: string | undefined): Settings {
   const c: Settings = JSON.parse(JSON.stringify(s));
   c.rules = (c.rules ?? []).map((r) => cleanRule(r, mainId));
   c.defaultFallback = c.defaultAction === 'tunnel' ? cleanFallback(c.defaultFallback, c.defaultProfile, mainId) : [];
   if (!c.defaultFallback.length) delete c.defaultFallback;
   if (c.defaultAction !== 'tunnel' || !c.defaultProfile) delete c.defaultProfile;
+  delete c.warnings;
   return c;
+}
+
+// ==== foundation ====
+
+// What a writer based its change on (Go app.EditGuard): the revision of the
+// copy it read. 0 = no check.
+export interface EditGuard {
+  ruleset: string;
+  rev: number;
+  editRev: number;
+}
+
+export interface SaveResult {
+  needsReconnect: boolean;
+  rev: number; // the settings revision after the save
+  editRev?: number;
+}
+
+// The rules as text with the revision «заменить всё» sends back.
+export interface RulesTextView {
+  text: string;
+  ruleset: string;
+  rev: number;
+  editRev?: number;
+}
+
+// The engine options: the part of Settings outside the rules, saved on its
+// own («Настройки»), so it never writes back an old copy of the rules.
+export interface EngineOptions {
+  blockQUIC?: boolean;
+  blockIPv6Tunnel?: boolean;
+  preferRemoteDNS?: boolean;
+  exactWebDomains?: boolean;
+  sniffTimeoutMs?: number;
+  killSwitch?: boolean;
+}
+
+// optionsOf picks the six engine options of s.
+export function optionsOf(s: Settings): EngineOptions {
+  const { blockQUIC, blockIPv6Tunnel, preferRemoteDNS, exactWebDomains, sniffTimeoutMs, killSwitch } = s;
+  return { blockQUIC, blockIPv6Tunnel, preferRemoteDNS, exactWebDomains, sniffTimeoutMs, killSwitch };
+}
+
+// guardOf is the revision a copy of the settings (or of the rules text)
+// sends back with a save.
+export function guardOf(v: { ruleset?: string; rev?: number; editRev?: number }): EditGuard {
+  return { ruleset: v.ruleset ?? '', rev: v.rev ?? 0, editRev: v.editRev ?? 0 };
+}
+
+// staleText starts Go's refusal of a save built on rules changed elsewhere
+// (the page reloads then).
+const staleText = 'Правила изменились в другом месте';
+
+export function isStale(e: unknown): boolean {
+  return errText(e).startsWith(staleText);
+}
+
+interface GUI {
+  SaveEngineOptions(o: EngineOptions): Promise<SaveResult>;
 }

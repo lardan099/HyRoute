@@ -1,7 +1,9 @@
 package flows
 
 import (
+	"encoding/json"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 )
@@ -32,5 +34,19 @@ func TestRegistry(t *testing.T) {
 	v := closed[0]
 	if v.Duration != time.Second || v.Proto != "udp" || v.Sent != 10 || v.Recv != -1 || v.Route != "direct" || !v.Closed {
 		t.Fatalf("%+v", v)
+	}
+}
+
+// TestExcludedJSON: the exclusion kind reaches the UI only when set.
+func TestExcludedJSON(t *testing.T) {
+	r := &Record{Proto: 6, Dst: netip.MustParseAddrPort("1.1.1.1:443")}
+	b, _ := json.Marshal(r.View(time.Now()))
+	if strings.Contains(string(b), `"excluded"`) {
+		t.Fatalf("empty kind marshalled: %s", b)
+	}
+	r.Set(func(f *Fields) { f.Excluded = "system-dns" })
+	b, _ = json.Marshal(r.View(time.Now()))
+	if !strings.Contains(string(b), `"excluded":"system-dns"`) {
+		t.Fatalf("%s", b)
 	}
 }

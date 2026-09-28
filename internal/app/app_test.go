@@ -2,7 +2,6 @@ package app
 
 import (
 	"log/slog"
-	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -19,6 +18,7 @@ import (
 const link = "hysteria2://user:pass@example.com:443,20000-50000/?obfs-password=ob&sni=s.example#DE%20one"
 
 type fakeSession struct {
+	NopSession
 	stopped  bool
 	set      *rules.Set
 	profiles []hysteria.Profile
@@ -49,15 +49,10 @@ func (f *fakeSession) ResetConnections() {
 func (f *fakeSession) SetRules(s *rules.Set, p []hysteria.Profile) {
 	f.set, f.profiles = s, p
 }
-func (f *fakeSession) Flows() *flows.Registry            { return f.reg }
-func (f *fakeSession) EngineFailed() bool                { return f.failed.Load() }
-func (f *fakeSession) Tunnels() []tunnels.Status         { return f.tunnels }
-func (f *fakeSession) DNSSites(netip.Addr) [][]string    { return nil }
-func (f *fakeSession) Endpoint(string) *tunnels.Endpoint { return nil }
-func (f *fakeSession) Stats() session.Stats              { return f.stats }
-func (f *fakeSession) Acquire(hysteria.Profile) (*tunnels.Endpoint, func()) {
-	return nil, func() {}
-}
+func (f *fakeSession) Flows() *flows.Registry    { return f.reg }
+func (f *fakeSession) EngineFailed() bool        { return f.failed.Load() }
+func (f *fakeSession) Tunnels() []tunnels.Status { return f.tunnels }
+func (f *fakeSession) Stats() session.Stats      { return f.stats }
 
 func newCtl(t *testing.T) (*Controller, *[]*fakeSession) {
 	t.Helper()

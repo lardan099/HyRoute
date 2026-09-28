@@ -86,6 +86,10 @@ type Controller struct {
 	// ProxyFirewall allows exactly these local proxy ports from the local
 	// network (nil = nothing to do).
 	ProxyFirewall func(ports []int) error
+	// foundation: OnSettings is called, holding no lock, after every
+	// settings commit with the new revision (SettingsRev): pages holding a
+	// copy of the settings reload. It must not block.
+	OnSettings func(rev uint64)
 
 	// lifeMu serializes Connect, disconnect, kill switch changes, the
 	// automatic reconnect after an engine failure and the ports of local
@@ -144,6 +148,15 @@ type Controller struct {
 	// failedStop: the last session stopped after its engine failed, and
 	// routing did not come back since (see startLocked). Guarded by mu.
 	failedStop bool
+
+	// foundation: settingsRev is the settings revision: +1 by every
+	// settings commit, at install under mu; 1 after Load (see SettingsRev).
+	settingsRev atomic.Uint64
+	// rulesAt is the settingsRev of the last commit that changed the
+	// active rules part (guardRevLocked). Guarded by mu.
+	rulesAt uint64
+
+	// Feature state (one line per feature, landing order).
 }
 
 // New builds a controller with journals and a logger.
@@ -211,6 +224,7 @@ func (c *Controller) Load() error {
 	c.mu.Lock()
 	c.profiles, c.settings, c.set, c.subs, c.prefs, c.proxies = p, st, set, subs, prefs, proxies
 	c.settingsBroken, c.proxiesBroken, c.prefsBroken = err2, err5, err4
+	c.rulesAt = c.settingsRev.Add(1)
 	c.updateNamesLocked()
 	c.loadErr = strings.Join(errs, "; ")
 	c.mu.Unlock()

@@ -291,3 +291,45 @@ table { border-collapse: collapse; width: 100%; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 5px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- toasts (lib/Toasts.svelte; foundation) ---- */
+.toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 50; /* above .backdrop */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0; /* the toasts space themselves: an empty region takes no room */
+  width: min(380px, calc(100vw - 40px));
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  padding: 10px 8px 10px 14px;
+  user-select: text;
+  animation: pop 0.14s ease-out;
+  margin-top: 8px;
+}
+.toast.ok { border-left-color: var(--direct); }
+.toast.error { border-left-color: var(--block); }
+.toast .t { font-weight: 600; overflow-wrap: anywhere; }
+.toast.error .t { color: var(--block); }
+.toast .d { color: var(--muted); font-size: 12.5px; margin-top: 2px; overflow-wrap: anywhere; }
+.toast .acts { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; }
+.toast button.icon { min-width: 28px; min-height: 28px; padding: 4px; }
+.toasts .more { pointer-events: auto; color: var(--muted); font-size: 12px; padding: 0 4px; margin-top: 8px; }
+/* Two live regions that are always in the page (errors first). */
+.toasts .region { display: flex; flex-direction: column; align-items: flex-end; width: 100%; }
+/* Focus comes back to the page when a focused toast closes. */
+main:focus { outline: none; }

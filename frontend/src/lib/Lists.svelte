@@ -78,7 +78,8 @@
     const s = await api.Settings();
     s.rules = (s.rules ?? []).map(toLists);
     s.rules.unshift(r);
-    await api.SaveSettings(cleanSettings(s, mainProfile()?.id));
+    // With the revision of the copy just read (only a true race refuses it).
+    await api.SaveSettings({ ...cleanSettings(s, mainProfile()?.id), rev: s.rev ?? 0 });
     adding = null;
     info = `Правило «${r.name}» добавлено в начало списка правил`;
     if (res) search(res.query);

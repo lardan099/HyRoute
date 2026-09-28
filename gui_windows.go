@@ -151,6 +151,13 @@ func (g *GUI) emitStatus() {
 	}
 }
 
+// emitSettings tells the pages that the settings changed (revision rev).
+func (g *GUI) emitSettings(rev uint64) {
+	if ctx := g.context(); ctx != nil {
+		runtime.EventsEmit(ctx, "settings", rev)
+	}
+}
+
 // ---- status and connection ----
 
 func (g *GUI) Status() app.Status { return g.ctl.Status() }
@@ -294,14 +301,19 @@ func (g *GUI) CopyText(text string) error { return runtime.ClipboardSetText(g.co
 
 // ---- rules and settings ----
 
-func (g *GUI) Settings() settings.Settings     { return g.ctl.Settings() }
+// Settings is a page's copy of the settings with the revision its saves
+// send back (SaveSettings refuses a stale one).
+func (g *GUI) Settings() app.SettingsView      { return g.ctl.SettingsView() }
 func (g *GUI) RuleWarnings() []app.RuleWarning { return g.ctl.RuleWarnings() }
 
 // Rules as text (many at once).
-func (g *GUI) RulesText() string                              { return g.ctl.RulesText() }
+func (g *GUI) RulesText() app.RulesTextView {
+	v, _ := g.ctl.RulesTextFor("") // the active rules always render
+	return v
+}
 func (g *GUI) ParseRulesText(text string) app.RulesTextResult { return g.ctl.ParseRulesText(text) }
-func (g *GUI) ApplyRulesText(text string, replace bool) (app.RulesTextResult, error) {
-	_, res, err := g.ctl.ApplyRulesText(text, replace)
+func (g *GUI) ApplyRulesText(text string, replace bool, guard app.EditGuard) (app.RulesTextResult, error) {
+	_, res, err := g.ctl.ApplyRulesText(text, replace, guard)
 	return res, err
 }
 
@@ -311,11 +323,22 @@ func (g *GUI) LintRules(s settings.Settings) []rules.Issue {
 func (g *GUI) Explain(q app.ExplainQuery, s *settings.Settings) app.Explanation {
 	return g.ctl.Explain(q, s)
 }
-func (g *GUI) SaveSettings(s settings.Settings) (app.SaveResult, error) {
+
+// SaveSettings saves the rules part of v; the engine options of the page's
+// copy are ignored (SaveEngineOptions saves them).
+func (g *GUI) SaveSettings(v app.SettingsView) (app.SaveResult, error) {
+	return g.ctl.SaveRulesIn(app.EditGuard{Ruleset: v.Ruleset, Rev: v.Rev, EditRev: v.EditRev}, v.Config)
+}
+
+// SaveEngineOptions saves the engine options («Настройки»); the rules
+// stay as they are.
+func (g *GUI) SaveEngineOptions(o settings.EngineOptions) (app.SaveResult, error) {
 	cur := g.ctl.Settings()
 	was := cur.KillSwitchOn()
-	res, err := g.ctl.SaveSettings(s)
-	if err == nil && s.KillSwitchOn() != was {
+	res, err := g.ctl.SaveEngineOptions(o)
+	var next settings.Settings
+	next.SetOptions(o)
+	if err == nil && next.KillSwitchOn() != was {
 		go g.syncKillSwitchCheck()
 	}
 	return res, err

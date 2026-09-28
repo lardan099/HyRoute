@@ -188,6 +188,10 @@ type Status struct {
 	// KillSwitch: "" (off), "armed" or "blocking" (the internet is closed).
 	KillSwitch      string `json:"killSwitch"`
 	KillSwitchError string `json:"killSwitchError,omitempty"`
+	// foundation
+	// SettingsRev is the settings revision (Controller.SettingsRev): a page
+	// that missed the "settings" event still sees the rules changed.
+	SettingsRev uint64 `json:"settingsRev"`
 }
 
 // down reports a profile that cannot carry traffic now: failed, or
@@ -206,6 +210,7 @@ func (c *Controller) Status() Status {
 	c.mu.Lock()
 	s := c.sess
 	st := Status{State: "disconnected", LoadError: c.loadErr, Tunnels: []tunnels.Status{}, Warnings: c.ruleWarningsLocked()}
+	st.SettingsRev = c.settingsRev.Load()
 	if p := c.profiles.Find(c.profiles.Active); p != nil {
 		st.Main, st.MainID = p.Name, p.ID
 	}

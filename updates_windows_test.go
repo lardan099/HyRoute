@@ -11,24 +11,15 @@ import (
 
 	"github.com/lardan099/hyroute/internal/app"
 	"github.com/lardan099/hyroute/internal/flows"
-	"github.com/lardan099/hyroute/internal/hysteria"
-	"github.com/lardan099/hyroute/internal/rules"
 	"github.com/lardan099/hyroute/internal/session"
 	"github.com/lardan099/hyroute/internal/store"
-	"github.com/lardan099/hyroute/internal/tunnels"
 )
 
-// testSession is a running session with no tunnels; only what Connect,
-// Status and Disconnect call is implemented.
-type testSession struct{ app.Session }
+// testSession is a running session with no tunnels: NopSession plus a
+// registry of connections.
+type testSession struct{ app.NopSession }
 
-func (testSession) Stop()                                   {}
-func (testSession) ResetConnections()                       {}
-func (testSession) SetRules(*rules.Set, []hysteria.Profile) {}
-func (testSession) Flows() *flows.Registry                  { return flows.NewRegistry(10) }
-func (testSession) EngineFailed() bool                      { return false }
-func (testSession) Tunnels() []tunnels.Status               { return nil }
-func (testSession) Stats() session.Stats                    { return session.Stats{} }
+func (testSession) Flows() *flows.Registry { return flows.NewRegistry(10) }
 
 func testCtl(t *testing.T, start app.Starter) *app.Controller {
 	t.Helper()

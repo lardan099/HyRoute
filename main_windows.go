@@ -218,6 +218,9 @@ func main() {
 	// Set before any goroutine below can report a change.
 	ctl.CoreVersion = func() string { return coreMgr.Info().Version }
 	ctl.OnChange = gui.emitStatus
+	// Pages holding a copy of the settings reload (Status carries the
+	// revision too, for a missed event).
+	ctl.OnSettings = gui.emitSettings
 	// Automatic reconnects after engine failures stopped: without the
 	// window a user in the tray would not know.
 	ctl.OnGiveUp = gui.showWindow

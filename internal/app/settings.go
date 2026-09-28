@@ -1,11 +1,14 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,31 +30,138 @@ func (c *Controller) SettingsError() error {
 	return c.settingsBroken
 }
 
+// SaveResult is what a settings save returns.
 type SaveResult struct {
 	// NeedsReconnect: engine options changed; rules already apply.
 	NeedsReconnect bool `json:"needsReconnect"`
+	// Rev is the settings revision after the call (SettingsRev).
+	Rev uint64 `json:"rev"`
+	// EditRev: the revision of the rule profiles after an edit of an
+	// inactive one (rulesets); 0 otherwise.
+	EditRev uint64 `json:"editRev,omitempty"`
 }
 
-// SaveSettings validates and stores. Rules apply to new flows at once;
-// profiles the new rules need start, unused ones stop.
-func (c *Controller) SaveSettings(st settings.Settings) (SaveResult, error) {
+// EditGuard says what a writer based its change on. The zero value checks
+// nothing (internal callers, CLI).
+type EditGuard struct {
+	// Ruleset is the token of the rules the copy belongs to ("" = any).
+	Ruleset string `json:"ruleset"`
+	// Rev is the settings revision the copy was read at (0 = no check);
+	// checked for the active rules only.
+	Rev uint64 `json:"rev"`
+	// EditRev is the rule profiles' revision the copy was read at (0 = no
+	// check); checked only when editing an inactive profile.
+	EditRev uint64 `json:"editRev"`
+}
+
+// SettingsView is the settings as a page reads them, with the revision it
+// sends back when it saves. Wails only, never stored.
+type SettingsView struct {
+	settings.Settings
+	Ruleset string `json:"ruleset"`
+	// Rev is always the settings revision, read together with the copy.
+	Rev uint64 `json:"rev"`
+	// EditRev and Warnings: editing an inactive rule profile only.
+	EditRev  uint64        `json:"editRev,omitempty"`
+	Warnings []RuleWarning `json:"warnings,omitempty"`
+}
+
+// errRulesChanged refuses a save built on a copy of the rules read before
+// the last change of the active rules (guardLocked). A type of its own: the
+// text is a sentence for the user.
+var errRulesChanged error = staleError("Правила изменились в другом месте (например, из «Соединений»): изменение не сохранено, список обновлён — повторите.")
+
+type staleError string
+
+func (e staleError) Error() string { return string(e) }
+
+// SettingsRev is the settings revision: +1 by every successful settings
+// commit, 1 after Load. Pages holding a copy reload when it grows.
+func (c *Controller) SettingsRev() uint64 { return c.settingsRev.Load() }
+
+// SettingsView reads the settings and their revision together.
+func (c *Controller) SettingsView() SettingsView {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return SettingsView{Settings: *c.settings, Rev: c.settingsRev.Load()}
+}
+
+func (c *Controller) settingsBrokenError() error {
 	if err := c.SettingsError(); err != nil {
-		return SaveResult{}, fmt.Errorf("settings.json не загружен, изменения не сохраняются, чтобы не потерять правила: %v", err)
+		return fmt.Errorf("settings.json не загружен, изменения не сохраняются, чтобы не потерять правила: %v", err)
 	}
+	return nil
+}
+
+// sameRules compares two rules parts through their JSON, as settings.json
+// holds them. A nil rule list counts as an empty one (commitSettingsLocked
+// stores it so); the lists inside a rule are omitempty, so there nil and
+// empty already marshal alike.
+func sameRules(a, b rules.Config) bool {
+	if a.Rules == nil {
+		a.Rules = []rules.Rule{}
+	}
+	if b.Rules == nil {
+		b.Rules = []rules.Rule{}
+	}
+	ja, err1 := json.Marshal(a)
+	jb, err2 := json.Marshal(b)
+	return err1 == nil && err2 == nil && bytes.Equal(ja, jb)
+}
+
+// guardLocked checks a save against what its copy was read at (c.mu
+// held): guardTargetLocked, then guardRevLocked on the rules to save.
+// Returns the inactive rule profile an edit addresses ("" = the active
+// rules).
+func (c *Controller) guardLocked(g EditGuard, cfg rules.Config) (editID string, err error) {
+	if editID, err = c.guardTargetLocked(g); err != nil {
+		return "", err
+	}
+	return editID, c.guardRevLocked(g, editID, cfg)
+}
+
+// guardTargetLocked is the part of the guard that does not depend on the
+// rules to save: which rules g addresses and whether its copy still
+// belongs to them. editRulesIn runs it before fn, so fn never edits rules
+// the guard refuses. Only the active rules exist so far: rule profiles add
+// the token check and the edit mode here.
+func (c *Controller) guardTargetLocked(g EditGuard) (editID string, err error) {
+	return "", nil
+}
+
+// guardRevLocked is the revision rule (c.mu held): a copy of the active
+// rules read before their last change (g.Rev < rulesAt) may not replace
+// them with something else. A copy stale only because of an engine option
+// save passes, and so does one whose rules equal the current ones.
+func (c *Controller) guardRevLocked(g EditGuard, editID string, cfg rules.Config) error {
+	if editID == "" && g.Rev != 0 && g.Rev < c.rulesAt && !sameRules(cfg, c.settings.Config) {
+		return errRulesChanged
+	}
+	return nil
+}
+
+// commitSettingsLocked validates, stores and applies st; c.saveMu must be
+// held. At install (under c.mu) it increments the settings revision and,
+// when the rules part changed, sets rulesAt to it. post runs the follow-ups
+// (log, geo, kill switch, OnChange, OnSettings) and must be called after
+// c.saveMu is released. A failed write changes nothing.
+func (c *Controller) commitSettingsLocked(st settings.Settings) (res SaveResult, post func(), err error) {
 	if st.Rules == nil {
 		st.Rules = []rules.Rule{}
 	}
-	// Two saves at once: the file and the rules in use end up the same.
-	c.saveMu.Lock()
 	set, err := c.Store.SaveSettings(&st)
 	if err != nil {
-		c.saveMu.Unlock()
-		return SaveResult{}, err
+		return SaveResult{}, nil, err
 	}
 	c.mu.Lock()
 	ksChanged := c.settings == nil || c.settings.KillSwitchOn() != st.KillSwitchOn()
+	rulesChanged := c.settings == nil || !sameRules(c.settings.Config, st.Config)
 	c.settings, c.set = &st, set
-	res := SaveResult{}
+	rev := c.settingsRev.Add(1)
+	if rulesChanged {
+		c.rulesAt = rev
+	}
+	res.Rev = rev
 	_, want := c.routingLocked()
 	// A session still starting gets the rules from Connect once it runs,
 	// but its engine options are those it started with.
@@ -60,21 +170,134 @@ func (c *Controller) SaveSettings(st settings.Settings) (SaveResult, error) {
 		res.NeedsReconnect = engineOptionsDiffer(c.sessSet, &st)
 	}
 	c.mu.Unlock()
+	post = func() {
+		names := make([]string, len(want))
+		for i, p := range want {
+			names[i] = p.Name
+		}
+		c.Log.Info("rules saved: new flows use them, existing flows keep their route", "rules", len(st.Rules), "default", st.DefaultAction,
+			"tunnelProfiles", strings.Join(names, ", "))
+		for _, w := range set.Warnings {
+			c.Log.Warn("rules: " + w)
+		}
+		c.pokeGeo() // a new category may need the databases
+		if ksChanged {
+			c.applyKillSwitch()
+		}
+		c.changed()
+		if c.OnSettings != nil {
+			c.OnSettings(rev)
+		}
+	}
+	return res, post, nil
+}
+
+// SaveSettings validates and stores. Rules apply to new flows at once;
+// profiles the new rules need start, unused ones stop.
+func (c *Controller) SaveSettings(st settings.Settings) (SaveResult, error) {
+	return c.SaveSettingsIn(EditGuard{}, st)
+}
+
+// SaveSettingsIn saves the whole settings (rules and engine options) if g
+// allows it. Pages save the two parts separately (SaveRulesIn,
+// SaveEngineOptions); this is for internal callers and tests.
+func (c *Controller) SaveSettingsIn(g EditGuard, st settings.Settings) (SaveResult, error) {
+	if st.Rules == nil {
+		st.Rules = []rules.Rule{}
+	}
+	return c.commitWith(func() (settings.Settings, bool, error) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		_, err := c.guardLocked(g, st.Config)
+		return st, true, err
+	})
+}
+
+// SaveRulesIn saves cfg as the rules part if g allows it; the engine
+// options stay the current ones, whatever the page had.
+func (c *Controller) SaveRulesIn(g EditGuard, cfg rules.Config) (SaveResult, error) {
+	if cfg.Rules == nil {
+		cfg.Rules = []rules.Rule{}
+	}
+	return c.commitWith(func() (settings.Settings, bool, error) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if _, err := c.guardLocked(g, cfg); err != nil {
+			return settings.Settings{}, false, err
+		}
+		st := *c.settings
+		st.Config = cfg
+		return st, true, nil
+	})
+}
+
+// SaveEngineOptions saves o as the engine options; the rules part stays
+// the current one. No guard: it cannot conflict with a rules change.
+func (c *Controller) SaveEngineOptions(o settings.EngineOptions) (SaveResult, error) {
+	return c.commitWith(func() (settings.Settings, bool, error) {
+		st := c.Settings()
+		st.SetOptions(o)
+		return st, true, nil
+	})
+}
+
+// editRulesIn applies fn to a private copy of the current rules and saves
+// the result, all under c.saveMu, so no other writer can come between the
+// read and the write. fn returns false to save nothing (the result then
+// carries the current revision). Order: guardTargetLocked and the copy in
+// one c.mu section, so a refusal comes before fn runs (a false or an error
+// from fn never hides it); then fn; then guardRevLocked on the edited
+// rules, which the revision rule compares with the current ones.
+func (c *Controller) editRulesIn(g EditGuard, fn func(cfg *rules.Config) (bool, error)) (SaveResult, error) {
+	return c.commitWith(func() (settings.Settings, bool, error) {
+		c.mu.Lock()
+		editID, err := c.guardTargetLocked(g)
+		st := *c.settings
+		c.mu.Unlock()
+		if err != nil {
+			return settings.Settings{}, false, err
+		}
+		// fn replaces whole elements; the shared inner slices stay intact.
+		st.Rules = slices.Clone(st.Rules)
+		if ok, err := fn(&st.Config); err != nil || !ok {
+			return settings.Settings{}, false, err
+		}
+		if st.Rules == nil {
+			st.Rules = []rules.Rule{}
+		}
+		// c.saveMu is still held: the rules and rulesAt are those fn saw.
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return st, true, c.guardRevLocked(g, editID, st.Config)
+	})
+}
+
+// editRules is editRulesIn without a guard.
+func (c *Controller) editRules(fn func(cfg *rules.Config) (bool, error)) (SaveResult, error) {
+	return c.editRulesIn(EditGuard{}, fn)
+}
+
+// commitWith is the one settings write path: under c.saveMu it checks that
+// settings.json loaded, builds the settings to save with next (which runs
+// the guard; save = false saves nothing) and commits them. The follow-ups
+// run after c.saveMu is released.
+func (c *Controller) commitWith(next func() (st settings.Settings, save bool, err error)) (SaveResult, error) {
+	c.saveMu.Lock()
+	if err := c.settingsBrokenError(); err != nil {
+		c.saveMu.Unlock()
+		return SaveResult{}, err
+	}
+	st, save, err := next()
+	if err != nil || !save {
+		c.saveMu.Unlock()
+		return SaveResult{Rev: c.SettingsRev()}, err
+	}
+	res, post, err := c.commitSettingsLocked(st)
 	c.saveMu.Unlock()
-	names := make([]string, len(want))
-	for i, p := range want {
-		names[i] = p.Name
+	if err != nil {
+		return SaveResult{}, err
 	}
-	c.Log.Info("rules saved: new flows use them, existing flows keep their route", "rules", len(st.Rules), "default", st.DefaultAction,
-		"tunnelProfiles", strings.Join(names, ", "))
-	for _, w := range set.Warnings {
-		c.Log.Warn("rules: " + w)
-	}
-	c.pokeGeo() // a new category may need the databases
-	if ksChanged {
-		c.applyKillSwitch()
-	}
-	c.changed()
+	post()
 	return res, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -92,5 +93,85 @@ func TestExactWebDefault(t *testing.T) {
 	_, set, err = Parse([]byte(`{"defaultAction":"direct","rules":[],"exactWebDomains":false}`))
 	if err != nil || set.ExactWeb {
 		t.Fatalf("off: %v", err)
+	}
+}
+
+// TestEngineOptionsCoverSettings: every field of Settings outside the
+// embedded rules.Config is an engine option, with the same type and JSON
+// key, and Options/SetOptions copy all of them. A new option that is
+// missing here would be dropped by one of the two save paths.
+func TestEngineOptionsCoverSettings(t *testing.T) {
+	st := reflect.TypeOf(Settings{})
+	ot := reflect.TypeOf(EngineOptions{})
+	n := 0
+	for i := 0; i < st.NumField(); i++ {
+		f := st.Field(i)
+		if f.Anonymous && f.Type == reflect.TypeOf(rules.Config{}) {
+			continue
+		}
+		n++
+		o, ok := ot.FieldByName(f.Name)
+		if !ok {
+			t.Errorf("EngineOptions lacks %s", f.Name)
+			continue
+		}
+		if o.Type != f.Type || o.Tag.Get("json") != f.Tag.Get("json") {
+			t.Errorf("%s: %v %q, want %v %q", f.Name, o.Type, o.Tag.Get("json"), f.Type, f.Tag.Get("json"))
+		}
+	}
+	if n != ot.NumField() {
+		t.Errorf("EngineOptions has %d fields, Settings %d options", ot.NumField(), n)
+	}
+
+	// Every option set to a non-zero value survives Options -> SetOptions,
+	// and the rules part is not touched.
+	var s Settings
+	v := reflect.ValueOf(&s).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		if st.Field(i).Anonymous {
+			continue
+		}
+		switch f := v.Field(i); f.Kind() {
+		case reflect.Pointer:
+			f.Set(reflect.New(f.Type().Elem()))
+		case reflect.Int:
+			f.SetInt(int64(100 + i))
+		default:
+			t.Fatalf("%s: unexpected kind %v", st.Field(i).Name, f.Kind())
+		}
+	}
+	s.DefaultAction = rules.Tunnel
+	s.Rules = []rules.Rule{{Name: "x", Domains: []string{"a.com"}, Action: rules.Block}}
+	var got Settings
+	got.SetOptions(s.Options())
+	if got.Options() != s.Options() {
+		t.Fatalf("round trip: %+v != %+v", got.Options(), s.Options())
+	}
+	gv := reflect.ValueOf(got)
+	for i := 0; i < gv.NumField(); i++ {
+		if st.Field(i).Anonymous {
+			continue
+		}
+		if !reflect.DeepEqual(gv.Field(i).Interface(), v.Field(i).Interface()) {
+			t.Errorf("%s not copied", st.Field(i).Name)
+		}
+	}
+	if got.DefaultAction != rules.Direct || got.Rules != nil {
+		t.Fatalf("SetOptions touched the rules: %+v", got.Config)
+	}
+	// Same JSON as the options part of settings.json.
+	a, _ := json.Marshal(s.Options())
+	s.Config = rules.Config{}
+	b, _ := json.Marshal(s)
+	var am, bm map[string]any
+	json.Unmarshal(a, &am)
+	json.Unmarshal(b, &bm)
+	for k := range bm {
+		if _, ok := am[k]; !ok && k != "defaultAction" && k != "rules" {
+			t.Errorf("settings key %q is not in EngineOptions", k)
+		}
+	}
+	if len(am) == 0 {
+		t.Fatal("empty options JSON")
 	}
 }

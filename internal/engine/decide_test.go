@@ -27,7 +27,7 @@ func TestSystemDNSEncryptedExcluded(t *testing.T) {
 		if i := h.next(t); !i.addr.Outbound() {
 			t.Fatalf("Dnscache to %s must be direct", dst)
 		}
-		if v := lastRecord(t, h.c); v.Rule != "exclusion: system DNS" || v.Route != "direct" {
+		if v := lastRecord(t, h.c); v.Rule != "exclusion: system DNS" || v.Excluded != "system-dns" || v.Route != "direct" {
 			t.Fatalf("%s: %+v", dst, v)
 		}
 	}
@@ -159,7 +159,7 @@ func TestHysteriaChildExcluded(t *testing.T) {
 	if i := h.next(t); !i.addr.Outbound() {
 		t.Fatal("our Hysteria must go direct")
 	}
-	if v := lastRecord(t, h.c); v.Rule != "exclusion: hysteria" {
+	if v := lastRecord(t, h.c); v.Rule != "exclusion: hysteria" || v.Excluded != "hysteria" {
 		t.Fatalf("%+v", v)
 	}
 	h.own(6, "192.168.1.5:40001", "203.0.113.7:443", 501)
@@ -177,5 +177,53 @@ func TestRelayRejectCountedOnce(t *testing.T) {
 	h.c.RelayDone(relay.Result{Entry: e, Route: "rejected", End: time.Now()})
 	if n := h.c.Rejected.Load(); n != 0 {
 		t.Fatalf("engine counted %d relay rejections", n)
+	}
+}
+
+// TestExclusionKinds: exclusion reports its kind, decide records it on the
+// flow, and nothing keys on the rule text: a user rule named like an
+// exclusion is an ordinary rule.
+func TestExclusionKinds(t *testing.T) {
+	cfg := rules.Config{DefaultAction: rules.Tunnel, Rules: []rules.Rule{
+		{Name: "exclusion: self", App: &rules.AppMatch{Pattern: "curl.exe"}, Action: rules.Direct},
+	}}
+	h := newHarness(t, cfg, Options{})
+	h.c.SelfPID = 999
+	h.c.DnscachePID.Store(300)
+	dns := netip.MustParseAddrPort("8.8.8.8:53")
+	for _, c := range []struct {
+		pid   uint32
+		known bool
+		proc  *procinfo.Info
+		want  string
+	}{
+		{999, true, nil, "self"},
+		{999, false, nil, ""},
+		{500, true, &procinfo.Info{Name: "hysteria.exe", Parent: &procinfo.Info{PID: 999}}, "hysteria"},
+		{501, true, &procinfo.Info{Name: "hysteria.exe", Parent: &procinfo.Info{PID: 1}}, ""},
+		{300, true, nil, "system-dns"},
+		{100, true, nil, ""},
+	} {
+		res, kind := h.c.exclusion(c.pid, c.known, c.proc, packet.ProtoUDP, dns)
+		if kind != c.want || (kind != "") != (res.Action == rules.Direct && res.Rule != "") {
+			t.Errorf("pid %d: %q %+v, want %q", c.pid, kind, res, c.want)
+		}
+	}
+
+	// The user's rule named "exclusion: self" decides curl's flow.
+	h.own(6, L, R, 100)
+	h.sendTCP(L, R, packet.FlagSYN, "")
+	if i := h.next(t); !i.addr.Outbound() {
+		t.Fatal("curl must go direct by its rule")
+	}
+	if v := lastRecord(t, h.c); v.Rule != "exclusion: self" || v.Excluded != "" {
+		t.Fatalf("%+v", v)
+	}
+	// A normal flow is not excluded.
+	h.own(6, "192.168.1.5:40100", R, 200)
+	h.sendTCP("192.168.1.5:40100", R, packet.FlagSYN, "")
+	h.next(t)
+	if v := lastRecord(t, h.c); v.Excluded != "" || v.Process != "chrome.exe" {
+		t.Fatalf("%+v", v)
 	}
 }

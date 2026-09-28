@@ -20,6 +20,20 @@
     }
   }
 
+  // The rules changed elsewhere: reload the copy «Весь трафик» builds on
+  // (not while its own save runs). A change reported during a reload is
+  // caught up after it; a failed reload is not retried until the revision
+  // grows again (triedAt).
+  let savingEverything = $state(false);
+  let reloading = $state(false);
+  let triedAt = 0;
+  $effect(() => {
+    if (!settings || ui.settingsRev <= (settings.rev ?? 0) || ui.settingsRev <= triedAt || savingEverything || reloading) return;
+    triedAt = ui.settingsRev;
+    reloading = true;
+    loadSettings().finally(() => (reloading = false));
+  });
+
   let sys = $state<SystemInfo | null>(null);
   let moving = $state(false);
   // Already where "Перенести" would copy it: only the folder's permissions are wrong.
@@ -125,12 +139,16 @@
     if (!settings || settings.defaultAction === want) return;
     const next: Settings = JSON.parse(JSON.stringify(settings));
     next.defaultAction = want;
+    savingEverything = true;
     try {
+      // next carries the revision of the copy: Go refuses it if the rules
+      // changed elsewhere since, and the reload shows them.
       await api.SaveSettings(cleanSettings(next, mainProfile()?.id));
-      await loadSettings();
     } catch (e) {
       error = errText(e);
     }
+    await loadSettings();
+    savingEverything = false;
   }
 
   async function pickMain(id: string) {

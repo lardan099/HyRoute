@@ -25,7 +25,16 @@ export const ui = $state({
   status: null as Status | null,
   theme: (get('theme') ?? 'system') as Theme,
   accent: (get('accent') ?? 'blue') as Accent,
+  // foundation: the highest settings revision seen (status and the
+  // "settings" event); pages holding a copy of the rules reload when it
+  // passes theirs.
+  settingsRev: 0,
 });
+
+// noteSettingsRev raises ui.settingsRev, never lowers it.
+export function noteSettingsRev(r: unknown) {
+  if (typeof r === 'number' && r > ui.settingsRev) ui.settingsRev = r;
+}
 
 export function applyTheme() {
   const r = document.documentElement;

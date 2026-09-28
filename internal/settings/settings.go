@@ -28,6 +28,42 @@ type Settings struct {
 	KillSwitch *bool `json:"killSwitch,omitempty"`
 }
 
+// EngineOptions is the non-rules part of Settings, with the same JSON keys.
+// The rules part and the engine options are saved separately (app
+// SaveRulesIn / SaveEngineOptions), so a page holding an old copy of one
+// never writes the other back. A new engine option goes into both structs
+// (TestEngineOptionsCoverSettings).
+type EngineOptions struct {
+	BlockQUIC       *bool `json:"blockQUIC,omitempty"`
+	BlockIPv6Tunnel *bool `json:"blockIPv6Tunnel,omitempty"`
+	PreferRemoteDNS *bool `json:"preferRemoteDNS,omitempty"`
+	ExactWebDomains *bool `json:"exactWebDomains,omitempty"`
+	SniffTimeoutMs  int   `json:"sniffTimeoutMs,omitempty"`
+	KillSwitch      *bool `json:"killSwitch,omitempty"`
+}
+
+// Options returns the engine options of s.
+func (s *Settings) Options() EngineOptions {
+	return EngineOptions{
+		BlockQUIC:       s.BlockQUIC,
+		BlockIPv6Tunnel: s.BlockIPv6Tunnel,
+		PreferRemoteDNS: s.PreferRemoteDNS,
+		ExactWebDomains: s.ExactWebDomains,
+		SniffTimeoutMs:  s.SniffTimeoutMs,
+		KillSwitch:      s.KillSwitch,
+	}
+}
+
+// SetOptions replaces the engine options of s; the rules stay.
+func (s *Settings) SetOptions(o EngineOptions) {
+	s.BlockQUIC = o.BlockQUIC
+	s.BlockIPv6Tunnel = o.BlockIPv6Tunnel
+	s.PreferRemoteDNS = o.PreferRemoteDNS
+	s.ExactWebDomains = o.ExactWebDomains
+	s.SniffTimeoutMs = o.SniffTimeoutMs
+	s.KillSwitch = o.KillSwitch
+}
+
 func boolOr(p *bool, def bool) bool {
 	if p == nil {
 		return def

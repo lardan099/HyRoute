@@ -47,6 +47,12 @@ type Fields struct {
 	Attrib string `json:"attrib"`
 	// Stage says where the route was decided: packet | sniff | sniff-timeout.
 	Stage string `json:"stage"`
+	// foundation
+	// Excluded is the mandatory exclusion the flow fell under (rules do not
+	// apply to it): hysteria | system-dns (self exists in the engine but
+	// its flows are never recorded); "" = none. The Rule text of such a
+	// flow is for display only.
+	Excluded string `json:"excluded,omitempty"`
 }
 
 // Set updates fields under the record lock.

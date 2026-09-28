@@ -52,8 +52,14 @@ func TestBrokenFilesAreNotOverwritten(t *testing.T) {
 	if _, err := c.SaveSettings(s); err == nil || !strings.Contains(err.Error(), "settings.json не загружен") {
 		t.Fatalf("settings saved over a broken file: %v", err)
 	}
-	if _, _, err := c.ApplyRulesText("example.com -> напрямую", true); err == nil {
+	if _, _, err := c.ApplyRulesText("example.com -> напрямую", true, EditGuard{}); err == nil {
 		t.Fatal("rules text saved over a broken settings.json")
+	}
+	if _, err := c.SaveRulesIn(EditGuard{}, s.Config); err == nil || !strings.Contains(err.Error(), "settings.json не загружен") {
+		t.Fatalf("rules saved over a broken file: %v", err)
+	}
+	if _, err := c.SaveEngineOptions(s.Options()); err == nil || !strings.Contains(err.Error(), "settings.json не загружен") {
+		t.Fatalf("engine options saved over a broken file: %v", err)
 	}
 	if _, err := c.SaveProxy(ProxyInput{LocalProxy: store.LocalProxy{Port: 10802}}); err == nil || !strings.Contains(err.Error(), "proxies.json не загружен") {
 		t.Fatalf("proxy saved over a broken file: %v", err)

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, onEvent, errText, type Updates } from './api';
-  import { ui, hide, setPrivacy, applyTheme } from './state.svelte';
+  import { ui, hide, setPrivacy, applyTheme, noteSettingsRev } from './state.svelte';
   import Icon from './lib/Icon.svelte';
   import Home from './lib/Home.svelte';
   import Rules from './lib/Rules.svelte';
@@ -13,6 +13,7 @@
   import Lists from './lib/Lists.svelte';
   import Proxies from './lib/Proxies.svelte';
   import UpdateDialog from './lib/UpdateDialog.svelte';
+  import Toasts from './lib/Toasts.svelte';
 
   const pages = [
     { id: 'home', label: 'Главная', icon: 'home' },
@@ -52,6 +53,7 @@
   async function refresh() {
     try {
       ui.status = await api.Status();
+      noteSettingsRev(ui.status.settingsRev);
     } catch (e) {
       actionError = errText(e);
     }
@@ -84,10 +86,14 @@
       refresh();
       refreshProfiles();
     });
+    // The settings changed (payload: the new revision): pages holding a
+    // copy of the rules reload.
+    const offSettings = onEvent('settings', (r) => noteSettingsRev(r));
     return () => {
       clearInterval(t);
       clearInterval(tu);
       off();
+      offSettings();
     };
   });
 
@@ -190,7 +196,7 @@
     </button>
   </aside>
 
-  <main>
+  <main tabindex="-1">
     <div class="banners">
       {#if actionError}
         <div class="note error row"><span class="grow">{hide(actionError)}</span><button class="icon" onclick={() => (actionError = '')}><Icon name="x" size={16} /></button></div>
@@ -245,6 +251,7 @@
       {/if}
     </div>
   </main>
+  <Toasts />
 </div>
 
 {#if showUpdate && updates?.app}

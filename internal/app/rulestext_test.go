@@ -115,23 +115,23 @@ func TestRulesTextRoundTrip(t *testing.T) {
 func TestApplyRulesText(t *testing.T) {
 	c, _ := newCtl(t)
 	c.ImportURIs(link)
-	if _, _, err := c.ApplyRulesText("youtube.com -> vpn\nbad", true); err == nil {
+	if _, _, err := c.ApplyRulesText("youtube.com -> vpn\nbad", true, EditGuard{}); err == nil {
 		t.Fatal("errors must block saving")
 	}
 	if len(c.Settings().Rules) != 0 {
 		t.Fatal("saved despite errors")
 	}
-	if _, _, err := c.ApplyRulesText("youtube.com -> vpn\n* -> напрямую", true); err != nil {
+	if _, _, err := c.ApplyRulesText("youtube.com -> vpn\n* -> напрямую", true, EditGuard{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := c.ApplyRulesText("[chrome.exe]\na.com -> блок\nb.com -> блок", false); err != nil {
+	if _, _, err := c.ApplyRulesText("[chrome.exe]\na.com -> блок\nb.com -> блок", false, EditGuard{}); err != nil {
 		t.Fatal(err)
 	}
 	if st := c.Settings(); len(st.Rules) != 3 || st.DefaultAction != rules.Direct {
 		t.Fatalf("%+v", st)
 	}
 	// Adding rules never changes "Всё остальное": "* ->" is refused there.
-	if _, _, err := c.ApplyRulesText("c.com -> блок\n* -> vpn", false); err == nil || !strings.Contains(err.Error(), "Всё остальное") {
+	if _, _, err := c.ApplyRulesText("c.com -> блок\n* -> vpn", false, EditGuard{}); err == nil || !strings.Contains(err.Error(), "Всё остальное") {
 		t.Fatalf("default changed by adding: %v", err)
 	}
 	if st := c.Settings(); len(st.Rules) != 3 || st.DefaultAction != rules.Direct {
