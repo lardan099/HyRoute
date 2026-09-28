@@ -29,7 +29,23 @@ func direct(seen *[]string) Dialer {
 
 func start(t *testing.T, s *Server) string {
 	t.Helper()
-	if err := s.Listen("127.0.0.1:0"); err != nil {
+	// A port number free for UDP too: shared mode binds UDP on the TCP
+	// port number, and Windows reserves UDP ranges of its own (Hyper-V,
+	// WSL, Docker) that an ephemeral TCP port may fall into. An ephemeral
+	// UDP port never does; TCP is then tried on the same number.
+	var err error
+	for range 20 {
+		var pc *net.UDPConn
+		if pc, err = net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)}); err != nil {
+			t.Fatal(err)
+		}
+		port := pc.LocalAddr().(*net.UDPAddr).Port
+		pc.Close()
+		if err = s.Listen(net.JoinHostPort("127.0.0.1", fmt.Sprint(port))); err == nil {
+			break
+		}
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
