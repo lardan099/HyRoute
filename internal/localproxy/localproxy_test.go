@@ -29,6 +29,14 @@ func direct(seen *[]string) Dialer {
 
 func start(t *testing.T, s *Server) string {
 	t.Helper()
+	listenFree(t, s)
+	t.Cleanup(func() { s.Close() })
+	return s.Addr()
+}
+
+// listenFree starts s on loopback without a cleanup (the caller closes it).
+func listenFree(t *testing.T, s *Server) {
+	t.Helper()
 	// A port number free for UDP too: shared mode binds UDP on the TCP
 	// port number, and Windows reserves UDP ranges of its own (Hyper-V,
 	// WSL, Docker) that an ephemeral TCP port may fall into. An ephemeral
@@ -48,8 +56,6 @@ func start(t *testing.T, s *Server) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
-	return s.Addr()
 }
 
 func origin(t *testing.T) *httptest.Server {

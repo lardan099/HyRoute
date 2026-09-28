@@ -1090,9 +1090,7 @@ func TestUDPClose(t *testing.T) {
 	for _, shared := range []bool{false, true} {
 		u := ups{echo: true}
 		s := &Server{Dial: dialer(nil), AssociateUDP: u.dial, SharedUDP: shared}
-		if err := s.Listen("127.0.0.1:0"); err != nil {
-			t.Fatal(err)
-		}
+		listenFree(t, s)
 		addr := s.Addr()
 		var bnds []netip.AddrPort
 		for range 3 {
