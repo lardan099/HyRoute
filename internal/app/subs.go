@@ -44,6 +44,8 @@ type FetchResult struct {
 // requests go straight to the server, never through the HTTP_PROXY or
 // HTTPS_PROXY of the user's environment (a proxy that is not running yet
 // at logon, or another VPN, which would also see an http:// link whole).
+// dns: InstallOwnDial makes it dial through OwnDial; a new direct HTTP
+// client must use it, http.DefaultTransport or OwnDial.
 var directTransport = func() *http.Transport {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.Proxy = nil
@@ -53,7 +55,9 @@ var directTransport = func() *http.Transport {
 }()
 
 // httpFetch downloads a subscription. HyRoute's own traffic is never
-// routed, so this goes straight to the subscription server.
+// routed, so this goes straight to the subscription server (dns: through
+// directTransport, whose OwnDial registers each host it dials, a redirect's
+// too, as HyRoute's own name).
 func (c *Controller) httpFetch(ctx context.Context, rawURL string) (FetchResult, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {

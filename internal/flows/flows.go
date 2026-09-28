@@ -41,7 +41,8 @@ type Record struct {
 
 // take returns the tunneled bytes not counted yet (r.mu held).
 func (r *Record) take() (profile string, sent, recv int64) {
-	if r.f.Route != "tunnel" || r.f.Profile == "" {
+	// DNS rows are queries HyRoute answered, not traffic (dns).
+	if r.f.Route != "tunnel" || r.f.Profile == "" || r.f.Stage == StageDNS {
 		return "", 0, 0
 	}
 	s, v := r.Sent.Load(), max(r.Recv.Load(), 0)
@@ -76,7 +77,15 @@ type Fields struct {
 	// Failover: the flow could not use its preferred server
 	// (rules.Result.Failover).
 	Failover bool `json:"failover,omitempty"`
+	// dns
+	// Count: the queries aggregated into a DNS row (Stage StageDNS).
+	Count int `json:"count,omitempty"`
 }
+
+// StageDNS marks a DNS row: queries HyRoute answered itself, aggregated
+// per requester, name and outcome (dns). Such rows are kept in their own
+// ring and are not traffic.
+const StageDNS = "dns"
 
 // Set updates fields under the record lock.
 func (r *Record) Set(f func(*Fields)) {
@@ -147,12 +156,24 @@ type Registry struct {
 	mu     sync.Mutex
 	active map[uint64]*Record
 	closed *logx.Ring[View]
+	// dns: closed DNS rows, so they never push connections out of closed.
+	dnsClosed atomic.Pointer[logx.Ring[View]]
 }
 
-// NewRegistry keeps the last keepClosed closed flows.
+// KeepDNS is how many closed DNS rows a registry keeps by default.
+const KeepDNS = 1000
+
+// NewRegistry keeps the last keepClosed closed flows (and the last
+// KeepDNS closed DNS rows, see SetKeepDNS).
 func NewRegistry(keepClosed int) *Registry {
-	return &Registry{active: make(map[uint64]*Record), closed: logx.NewRing[View](keepClosed)}
+	g := &Registry{active: make(map[uint64]*Record), closed: logx.NewRing[View](keepClosed)}
+	g.dnsClosed.Store(logx.NewRing[View](KeepDNS))
+	return g
 }
+
+// SetKeepDNS keeps the last n closed DNS rows (dns); the rows kept so far
+// are dropped.
+func (g *Registry) SetKeepDNS(n int) { g.dnsClosed.Store(logx.NewRing[View](max(n, 1))) }
 
 // Open registers r and assigns its ID.
 func (g *Registry) Open(r *Record) *Record {
@@ -186,7 +207,11 @@ func (g *Registry) Close(r *Record, now time.Time) {
 		fn(profile, r.Process, sent, recv)
 	}
 	v := r.View(now)
-	g.closed.Add(v)
+	if v.Stage == StageDNS {
+		g.dnsClosed.Load().Add(v)
+	} else {
+		g.closed.Add(v)
+	}
 	if g.OnClose != nil {
 		g.OnClose(v)
 	}
@@ -235,4 +260,25 @@ func (g *Registry) Sample() {
 }
 
 // Closed returns the retained closed flows, oldest first.
-func (g *Registry) Closed() []View { return g.closed.Snapshot() }
+// DNS rows (dns) come from their own ring, merged in by close time.
+func (g *Registry) Closed() []View {
+	conns, dns := g.closed.Snapshot(), g.dnsClosed.Load().Snapshot()
+	if len(dns) == 0 {
+		return conns
+	}
+	out := make([]View, 0, len(conns)+len(dns))
+	i, j := 0, 0
+	for i < len(conns) || j < len(dns) {
+		if j == len(dns) || (i < len(conns) && !conns[i].end().After(dns[j].end())) {
+			out = append(out, conns[i])
+			i++
+		} else {
+			out = append(out, dns[j])
+			j++
+		}
+	}
+	return out
+}
+
+// end is when a closed view was closed.
+func (v *View) end() time.Time { return v.Start.Add(v.Duration) }

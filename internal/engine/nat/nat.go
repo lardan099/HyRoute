@@ -29,6 +29,9 @@ const (
 	NoSniff Mode = iota
 	// Sniff: the route depends on the domain; read ClientHello/Host first.
 	Sniff
+	// DNS: the relay answers DNS messages itself (dns: TCP to port 53
+	// while a DNS policy is on).
+	DNS
 )
 
 // FlowKey is the application's TCP 4-tuple as seen on the outbound packet.
@@ -55,6 +58,9 @@ type Entry struct {
 	Rec *flows.Record
 	// Meta is opaque to the table.
 	Meta any
+	// DNSDest is the kind of DNS server a DNS entry's connection goes to
+	// (dns; the engine's dnsDest), fixed for the connection; 0 otherwise.
+	DNSDest uint8
 
 	lastSeen  time.Time
 	closedAt  time.Time // zero while open
@@ -295,6 +301,20 @@ func (t *Table) ResetApps() []AppReset {
 	var out []AppReset
 	for _, e := range t.byFlow {
 		out = appendResets(out, e)
+	}
+	return out
+}
+
+// ResetAppsWhere is ResetApps limited to the entries pred matches (dns:
+// DNS-mode connections when DNS capture goes, browsers' DoH connections).
+func (t *Table) ResetAppsWhere(pred func(*Entry) bool) []AppReset {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	var out []AppReset
+	for _, e := range t.byFlow {
+		if pred(e) {
+			out = appendResets(out, e)
+		}
 	}
 	return out
 }

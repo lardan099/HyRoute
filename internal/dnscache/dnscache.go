@@ -177,6 +177,41 @@ func (c *Cache) AddAnswer(tcp bool, client, server netip.AddrPort, msg []byte) (
 	return c.AddResponse(msg)
 }
 
+// AddAnswerFor records the answer to a query HyRoute sent itself (dns: an
+// upstream resolution or a TCP pass-through): the answer must repeat the
+// query's ID and question (DoH answers carry ID 0 like the query). Nothing
+// else is accepted, so no one but the resolver HyRoute asked can add
+// pairs. HyRoute's own injected answers never pass the DNS sniff handle,
+// so this is the only way their pairs reach the cache.
+func (c *Cache) AddAnswerFor(query, answer []byte) (n int, err error) {
+	defer func() {
+		if recover() != nil {
+			n, err = 0, ErrNotResponse
+		}
+	}()
+	var qp, ap dnsmessage.Parser
+	qh, err := qp.Start(query)
+	if err != nil || qh.Response {
+		return 0, ErrNotQuery
+	}
+	qq, err := qp.Question()
+	if err != nil {
+		return 0, ErrNotQuery
+	}
+	ah, err := ap.Start(answer)
+	if err != nil || !ah.Response {
+		return 0, ErrNotResponse
+	}
+	aq, err := ap.Question()
+	if err != nil {
+		return 0, ErrNotResponse
+	}
+	if ah.ID != qh.ID || aq.Type != qq.Type || aq.Class != qq.Class || !strings.EqualFold(aq.Name.String(), qq.Name.String()) {
+		return 0, ErrUnsolicited
+	}
+	return c.AddResponse(answer)
+}
+
 func newQueryKey(tcp bool, client, server netip.AddrPort, id uint16, q dnsmessage.Question) queryKey {
 	// Resolvers may echo the question in randomized case (DNS 0x20).
 	return queryKey{tcp, client, server, id, strings.ToLower(q.Name.String()), q.Type, q.Class}

@@ -40,6 +40,7 @@ import (
 	"github.com/lardan099/hyroute/internal/runtimefiles"
 	"github.com/lardan099/hyroute/internal/session"
 	"github.com/lardan099/hyroute/internal/store"
+	"github.com/lardan099/hyroute/internal/sysdns"
 	"github.com/lardan099/hyroute/internal/update"
 )
 
@@ -169,6 +170,15 @@ func main() {
 	// settings are loaded: before, the setting reads as its default (on),
 	// and the first lines would reach the disk of a user who turned it off.
 	ctl.Log = slog.New(ctl.NewFileHandler(level, ctl.EngineWriter()))
+	// dns: HyRoute's own direct connections register their hosts (before
+	// anything fetches), the Windows DNS cache is flushed through dnsapi
+	// (Load may flush already), and Explain reads the local namespaces.
+	ctl.InstallOwnDial()
+	ctl.FlushDNS = sysdns.FlushCache
+	ctl.LocalSuffixes = func() []string {
+		i, _ := sysdns.Snapshot()
+		return i.Suffixes
+	}
 	loadErr := ctl.Load()
 	ctl.SetLogDir(filepath.Join(dataDir, "logs"))
 	ctl.Log.Info("HyRoute starting", "build", build, "dir", dir, "runtime", runtimeDir, "data", dataDir, "stub", *stub)

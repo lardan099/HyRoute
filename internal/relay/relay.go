@@ -109,13 +109,23 @@ type Server struct {
 	SniffTimeout       time.Duration
 	ServerFirstTimeout time.Duration
 	ServerFirstPorts   map[uint16]bool
+	// dns
+	// ServeDNS serves a DNS entry's connection (nat.DNS): length-prefixed
+	// queries in, answers out. pass opens the connection that queries
+	// passed on unchanged go to (the original server, by the route res):
+	// Direct dials like a relayed Direct connection, Tunnel through
+	// res.Profile's tunnel (unavailable: an error, never direct), Block is
+	// an error. The connection is tracked (reset by Abort) until ServeDNS
+	// returns. nil: DNS entries are reset.
+	ServeDNS func(ctx context.Context, e *nat.Entry, client net.Conn,
+		pass func(ctx context.Context, res rules.Result) (net.Conn, error))
 
 	Counters
 
 	port   uint16
 	lns    []net.Listener
 	mu     sync.Mutex
-	conns  map[net.Conn]struct{}
+	conns  map[net.Conn]*nat.Entry // the entry of a client or upstream connection; nil before the NAT lookup
 	wg     sync.WaitGroup
 	done   chan struct{}
 	ctx    context.Context // canceled by Abort: interrupts pending dials
@@ -142,7 +152,7 @@ func (s *Server) Start(port uint16) error {
 	if len(s.ListenIPs) == 0 {
 		s.ListenIPs = []netip.Addr{netip.IPv4Unspecified(), netip.IPv6Unspecified()}
 	}
-	s.conns = make(map[net.Conn]struct{})
+	s.conns = make(map[net.Conn]*nat.Entry)
 	s.done = make(chan struct{})
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	tries := 1
@@ -318,11 +328,34 @@ func (s *Server) track(c net.Conn, add bool) bool {
 			return false
 		default:
 		}
-		s.conns[c] = struct{}{}
+		s.conns[c] = nil
 	} else {
 		delete(s.conns, c)
 	}
 	return true
+}
+
+// setEntry records the NAT entry of a tracked connection (AbortWhere).
+func (s *Server) setEntry(c net.Conn, e *nat.Entry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.conns[c]; ok {
+		s.conns[c] = e
+	}
+}
+
+// AbortWhere resets every tracked connection, application and upstream
+// side, whose entry pred matches (dns: the DNS-mode connections when DNS
+// capture goes, the browsers' DoH connections). Call it while the filters
+// still reflect the resets to the applications.
+func (s *Server) AbortWhere(pred func(*nat.Entry) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for c, e := range s.conns {
+		if e != nil && pred(e) {
+			Reset(c)
+		}
+	}
 }
 
 func (s *Server) handle(c net.Conn) {
@@ -344,6 +377,11 @@ func (s *Server) handle(c net.Conn) {
 			s.OnDone(res)
 		}
 	}()
+	s.setEntry(c, e)
+	if e.Mode == nat.DNS { // dns
+		s.serveDNS(c, e, &res)
+		return
+	}
 
 	client := &appConn{Conn: c, s: s, rec: e.Rec}
 	action, profile := rules.Tunnel, e.Profile
@@ -386,65 +424,32 @@ func (s *Server) handle(c net.Conn) {
 		}
 	}
 
-	timeout := s.DialTimeout
-	if timeout == 0 {
-		timeout = 10 * time.Second
-	}
-	// Abort cancels the dial: Close must not wait for a dead upstream.
-	ctx, cancel := context.WithTimeout(s.ctx, timeout)
-	var up net.Conn
-	var err error
-	switch action {
-	case rules.Block:
-		cancel()
+	if action == rules.Block {
 		s.Blocked.Add(1)
 		res.Route = "block"
 		s.setOutcome(e, "rst: blocked")
 		Reset(c)
 		return
-	case rules.Direct:
-		dial := s.DialDirect
-		if dial == nil {
-			dial = dialFrom
-		}
-		up, err = dial(ctx, e.Flow.Src.Addr(), e.Flow.Dst)
-		cancel()
-		if err != nil {
-			res.Route, res.Err = "direct", err
-			s.setOutcome(e, "rst: direct dial failed")
-			Reset(c)
-			return
-		}
-		s.Direct.Add(1)
+	}
+	if action != rules.Direct {
+		res.Profile = profile
+	}
+	up, tun, fail, err := s.dialRoute(s.ctx, e, action, profile, remoteName)
+	switch {
+	case err != nil && action == rules.Direct:
+		res.Route, res.Err = "direct", err
+		s.setOutcome(e, "rst: "+fail)
+		Reset(c)
+		return
+	case errors.Is(err, errTunnelUnavailable):
+		s.reject(c, &res, fail, nil)
+		return
+	case err != nil:
+		s.reject(c, &res, fail, err)
+		return
+	case action == rules.Direct:
 		res.Route = "direct"
 	default:
-		res.Profile = profile
-		var tun Tunnel
-		if s.Tunnel != nil {
-			tun = s.Tunnel(profile)
-		}
-		if tun == nil || !tun.Available() {
-			cancel()
-			if cnt, ok := tun.(Counting); ok {
-				cnt.NoteRejected()
-			}
-			s.reject(c, &res, "tunnel unavailable", nil)
-			return
-		}
-		dst := socks5.AddrFromAddrPort(e.Flow.Dst)
-		if remoteName != "" && s.PreferRemoteDNS {
-			dst.Host = remoteName // name from SNI/Host only
-		}
-		up, err = tun.Dial(ctx, dst)
-		cancel()
-		if err != nil {
-			if cnt, ok := tun.(Counting); ok {
-				cnt.NoteRejected()
-			}
-			s.reject(c, &res, "socks5 connect failed", err)
-			return
-		}
-		s.Tunneled.Add(1)
 		res.Route = "tunnel"
 		if cnt, ok := tun.(Counting); ok {
 			defer func() { cnt.NoteTraffic(res.Sent, res.Recv) }()
@@ -456,6 +461,7 @@ func (s *Server) handle(c net.Conn) {
 		return
 	}
 	defer s.track(up, false)
+	s.setEntry(up, e)
 	s.setOutcome(e, "relayed")
 	if len(head) > 0 {
 		if _, err := up.Write(head); err != nil {
@@ -667,3 +673,101 @@ func (c *appConn) CloseWrite() error {
 
 // NetConn returns the wrapped connection (socks5.Abort resets through it).
 func (c *appConn) NetConn() net.Conn { return c.Conn }
+
+// dialRoute opens the upstream of e for action (Direct or Tunnel; Block is
+// the caller's): Direct from the application's address, Tunnel through
+// profile's Hysteria (remoteName: the name the tunnel may resolve instead
+// of the address), never direct. The dial is bounded by DialTimeout and
+// canceled by Abort. The Direct and Tunnel counters are kept here; fail
+// says why a dial failed ("direct dial failed", "tunnel unavailable",
+// "socks5 connect failed").
+func (s *Server) dialRoute(parent context.Context, e *nat.Entry, action rules.Action, profile, remoteName string) (up net.Conn, tun Tunnel, fail string, err error) {
+	timeout := s.DialTimeout
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	// Abort cancels the dial: Close must not wait for a dead upstream.
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	if action == rules.Direct {
+		dial := s.DialDirect
+		if dial == nil {
+			dial = dialFrom
+		}
+		up, err = dial(ctx, e.Flow.Src.Addr(), e.Flow.Dst)
+		if err != nil {
+			return nil, nil, "direct dial failed", err
+		}
+		s.Direct.Add(1)
+		return up, nil, "", nil
+	}
+	if s.Tunnel != nil {
+		tun = s.Tunnel(profile)
+	}
+	if tun == nil || !tun.Available() {
+		if cnt, ok := tun.(Counting); ok {
+			cnt.NoteRejected()
+		}
+		return nil, tun, "tunnel unavailable", errTunnelUnavailable
+	}
+	dst := socks5.AddrFromAddrPort(e.Flow.Dst)
+	if remoteName != "" && s.PreferRemoteDNS {
+		dst.Host = remoteName // name from SNI/Host only
+	}
+	up, err = tun.Dial(ctx, dst)
+	if err != nil {
+		if cnt, ok := tun.(Counting); ok {
+			cnt.NoteRejected()
+		}
+		return nil, tun, "socks5 connect failed", err
+	}
+	s.Tunneled.Add(1)
+	return up, tun, "", nil
+}
+
+var (
+	errTunnelUnavailable = errors.New("relay: tunnel unavailable")
+	errPassBlocked       = errors.New("relay: blocked")
+)
+
+// serveDNS hands a DNS entry's connection to ServeDNS (dns) with the dial
+// for queries passed on unchanged. Upstreams it opened are tracked (Abort
+// and AbortWhere reset them) and closed when it returns; res.Route is the
+// last route used ("" when nothing was passed on).
+func (s *Server) serveDNS(c net.Conn, e *nat.Entry, res *Result) {
+	res.Stage = "dns"
+	if s.ServeDNS == nil {
+		Reset(c)
+		return
+	}
+	var ups []net.Conn
+	defer func() {
+		for _, up := range ups {
+			s.track(up, false)
+			up.Close()
+		}
+	}()
+	pass := func(ctx context.Context, r rules.Result) (net.Conn, error) {
+		if r.Action == rules.Block {
+			return nil, errPassBlocked
+		}
+		up, _, fail, err := s.dialRoute(ctx, e, r.Action, r.Profile, "")
+		if err != nil {
+			if r.Action != rules.Direct {
+				s.Rejected.Add(1)
+			}
+			s.Log.Debug("relay: DNS pass-through dial failed", "route", r.Action.String(), "reason", fail, "err", err)
+			return nil, err
+		}
+		if !s.track(up, true) {
+			Reset(up)
+			return nil, net.ErrClosed
+		}
+		s.setEntry(up, e)
+		ups = append(ups, up)
+		res.Route, res.Profile = r.Action.String(), r.Profile
+		return up, nil
+	}
+	s.ServeDNS(s.ctx, e, c, pass)
+	c.Close()
+}

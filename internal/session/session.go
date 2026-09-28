@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 
+	"github.com/lardan099/hyroute/internal/dnspolicy"
 	"github.com/lardan099/hyroute/internal/flows"
 	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/hysteria"
@@ -81,6 +82,14 @@ type Config struct {
 	Groups   *groups.Runtime
 	OnDial   func(profile, dst string, err error)
 	OnHealth func(profile string, st hysteria.Status)
+	// dns
+	// DNS is the DNS policy (nil = off). ProfileName names a profile in the
+	// DNS resolver's log lines (nil: its ID). OwnName reports one of
+	// HyRoute's own hosts, whose lookups the policy passes on
+	// (dnspolicy.OwnNames.Has of the controller; nil = none).
+	DNS         *dnspolicy.Policy
+	ProfileName func(id string) string
+	OwnName     func(name string) bool
 }
 
 // Stats are the counters shown next to the status.
@@ -118,4 +127,18 @@ type Stats struct {
 	FragOrphan      int64 `json:"fragOrphan"`
 	FragLegacy      int64 `json:"fragLegacy"`
 	UDPTooBig       int64 `json:"udpTooBig"`
+	// dns: queries HyRoute resolved through a tunnel or directly, passed on
+	// as before, answered NXDOMAIN by a block rule, answered or blocked for
+	// browser DoH, answered SERVFAIL, answered truncated, passed during the
+	// captive-portal pause; SystemDoH: the Windows DNS client's encrypted
+	// DNS connections seen (DNS policies cannot see those queries).
+	DNSTunnel       int64 `json:"dnsTunnel"`
+	DNSDirect       int64 `json:"dnsDirect"`
+	DNSPassed       int64 `json:"dnsPassed"`
+	DNSBlocked      int64 `json:"dnsBlocked"`
+	DNSDoH          int64 `json:"dnsDoH"`
+	DNSFailed       int64 `json:"dnsFailed"`
+	DNSTruncated    int64 `json:"dnsTruncated"`
+	DNSPortalPassed int64 `json:"dnsPortalPassed"`
+	SystemDoH       int64 `json:"systemDoH"`
 }

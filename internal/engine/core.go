@@ -15,6 +15,7 @@ import (
 	"github.com/lardan099/hyroute/internal/attrib"
 	"github.com/lardan099/hyroute/internal/divert"
 	"github.com/lardan099/hyroute/internal/dnscache"
+	"github.com/lardan099/hyroute/internal/dnspolicy"
 	"github.com/lardan099/hyroute/internal/engine/nat"
 	"github.com/lardan099/hyroute/internal/flows"
 	"github.com/lardan099/hyroute/internal/groups"
@@ -109,6 +110,15 @@ type Stats struct {
 	// UDPTooBig: tunnel datagrams dropped as larger than Hysteria carries
 	// (also counted in UDPDropped).
 	FragReassembled, FragIncomplete, UDPTooBig atomic.Int64
+	// dns
+	// DNS queries HyRoute took: resolved through a tunnel or directly,
+	// passed on as before, answered NXDOMAIN by a block rule, answered for
+	// browser DoH (the canary) or blocked DoH connections, answered
+	// SERVFAIL, answered truncated, passed during the portal pause.
+	DNSTunnel, DNSDirect, DNSPassed, DNSBlocked, DNSDoH, DNSFailed, DNSTruncated, DNSPortalPassed atomic.Int64
+	// SystemDoH counts the Windows DNS client's encrypted DNS connections
+	// (its exclusion on 443/853): DNS policies cannot see those queries.
+	SystemDoH atomic.Int64
 }
 
 // Core decides routes and moves packets. It is driven by the platform layer
@@ -171,6 +181,7 @@ type Core struct {
 	snapAt time.Time
 
 	fragTable // bigudp: reassembly state (frag.go), under mu
+	dnsState  // dns: DNS policies (dnspol.go)
 }
 
 type tcpFlow struct {
@@ -255,7 +266,7 @@ func NewCore(opt Options, tun Tunnels, procs *procinfo.Cache, inject func([]byte
 	if opt.IPHelperAfter == 0 {
 		opt.IPHelperAfter = 20 * time.Millisecond
 	}
-	return &Core{
+	c := &Core{
 		Opt: opt, Rules: &rules.Store{}, DNS: dnscache.New(), NAT: nat.NewTable(),
 		Conns: attrib.NewTable(), Procs: procs, Flows: flows.NewRegistry(5000),
 		Tunnels: tun, Inject: inject, Log: slog.Default(),
@@ -267,6 +278,8 @@ func NewCore(opt Options, tun Tunnels, procs *procinfo.Cache, inject func([]byte
 		sem:      make(chan struct{}, pendingMaxFlows), stop: make(chan struct{}),
 		untracked: map[nat.FlowKey]time.Time{},
 	}
+	c.dnsSem = make(chan struct{}, dnsMaxInflight) // dns
+	return c
 }
 
 // Close stops UDP sessions and pending waits.
@@ -279,6 +292,7 @@ func (c *Core) Close() {
 	for _, s := range sess {
 		s.close()
 	}
+	c.sweepDNSRows(time.Now(), true) // dns
 }
 
 // tunnel returns the profile's tunnel or nil. A target that stayed a
@@ -450,7 +464,9 @@ func (c *Core) tcpOut(p *packet.Packet, addr *divert.Address) {
 		}
 	}
 	c.mu.Unlock()
-	if c.excluded(p.DstIP()) {
+	// dns: a SYN to a private DNS server the policy intercepts goes on to
+	// newFlow.
+	if c.excluded(p.DstIP()) && !(p.IsSYN() && p.DstPort() == 53 && c.DNSPol.Load() != nil && c.dnsTarget(p.Dst(), true) != dnsNone) {
 		c.Inject(p.Buf, addr)
 		return
 	}
@@ -545,6 +561,10 @@ func (c *Core) untrackedRoute(p *packet.Packet, key nat.FlowKey, now time.Time) 
 	if res, kind := c.exclusion(pid, known, proc, packet.ProtoTCP, key.Dst); kind != "" {
 		return res, proc
 	}
+	if c.dohBlocked(proc, packet.ProtoTCP, key.Dst, "") { // dns: reset once
+		c.DNSDoH.Add(1)
+		return rules.Result{Action: rules.Block, Rule: dnspolicy.RuleBrowserDoH}, proc
+	}
 	set := c.Rules.Load()
 	sub := rules.Subject{Proc: proc, Proto: packet.ProtoTCP, Dst: key.Dst}
 	res := set.EvaluateSites(sub, c.packetSites(set, packet.ProtoTCP, key.Dst))
@@ -580,6 +600,20 @@ func (c *Core) tcpSnapshot(now time.Time, maxAge time.Duration) *attrib.TCPSnaps
 }
 
 func (c *Core) udpOut(p *packet.Packet, addr *divert.Address) {
+	// dns: a query the policy takes goes no further.
+	if p.DstPort() == 53 {
+		if pol := c.DNSPol.Load(); pol != nil {
+			if dest := c.dnsTarget(p.Dst(), false); dest != dnsNone && c.dnsUDP(pol, dest, p, addr) {
+				return
+			}
+		}
+	}
+	c.udpRoute(p, addr)
+}
+
+// udpRoute is udpOut after the DNS check (dns re-enters it from a
+// goroutine for a query it passes on).
+func (c *Core) udpRoute(p *packet.Packet, addr *divert.Address) {
 	if c.excluded(p.DstIP()) {
 		c.injectDirect(p, addr)
 		return
@@ -799,9 +833,15 @@ func (c *Core) decide(p *packet.Packet, addr *divert.Address, proto uint8, key n
 	}
 	sub := rules.Subject{Proc: proc, Proto: proto, Dst: key.Dst}
 	set := c.Rules.Load()
+	if proto == packet.ProtoTCP && key.Dst.Port() == 53 && c.dnsTCP(p, addr, key, pid, known, proc, rec) {
+		return // dns: a DNS-mode connection (or a private server's, as before)
+	}
 	res, excluded := c.exclusion(pid, known, proc, proto, key.Dst)
 	var pk groups.Pick
-	if excluded == "" {
+	if excluded == "" && c.dohBlocked(proc, proto, key.Dst, "") { // dns
+		res = rules.Result{Action: rules.Block, Rule: dnspolicy.RuleBrowserDoH}
+		c.DNSDoH.Add(1)
+	} else if excluded == "" {
 		res = set.EvaluateSites(sub, c.packetSites(set, proto, key.Dst))
 		res, pk = c.pick(res, proto == packet.ProtoUDP, c.hint(res, proc, "", key.Dst.Addr()))
 	}
@@ -859,12 +899,15 @@ func (c *Core) exclusion(pid uint32, known bool, proc *procinfo.Info, proto uint
 	switch port := dst.Port(); {
 	case pid == c.SelfPID:
 		return rules.Result{Action: rules.Direct, Rule: "exclusion: self"}, "self"
-	case c.SelfPID != 0 && proc != nil && proc.Name == "hysteria.exe" && proc.Parent != nil && proc.Parent.PID == c.SelfPID:
+	case c.ownHysteria(proc):
 		// Normally Hysteria only talks to its server, which the kernel
 		// filter already excludes; this covers an address it resolved on
 		// its own. Its traffic must never loop back into a tunnel.
 		return rules.Result{Action: rules.Direct, Rule: "exclusion: hysteria"}, "hysteria"
 	case pid != 0 && pid == c.DnscachePID.Load() && (port == 53 || c.encryptedDNS(proto, dst)):
+		if port != 53 {
+			c.SystemDoH.Add(1) // dns: queries DNS policies cannot see
+		}
 		return rules.Result{Action: rules.Direct, Rule: "exclusion: system DNS"}, "system-dns"
 	}
 	return rules.Result{}, ""
@@ -1088,6 +1131,10 @@ func (c *Core) packetSites(set *rules.Set, proto uint8, dst netip.AddrPort) [][]
 // RelayDecide is the relay's Decide callback for SNIFF entries.
 func (c *Core) RelayDecide(e *nat.Entry, domain string, src rules.DomainSource) rules.Result {
 	proc, _ := e.Meta.(*procinfo.Info)
+	if domain != "" && c.dohBlocked(proc, packet.ProtoTCP, e.Flow.Dst, domain) { // dns: SNI seen in the relay
+		c.DNSDoH.Add(1)
+		return rules.Result{Action: rules.Block, Rule: dnspolicy.RuleBrowserDoH, Domain: rules.NormalizeDomain(domain), DomainSrc: rules.SrcSNI}
+	}
 	sub := rules.Subject{Proc: proc, Proto: packet.ProtoTCP, Dst: e.Flow.Dst}
 	set := c.Rules.Load()
 	var res rules.Result
@@ -1264,6 +1311,7 @@ func (c *Core) Maintain(now time.Time) {
 	}
 	c.Conns.Sweep(now, 30*time.Minute)
 	c.DNS.Sweep()
+	c.maintainDNS(now) // dns
 	c.snapMu.Lock()
 	if now.Sub(c.snapAt) >= snapshotAge {
 		c.snap = nil // stale: the next untracked segment reads the table again

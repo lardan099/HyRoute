@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/dnsproxy"
 	"github.com/lardan099/hyroute/internal/engine"
 	"github.com/lardan099/hyroute/internal/engine/nat"
 	"github.com/lardan099/hyroute/internal/flows"
@@ -35,6 +36,8 @@ type Session struct {
 	rel  *relay.Server
 	mgr  *tunnels.Manager
 	stub *socks5.Server
+	// dns: the resolver of the DNS policy (Stop closes it).
+	res *dnsproxy.Resolver
 	// unlock gives back the machine's single engine (engine.LockMachine).
 	unlock func()
 }
@@ -104,6 +107,14 @@ func Start(cfg Config) (_ *Session, err error) {
 		OnDone:          func(r relay.Result) { engp.Load().RelayDone(r) },
 		PreferRemoteDNS: cfg.Settings.RemoteDNS(),
 		SniffTimeout:    cfg.Settings.SniffTimeout(),
+		// dns: TCP DNS to the servers the DNS policy intercepts.
+		ServeDNS: func(ctx context.Context, e *nat.Entry, c net.Conn, pass func(context.Context, rules.Result) (net.Conn, error)) {
+			if eng := engp.Load(); eng != nil {
+				eng.ServeDNS(ctx, e, c, pass)
+			} else {
+				relay.Reset(c) // no engine yet: a stray connection
+			}
+		},
 	}
 	if err := s.rel.Start(0); err != nil {
 		return nil, fmt.Errorf("relay: %w", err)
@@ -143,6 +154,9 @@ func Start(cfg Config) (_ *Session, err error) {
 	eng.Flows.OnTraffic = cfg.OnTraffic
 	s.eng = eng
 	engp.Store(eng)
+	if err := s.startDNS(cfg); err != nil { // dns
+		return nil, err
+	}
 	if err := eng.Start(); err != nil {
 		return nil, err
 	}
@@ -166,6 +180,9 @@ func (s *Session) Stop() {
 	}
 	if s.eng != nil {
 		s.eng.Stop()
+	}
+	if s.res != nil {
+		s.res.Close() // dns
 	}
 	if s.mgr != nil {
 		s.mgr.StopAll()
@@ -196,6 +213,7 @@ func (s *Session) ResetConnections() {
 func (s *Session) SetRules(set *rules.Set, profiles []hysteria.Profile) {
 	s.mgr.Sync(profiles)
 	s.eng.Rules.Swap(set)
+	s.retainDNS(profiles) // dns
 }
 
 func (s *Session) Flows() *flows.Registry { return s.eng.Flows }
@@ -246,6 +264,16 @@ func (s *Session) Stats() Stats {
 		FragOrphan:      e.FragOrphan.Load(),
 		FragLegacy:      e.FragLegacy.Load(),
 		UDPTooBig:       e.UDPTooBig.Load(),
+		// dns
+		DNSTunnel:       e.DNSTunnel.Load(),
+		DNSDirect:       e.DNSDirect.Load(),
+		DNSPassed:       e.DNSPassed.Load(),
+		DNSBlocked:      e.DNSBlocked.Load(),
+		DNSDoH:          e.DNSDoH.Load(),
+		DNSFailed:       e.DNSFailed.Load(),
+		DNSTruncated:    e.DNSTruncated.Load(),
+		DNSPortalPassed: e.DNSPortalPassed.Load(),
+		SystemDoH:       e.SystemDoH.Load(),
 	}
 }
 

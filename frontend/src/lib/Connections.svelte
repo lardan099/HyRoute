@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, errText, fmtBytes, fmtDuration, fmtTime, actionLabel, strategyLabel, type Flow } from '../api';
+  import { api, errText, fmtBytes, fmtDuration, fmtTime, actionLabel, strategyLabel, dnsRuleLabel, type Flow } from '../api';
   import { ui, hide, profileName } from '../state.svelte';
   import RuleFromFlow from './RuleFromFlow.svelte';
   import Icon from './Icon.svelte';
@@ -31,7 +31,33 @@
   let menu = $state<{ f: Flow; x: number; y: number } | null>(null);
 
   // Mandatory exclusions (HyRoute, Hysteria, the system DNS) take no rules.
-  const canRule = (f: Flow) => !f.excluded && !f.rule.startsWith('exclusion');
+  // dns: nor do DNS rows here: the process of most is the Windows DNS
+  // client and the address a DNS server (a rule from a query's name comes
+  // with the connection menu).
+  const canRule = (f: Flow) => !f.excluded && !f.rule.startsWith('exclusion') && f.stage !== 'dns';
+
+  // dns: DNS rows (queries HyRoute answered) are hidden unless «DNS-запросы»
+  // is on (kept per viewer).
+  function loadShowDNS(): boolean {
+    try {
+      return localStorage.getItem('hyroute.connDNS') === '1';
+    } catch {
+      return false;
+    }
+  }
+  let showDNS = $state(loadShowDNS());
+  function setShowDNS(on: boolean) {
+    showDNS = on;
+    try {
+      localStorage.setItem('hyroute.connDNS', on ? '1' : '0');
+    } catch {}
+  }
+  const dnsRows = $derived((showClosed ? [...active, ...closed] : active).filter((f) => f.stage === 'dns').length);
+
+  // The rule cell: HyRoute's own DNS answers have their own texts.
+  function ruleText(rule: string): string {
+    return dnsRuleLabel[rule] ?? (!rule || rule === 'default' ? 'Всё остальное' : rule);
+  }
 
   async function load() {
     if (paused) return;
@@ -60,6 +86,7 @@
     const q = query.trim().toLowerCase();
     const all = showClosed ? [...active, ...closed] : active;
     return all
+      .filter((f) => showDNS || f.stage !== 'dns') // dns
       .filter((f) => route === 'all' || f.route === route)
       .filter(
         (f) =>
@@ -75,15 +102,23 @@
       .slice(0, 1500);
   });
 
-  const srcName: Record<string, string> = { sni: 'по SNI (имя сайта в HTTPS)', host: 'по заголовку Host (HTTP)', dns: 'по кэшу DNS', unknown: '' };
+  const srcName: Record<string, string> = { sni: 'по SNI (имя сайта в HTTPS)', host: 'по заголовку Host (HTTP)', dns: 'по кэшу DNS', query: 'из DNS-запроса', unknown: '' };
 
   function whyText(f: Flow): string {
+    if (f.stage === 'dns') {
+      // dns: a query HyRoute answered itself.
+      const r = dnsRuleLabel[f.rule] ?? (!f.rule || f.rule === 'default' ? 'сработало «Всё остальное»' : `сработало правило «${f.rule}»`);
+      return `DNS-запрос имени ${hide(f.domain)}: ${r}.${(f.count ?? 0) > 1 ? ` Запросов: ${f.count}.` : ''}`;
+    }
+    if (dnsRuleLabel[f.rule]) return `${dnsRuleLabel[f.rule]}.`; // dns: a browser's DoH connection
     const rule = !f.rule || f.rule === 'default' ? 'сработало «Всё остальное»' : f.rule.startsWith('exclusion') ? 'служебное исключение HyRoute' : `сработало правило «${f.rule}»`;
     const dom = f.domain ? `, сайт определён ${srcName[f.domainSrc] ?? f.domainSrc}` : ', сайт не определён';
     return rule[0].toUpperCase() + rule.slice(1) + dom + '.';
   }
 
-  const srcLabel: Record<string, string> = { sni: 'SNI', host: 'Host', dns: 'DNS', unknown: '' };
+  const srcLabel: Record<string, string> = { sni: 'SNI', host: 'Host', dns: 'DNS', query: 'запрос', unknown: '' };
+  // dns: how the owner was found; «dnscache» is the Windows DNS client.
+  const attribLabel: Record<string, string> = { dnscache: 'служба DNS Windows' };
 </script>
 
 <div class="wrap">
@@ -105,6 +140,11 @@
     </select>
     <label class="check"><input type="checkbox" bind:checked={showClosed} /> закрытые</label>
     <label class="check"><input type="checkbox" bind:checked={paused} /> пауза</label>
+    {#if dnsRows > 0}
+      <label class="check" title="Запросы, на которые ответил HyRoute. Имена серверов, служебные и локальные имена идут как раньше и здесь не показываются.">
+        <input type="checkbox" checked={showDNS} onchange={(e) => setShowDNS((e.currentTarget as HTMLInputElement).checked)} /> DNS-запросы{showDNS ? '' : ` (${dnsRows})`}
+      </label>
+    {/if}
     <span class="muted">активных {active.length}, закрытых {closed.length}</span>
   </div>
   {#if error}<div class="note error">{error}</div>{/if}
@@ -132,8 +172,8 @@
             <td class="mono">{fmtTime(f.start)}</td>
             <td title={f.path}>{f.process || `PID ${f.pid}`}</td>
             <td class="mono">{f.proto} {hide(f.dst)}</td>
-            <td title={hide(f.domain)}>{hide(f.domain)}{#if srcLabel[f.domainSrc]}<span class="src">{srcLabel[f.domainSrc]}</span>{/if}</td>
-            <td title={f.rule}>{!f.rule || f.rule === 'default' ? 'Всё остальное' : f.rule}</td>
+            <td title={hide(f.domain)}>{hide(f.domain)}{#if (f.count ?? 0) > 1}<span class="muted"> ×{f.count}</span>{/if}{#if srcLabel[f.domainSrc]}<span class="src">{srcLabel[f.domainSrc]}</span>{/if}</td>
+            <td title={f.rule}>{ruleText(f.rule)}</td>
             <td class="route-{f.route}" title={routeText(f)}>{routeText(f)}</td>
             <td title={f.outcome}>{f.outcome}</td>
             <td class="num">{fmtBytes(f.sent)}</td>
@@ -154,7 +194,7 @@
       <div class="mono small facts">
         <span>{hide(selected.path || selected.process)} (PID {selected.pid})</span>
         <span>{selected.proto} {hide(selected.src)} → {hide(selected.dst)}</span>
-        <span>исход: {selected.outcome} · процесс найден: {selected.attrib} · решение: {selected.stage}</span>
+        <span>исход: {selected.outcome} · процесс найден: {attribLabel[selected.attrib] ?? selected.attrib} · решение: {selected.stage}</span>
         {#if selected.group}<span>Группа: {groupText(selected.group)}</span>{/if}
         {#if selected.tooBig}
           <span>датаграмм больше предела Hysteria (около 4 КБ) отброшено: {selected.tooBig}</span>

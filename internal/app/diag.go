@@ -46,6 +46,9 @@ func (c *Controller) Diagnostics(system []string, privacy bool) string {
 			w("%s", l)
 		}
 	}
+	for _, l := range c.dnsDiagLines(st.Stats) { // dns
+		w("%s", l)
+	}
 	for _, t := range st.Tunnels {
 		w("   профиль %q: %s, SOCKS %s, рестартов %d, отклонено %d, ↑%d ↓%d байт, сервер %s%s",
 			t.Name, t.State, orDash(t.SOCKS), t.Restarts, t.Rejected, t.Sent, t.Recv, strings.Join(t.ServerIPs, ","), msgSuffix(t.Message))

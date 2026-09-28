@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { api, errText, fmtDateTime, optionsOf, type SystemInfo, type Prefs, type Updates, type Settings, type AutostartInfo, type EngineOptions } from '../api';
   import { ui, hide, setTheme, setAccent, settle, setExpert, resetHelp, type Theme, type Accent } from '../state.svelte';
   import Icon from './Icon.svelte';
   import GeoSettings from './GeoSettings.svelte';
   import Backup from './Backup.svelte';
+  import DNSSettings from './DNSSettings.svelte'; // dns
 
   let {
     updates,
@@ -168,6 +169,16 @@
 
   const offline = $derived(!status || status.state === 'disconnected' || status.state === 'error');
   const updateMode = $derived(prefs.updateCheck || (updates?.dev ? 'manual' : 'auto'));
+
+  // dns: Home's «Настройки DNS» asks to be shown a card (ui.scrollTo).
+  $effect(() => {
+    const id = ui.scrollTo;
+    if (!id) return;
+    tick().then(() => {
+      document.getElementById(id)?.scrollIntoView({ block: 'start' });
+      ui.scrollTo = '';
+    });
+  });
 </script>
 
 <div class="layout">
@@ -360,6 +371,8 @@
     </section>
   {/if}
 
+  {#if ui.expert}<DNSSettings />{/if}
+
   <!-- Both modes: templates, the rules step by step and the rule editor
        send here to change the database, and its update errors show here. -->
   <GeoSettings />
@@ -461,7 +474,7 @@
         <span class="muted">Ядро Hysteria</span><span class="mono">{info.hysteriaPath}</span>
         <span class="muted">Сборка</span><span class="mono">{updates?.current ?? ''} ({info.build})</span>
       </div>
-      <p class="muted">Пароли профилей и ссылки подписок зашифрованы средствами Windows (DPAPI) и расшифровываются только под вашей учётной записью.</p>
+      <p class="muted">Пароли профилей, ссылки подписок и адрес своего DNS-сервера зашифрованы средствами Windows (DPAPI) и расшифровываются только под вашей учётной записью.</p>
       <button onclick={() => run(() => api.OpenDataDir(), '')}>Открыть папку</button>
       <p class="muted small credits">Флаги стран — Twemoji (© Twitter, CC-BY 4.0). Иконки по мотивам Lucide (ISC).</p>
     </details>

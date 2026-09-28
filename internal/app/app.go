@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/dnspolicy"
+	"github.com/lardan099/hyroute/internal/dnsproxy"
 	"github.com/lardan099/hyroute/internal/flows"
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/logx"
@@ -45,6 +47,13 @@ type Session interface {
 	// groups
 	// ServerIPRoom is how many more server IPs the exclusions can take.
 	ServerIPRoom() int
+	// dns
+	// SetDNS replaces the DNS policy (nil = off); DNSHealth lists the
+	// resolver clients that are down; PauseDNS sets the captive-portal
+	// pause (zero time: none).
+	SetDNS(*dnspolicy.Policy) error
+	DNSHealth() []dnsproxy.Health
+	PauseDNS(until time.Time)
 }
 
 type Starter func(session.Config) (Session, error)
@@ -164,6 +173,7 @@ type Controller struct {
 	groupsState
 	portsState
 	rulesetsState // rulesets: guarded by mu (rulesets.go)
+	dnsState      // dns: DNS policies (dns.go)
 }
 
 // New builds a controller with journals and a logger.
@@ -221,6 +231,8 @@ func (c *Controller) Load() error {
 	for _, p := range proxies {
 		c.Redactor.SetGroup("proxy:"+p.ID, p.Password)
 	}
+	// dns: dns.json (a broken one keeps every option off)
+	dnsCfg, dnsErr := c.loadDNS(&errs)
 	c.initGeo() // categories resolve while the settings compile
 	groupsFile, groupsErr := c.loadGroups(&errs, p)
 	// rulesets: whether settings.json exists, read before LoadSettings.
@@ -247,6 +259,7 @@ func (c *Controller) Load() error {
 	c.rulesAt = c.settingsRev.Add(1)
 	c.loadedGroupsLocked(groupsFile, groupsErr)
 	c.installRulesetsLoadLocked(rl)
+	c.installLoadedDNSLocked(dnsCfg, dnsErr) // dns
 	c.updateNamesLocked()
 	c.loadErr = strings.Join(errs, "; ")
 	c.mu.Unlock()
@@ -254,6 +267,9 @@ func (c *Controller) Load() error {
 		c.Log.Info(rl.Note)
 	}
 	c.applyLogPrefs()
+	if dnsErr == nil && dnsCfg.Active() {
+		c.flushDNSAsync("start") // dns: answers of a run that crashed
+	}
 	if len(errs) > 0 {
 		return errors.New(c.loadErr)
 	}
@@ -316,5 +332,6 @@ func (c *Controller) applyRoutingLocked() {
 		return
 	}
 	set, want, _ := c.routingLocked()
+	c.applyDNSLocked() // dns: before SetRules starts a new server's Hysteria
 	c.sess.SetRules(set, want)
 }

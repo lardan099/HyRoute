@@ -8,6 +8,7 @@
   import TargetOptions from './TargetOptions.svelte';
   import { showSwitchResult, showRulesetError } from './RulesetBar.svelte';
   import HomeSubAlerts from './HomeSubAlerts.svelte'; // subinfo
+  import HomeDNS, { dnsNotesShown, allTunnelsDown } from './HomeDNS.svelte'; // dns
 
   let { go, onsetup }: { go: (page: string) => void; onsetup: () => void } = $props();
 
@@ -144,7 +145,8 @@
     if (st.state === 'connected') {
       return everything ? 'Весь трафик идёт через VPN, кроме исключений в правилах.' : 'Через VPN идут только программы и сайты из правил.';
     }
-    return st.message;
+    // dns: names through VPN do not resolve either (DNS by the rules).
+    return st.dns?.byRules && allTunnelsDown(st) ? `${st.message}. Имена сайтов через VPN не разрешаются.` : st.message;
   });
 
   async function toggle() {
@@ -434,11 +436,12 @@
       </section>
     {/if}
 
-    {#if st?.warnings?.length}
+    {#if st?.warnings?.length || dnsNotesShown(st)}
       <section class="card">
         <h2>Требует внимания</h2>
-        {#each st.warnings as w}<div class="note warn">Правило «{hide(w.rule)}»: {hide(w.text)}</div>{/each}
-        <button onclick={() => go('rules')}>Открыть правила</button>
+        <HomeDNS {go} />
+        {#each st?.warnings ?? [] as w}<div class="note warn">Правило «{hide(w.rule)}»: {hide(w.text)}</div>{/each}
+        {#if st?.warnings?.length}<button onclick={() => go('rules')}>Открыть правила</button>{/if}
       </section>
     {/if}
 

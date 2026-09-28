@@ -39,6 +39,8 @@ export const ui = $state({
   // subinfo: dismissed subscription alerts, subscription ID -> alert key
   // (WebView memory only; not part of a backup).
   subAck: loadSubAcks(),
+  // dns: an element id a page scrolls to once it is shown (Home → «Настройки DNS»)
+  scrollTo: '',
 });
 
 export function setExpert(on: boolean) {

@@ -102,6 +102,18 @@ export interface Stats {
   natEntries: number;
   relayPort: number;
   driverVersion: string;
+  // dns: queries HyRoute resolved through a tunnel or directly, passed on,
+  // answered NXDOMAIN by a block rule, for browser DoH, SERVFAIL, truncated,
+  // passed during the portal pause; systemDoH: Windows' own encrypted DNS seen
+  dnsTunnel?: number;
+  dnsDirect?: number;
+  dnsPassed?: number;
+  dnsBlocked?: number;
+  dnsDoH?: number;
+  dnsFailed?: number;
+  dnsTruncated?: number;
+  dnsPortalPassed?: number;
+  systemDoH?: number;
 }
 
 export interface TunnelStatus {
@@ -218,6 +230,8 @@ export interface Explanation {
   // winner.index -2 (StepQUICBlock) is the synthetic «Блокировка QUIC».
   port: number;
   portRules: boolean;
+  // dns: how the name resolves (a domain target, a DNS option on)
+  dns?: DNSExplain | null;
 }
 
 export type State = 'disconnected' | 'starting' | 'connecting' | 'connected' | 'tunnel-down' | 'error';
@@ -283,6 +297,8 @@ export interface Status {
   // subscription list is authoritative (dismissals may be pruned)
   subAlerts: SubAlert[];
   subsOK: boolean;
+  // dns: while connected with a DNS option on
+  dns?: DNSStatus;
 }
 
 export interface Flow {
@@ -315,6 +331,8 @@ export interface Flow {
   // bigudp: UDP datagrams dropped as larger than Hysteria carries; a tunneled
   // flow of which nothing got through has outcome 'dropped: larger than Hysteria carries'
   tooBig?: number;
+  // dns: a DNS row (stage 'dns', domainSrc 'query'): the queries it counts
+  count?: number;
 }
 
 export interface Connections {
@@ -1141,4 +1159,94 @@ interface GUI {
   // Opens the support link the panel of subscription id sent, through
   // Explorer; the page never passes a URL.
   OpenSubscriptionSupport(id: string): Promise<void>;
+}
+
+// ==== dns ====
+
+// «Настройки» → «DNS» (dns.json). A preset ID, or 'custom' with url.
+export interface DNSUpstream {
+  preset: string; // '' | 'cloudflare' | 'google' | 'quad9' | 'adguard' | 'yandex' | 'custom'
+  url?: string; // custom only
+}
+
+export interface DNSConfig {
+  blockBrowserDoH: boolean;
+  stripECH: boolean;
+  byRules: boolean;
+  ignoreAddrRules: boolean; // true = «Сверяться с правилами по IP и geoip» off
+  tunnel: DNSUpstream; // preset '' = 'cloudflare'
+  direct: DNSUpstream; // preset '' = off
+}
+
+export interface DNSPreset {
+  id: string;
+  name: string;
+  url: string;
+  tunnel: boolean;
+  direct: boolean;
+}
+
+// An upstream server that does not answer (Status.dns.health).
+export interface DNSHealth {
+  via: 'tunnel' | 'direct';
+  profile?: string; // tunnel: server/group ID → profileName()
+  upstream: string; // preset name or 'свой сервер'
+  kind: 'timeout' | 'connect' | 'tls' | 'http' | 'answer';
+  code?: number;
+  retryIn: number; // seconds
+}
+
+export interface DNSStatus {
+  byRules: boolean;
+  direct: boolean;
+  health?: DNSHealth[];
+  pauseLeft?: number; // captive-portal pause, seconds left
+}
+
+export interface DNSView {
+  config: DNSConfig;
+  presets: DNSPreset[];
+  error?: string; // dns.json did not load
+}
+
+export interface DNSExplain {
+  route: 'tunnel' | 'block' | 'upstream' | 'direct' | 'addr' | 'server' | 'local' | 'service';
+  profile?: string;
+  upstream?: string;
+  rule?: string;
+  cond?: 'app' | 'proto';
+  proto?: 'tcp' | 'udp' | '';
+  noIPv6?: boolean;
+}
+
+interface GUI {
+  DNS(): Promise<DNSView>;
+  SaveDNS(c: DNSConfig): Promise<void>;
+  PauseDNSTunnel(): Promise<void>;
+  CancelDNSPause(): Promise<void>;
+}
+
+// The rule texts of HyRoute's own DNS answers, for «Соединения».
+export const dnsRuleLabel: Record<string, string> = {
+  'dns: DoH canary': 'DoH браузеров отключён',
+  'dns: ECH off': 'ECH отключён',
+  'dns: IPv6 not through tunnel': 'IPv6 не через VPN',
+  'dns: browser DoH': 'DoH браузера заблокирован',
+};
+
+// dnsErrorText: why an upstream server does not answer.
+export function dnsErrorText(kind: string, code?: number): string {
+  switch (kind) {
+    case 'timeout':
+      return 'Нет ответа';
+    case 'connect':
+      return 'Не удаётся соединиться';
+    case 'tls':
+      return 'Ошибка TLS (сертификат или блокировка)';
+    case 'http':
+      return `Сервер вернул ошибку HTTP ${code ?? ''}`.trim();
+    case 'answer':
+      return 'Неверный ответ сервера';
+  }
+  return kind;
 }

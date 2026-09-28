@@ -2,7 +2,10 @@ package app
 
 import (
 	"net/netip"
+	"time"
 
+	"github.com/lardan099/hyroute/internal/dnspolicy"
+	"github.com/lardan099/hyroute/internal/dnsproxy"
 	"github.com/lardan099/hyroute/internal/flows"
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/rules"
@@ -36,3 +39,9 @@ func (NopSession) Endpoint(string) *tunnels.Endpoint                    { return
 
 // ServerIPRoom has no room: a group check starts no temporary Hysteria.
 func (NopSession) ServerIPRoom() int { return 0 }
+
+// dns
+
+func (NopSession) SetDNS(*dnspolicy.Policy) error { return nil }
+func (NopSession) DNSHealth() []dnsproxy.Health   { return nil }
+func (NopSession) PauseDNS(time.Time)             {}

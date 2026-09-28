@@ -23,6 +23,7 @@ import (
 	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/packet"
 	"github.com/lardan099/hyroute/internal/procinfo"
+	"github.com/lardan099/hyroute/internal/sysdns"
 )
 
 type Config struct {
@@ -62,6 +63,9 @@ type Engine struct {
 	mains     map[*divert.Handle]bool // every open main handle; true = retired (no longer receives)
 	mainPrio  int16                   // level of the receiving main handle
 	serverIPs []netip.Addr            // excluded by the receiving main handle (see serverExclusions)
+	// dns: dnsCapture: the main filter also captures DNS to private
+	// destinations (FilterOptions.DNS); guarded by mainMu.
+	dnsCapture bool
 
 	sniffs []*divert.Handle // H2..H4
 
@@ -85,8 +89,9 @@ const (
 	// stopWait bounds how long Stop waits for the engine's goroutines.
 	stopWait = 5 * time.Second
 	// maxServerIPs keeps the main filter within the 256 tests WinDivert
-	// compiles: the fixed part takes 41 and every server IP 2, so 107 fit
-	// today; the margin leaves room for the fixed part to grow.
+	// compiles: the fixed part takes 41 (45 with DNS capture) and every
+	// server IP 2, so 105 fit today; the margin leaves room for the fixed
+	// part to grow.
 	maxServerIPs = 100
 )
 
@@ -236,6 +241,7 @@ func New(cfg Config) *Engine {
 	}
 	e.Core.TCPTable = attrib.ReadTCPTable
 	e.Core.Groups = cfg.Groups
+	e.Core.SysDNS = NewSysDNSView(sysdns.Snapshot, cfg.Log) // dns
 	return e
 }
 
@@ -464,6 +470,7 @@ func (e *Engine) filter(serverIPs []netip.Addr) string {
 		RelayPort: e.cfg.Options.RelayPort,
 		ServerIPs: serverIPs,
 		TCPOnly:   e.cfg.Options.TCPOnly,
+		DNS:       e.dnsCapture, // dns
 	})
 }
 
@@ -804,4 +811,28 @@ func allStacks() string {
 		return string(buf) + "\n… (cut)"
 	}
 	return string(buf[:n])
+}
+
+// SetDNSCapture switches capturing DNS to private destinations on or off
+// (dns). While running it hot-swaps the main handle like SetServerIPs; a
+// failed swap leaves the capture as it was.
+func (e *Engine) SetDNSCapture(on bool) error {
+	e.mainMu.Lock()
+	defer e.mainMu.Unlock()
+	if e.dnsCapture == on {
+		return nil
+	}
+	prev := e.dnsCapture
+	e.dnsCapture = on
+	if !e.running.Load() || e.failed.Load() {
+		return nil // the first main handle uses it
+	}
+	if err := e.reopenMain(e.serverIPs); err != nil {
+		e.dnsCapture = prev
+		if e.failed.Load() {
+			return nil // failed meanwhile: there is no filter to update
+		}
+		return err
+	}
+	return nil
 }

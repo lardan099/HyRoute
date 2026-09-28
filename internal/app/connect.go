@@ -47,6 +47,8 @@ func (c *Controller) startLocked(recovering bool) error {
 	set, want, _ := c.routingLocked()
 	st := *c.settings
 	cfg.Settings, cfg.Rules, cfg.Profiles = &st, set, want
+	c.dnsSessionLocked(&cfg) // dns
+	c.dnsPause = time.Time{} // dns: a pause never outlives its session
 	// SaveSettings compares engine options with what is starting.
 	c.sessSet = &st
 	c.starting, c.startErr = true, ""
@@ -78,6 +80,7 @@ func (c *Controller) startLocked(recovering bool) error {
 	c.startTrafficLoop()
 	cfg.OnStatus = func(id string, s hysteria.Status) {
 		c.Log.Info("hysteria status", "profile", c.profileName(id), "state", s.State.String(), "msg", s.Message, "udp", s.UDPEnabled, "socks", s.SOCKS, "serverIPs", s.ServerIPs)
+		c.dnsTunnelUp(s) // dns
 		c.changed()
 	}
 	c.groupsSession(&cfg)
@@ -107,6 +110,7 @@ func (c *Controller) startLocked(recovering bool) error {
 	c.applyRoutingLocked()
 	c.mu.Unlock()
 	c.Log.Info("connected: filters active")
+	c.dnsStarted(sess, cfg) // dns
 	c.startProber()
 	c.armKillSwitch(sess)
 	c.syncProxies()
@@ -132,7 +136,10 @@ func (c *Controller) Disconnect() { c.disconnect(true) }
 // Shutdown stops routing when HyRoute exits. Only Disconnect opens the
 // internet: the kill switch block stays over an exit (not over the end of
 // the Windows session, see EndSession).
-func (c *Controller) Shutdown() { c.disconnect(false) }
+func (c *Controller) Shutdown() {
+	c.disconnect(false)
+	c.dnsExitFlush() // dns: the process ends next, a waiting flush runs now
+}
 
 // disconnect: with release unset the kill switch keeps the internet
 // closed (reconnect). The relayed connections are reset first; then its
@@ -151,6 +158,7 @@ func (c *Controller) disconnectLocked(release bool) {
 	c.mu.Lock()
 	s := c.sess
 	c.sess, c.startErr = nil, ""
+	c.dnsPause = time.Time{} // dns
 	// Until the next start, unless the user turns routing off: its
 	// connections have gone direct since.
 	c.failedStop = !release && (c.failedStop || s != nil && s.EngineFailed())
@@ -165,6 +173,7 @@ func (c *Controller) disconnectLocked(release bool) {
 	if s != nil {
 		s.Stop()
 		c.Log.Info("disconnected: filters removed")
+		c.dnsStopped() // dns: flush the answers HyRoute gave
 		// Flows left open by the stop are not closed: count them now.
 		if reg := s.Flows(); reg != nil {
 			reg.Sample()
@@ -225,6 +234,8 @@ type Status struct {
 	// alert.
 	SubAlerts []SubAlert `json:"subAlerts"`
 	SubsOK    bool       `json:"subsOK"`
+	// dns: while connected with a DNS option on (DNSStatus).
+	DNS *DNSStatus `json:"dns,omitempty"`
 }
 
 // down reports a profile that cannot carry traffic now: failed, or
@@ -250,6 +261,7 @@ func (c *Controller) Status() Status {
 		st.Main, st.MainID = p.Name, p.ID
 	}
 	gst := c.groupStatusLocked(&st)
+	st.DNS = c.dnsStatusLocked(s) // dns
 	if s != nil {
 		st.Since = c.since
 	}

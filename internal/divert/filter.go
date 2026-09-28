@@ -37,6 +37,12 @@ type FilterOptions struct {
 	ExcludeCGNAT bool
 	// TCPOnly restricts capture to TCP (PoC); UDP comes in step 3.
 	TCPOnly bool
+	// dns
+	// DNS also captures DNS (UDP and TCP port 53) to private and
+	// link-local destinations (the home router), fragments to them (only
+	// the first fragment of a query has the port), and the relay's replies
+	// to such a destination. Hysteria server IPs and loopback stay out.
+	DNS bool
 }
 
 // MainFilter builds the H1 filter:
@@ -51,7 +57,7 @@ type FilterOptions struct {
 //   - a test on a field the packet does not have (ip.* on IPv6) is false,
 //     so each exclusion also lets the other family through explicitly.
 func MainFilter(o FilterOptions) string {
-	var excl []string
+	var excl, servers []string
 	v4 := ExcludedV4
 	if o.ExcludeCGNAT {
 		v4 = append(v4[:len(v4):len(v4)], CGNAT)
@@ -65,9 +71,9 @@ func MainFilter(o FilterOptions) string {
 	for _, ip := range o.ServerIPs {
 		ip = ip.Unmap()
 		if ip.Is4() {
-			excl = append(excl, fmt.Sprintf("(ipv6 or ip.DstAddr != %s)", ip))
+			servers = append(servers, fmt.Sprintf("(ipv6 or ip.DstAddr != %s)", ip))
 		} else {
-			excl = append(excl, fmt.Sprintf("(ip or ipv6.DstAddr != %s)", ip))
+			servers = append(servers, fmt.Sprintf("(ip or ipv6.DstAddr != %s)", ip))
 		}
 	}
 	// Fragments without the transport header match neither tcp nor udp;
@@ -78,8 +84,11 @@ func MainFilter(o FilterOptions) string {
 	if o.TCPOnly {
 		proto = "tcp"
 	}
+	if o.DNS {
+		return dnsFilter(o, proto, excl, servers)
+	}
 	return fmt.Sprintf("(outbound and !loopback and %s and %s) or (inbound and tcp.DstPort == %d)",
-		proto, strings.Join(excl, " and "), o.RelayPort)
+		proto, strings.Join(append(excl, servers...), " and "), o.RelayPort)
 }
 
 // outsideRange matches packets of the other family or with field outside p.
@@ -119,3 +128,25 @@ const FlowFilter = "!loopback"
 const DNSFilter = "!loopback and (" +
 	"(outbound and (udp.DstPort == 53 or (tcp.DstPort == 53 and tcp.PayloadLength > 0))) or " +
 	"(inbound and (udp.SrcPort == 53 or (tcp.SrcPort == 53 and tcp.PayloadLength > 0))))"
+
+// dnsFilter is MainFilter with DNS capture (dns):
+//
+//	(outbound and !loopback and (tcp or udp or fragment) and <server IP exclusions>
+//	   and ((<range exclusions>) or udp.DstPort == 53 or fragment
+//	        or tcp.DstPort == 53 or tcp.SrcPort == RELAY))
+//	or (inbound and tcp.DstPort == RELAY)
+//
+// DNS to private and link-local destinations is captured, and the relay's
+// replies to a reflected private destination come back. WinDivert reads
+// ports only in a first fragment, so every fragment to a private
+// destination is captured too (Core.dnsHold decides which are held).
+func dnsFilter(o FilterOptions, proto string, ranges, servers []string) string {
+	dns := []string{"(" + strings.Join(ranges, " and ") + ")"}
+	if !o.TCPOnly {
+		dns = append(dns, "udp.DstPort == 53", "fragment")
+	}
+	dns = append(dns, "tcp.DstPort == 53", fmt.Sprintf("tcp.SrcPort == %d", o.RelayPort))
+	cond := append([]string{"!loopback", proto}, servers...)
+	cond = append(cond, "("+strings.Join(dns, " or ")+")")
+	return fmt.Sprintf("(outbound and %s) or (inbound and tcp.DstPort == %d)", strings.Join(cond, " and "), o.RelayPort)
+}

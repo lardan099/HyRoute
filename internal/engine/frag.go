@@ -113,6 +113,9 @@ type fragIn struct {
 	lim   int      // payload limit for an oversize datagram, else math.MaxInt
 	peek  *udpFlow // the flow seen when tunUp was computed (oversize only)
 	tunUp bool     // peek's tunnel could carry UDP (checked unlocked)
+	// dns: an excluded destination under the DNS hold, port ≠ 53: passes
+	// unrouted, its later fragments follow.
+	exclPass bool
 }
 
 type fragFail struct {
@@ -139,7 +142,10 @@ func (c *Core) fragOut(raw []byte, addr *divert.Address) {
 		c.Malformed.Add(1)
 		return
 	}
-	if !f.Routable() || c.excluded(f.Dst) {
+	// dns: an excluded destination is held when it is a DNS server the
+	// policy intercepts: its fragmented queries must reach the DNS check.
+	hold := f.Routable() && c.excluded(f.Dst) && c.dnsHold(f.Dst)
+	if !f.Routable() || c.excluded(f.Dst) && !hold {
 		// Protocols the engine does not route (ICMP, ESP, GRE...: their
 		// whole packets are not captured either) go on unchanged.
 		c.Inject(raw, addr)
@@ -150,6 +156,12 @@ func (c *Core) fragOut(raw []byte, addr *divert.Address) {
 	var key nat.FlowKey
 	if f.HasPorts {
 		key = nat.FlowKey{Src: netip.AddrPortFrom(f.Src, f.SrcPort), Dst: netip.AddrPortFrom(f.Dst, f.DstPort)}
+	}
+	if hold && f.Offset == 0 && f.HasPorts && f.DstPort != 53 && !f.Reassemblable() {
+		// Other traffic to the held server goes on as before, unrouted.
+		c.fragReport(c.fragLegacyStore(fk, key, rules.Direct, now), fragSwept{})
+		c.Inject(raw, addr)
+		return
 	}
 	if f.Offset == 0 && !f.HasPorts {
 		// A first fragment too short to carry ports cannot be routed: it is
@@ -162,8 +174,8 @@ func (c *Core) fragOut(raw []byte, addr *divert.Address) {
 		c.fragLegacy(&f, fk, key, raw, addr, now)
 		return
 	}
-	in := fragIn{lim: math.MaxInt}
-	if f.Offset == 0 && f.UDPLen-8 > socks5.UDPPayloadAlways {
+	in := fragIn{lim: math.MaxInt, exclPass: hold && f.Offset == 0 && f.DstPort != 53}
+	if f.Offset == 0 && !in.exclPass && f.UDPLen-8 > socks5.UDPPayloadAlways {
 		if lim := socks5.MaxUDPPayload(socks5.AddrFromAddrPort(key.Dst)); f.UDPLen-8 > lim {
 			// Too big for Hysteria. An existing Tunnel flow drops it at
 			// once, but only while its tunnel is up: otherwise udpOut
@@ -204,7 +216,15 @@ func (c *Core) fragOut(raw []byte, addr *divert.Address) {
 // fragLegacy routes a datagram that is not reassembled by its first
 // fragment (TCP, IPv6 extension headers in front of the fragment header).
 func (c *Core) fragLegacy(f *packet.Fragment, fk packet.FragKey, key nat.FlowKey, raw []byte, addr *divert.Address, now time.Time) {
-	route := c.fragRoute(f.Proto, key)
+	var route rules.Action
+	if key.Dst.Port() == 53 && c.DNSPol.Load() != nil && (f.Proto == packet.ProtoUDP || c.excluded(f.Dst)) {
+		// dns: a query that cannot be shown to the DNS policy whole must
+		// not skip it (IPv6 extension headers; the Windows DNS client
+		// sends none).
+		route = rules.Block
+	} else {
+		route = c.fragRoute(f.Proto, key)
+	}
 	c.fragReport(c.fragLegacyStore(fk, key, route, now), fragSwept{})
 	if route == rules.Direct {
 		c.Inject(raw, addr)
@@ -405,6 +425,9 @@ func (c *Core) fragFirstLocked(act *fragAct, fk packet.FragKey, key nat.FlowKey,
 	switch {
 	case e == nil || !e.holding(): // a new datagram; the old decision is replaced
 		switch {
+		case in.exclPass: // dns: no flow, nothing counted, as for whole excluded packets
+			c.fragSetLocked(fk, e, fragPass, now.Add(fragPassTTL)).flow = key
+			act.inject = true
 		case f.DstPort == 53 || f.UDPLen < 8 || uf == nil:
 			// DNS: the whole query goes through udpOut. A UDP length below
 			// the header: Add rejects it (the fast path must not pass an

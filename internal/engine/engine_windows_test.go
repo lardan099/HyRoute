@@ -336,10 +336,12 @@ func TestMainFilterFitsMaxServerIPs(t *testing.T) {
 	}
 	e := testEngine()
 	for _, tcpOnly := range []bool{false, true} {
-		e.cfg.Options.TCPOnly = tcpOnly
-		out, _ := exec.Command(bin, "compile", e.filter(serverExclusions(ips)), "0").CombinedOutput()
-		if got := strings.TrimSpace(string(out)); got != "OK" {
-			t.Errorf("tcpOnly=%v: %s", tcpOnly, got)
+		for _, dns := range []bool{false, true} { // dns: DNS capture adds 4 tests
+			e.cfg.Options.TCPOnly, e.dnsCapture = tcpOnly, dns
+			out, _ := exec.Command(bin, "compile", e.filter(serverExclusions(ips)), "0").CombinedOutput()
+			if got := strings.TrimSpace(string(out)); got != "OK" {
+				t.Errorf("tcpOnly=%v dns=%v: %s", tcpOnly, dns, got)
+			}
 		}
 	}
 }

@@ -172,6 +172,7 @@ func (c *Controller) commitSettingsLocked(st settings.Settings, next *store.Rule
 	ksChanged := c.settings == nil || c.settings.KillSwitchOn() != st.KillSwitchOn()
 	rulesChanged := c.settings == nil || !sameRules(c.settings.Config, st.Config)
 	c.settings, c.set = &st, set
+	flushDNS := rulesChanged && c.dnsRulesChangedLocked() // dns
 	rev := c.settingsRev.Add(1)
 	if rulesChanged {
 		c.rulesAt = rev
@@ -198,6 +199,9 @@ func (c *Controller) commitSettingsLocked(st settings.Settings, next *store.Rule
 		c.pokeGeo() // a new category may need the databases
 		if ksChanged {
 			c.applyKillSwitch()
+		}
+		if flushDNS {
+			c.flushDNSAsync("rules") // dns: names the new rules answer otherwise
 		}
 		c.changed()
 		if c.OnSettings != nil {
@@ -441,6 +445,9 @@ type Explanation struct {
 	// ports
 	// Port is the port actually checked (0 = none).
 	Port int `json:"port"`
+	// dns: how the name resolves with the DNS settings (a domain target, a
+	// DNS option on).
+	DNS *DNSExplain `json:"dns,omitempty"`
 }
 
 // Explain traces a hypothetical connection through the saved rules, or
@@ -495,6 +502,7 @@ func (c *Controller) Explain(q ExplainQuery, st *settings.Settings) Explanation 
 		}
 		c.explainGroup(&ex, sess)
 	}
+	ex.DNS = c.explainDNS(rq.Domain, q.App, cfg, main, src.IPv6TunnelBlocked()) // dns
 	return ex
 }
 

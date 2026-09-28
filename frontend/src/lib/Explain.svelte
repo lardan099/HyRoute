@@ -1,7 +1,7 @@
 <script lang="ts">
   // "Проверить адрес": which rule would take a site or program and where it
   // would go. Useful when a site goes the wrong way.
-  import { api, errText, type Explanation, type Settings } from '../api';
+  import { api, errText, dnsRuleLabel, type DNSExplain, type Explanation, type Settings } from '../api';
   import { profileName, hide } from '../state.svelte';
   import Icon from './Icon.svelte';
 
@@ -46,6 +46,31 @@
     return `${what}${e.port ? `, порт ${e.port}` : ''}${udp}`;
   }
 
+  // dns: how the name resolves with the DNS settings.
+  function dnsText(d: DNSExplain): string {
+    const rule = (r?: string) => (!r || r === 'default' ? 'Всё остальное' : (dnsRuleLabel[r] ?? r));
+    let cond = '';
+    if (d.cond === 'app') cond = ` Так решает правило «${rule(d.rule)}» для программы: спрашивает служба DNS Windows, и программа неизвестна.`;
+    else if (d.cond === 'proto') cond = ` Так решает правило «${rule(d.rule)}» для ${d.proto || 'некоторых портов'}.`;
+    switch (d.route) {
+      case 'tunnel':
+        return `DNS: имя разрешается через ${profileName(d.profile ?? '')} (${d.upstream ?? ''}).${cond}`;
+      case 'block':
+        return `DNS: имя не разрешается — правило «${rule(d.rule)}».${cond}`;
+      case 'upstream':
+        return `DNS: напрямую через ${d.upstream ?? ''}.`;
+      case 'addr':
+        return `DNS: как обычно, через DNS-сервер сети: выше есть правило «${rule(d.rule)}» по IP/geoip, и через VPN адрес сайта мог бы оказаться другим.`;
+      case 'server':
+        return 'DNS: адрес сервера Hysteria — всегда через DNS-сервер сети.';
+      case 'local':
+        return 'DNS: локальное имя — как обычно.';
+      case 'service':
+        return 'DNS: имя нужно Windows или самому HyRoute — всегда через DNS-сервер сети.';
+    }
+    return 'DNS: как обычно, через DNS-сервер сети.';
+  }
+
   function routeText(a: string, profile: string, group?: boolean, via?: string): string {
     if (a === 'direct') return 'напрямую';
     if (a === 'block') return 'будет заблокировано';
@@ -79,6 +104,10 @@
     <div class="muted small">
       {#if ex.winner.index === -2}QUIC с неизвестным сайтом блокируется («Блокировать QUIC с неизвестным сайтом»).{:else if ex.winner.index < 0}Ни одно правило не подошло, сработало «Всё остальное».{:else}Сработало правило «{ex.winner.name}»: {hide(ex.winner.reason)}.{/if}
     </div>
+    {#if ex.dns}
+      <div class="muted small">{dnsText(ex.dns)}</div>
+      {#if ex.dns.noIPv6}<div class="muted small">DNS: IPv6-адреса для него не выдаются («Не пускать IPv6 в VPN»).</div>{/if}
+    {/if}
     <details class="more">
       <summary class="small">Подробно по каждому правилу</summary>
       <ol>

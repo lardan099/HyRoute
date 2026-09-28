@@ -124,9 +124,15 @@ const (
 	// ECH. The relay passes it to the decider, which settles which it is;
 	// it is shown as "sni".
 	SrcECH
+	// dns
+	// SrcQuery is the name of a DNS query HyRoute answered itself (a DNS
+	// row of "Connections"), shown as "query".
+	SrcQuery
 )
 
-func (s DomainSource) String() string { return [...]string{"unknown", "dns", "host", "sni", "sni"}[s] }
+func (s DomainSource) String() string {
+	return [...]string{"unknown", "dns", "host", "sni", "sni", "query"}[s]
+}
 
 // Subject is what the engine knows about a new flow.
 type Subject struct {
@@ -227,6 +233,10 @@ type compiled struct {
 	fallback []string // "" = main
 	// ports: destination ports, sorted and merged; empty = any port.
 	ports []PortRange
+	// dns
+	// addrLocal: every address item covers local ranges only (localOnly);
+	// EvaluateName reports it for address-only matches.
+	addrLocal bool
 }
 
 func (r *compiled) hasApp() bool  { return len(r.apps) > 0 }
@@ -444,6 +454,7 @@ func compileRule(i int, r Rule, g Geo) (compiled, error) {
 		return cr, fmt.Errorf("%s: %v", cr.name, err)
 	}
 	cr.ports = ps
+	cr.addrLocal = localOnly(cr.ips) // dns
 	return cr, nil
 }
 

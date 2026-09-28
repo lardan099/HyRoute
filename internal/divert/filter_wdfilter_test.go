@@ -129,3 +129,63 @@ func TestMainFilterSemantics(t *testing.T) {
 		}
 	}
 }
+
+// dns: the DNS capture filter compiles, with maxServerIPs addresses too,
+// and captures DNS and fragments to private destinations.
+func TestMainFilterDNSWinDivert(t *testing.T) {
+	bin := wdfilter(t)
+	const relay = 50123
+	servers := []netip.Addr{netip.MustParseAddr("203.0.113.10"), netip.MustParseAddr("2001:db8::10")}
+	opts := FilterOptions{RelayPort: relay, ServerIPs: servers, DNS: true}
+	many := FilterOptions{RelayPort: relay, DNS: true}
+	for i := range 100 {
+		if i%2 == 0 {
+			many.ServerIPs = append(many.ServerIPs, netip.AddrFrom4([4]byte{203, 0, 113, byte(i)}))
+		} else {
+			many.ServerIPs = append(many.ServerIPs, netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 15: byte(i)}))
+		}
+	}
+	for _, o := range []FilterOptions{opts, many, {RelayPort: relay, DNS: true, TCPOnly: true, ServerIPs: many.ServerIPs}} {
+		if got := run(t, bin, "compile", MainFilter(o), "0"); got != "OK" {
+			t.Fatalf("%s\n%s", got, MainFilter(o))
+		}
+	}
+	tcp := func(src, dst string) []byte {
+		return packet.BuildTCP(netip.MustParseAddrPort(src), netip.MustParseAddrPort(dst), packet.FlagSYN, 1, 0, nil)
+	}
+	udp := func(src, dst string) []byte {
+		return packet.BuildUDP(netip.MustParseAddrPort(src), netip.MustParseAddrPort(dst), []byte("x"))
+	}
+	later := func(b []byte) []byte { // an IPv4 fragment at offset 1480, no UDP header
+		b = append([]byte(nil), b[:20]...)
+		b = append(b, []byte("payload-continues")...)
+		b[2], b[3] = 0, byte(len(b))
+		b[6], b[7] = 0, 185
+		return b
+	}
+	const L4, L6 = "192.168.1.5:50000", "[fe80::5]:50000"
+	for _, c := range []struct {
+		name string
+		pkt  []byte
+		want string
+	}{
+		{"udp 53 to the router", udp(L4, "192.168.1.1:53"), "1"},
+		{"tcp 53 to the router", tcp(L4, "192.168.1.1:53"), "1"},
+		{"udp 53 link-local v6", udp(L6, "[fe80::1]:53"), "1"},
+		{"tcp 53 link-local v6", tcp(L6, "[fe80::1]:53"), "1"},
+		{"router 443", tcp(L4, "192.168.1.1:443"), "0"},
+		{"router 443 udp", udp(L4, "192.168.1.1:443"), "0"},
+		{"server 53", udp(L4, "203.0.113.10:53"), "0"},
+		{"server v6 53", tcp("[2a00::5]:50000", "[2001:db8::10]:53"), "0"},
+		{"relay reply to the router", tcp("192.168.1.5:50123", "192.168.1.1:50000"), "1"},
+		{"later fragment to the router", later(udp(L4, "192.168.1.1:53")), "1"},
+		{"public stays", tcp(L4, "93.184.216.34:443"), "1"},
+	} {
+		if got := run(t, bin, "eval", MainFilter(opts), hex.EncodeToString(c.pkt), "1", "0"); got != c.want {
+			t.Errorf("%s: got %s want %s", c.name, got, c.want)
+		}
+	}
+	if got := run(t, bin, "eval", MainFilter(opts), hex.EncodeToString(udp(L4, "192.168.1.1:53")), "1", "1"); got != "0" {
+		t.Errorf("loopback captured")
+	}
+}

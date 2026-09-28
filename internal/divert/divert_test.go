@@ -131,3 +131,48 @@ func TestExplain(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// dns: without DNS capture the filter is exactly the one before it;
+// with it, DNS and fragments to private destinations and the relay's
+// replies are captured, never a server IP's.
+func TestMainFilterDNS(t *testing.T) {
+	servers := []netip.Addr{netip.MustParseAddr("203.0.113.10"), netip.MustParseAddr("2001:db8::10")}
+	base := FilterOptions{RelayPort: 50123, ServerIPs: servers}
+	const before = "(outbound and !loopback and (tcp or udp or fragment) and (ipv6 or ip.DstAddr > 0.255.255.255) and " +
+		"(ipv6 or ip.DstAddr < 10.0.0.0 or ip.DstAddr > 10.255.255.255) and (ipv6 or ip.DstAddr < 127.0.0.0 or ip.DstAddr > 127.255.255.255) and " +
+		"(ipv6 or ip.DstAddr < 169.254.0.0 or ip.DstAddr > 169.254.255.255) and (ipv6 or ip.DstAddr < 172.16.0.0 or ip.DstAddr > 172.31.255.255) and " +
+		"(ipv6 or ip.DstAddr < 192.168.0.0 or ip.DstAddr > 192.168.255.255) and (ipv6 or ip.DstAddr < 224.0.0.0 or ip.DstAddr > 239.255.255.255) and " +
+		"(ipv6 or ip.DstAddr < 240.0.0.0 or ip.DstAddr > 255.255.255.255) and (ip or ipv6.DstAddr > ::1) and " +
+		"(ip or ipv6.DstAddr < fe80:: or ipv6.DstAddr > febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff) and " +
+		"(ip or ipv6.DstAddr < fc00:: or ipv6.DstAddr > fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff) and " +
+		"(ip or ipv6.DstAddr < ff00:: or ipv6.DstAddr > ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff) and " +
+		"(ipv6 or ip.DstAddr != 203.0.113.10) and (ip or ipv6.DstAddr != 2001:db8::10)) or (inbound and tcp.DstPort == 50123)"
+	if got := MainFilter(base); got != before {
+		t.Fatalf("DNS off changed the filter:\n%s", got)
+	}
+	o := base
+	o.DNS = true
+	f := MainFilter(o)
+	for _, want := range []string{
+		"(outbound and !loopback and (tcp or udp or fragment) and (ipv6 or ip.DstAddr != 203.0.113.10) and (ip or ipv6.DstAddr != 2001:db8::10) and (((ipv6 or ip.DstAddr > 0.255.255.255) and ",
+		" or udp.DstPort == 53 or fragment or tcp.DstPort == 53 or tcp.SrcPort == 50123)) or (inbound and tcp.DstPort == 50123)",
+	} {
+		if !strings.Contains(f, want) {
+			t.Fatalf("filter lacks %q:\n%s", want, f)
+		}
+	}
+	o.TCPOnly = true
+	if f := MainFilter(o); strings.Contains(f, "udp.DstPort") || strings.Contains(f, "or fragment") || !strings.Contains(f, "!loopback and tcp and") {
+		t.Fatalf("TCP only: %s", f)
+	}
+	// The term count WinDivert compiles (at most 256): 45 fixed + 2 per
+	// server address, so maxServerIPs (100) fits.
+	o = FilterOptions{RelayPort: 50123, DNS: true}
+	for i := range 100 {
+		o.ServerIPs = append(o.ServerIPs, netip.AddrFrom4([4]byte{203, 0, 113, byte(i)}))
+	}
+	if n := strings.Count(MainFilter(o), "==") + strings.Count(MainFilter(o), "!=") + strings.Count(MainFilter(o), " < ") +
+		strings.Count(MainFilter(o), " > "); n > 256 {
+		t.Fatalf("%d comparisons", n)
+	}
+}
