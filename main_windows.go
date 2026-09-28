@@ -138,9 +138,10 @@ func main() {
 	// the user could swap one of its subfolders for a link and have them
 	// write wherever it leads. So the folder is one only administrators can
 	// write to, as runtimeDir (after it: the HyRoute folder above both is
-	// protected by then).
-	webviewDir, err := webviewDataDir()
-	if err == nil {
+	// protected by then). Under Administrator protection WebView2 does not
+	// run elevated, and its folder is the user's own (webviewDataDir).
+	webviewDir, protect, err := webviewDataDir()
+	if err == nil && protect {
 		err = core.ProtectDir(webviewDir)
 	}
 	if err != nil {
@@ -309,16 +310,56 @@ func main() {
 }
 
 // webviewDataDir is where WebView2 keeps the window's data (cache, the
-// page's own storage): %ProgramData%\HyRoute\webview\<the user's SID>,
-// one per Windows user as in the profile, where it was before
-// (%APPDATA%\HyRoute\webview, no longer used).
-func webviewDataDir() (string, error) {
+// page's own storage), and whether HyRoute protects that folder:
+// %ProgramData%\HyRoute\webview\<the user's SID>, one per Windows user as
+// in the profile, where it was before (%APPDATA%\HyRoute\webview, no
+// longer used).
+//
+// With Windows 11 Administrator protection the elevated HyRoute runs as a
+// hidden admin account of its own, and WebView2 de-elevates itself: its
+// processes run as the signed-in user, who may only read the protected
+// folder, so the window never opened («Microsoft Edge не может выполнить
+// чтение и запись в своем каталоге данных»). They then have no more rights
+// than the user's other programs, so the folder is the user's own
+// %LOCALAPPDATA%\HyRoute\webview, which WebView2 creates itself: HyRoute
+// never touches it.
+func webviewDataDir() (dir string, protect bool, err error) {
 	u, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return filepath.Join(core.DefaultDir("webview"), u.User.Sid.String()), nil
+	if local := deElevatedLocalAppData(u.User.Sid); local != "" {
+		return filepath.Join(local, "HyRoute", "webview"), false, nil
+	}
+	return filepath.Join(core.DefaultDir("webview"), u.User.Sid.String()), true, nil
 }
+
+// deElevatedLocalAppData is the signed-in user's %LOCALAPPDATA% when this
+// process runs elevated as another account than its limited (linked)
+// token, as Administrator protection does; "" otherwise (plain UAC keeps
+// one account, and a process that is not elevated has no linked token).
+func deElevatedLocalAppData(own *windows.SID) string {
+	lt, err := store.LimitedToken()
+	if err != nil || lt == 0 {
+		return ""
+	}
+	defer lt.Close()
+	lu, err := lt.GetTokenUser()
+	if err != nil || !profileSeparated(own, lu.User.Sid) {
+		return ""
+	}
+	if p, err := lt.KnownFolderPath(windows.FOLDERID_LocalAppData, windows.KF_FLAG_DONT_VERIFY); err == nil && filepath.IsAbs(p) {
+		return p
+	}
+	if p, err := lt.GetUserProfileDirectory(); err == nil && filepath.IsAbs(p) {
+		return filepath.Join(p, "AppData", "Local")
+	}
+	return ""
+}
+
+// profileSeparated: the elevated token belongs to another account than
+// the limited one (Administrator protection), not to the same user (UAC).
+func profileSeparated(own, limited *windows.SID) bool { return !own.Equals(limited) }
 
 // cleanUpdates removes old staging directories (the one the updater may
 // still run from is busy and stays until the next start). A folder a

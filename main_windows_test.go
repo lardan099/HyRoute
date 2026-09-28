@@ -59,9 +59,10 @@ func TestWaitProcess(t *testing.T) {
 }
 
 // WebView2's data are kept out of the user's profile, in HyRoute's
-// protected folder, one folder per Windows user.
+// protected folder, one folder per Windows user. (Tests do not run under
+// Administrator protection: this process is its own limited user.)
 func TestWebviewDataDir(t *testing.T) {
-	dir, err := webviewDataDir()
+	dir, protect, err := webviewDataDir()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,8 +70,22 @@ func TestWebviewDataDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(core.DefaultDir("webview"), u.User.Sid.String()); !strings.EqualFold(dir, want) {
-		t.Fatalf("WebView2 data in %s, want %s", dir, want)
+	if want := filepath.Join(core.DefaultDir("webview"), u.User.Sid.String()); !strings.EqualFold(dir, want) || !protect {
+		t.Fatalf("WebView2 data in %s (protected %v), want %s protected", dir, protect, want)
+	}
+	if deElevatedLocalAppData(u.User.Sid) != "" {
+		t.Fatal("a process without a separate admin account counts as de-elevated")
+	}
+}
+
+// Administrator protection elevates as another account (WebView2 then
+// runs as the limited user); plain UAC elevates the same account.
+func TestProfileSeparated(t *testing.T) {
+	user, _ := windows.StringToSid("S-1-5-21-1-2-3-1000")
+	same, _ := windows.StringToSid("S-1-5-21-1-2-3-1000")
+	admin, _ := windows.StringToSid("S-1-5-21-1-2-3-1002")
+	if profileSeparated(user, same) || !profileSeparated(admin, user) {
+		t.Fatal("wrong account comparison")
 	}
 }
 
