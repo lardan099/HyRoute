@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { api, onEvent, errText, type Updates } from './api';
   import { ui, hide, setPrivacy, applyTheme, noteSettingsRev, setExpert, setupDone, setupStep } from './state.svelte';
+  import { pruneSubAcks, subAlerts } from './state.svelte'; // subinfo
   import Icon from './lib/Icon.svelte';
   import Home from './lib/Home.svelte';
   import Rules from './lib/Rules.svelte';
@@ -63,6 +64,7 @@
     try {
       ui.status = await api.Status();
       noteSettingsRev(ui.status.settingsRev);
+      pruneSubAcks(ui.status); // subinfo: only after a successful poll
     } catch (e) {
       actionError = errText(e);
     }
@@ -215,6 +217,7 @@
           <span>{p.label}</span>
           {#if p.id === 'rules' && st?.warnings?.length}<span class="count warn">{st.warnings.length}</span>{/if}
           {#if p.id === 'settings' && (updates?.app || updates?.coreUpdate)}<span class="count">1</span>{/if}
+          {#if p.id === 'subs' && subAlerts().length}<span class="count warn" title="Подписки, которые скоро закончатся или закончились">{subAlerts().length}</span>{/if}
         </button>
       {/each}
     </nav>

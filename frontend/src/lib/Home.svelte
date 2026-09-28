@@ -7,6 +7,7 @@
   import Help from './Help.svelte';
   import TargetOptions from './TargetOptions.svelte';
   import { showSwitchResult, showRulesetError } from './RulesetBar.svelte';
+  import HomeSubAlerts from './HomeSubAlerts.svelte'; // subinfo
 
   let { go, onsetup }: { go: (page: string) => void; onsetup: () => void } = $props();
 
@@ -322,6 +323,8 @@
   {#if st?.groupsNote}
     <div class="note warn">{hide(st.groupsNote)}</div>
   {/if}
+
+  <HomeSubAlerts {go} />
 
   {#if ui.profiles.length === 0 && !ui.expert}
     <section class="card start simple">

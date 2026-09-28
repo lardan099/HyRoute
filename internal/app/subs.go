@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +32,12 @@ type FetchResult struct {
 	Body     []byte
 	Title    string // profile-title header
 	UserInfo string // subscription-userinfo header
+	// subinfo: after clean, Title is cleanTitle'd and UserInfo canonical or
+	// "". profile-update-interval in hours (0 = not sent), support-url
+	// (safeLink'ed or ""), and when it was downloaded.
+	UpdateHours int
+	Support     string
+	At          time.Time
 }
 
 // directTransport is http.DefaultTransport without a proxy: HyRoute's own
@@ -42,6 +47,8 @@ type FetchResult struct {
 var directTransport = func() *http.Transport {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.Proxy = nil
+	// subinfo: the panel's headers are read, so all of them are bounded.
+	tr.MaxResponseHeaderBytes = 64 << 10
 	return tr
 }()
 
@@ -78,7 +85,9 @@ func (c *Controller) httpFetch(ctx context.Context, rawURL string) (FetchResult,
 	if len(body) > maxSubBody {
 		return FetchResult{}, errors.New("ответ подписки больше 5 МБ")
 	}
-	return FetchResult{Body: body, Title: decodeTitle(resp.Header.Get("Profile-Title")), UserInfo: resp.Header.Get("Subscription-Userinfo")}, nil
+	res := panelHeaders(resp.Header)
+	res.Body = body
+	return res, nil
 }
 
 // decodeTitle handles "base64:..." titles used by common panels.
@@ -92,10 +101,16 @@ func decodeTitle(s string) string {
 }
 
 func (c *Controller) fetch(ctx context.Context, u string) (FetchResult, error) {
+	fetch := c.httpFetch
 	if c.Fetch != nil {
-		return c.Fetch(ctx, u)
+		fetch = c.Fetch
 	}
-	return c.httpFetch(ctx, u)
+	res, err := fetch(ctx, u)
+	if err == nil {
+		res = res.clean()
+		res.At = time.Now()
+	}
+	return res, err
 }
 
 // parseSubscription turns a body into profiles or an error that explains
@@ -175,16 +190,18 @@ type SubView struct {
 	Profiles  int       `json:"profiles"` // profiles currently from it
 	Missing   int       `json:"missing"`
 	NextAt    time.Time `json:"nextAt"`
-	Traffic   string    `json:"traffic"` // from Subscription-Userinfo
+	Info      *SubInfo  `json:"info"` // subinfo: nil when the panel reports nothing
 }
 
 func (c *Controller) Subscriptions() []SubView {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := []SubView{}
+	now := time.Now()
 	for _, s := range c.subs {
-		v := SubView{Subscription: s, URLMasked: MaskURL(s.URL), Traffic: trafficText(s.UserInfo)}
+		v := SubView{Subscription: s, URLMasked: MaskURL(s.URL), Info: subInfoAt(s, now)}
 		v.URL = ""
+		v.Support = safeLink(s.Support) // subinfo: the file is user-writable
 		for _, p := range c.profiles.List {
 			if p.Source == "sub:"+s.ID {
 				v.Profiles++
@@ -199,40 +216,6 @@ func (c *Controller) Subscriptions() []SubView {
 		out = append(out, v)
 	}
 	return out
-}
-
-// trafficText formats "upload=1; download=2; total=3; expire=4".
-func trafficText(info string) string {
-	if info == "" {
-		return ""
-	}
-	vals := map[string]int64{}
-	for _, part := range strings.Split(info, ";") {
-		k, v, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if !ok {
-			continue
-		}
-		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
-		if err == nil {
-			vals[strings.ToLower(k)] = n
-		}
-	}
-	var parts []string
-	if used := vals["upload"] + vals["download"]; used > 0 || vals["total"] > 0 {
-		s := "использовано " + gib(used)
-		if vals["total"] > 0 {
-			s += " из " + gib(vals["total"])
-		}
-		parts = append(parts, s)
-	}
-	if e := vals["expire"]; e > 0 {
-		parts = append(parts, "до "+time.Unix(e, 0).Format("02.01.2006"))
-	}
-	return strings.Join(parts, ", ")
-}
-
-func gib(n int64) string {
-	return strconv.FormatFloat(float64(n)/(1<<30), 'f', 1, 64) + " ГБ"
 }
 
 func (c *Controller) sourceNameLocked(source string) string {
@@ -259,7 +242,9 @@ type Preview struct {
 	Warnings []string       `json:"warnings"`
 	Errors   []string       `json:"errors"`
 	Base64   bool           `json:"base64"`
-	Traffic  string         `json:"traffic"`
+	// subinfo: the panel's figures (nil: none) and its advised interval.
+	Info        *SubInfo `json:"info"`
+	UpdateHours int      `json:"updateHours"`
 }
 
 type pendingSub struct {
@@ -280,10 +265,11 @@ func (c *Controller) PreviewSubscription(rawURL string) (Preview, error) {
 	}
 	l, err := parseSubscription(res.Body)
 	if err != nil {
-		return Preview{}, err
+		return Preview{}, previewInfoErr(err, res)
 	}
 	pv := Preview{Token: newID(), Title: res.Title, Count: len(l.Profiles), Ignored: l.Ignored, IgnoredN: l.IgnoredTotal(),
-		Warnings: l.Warnings, Errors: l.Errors, Base64: l.Base64, Traffic: trafficText(res.UserInfo), Names: []string{}}
+		Warnings: l.Warnings, Errors: l.Errors, Base64: l.Base64, Names: []string{}}
+	pv.Info, pv.UpdateHours = fetchedInfo(res), res.UpdateHours
 	if strings.HasPrefix(strings.ToLower(rawURL), "http://") {
 		// The link usually carries the account token; over plain HTTP the
 		// provider and anyone on the network can read and reuse it.
@@ -521,10 +507,21 @@ func (c *Controller) subName(id string) string {
 }
 
 func (c *Controller) recordSubError(id string, err error) {
+	c.recordSubErrorInfo(id, err, "", time.Time{})
+}
+
+// recordSubErrorInfo is recordSubError that also stores the panel's
+// figures from an answer whose body did not parse (an expired account
+// answered 200 with an empty list or a web page). Empty userInfo keeps the
+// old figures.
+func (c *Controller) recordSubErrorInfo(id string, err error, userInfo string, at time.Time) {
 	c.mu.Lock()
 	next := slices.Clone(c.subs)
 	if i := slices.IndexFunc(next, func(s store.Subscription) bool { return s.ID == id }); i >= 0 {
 		next[i].LastAttempt, next[i].LastError = time.Now(), err.Error()
+		if userInfo != "" {
+			next[i].UserInfo, next[i].InfoAt = userInfo, at
+		}
 		// Kept even when subscriptions.json cannot be saved: the error
 		// shows, and the scheduler retries at its pace, not every minute.
 		c.saveSubsLocked(next)
@@ -542,7 +539,7 @@ func (c *Controller) recordSubError(id string, err error) {
 func (c *Controller) applyFetched(id string, res FetchResult, rollback bool) (MergeStats, error) {
 	l, err := parseSubscription(res.Body)
 	if err != nil {
-		c.recordSubError(id, err)
+		c.recordSubErrorInfo(id, err, res.UserInfo, res.At)
 		return MergeStats{}, err
 	}
 	source := "sub:" + id
@@ -581,6 +578,11 @@ func (c *Controller) applyFetched(id string, res FetchResult, rollback bool) (Me
 	subs := slices.Clone(c.subs)
 	s := &subs[i]
 	now := time.Now()
+	if rollback && s.UserInfo != "" && s.InfoAt.IsZero() {
+		// subinfo: a rollback keeps the old figures; date them by the
+		// download they came with, not by now (v1.0.0 files have no infoAt).
+		s.InfoAt = s.LastUpdate
+	}
 	s.LastUpdate, s.LastAttempt, s.LastError = now, now, ""
 	if snapErr != nil {
 		// The profiles are applied; a rollback may now return to an older
@@ -590,7 +592,13 @@ func (c *Controller) applyFetched(id string, res FetchResult, rollback bool) (Me
 	}
 	s.Count, s.Ignored, s.Warnings = len(l.Profiles), l.Ignored, l.Warnings
 	if res.UserInfo != "" || !rollback {
-		s.UserInfo = res.UserInfo
+		s.UserInfo, s.InfoAt = res.UserInfo, res.At // "" clears, and InfoAt with it
+		if res.UserInfo == "" {
+			s.InfoAt = time.Time{}
+		}
+	}
+	if !rollback {
+		s.Support = res.Support // subinfo: "" clears (the panel stopped sending it)
 	}
 	s.HasPrevious = c.Store.HasPrevious(id)
 	err = c.saveSubsLocked(subs)

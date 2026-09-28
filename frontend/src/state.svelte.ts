@@ -1,6 +1,6 @@
 // Shared UI state: status, profiles, Privacy mode, theme.
 import { maskDomains, maskHosts, maskIPs, maskURLs } from './privacy';
-import { isGroupId, type GroupView, type ProfileSummary, type Status } from './api';
+import { isGroupId, type GroupView, type ProfileSummary, type Status, type SubAlert } from './api';
 
 function get(k: string): string | null {
   try {
@@ -36,6 +36,9 @@ export const ui = $state({
   expert: (get('expert') === null ? null : get('expert') === '1') as boolean | null,
   // groups: the server groups (App reloads them with the servers)
   groups: [] as GroupView[],
+  // subinfo: dismissed subscription alerts, subscription ID -> alert key
+  // (WebView memory only; not part of a backup).
+  subAck: loadSubAcks(),
 });
 
 export function setExpert(on: boolean) {
@@ -173,4 +176,43 @@ export async function settle(e: Event, save: (el: HTMLInputElement) => Promise<u
 export function mainText(m = mainTarget()): string {
   if (!m) return '';
   return m.unloaded ? m.name : targetText(m.id);
+}
+
+// ==== subinfo ====
+
+// loadSubAcks reads hyroute.subAck: an object of strings, else {}.
+function loadSubAcks(): Record<string, string> {
+  try {
+    const v: unknown = JSON.parse(get('subAck') ?? '{}');
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+    return Object.fromEntries(Object.entries(v).filter(([, k]) => typeof k === 'string')) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function saveSubAcks(acks: Record<string, string>) {
+  ui.subAck = acks;
+  set('subAck', JSON.stringify(acks));
+}
+
+// subAlerts are the subscription alerts the user has not dismissed.
+export function subAlerts(): SubAlert[] {
+  return (ui.status?.subAlerts ?? []).filter((a) => ui.subAck[a.id] !== a.key);
+}
+
+// ackSubAlert hides a until its situation changes (its key).
+export function ackSubAlert(a: SubAlert) {
+  saveSubAcks({ ...ui.subAck, [a.id]: a.key });
+}
+
+// pruneSubAcks forgets dismissals of subscriptions that have no alert now,
+// so a later alert with the same key (the next month of a plan) shows
+// again. Only from a status whose subscription list is authoritative: a
+// subscriptions.json that did not load never clears them.
+export function pruneSubAcks(st: Status) {
+  if (!st.subsOK) return;
+  const ids = new Set((st.subAlerts ?? []).map((a) => a.id));
+  const keep = Object.fromEntries(Object.entries(ui.subAck).filter(([id]) => ids.has(id)));
+  if (Object.keys(keep).length !== Object.keys(ui.subAck).length) saveSubAcks(keep);
 }

@@ -29,7 +29,16 @@ type Subscription struct {
 	Warnings    []string       `json:"warnings"` // import warnings of the last update
 	UserInfo    string         `json:"userInfo"` // Subscription-Userinfo header
 	HasPrevious bool           `json:"hasPrevious"`
+	// subinfo: UserInfo holds the header's canonical form. InfoAt is when
+	// it was reported (zero in files of v1.0.0). Support is the panel's
+	// support-url: public, one contact link for the whole panel, stored in
+	// plain; the app checks it on every use.
+	InfoAt  time.Time `json:"infoAt,omitzero"`
+	Support string    `json:"supportUrl,omitempty"`
 }
+
+// maxSupportURL bounds Subscription.Support read from the file.
+const maxSupportURL = 2048
 
 type storedSub struct {
 	Subscription
@@ -60,6 +69,9 @@ func (s *Store) LoadSubscriptions() ([]Subscription, error) {
 			return nil, fmt.Errorf("подписка %q: ссылку не удалось расшифровать (файл от другого пользователя или компьютера?): %w", st.Name, err)
 		}
 		st.Subscription.URL = string(raw)
+		if len(st.Support) > maxSupportURL {
+			st.Support = "" // a bound only: validity is checked on use
+		}
 		out = append(out, st.Subscription)
 	}
 	return out, nil

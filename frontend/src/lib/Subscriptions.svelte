@@ -3,6 +3,9 @@
   import { api, errText, fmtDateTime, plural, type Subscription, type SubPreview, type MergeStats } from '../api';
   import { hide, settle, ui } from '../state.svelte';
   import Help from './Help.svelte';
+  import { ackSubAlert, subAlerts } from '../state.svelte'; // subinfo
+  import type { SubAlert } from '../api';
+  import SubInfoBar from './SubInfoBar.svelte';
 
   let { onchange }: { onchange: () => void } = $props();
 
@@ -18,7 +21,7 @@
   const shown = $derived(preview && url.trim() === checkedURL ? preview : null);
   let busy = $state('');
   let error = $state('');
-  let info = $state('');
+  let okMsg = $state('');
   let showNames = $state(false);
 
   const intervals = [
@@ -35,7 +38,9 @@
     } catch (e) {
       error = errText(e);
     }
+    loaded = true;
   }
+  let loaded = $state(false); // subinfo: the first load answered
 
   onMount(() => {
     load();
@@ -46,7 +51,7 @@
   async function step<T>(label: string, f: () => Promise<T>): Promise<T | undefined> {
     busy = label;
     error = '';
-    info = '';
+    okMsg = '';
     try {
       return await f();
     } catch (e) {
@@ -65,6 +70,83 @@
       checkedURL = u;
       // Keep a name the user typed, not the title of a previous link.
       if (!name || name === autoName) name = autoName = pv.title;
+      // The interval the service advises, unless the user picked one.
+      if (!intervalTouched) presetInterval(pv.updateHours);
+    }
+  }
+
+  // ---- subinfo ----
+
+  // intervalTouched: the user chose the interval in this add form; a
+  // repeated «Проверить» keeps that choice. Reset with the form only.
+  let intervalTouched = $state(false);
+  $effect(() => {
+    if (!url.trim()) intervalTouched = false;
+  });
+
+  function cancelAdd() {
+    preview = null;
+    intervalTouched = false;
+  }
+
+  // presetInterval applies a check's advice to an interval the user did not
+  // choose. A link without advice takes back an earlier link's preset, so
+  // it is not added with an interval nobody chose for it.
+  let presetFrom = ''; // the interval the last advice put in the form
+  function presetInterval(hours: number) {
+    if (hours) {
+      interval = presetFrom = intervalFor(hours);
+    } else if (presetFrom && interval === presetFrom) {
+      interval = '24h';
+      presetFrom = '';
+    }
+  }
+
+  // intervalFor is the interval bucket for the hours a service advises.
+  function intervalFor(hours: number): string {
+    return hours <= 6 ? '6h' : hours <= 12 ? '12h' : '24h';
+  }
+
+  // The alert of subscription id the user has not dismissed (Home, nav).
+  function alertOf(id: string): SubAlert | undefined {
+    return subAlerts().find((a) => a.id === id);
+  }
+
+  async function copySupport(s: Subscription) {
+    if (!s.supportUrl) return;
+    error = okMsg = '';
+    try {
+      await api.CopyText(s.supportUrl);
+      okMsg = 'Ссылка поддержки скопирована.';
+    } catch (e) {
+      error = errText(e);
+    }
+  }
+
+  // openSupport asks Go to open the panel's support link through Explorer
+  // (the page never passes a URL). Explorer may hang: the button comes back
+  // after 10 s even if the call has not returned. Only the latest call
+  // clears the state (a hung earlier one may settle during a later one).
+  let opening = $state('');
+  let openingTok: object | null = null;
+  async function openSupport(s: Subscription) {
+    const tok = {};
+    openingTok = tok;
+    opening = s.id;
+    error = okMsg = '';
+    const t = setTimeout(() => {
+      if (openingTok === tok) opening = '';
+    }, 10000);
+    try {
+      await api.OpenSubscriptionSupport(s.id);
+    } catch (e) {
+      error = errText(e);
+    } finally {
+      clearTimeout(t);
+      if (openingTok === tok) {
+        opening = '';
+        openingTok = null;
+      }
     }
   }
 
@@ -73,7 +155,7 @@
     if (!pv) return;
     const v = await step('add', () => api.AddSubscription({ token: pv.token, name, enabled: true, interval }));
     if (v) {
-      info = `Подписка «${v.name}» добавлена: ${v.profiles} ${plural(v.profiles, 'профиль', 'профиля', 'профилей')}.`;
+      okMsg = `Подписка «${v.name}» добавлена: ${v.profiles} ${plural(v.profiles, 'профиль', 'профиля', 'профилей')}.`;
       url = name = '';
       preview = null;
       await load();
@@ -90,7 +172,7 @@
 
   async function update(s: Subscription) {
     const st = await step('upd:' + s.id, () => api.UpdateSubscription(s.id));
-    if (st) info = `«${s.name}» обновлена: ${statsText(st)}.`;
+    if (st) okMsg = `«${s.name}» обновлена: ${statsText(st)}.`;
     await load();
     onchange();
   }
@@ -98,7 +180,7 @@
   async function rollback(s: Subscription) {
     if (!confirm(`Вернуть предыдущую версию подписки «${hide(s.name)}»?`)) return;
     const st = await step('rb:' + s.id, () => api.RollbackSubscription(s.id));
-    if (st) info = `«${s.name}»: возвращена предыдущая версия (${statsText(st)}).`;
+    if (st) okMsg = `«${s.name}»: возвращена предыдущая версия (${statsText(st)}).`;
     await load();
     onchange();
   }
@@ -137,7 +219,13 @@
     }
     const ok = await edit(s, { token: pv.token });
     onchange();
-    if (ok) info = `«${s.name}»: ссылка изменена, профили обновлены.`;
+    if (ok) {
+      // The facts of the checked download; the interval stays the user's.
+      okMsg = `«${s.name}»: ссылка изменена, профили обновлены.`;
+      if (pv.info) okMsg += ` ${pv.info.summary}.`;
+      const cur = list.find((x) => x.id === s.id) ?? s;
+      if (pv.updateHours && intervalFor(pv.updateHours) !== cur.interval) okMsg += ` Сервис советует обновлять каждые ${pv.updateHours} ч.`;
+    }
   }
 
   function rename(s: Subscription) {
@@ -175,6 +263,7 @@
       список и обновляет его, поэтому, когда сервис добавит новый сервер или сменит старый, ничего делать не нужно.
     </p>
     <p>Вставьте ссылку ниже и нажмите «Проверить»: HyRoute покажет, сколько серверов нашёл. Потом нажмите «Добавить».</p>
+    <p>Если сервис сообщает остаток трафика и срок подписки, они видны у подписки, а когда подходят к концу, об этом предупредит главная.</p>
   </Help>
   <section class="card">
     <h2>Добавить подписку</h2>
@@ -199,7 +288,8 @@
             {shown.ignoredTotal} {plural(shown.ignoredTotal, 'запись', 'записи', 'записей')} других протоколов {plural(shown.ignoredTotal, 'проигнорирована', 'проигнорированы', 'проигнорированы')}
             <span class="muted">({ignoredText(shown.ignored)})</span>{/if}.
         </div>
-        {#if shown.traffic}<div class="muted">Трафик: {shown.traffic}</div>{/if}
+        {#if shown.info}<SubInfoBar info={shown.info} compact />{/if}
+        {#if shown.updateHours}<div class="muted small">Сервис советует обновлять каждые {shown.updateHours} ч.</div>{/if}
         {#if shown.base64}<div class="muted small">Формат: base64-список ссылок.</div>{/if}
         <button class="link" onclick={() => (showNames = !showNames)}>{showNames ? 'Скрыть список' : 'Показать профили'}</button>
         {#if showNames}<div class="names">{#each shown.names as n}<span>{hide(n)}</span>{/each}</div>{/if}
@@ -207,16 +297,16 @@
         {#each shown.errors.slice(0, 8) as w}<div class="note error small">{hide(w)}</div>{/each}
         <div class="row">
           <input class="grow" placeholder="Название" bind:value={name} />
-          <select bind:value={interval} title="Автообновление">
+          <select bind:value={interval} title="Автообновление" onchange={() => (intervalTouched = true)}>
             {#each intervals as i}<option value={i.v}>{i.l}</option>{/each}
           </select>
           <button class="primary" onclick={add} disabled={busy !== '' || shown.count === 0}>Добавить</button>
-          <button onclick={() => (preview = null)}>Отмена</button>
+          <button onclick={cancelAdd}>Отмена</button>
         </div>
       </div>
     {/if}
     {#if error}<div class="note error">{hide(error)}</div>{/if}
-    {#if info}<div class="note ok">{hide(info)}</div>{/if}
+    {#if okMsg}<div class="note ok">{hide(okMsg)}</div>{/if}
   </section>
 
   <section class="card">
@@ -226,12 +316,16 @@
       Если сервер пропал из подписки, а правило его использует, профиль остаётся с пометкой «нет в подписке» — трафик не
       переводится молча на другой сервер. Неудачное обновление не трогает текущий список; предыдущую версию можно вернуть.
     </p>
-    {#if list.length === 0}<p class="muted">Подписок нет.</p>{/if}
+    {#if ui.status && !ui.status.subsOK}
+      <div class="note error">Список подписок не загружен (subscriptions.json), поэтому остаток трафика и срок подписок не показываются. Подробности — в сообщении вверху окна.</div>
+    {/if}
+    {#if !loaded}<p class="muted">Загрузка…</p>{:else if list.length === 0 && ui.status?.subsOK !== false}<p class="muted">Подписок нет.</p>{/if}
     {#each list as s (s.id)}
-      <div class="sub-item" class:off={!s.enabled}>
+      {@const alert = alertOf(s.id)}
+      <div class="sub-item" class:off={!s.enabled} class:low={s.info?.level === 'low'} class:out={s.info?.level === 'out'}>
         <div class="row">
           <label class="check" title="Автообновление включено"><input type="checkbox" checked={s.enabled} onchange={(e) => settle(e, (el) => edit(s, { enabled: el.checked }), () => s.enabled)} /></label>
-          <div class="grow info">
+          <div class="grow sub-text">
             <div class="name">{hide(s.name)}</div>
             <div class="muted mono small">{hide(s.url)}</div>
           </div>
@@ -239,6 +333,20 @@
             {#each intervals as i}<option value={i.v}>{i.l}</option>{/each}
           </select>
         </div>
+        {#if s.info}
+          <div class="info-row">
+            <SubInfoBar info={s.info} />
+            {#if alert}<button class="ghost small-btn" title="Не показывать на главной, пока положение не изменится" onclick={() => ackSubAlert(alert)}>Скрыть предупреждение</button>{/if}
+          </div>
+        {/if}
+        {#if s.supportUrl}
+          <div class="support small">
+            <span class="muted">Поддержка:</span>
+            <span class="sel mono">{hide(s.supportUrl)}</span>
+            <button class="ghost small-btn" onclick={() => copySupport(s)}>Скопировать</button>
+            <button class="ghost small-btn" onclick={() => openSupport(s)} disabled={opening === s.id}>{opening === s.id ? 'Открывается…' : 'Открыть'}</button>
+          </div>
+        {/if}
         <div class="actions">
           <button onclick={() => update(s)} disabled={busy !== ''}>{busy === 'upd:' + s.id ? 'Обновление…' : 'Обновить сейчас'}</button>
           {#if s.hasPrevious}<button onclick={() => rollback(s)} disabled={busy !== ''} title="Вернуть предыдущую успешную версию">Откатить</button>{/if}
@@ -250,7 +358,6 @@
           <span>Обновлено: {fmtDateTime(s.lastUpdate)}</span>
           <span>Профилей: {s.profiles}{s.missing ? ` (нет в подписке: ${s.missing})` : ''}</span>
           {#if total(s.ignored)}<span class="muted">пропущено других протоколов: {total(s.ignored)}</span>{/if}
-          {#if s.traffic}<span>{s.traffic}</span>{/if}
           {#if s.enabled && s.nextAt && !s.nextAt.startsWith('0001')}<span class="muted">следующее: {fmtDateTime(s.nextAt)}</span>{/if}
         </div>
         {#if s.lastError}<div class="note error small">Последняя ошибка ({fmtDateTime(s.lastAttempt)}): {hide(s.lastError)}. Профили не изменены.</div>{/if}
@@ -271,7 +378,14 @@
   .link { background: none; border: none; padding: 0; color: var(--accent); cursor: pointer; justify-self: start; }
   .sub-item { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 8px; }
   .sub-item.off { opacity: 0.7; }
-  .info { min-width: 0; }
+  .sub-item.low { border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+  .sub-item.out { border-color: color-mix(in srgb, var(--block) 55%, var(--border)); }
+  .info-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 12px; margin: 8px 0 0 30px; }
+  .info-row :global(.subinfo) { flex: 1; }
+  .support { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 6px 0 0 30px; min-width: 0; }
+  .sel { user-select: text; overflow-wrap: anywhere; min-width: 0; }
+  .small-btn { padding: 3px 8px; font-size: 12px; }
+  .sub-text { min-width: 0; }
   .actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0 30px; }
   .name { font-weight: 600; }
   .meta { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 6px 0 0 30px; }

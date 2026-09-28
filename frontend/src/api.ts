@@ -279,6 +279,10 @@ export interface Status {
   groupsNote?: string;
   // rulesets: the active rule profile (rev and token make pages reload)
   ruleset: RulesetRef;
+  // subinfo: subscriptions whose traffic or term runs out; subsOK: the
+  // subscription list is authoritative (dismissals may be pruned)
+  subAlerts: SubAlert[];
+  subsOK: boolean;
 }
 
 export interface Flow {
@@ -438,7 +442,11 @@ export interface Subscription {
   profiles: number;
   missing: number;
   nextAt: string;
-  traffic: string;
+  // subinfo: when the panel reported userInfo; its view (null: nothing
+  // reported); the panel's public support link
+  infoAt?: string;
+  info: SubInfo | null;
+  supportUrl?: string;
 }
 
 export interface SubPreview {
@@ -451,7 +459,9 @@ export interface SubPreview {
   warnings: string[];
   errors: string[];
   base64: boolean;
-  traffic: string;
+  // subinfo: the panel's figures and the update interval it advises (hours, 0 = none)
+  info: SubInfo | null;
+  updateHours: number;
 }
 
 // token is a preview's (PreviewSubscription): the link to add, or on edit
@@ -1091,4 +1101,44 @@ interface GUI {
   RenameRuleset(id: string, name: string): Promise<void>;
   DeleteRuleset(id: string): Promise<void>;
   MoveRuleset(id: string, to: number): Promise<void>;
+}
+
+// ==== subinfo ====
+
+// A subscription's traffic and term as the panel reports them
+// (subscription-userinfo). Byte counts may exceed 2^53: the UI uses usedPct,
+// upDown and the Go-made texts, never arithmetic on them.
+export interface SubInfo {
+  upload: number;
+  download: number;
+  used: number;
+  total: number; // limit; 0: unlimited or not reported
+  unlimited: boolean;
+  left: number;
+  percent: number; // left share 0..100; -1 without a limit
+  usedPct: number; // bar fill 0..100
+  expire: number; // Unix seconds; 0: no end date
+  secondsLeft: number;
+  at?: string; // absent: time unknown (restored from an old backup)
+  level: '' | 'low' | 'out';
+  summary: string; // «Осталось 86 ГБ / 12 дней»
+  details: string; // «использовано 14 ГБ из 100 ГБ, до 10.10.2026»
+  warning: string;
+  upDown: string; // «↑ 1.2 ГБ ↓ 12.8 ГБ»
+}
+
+// A subscription that needs attention (Status.subAlerts). key changes when
+// the situation does: «Скрыть» holds until then.
+export interface SubAlert {
+  id: string;
+  name: string;
+  level: 'low' | 'out';
+  text: string;
+  key: string;
+}
+
+interface GUI {
+  // Opens the support link the panel of subscription id sent, through
+  // Explorer; the page never passes a URL.
+  OpenSubscriptionSupport(id: string): Promise<void>;
 }

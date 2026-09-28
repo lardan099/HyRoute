@@ -212,6 +212,13 @@ type Status struct {
 	GroupsNote string `json:"groupsNote,omitempty"`
 	// rulesets: the active rule profile (its rev and token make pages reload).
 	Ruleset RulesetRef `json:"ruleset"`
+	// subinfo
+	// SubAlerts: subscriptions whose traffic or term runs out (never nil).
+	// SubsOK: the subscription list is authoritative (subscriptions.json
+	// loaded), so the UI may forget dismissals of subscriptions without an
+	// alert.
+	SubAlerts []SubAlert `json:"subAlerts"`
+	SubsOK    bool       `json:"subsOK"`
 }
 
 // down reports a profile that cannot carry traffic now: failed, or
@@ -232,6 +239,7 @@ func (c *Controller) Status() Status {
 	st := Status{State: "disconnected", LoadError: c.loadErr, Tunnels: []tunnels.Status{}, Warnings: c.ruleWarningsLocked()}
 	st.SettingsRev = c.settingsRev.Load()
 	st.Ruleset = c.rulesetRefLocked()
+	c.subStatusLocked(&st) // subinfo
 	if p := c.profiles.Find(c.profiles.Active); p != nil {
 		st.Main, st.MainID = p.Name, p.ID
 	}

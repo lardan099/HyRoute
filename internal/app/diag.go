@@ -94,8 +94,9 @@ func (c *Controller) Diagnostics(system []string, privacy bool) string {
 		w("")
 		w("== Подписки")
 		for _, s := range subs {
-			w("   %q %s вкл=%v интервал=%s обновлена=%s профилей=%d пропущено=%d%s",
-				s.Name, s.URLMasked, s.Enabled, s.Interval, fmtTime(s.LastUpdate), s.Count, ignoredSum(s.Ignored), msgSuffix(s.LastError))
+			w("   %q %s вкл=%v интервал=%s обновлена=%s профилей=%d пропущено=%d%s%s",
+				s.Name, s.URLMasked, s.Enabled, s.Interval, fmtTime(s.LastUpdate), s.Count, ignoredSum(s.Ignored), msgSuffix(s.LastError),
+				subDiagSuffix(s)) // subinfo
 		}
 	}
 

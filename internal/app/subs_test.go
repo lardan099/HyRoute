@@ -28,7 +28,7 @@ func TestSubscriptionLifecycle(t *testing.T) {
 		return FetchResult{Body: []byte(body), Title: "My VPN", UserInfo: "upload=1073741824; download=1073741824; total=10737418240; expire=1893456000"}, fail
 	}
 	pv, err := c.PreviewSubscription(subURL)
-	if err != nil || pv.Count != 2 || pv.IgnoredN != 1 || pv.Title != "My VPN" || !strings.Contains(pv.Traffic, "2.0 ГБ из 10.0 ГБ") {
+	if err != nil || pv.Count != 2 || pv.IgnoredN != 1 || pv.Title != "My VPN" || pv.Info == nil || !strings.Contains(pv.Info.Details, "использовано 2.0 ГБ из 10 ГБ") {
 		t.Fatalf("%+v %v", pv, err)
 	}
 	v, err := c.AddSubscription(SubInput{Token: pv.Token, Enabled: true, Interval: "24h"})
