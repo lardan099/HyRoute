@@ -185,7 +185,7 @@
     </div>
     <p class="muted small mode">
       {#if ui.expert}
-        Все страницы и настройки: локальные прокси, списки сайтов, соединения, журнал, правила текстом, базы правил и тонкая настройка
+        Все страницы и настройки: локальные прокси, списки сайтов, соединения, журнал, правила текстом и тонкая настройка
         маршрутизации.
       {:else}
         Только самое нужное и подсказки простыми словами. Локальные прокси, списки сайтов, соединения, журнал и тонкие настройки спрятаны, их
@@ -360,9 +360,11 @@
     </section>
   {/if}
 
-  {#if ui.expert}
+  <!-- Both modes: templates, the rules step by step and the rule editor
+       send here to change the database, and its update errors show here. -->
   <GeoSettings />
 
+  {#if ui.expert}
   <section class="card">
     <h2><Icon name="log" size={17} /> Журнал на диске</h2>
     <div class="opts">

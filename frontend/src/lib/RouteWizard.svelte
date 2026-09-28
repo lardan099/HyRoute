@@ -4,7 +4,7 @@
   // «Пошагово» button on the Rules page. The user chooses everything; the
   // steps only put it into rules in a working order.
   import { onMount } from 'svelte';
-  import { api, errText, plural, cleanSettings, cleanFallback, type Action, type Rule, type Settings, type RunningApp } from '../api';
+  import { api, errText, plural, cleanSettings, cleanFallback, cleanRule, type Action, type Rule, type Settings, type RunningApp } from '../api';
   import { ui, hide, mainProfile, profileName } from '../state.svelte';
   import { templates, ruleFromTemplate, type Template } from './templates';
   import { itemLabel, isSpecial, isAddress, shortLabel, loadGeo } from '../geo.svelte';
@@ -13,7 +13,8 @@
   import AppPicker from './AppPicker.svelte';
   import GeoPicker from './GeoPicker.svelte';
 
-  let { onback, ondone }: { onback: () => void; ondone: (summary: string) => void } = $props();
+  // onkeep: the setup's way past this step that leaves the rules as they are.
+  let { onback, ondone, onkeep }: { onback: () => void; ondone: (summary: string) => void; onkeep?: () => void } = $props();
 
   type Way = 'tunnel' | 'direct';
   const tpl = (id: string) => templates.find((t) => t.id === id)!;
@@ -27,7 +28,11 @@
   let blocks = $state<string[]>([]);
   // The server of each group that goes through the VPN ('' = main).
   let server = $state<Record<string, string>>({});
+  // The reserve is one spare server: every fallback runs all the time,
+  // next to the route's own server (switching is instant), so all of them
+  // would be one tunnel per server of a subscription.
   let reserve = $state(true);
+  let spare = $state('');
   let replace = $state(false);
   let settings = $state<Settings | null>(null);
   let error = $state('');
@@ -36,7 +41,21 @@
   onMount(() => {
     loadGeo();
     api.Settings()
-      .then((s) => (settings = s))
+      .then((s) => {
+        settings = s;
+        // «Весь остальной интернет» starts on the server it has now, and
+        // the reserve as it is set for it (off when it has none).
+        if (s.defaultAction === 'tunnel') {
+          const known = (id: string) => ui.profiles.some((p) => p.id === id);
+          if (s.defaultProfile && known(s.defaultProfile)) server.rest ??= s.defaultProfile;
+          const fb = (s.defaultFallback ?? []).filter(known);
+          reserve = fb.length > 0;
+          // [main] is the reserve of a route on the spare itself.
+          const mainId = mainProfile()?.id;
+          const first = fb.find((id) => id !== mainId) ?? (s.defaultProfile && s.defaultProfile !== mainId && known(s.defaultProfile) ? s.defaultProfile : '');
+          if (first) spare = first;
+        }
+      })
       .catch((e) => (error = errText(e)));
   });
 
@@ -65,7 +84,12 @@
     { id: 'netflix', title: 'Netflix', hint: 'сайт и видео', rules: [tpl('netflix')] },
     { id: 'twitch', title: 'Twitch', hint: 'сайт и трансляции', rules: [tpl('twitch')] },
     { id: 'linkedin', title: 'LinkedIn', hint: 'сайт', rules: [tpl('linkedin')] },
-    { id: 'ru-blocked', title: 'Всё заблокированное в России', hint: 'сайты и адреса из реестра блокировок, список обновляется сам', rules: [tpl('ru-blocked')] },
+    {
+      id: 'ru-blocked',
+      title: 'Всё заблокированное в России',
+      hint: 'сайты и адреса из реестра блокировок, список обновляется сам. Банки, Госуслуги и сайты, которые работают только из России, пойдут напрямую',
+      rules: [tpl('ru-blocked')],
+    },
   ];
   const directLists: Tile[] = [
     {
@@ -159,7 +183,10 @@
   // groups are the rules in their order: the home network, the user's own
   // sites and programs (above the lists, which may hold the same names),
   // blocks, then the lists. «Работает только из России» stays above the
-  // services, as in the ready-made schemes (the lists overlap).
+  // services, as in the ready-made schemes (the lists overlap): with «Всё
+  // заблокированное в России» it comes by itself, since geoip:ru-blocked
+  // holds whole shared networks where Russian banks' sites live too, and
+  // a rule matches by the address or the name.
   const groups = $derived.by((): Group[] => {
     const g: Group[] = [{ key: '', title: 'Домашняя сеть', rules: fromTemplates([tpl('lan')]) }];
     for (const w of ['tunnel', 'direct'] as Way[]) {
@@ -179,6 +206,7 @@
     if (base === 'all') {
       for (const t of directLists) if (picked.includes(t.id)) g.push({ key: t.id, title: t.title, rules: fromTemplates(t.rules) });
     } else {
+      if (picked.includes('ru-blocked')) g.push({ key: 'ru-inside', title: 'Работает только из России — напрямую', rules: fromTemplates([tpl('ru-inside')]) });
       for (const t of services) if (picked.includes(t.id)) g.push({ key: t.id, title: t.title, rules: fromTemplates(t.rules) });
     }
     return g;
@@ -191,13 +219,14 @@
     ...(base === 'all' ? [{ key: 'rest', title: 'Весь остальной интернет', rules: [] }] : []),
   ]);
 
+  // The spare: the one chosen, else the first server but the main one.
+  const others = $derived(ui.profiles.filter((p) => p.id !== main?.id));
+  const spareId = $derived(others.some((p) => p.id === spare) ? spare : (others[0]?.id ?? ''));
+
+  // A route on the spare itself falls back to the main server.
   function reserveOf(profile: string): string[] {
-    if (!reserve) return [];
-    return cleanFallback(
-      ui.profiles.map((p) => p.id),
-      profile,
-      main?.id,
-    );
+    if (!reserve || !spareId) return [];
+    return cleanFallback([profile === spareId ? (main?.id ?? '') : spareId], profile, main?.id);
   }
 
   function built(): Rule[] {
@@ -262,6 +291,34 @@
     return names.join(', ') || 'ничего';
   }
 
+  // What a rule does, whatever its ID and field order: the same key, the
+  // same rule. The main server picked by name is the same as «Основной».
+  function ruleKey(r: Rule): string {
+    const sorted = (v: unknown): unknown =>
+      Array.isArray(v)
+        ? v.map(sorted)
+        : v && typeof v === 'object'
+          ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted((v as Record<string, unknown>)[k])]))
+          : v;
+    const c = cleanRule({ ...r, profile: main && r.profile === main.id ? '' : r.profile }, main?.id);
+    delete c.id;
+    return JSON.stringify(sorted(c));
+  }
+
+  // The new rules go on top. An old rule that is the same as a new one
+  // moves up to its place (keeping its ID) instead of staying below as a
+  // copy that never matches: the setup run again adds no second
+  // «Локальная сеть».
+  function onTop(added: Rule[], old: Rule[]): Rule[] {
+    const rest = [...old];
+    const top = added.map((r) => {
+      const k = ruleKey(r);
+      const i = rest.findIndex((x) => ruleKey(x) === k);
+      return i < 0 ? r : rest.splice(i, 1)[0];
+    });
+    return [...top, ...rest];
+  }
+
   async function save() {
     busy = true;
     error = '';
@@ -269,7 +326,7 @@
       // Built on a fresh copy: it carries the revision Go checks the save against.
       const cur = await api.Settings();
       const next: Settings = JSON.parse(JSON.stringify(cur));
-      next.rules = replace ? built() : [...built(), ...(cur.rules ?? [])];
+      next.rules = replace ? built() : onTop(built(), cur.rules ?? []);
       next.defaultAction = restAction;
       next.defaultProfile = restAction === 'tunnel' ? (server.rest ?? '') : '';
       next.defaultFallback = restAction === 'tunnel' ? reserveOf(server.rest ?? '') : [];
@@ -462,10 +519,22 @@
       {/if}
       <label class="opt">
         <input type="checkbox" bind:checked={reserve} />
-        <span><b>Подстраховка: если сервер не работает, пускать через другие по очереди</b>
-          <span>Без подстраховки соединения через неработающий сервер не пройдут. Напрямую, мимо VPN, они не уйдут в любом случае.</span></span
+        <span><b>Подстраховка: если сервер не работает, пускать через запасной</b>
+          <span>
+            Запасной сервер подключается вместе с основным и работает всё время, пока включён VPN: так на него можно переключиться мгновенно.
+            Без подстраховки соединения через неработающий сервер не пройдут. Напрямую, мимо VPN, они не уйдут в любом случае.
+          </span></span
         >
       </label>
+      {#if reserve}
+        <div class="item">
+          <span class="grow ellipsis"><b>Запасной сервер</b></span>
+          <select value={spareId} onchange={(e) => (spare = (e.currentTarget as HTMLSelectElement).value)}>
+            {#each others as p (p.id)}<option value={p.id}>{hide(p.name)}</option>{/each}
+          </select>
+        </div>
+        <p class="muted small">Для пунктов, которые сами идут через запасной сервер, подстраховкой будет основной.</p>
+      {/if}
     {:else if step === 'sum'}
       <h1>Проверим, что получилось</h1>
       <p class="lead">
@@ -485,7 +554,14 @@
         {/each}
         <li class="rest">
           <span class="n">*</span>
-          <span class="grow"><b>Всё остальное</b> <span class="muted small">то, что не подошло ни под одно правило выше</span></span>
+          <span class="grow"
+            ><b>Всё остальное</b>
+            <span class="muted small"
+              >то, что не подошло ни под одно правило выше{restAction === 'tunnel' && reserveOf(server.rest ?? '').length
+                ? ` · запасной сервер — ${serverName(reserveOf(server.rest ?? '')[0])}`
+                : ''}</span
+            ></span
+          >
           <span class="pill {restAction}">{restAction === 'tunnel' ? `Через ${serverName(server.rest ?? '')}` : 'Напрямую'}</span>
         </li>
       </ol>
@@ -497,7 +573,7 @@
         <div class="choices">
           <button class="choice small-choice" class:on={!replace} onclick={() => (replace = false)}>
             <span class="radio"></span>
-            <span class="ctext"><span class="ctitle">Добавить новые правила перед моими</span><span class="muted small">Ваши правила останутся ниже и сработают для всего, что не подошло под новые.</span></span>
+            <span class="ctext"><span class="ctitle">Добавить новые правила перед моими</span><span class="muted small">Ваши правила останутся ниже и сработают для всего, что не подошло под новые, а такие же, как новые, поднимутся на их место.</span></span>
           </button>
           <button class="choice small-choice" class:on={replace} onclick={() => (replace = true)}>
             <span class="radio"></span>
@@ -514,6 +590,7 @@
   <div class="nav">
     <button onclick={back} disabled={busy}>Назад</button>
     <div class="grow"></div>
+    {#if onkeep && hasRules}<button class="ghost" onclick={onkeep} disabled={busy}>Оставить правила как есть</button>{/if}
     {#if step === 'sum'}
       <button class="primary big" onclick={save} disabled={busy || !settings}>{busy ? 'Сохраняю…' : 'Сохранить правила'}<Icon name="check" size={16} /></button>
     {:else}

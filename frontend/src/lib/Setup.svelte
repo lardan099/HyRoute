@@ -286,9 +286,14 @@
         modeTitle = t;
         next();
       }}
+      onkeep={() => {
+        modeTitle = 'как было настроено';
+        next();
+      }}
     />
   {:else}
   <div class="body">
+    {#if ui.status?.loadError}<div class="note error">Настройки не загружены: {hide(ui.status.loadError)}</div>{/if}
     {#if step === 'hello'}
       <h1>Добро пожаловать!</h1>
       <p class="lead">

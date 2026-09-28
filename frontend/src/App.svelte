@@ -77,12 +77,26 @@
     }
     if (!firstProfiles) return;
     firstProfiles = false;
+    // Settings that did not load (profiles.json of another user or machine)
+    // look like a new copy: no servers. Nothing is decided then: the full
+    // interface for this run only, and no setup over the banner that says
+    // what is wrong.
+    let loadError = ui.status?.loadError;
+    if (!ui.status)
+      try {
+        loadError = (await api.Status()).loadError;
+      } catch {}
+    if (loadError) {
+      if (ui.expert === null) ui.expert = true;
+      return;
+    }
     // Before the simple mode there was only the full interface: a copy that
     // already has servers keeps it. A new one starts simple.
     if (ui.expert === null) setExpert(ui.profiles.length > 0);
     // The setup opens by itself on the first start of the simple mode, and
-    // again after the restart «Установить» makes in the middle of it.
-    if (!ui.expert && ((!setupDone() && ui.profiles.length === 0) || setupStep() !== '')) setup = true;
+    // in either mode where it stopped: after the restart «Установить» makes
+    // in the middle of it, or a quit.
+    if (setupStep() !== '' || (!ui.expert && !setupDone() && ui.profiles.length === 0)) setup = true;
   }
 
   async function refreshUpdates() {
