@@ -1605,9 +1605,11 @@ func TestNetWatchErrorPolls(t *testing.T) {
 	eventually(t, "baseline", func() bool { s, _, _ := w.counts(); return s >= 1 })
 	w.set(cafe())
 	eventually(t, "connect by polling", func() bool { return starts() == 1 })
-	if v := c.NetModes(false); !strings.Contains(v.Unavailable, "задержкой до 30 с") {
-		t.Fatal(v.Unavailable)
-	}
+	// The start decision may connect before the watch loop has run and
+	// noted the failed subscription: wait for the notice.
+	eventually(t, "the polling notice", func() bool {
+		return strings.Contains(c.NetModes(false).Unavailable, "задержкой до 30 с")
+	})
 }
 
 func TestNetLockOrder(t *testing.T) {
