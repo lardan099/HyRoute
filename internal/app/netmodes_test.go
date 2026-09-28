@@ -1616,11 +1616,9 @@ func TestNetLockOrder(t *testing.T) {
 	c.testNetManual = func() {
 		calls.Add(1)
 		for name, m := range map[string]*sync.Mutex{"saveMu": &c.saveMu, "lifeMu": &c.lifeMu, "mu": &c.mu} {
-			if !m.TryLock() {
+			if !free(m) {
 				t.Errorf("netManual with %s held", name)
-				continue
 			}
-			m.Unlock()
 		}
 	}
 	direct, vpn := rulesetsFor(t, c)

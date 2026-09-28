@@ -66,11 +66,9 @@ func TestSettingsRevAndEvent(t *testing.T) {
 	c.OnSettings = func(rev uint64) {
 		// No lock of ours is held: the callback may read the settings.
 		for name, m := range map[string]*sync.Mutex{"saveMu": &c.saveMu, "mu": &c.mu} {
-			if !m.TryLock() {
+			if !free(m) {
 				t.Errorf("OnSettings called with %s held", name)
-				continue
 			}
-			m.Unlock()
 		}
 		if v := c.SettingsView(); v.Rev != rev {
 			t.Errorf("view rev %d, event %d", v.Rev, rev)

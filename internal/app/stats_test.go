@@ -114,10 +114,11 @@ func waitFor(t *testing.T, what string, ok func() bool) {
 	t.Fatalf("timed out: %s", what)
 }
 
-// free reports that m can be taken within 200 ms: a lock the calling
-// goroutine holds never can (another goroutine may hold it briefly).
+// free reports that m can be taken within a second: a lock the calling
+// goroutine holds never can, while another goroutine (the session, the
+// statistics) may hold it briefly, which a bare TryLock took for a bug.
 func free(m *sync.Mutex) bool {
-	for i := 0; i < 200; i++ {
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
 		if m.TryLock() {
 			m.Unlock()
 			return true

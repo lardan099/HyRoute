@@ -300,10 +300,8 @@ func TestSwitchSources(t *testing.T) {
 	var manual atomic.Int32
 	c.testManual = func() {
 		// Before saveMu (and no c.mu): netmodes takes its own lock there.
-		if !c.saveMu.TryLock() {
+		if !free(&c.saveMu) {
 			t.Error("netManual with saveMu held")
-		} else {
-			c.saveMu.Unlock()
 		}
 		manual.Add(1)
 	}
@@ -678,11 +676,9 @@ func TestNoCompileUnderMu(t *testing.T) {
 	var n atomic.Int32
 	setCompileHook(t, func() {
 		n.Add(1)
-		if !c.mu.TryLock() {
+		if !free(&c.mu) {
 			t.Error("compiled with c.mu held")
-			return
 		}
-		c.mu.Unlock()
 	})
 	_, work := rsTwo(t, c, rules.Config{DefaultAction: rules.Block})
 	must(t, errOf(c.SwitchRuleset(work, SourceUser, SwitchOptions{})))
