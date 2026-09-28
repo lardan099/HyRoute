@@ -19,7 +19,7 @@
   // on a fresh copy (its revision), so it never undoes a change made
   // elsewhere meanwhile.
   import { ui, hide, mainProfile, setupStep, setSetupStep, finishSetup } from '../state.svelte';
-  import { schemes, applyScheme, type Scheme } from './templates';
+  import { templates, applyScheme, type Scheme, type Template } from './templates';
   import Icon from './Icon.svelte';
 
   let { onclose, go }: { onclose: () => void; go: (page: string) => void } = $props();
@@ -189,43 +189,45 @@
   const failed = $derived(check?.steps.find((s) => !s.ok && !s.skip));
 
   // ---- mode ----
+  // The user picks the services that go through the VPN, and where the
+  // rest goes. Each service is the rules of its templates: a program and
+  // its sites are separate rules (a rule with both would match only that
+  // program opening those sites).
   let settings = $state<Settings | null>(null);
-  let choice = $state('');
-  const everything: Scheme = { id: 'all', name: 'Весь трафик через VPN', hint: '', rules: ['lan'], rest: 'tunnel' };
-  const blocked = schemes.find((s) => s.id === 'ru-blocked-only')!;
-  const notRu = schemes.find((s) => s.id === 'all-but-ru')!;
+  let picked = $state<string[]>([]);
+  let rest = $state<'direct' | 'tunnel'>('direct');
+  let ruDirect = $state(true);
+  let modeLoaded = false;
 
-  const choices = [
-    {
-      id: blocked.id,
-      title: 'Только заблокированное',
-      best: true,
-      text: 'Через VPN идут только сайты и сервисы, заблокированные в России: YouTube, Instagram, Discord и другие. Всё остальное работает как обычно, напрямую.',
-      plus: 'Российские сайты, банки и Госуслуги работают без проблем, интернет не замедляется, трафик VPN почти не тратится.',
-      minus: 'Если какой-то сайт не открывается, а в списке заблокированных его нет, его придётся добавить самому (это просто, в «Правилах»).',
-    },
-    {
-      id: notRu.id,
-      title: 'Всё, кроме российского',
-      best: false,
-      text: 'Весь интернет идёт через VPN, а российские сайты, банки и Госуслуги — напрямую.',
-      plus: 'Открываются и заблокированные сайты, и зарубежные сервисы, которые сами не пускают пользователей из России.',
-      minus: 'Тратится больше трафика VPN, зарубежные сайты открываются чуть медленнее.',
-    },
-    {
-      id: everything.id,
-      title: 'Весь трафик через VPN',
-      best: false,
-      text: 'Как обычный VPN: всё, что делает компьютер в интернете, идёт через сервер. Напрямую — только домашняя сеть (роутер, принтер).',
-      plus: 'Просто и понятно.',
-      minus: 'Российские банки, Госуслуги и некоторые магазины могут не открываться или просить подтверждение: они видят зарубежный адрес.',
-    },
+  const tpl = (id: string) => templates.find((t) => t.id === id)!;
+  const aiApps: Template = { id: 'ai-apps', name: 'Нейросети — программы', hint: '', apps: ['ChatGPT.exe', 'claude.exe'], domains: [], group: 'Сервисы' };
+  const aiSites: Template = { ...tpl('ai'), name: 'Нейросети — сайты' };
+
+  const services: { id: string; title: string; hint: string; best?: boolean; rules: Template[] }[] = [
+    { id: 'ai', title: 'Нейросети', hint: 'ChatGPT, Claude, Gemini, Copilot и другие — сайты и программы', best: true, rules: [aiSites, aiApps] },
+    { id: 'telegram', title: 'Telegram', hint: 'программа и веб-версия', best: true, rules: [tpl('telegram-app'), tpl('telegram')] },
+    { id: 'youtube', title: 'YouTube', hint: 'сайт, видео и приложение', rules: [tpl('youtube')] },
+    { id: 'discord', title: 'Discord', hint: 'программа с голосовыми и сайт', rules: [tpl('discord-app'), tpl('discord')] },
+    { id: 'meta', title: 'Instagram, Facebook, WhatsApp', hint: 'все сервисы Meta', rules: [tpl('meta')] },
+    { id: 'x', title: 'X (Twitter)', hint: 'сайт и медиа', rules: [tpl('x')] },
+    { id: 'spotify', title: 'Spotify', hint: 'программа и сайт', rules: [tpl('spotify-app'), tpl('spotify')] },
+    { id: 'netflix', title: 'Netflix', hint: 'сайт и видео', rules: [tpl('netflix')] },
+    { id: 'twitch', title: 'Twitch', hint: 'сайт и трансляции', rules: [tpl('twitch')] },
+    { id: 'linkedin', title: 'LinkedIn', hint: 'сайт', rules: [tpl('linkedin')] },
+    { id: 'ru-blocked', title: 'Всё заблокированное в России', hint: 'сайты и адреса из реестра блокировок, список обновляется сам', rules: [tpl('ru-blocked')] },
   ];
+
+  function toggleService(id: string) {
+    picked = picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id];
+  }
 
   async function loadSettings() {
     try {
       settings = await api.Settings();
-      if (!choice) choice = settings.rules?.length ? 'keep' : blocked.id;
+      if (!modeLoaded) {
+        modeLoaded = true;
+        rest = settings.defaultAction === 'tunnel' ? 'tunnel' : 'direct';
+      }
     } catch (e) {
       error = errText(e);
     }
@@ -235,15 +237,25 @@
     if ((step === 'mode' || step === 'launch') && !settings) loadSettings();
   });
 
+  const hasRules = $derived((settings?.rules?.length ?? 0) > 0);
+  // Nothing through the VPN at all: the setup would turn on a VPN that does nothing.
+  const nothing = $derived(!hasRules && picked.length === 0 && rest === 'direct');
+
   async function applyMode() {
     if (!settings) return;
-    if (choice === 'keep') return next();
-    const sc = choice === everything.id ? everything : schemes.find((s) => s.id === choice)!;
+    const want: Template[] = [tpl('lan')];
+    if (rest === 'tunnel' && ruDirect) want.push(tpl('ru-inside'));
+    // With the rest through the VPN the services go there anyway.
+    if (rest === 'direct') for (const sv of services) if (picked.includes(sv.id)) want.push(...sv.rules);
+    // Existing rules, nothing picked and «всё остальное» as it was: nothing to save.
+    const unchanged = hasRules && want.length === 1 && rest === (settings.defaultAction === 'tunnel' ? 'tunnel' : 'direct');
+    if (unchanged) return next();
     busy = true;
     error = '';
     try {
       // Built on a fresh copy: it carries the revision Go checks the save against.
       const cur = await api.Settings();
+      const sc: Scheme = { id: 'setup', name: '', hint: '', rules: want, rest };
       await api.SaveSettings(cleanSettings(applyScheme(cur, sc), mainProfile()?.id));
       settings = await api.Settings();
       next();
@@ -253,7 +265,11 @@
     busy = false;
   }
 
-  const modeTitle = $derived(choices.find((c) => c.id === choice)?.title ?? 'как было настроено');
+  const modeTitle = $derived.by(() => {
+    const names = services.filter((sv) => picked.includes(sv.id)).map((sv) => sv.title);
+    if (rest === 'tunnel') return 'весь интернет' + (ruDirect ? ', кроме российских банков и Госуслуг' : '');
+    return names.length ? names.join(', ') : hasRules ? 'как было настроено' : 'ничего';
+  });
 
   // ---- launch ----
   let auto = $state<AutostartInfo | null>(null);
@@ -338,8 +354,8 @@
     {#if step === 'hello'}
       <h1>Добро пожаловать!</h1>
       <p class="lead">
-        HyRoute — это VPN, который сам решает, что пускать через VPN, а что напрямую. Заблокированные сайты и программы открываются через VPN, а
-        банки, Госуслуги и всё российское работает как обычно: без VPN и без тормозов.
+        HyRoute — VPN, в котором вы сами выбираете, что через него пускать: отдельные сервисы и программы или весь интернет. Всё остальное
+        работает напрямую, как без VPN.
       </p>
       <p>
         Сейчас мы вместе всё настроим. Это займёт пару минут, и на каждом шаге будет написано, что делать. Ничего сломать нельзя: любую настройку
@@ -471,33 +487,52 @@
       {#if check && !checking}<div class="row"><button onclick={runCheck}><Icon name="refresh" size={16} />Проверить ещё раз</button></div>{/if}
     {:else if step === 'mode'}
       <h1>Что пускать через VPN?</h1>
-      <p class="lead">Если не уверены — берите первый вариант, он подходит большинству. Потом можно поменять.</p>
-      <div class="choices">
-        {#each choices as c (c.id)}
-          <button class="choice" class:on={choice === c.id} onclick={() => (choice = c.id)}>
-            <span class="radio"></span>
-            <span class="ctext">
-              <span class="ctitle">{c.title}{#if c.best}<span class="best">Рекомендуем</span>{/if}</span>
-              <span>{c.text}</span>
-              <span class="pm plus"><b>Плюсы.</b> {c.plus}</span>
-              <span class="pm minus"><b>Минусы.</b> {c.minus}</span>
-            </span>
-          </button>
-        {/each}
-        {#if settings?.rules?.length}
-          <button class="choice" class:on={choice === 'keep'} onclick={() => (choice = 'keep')}>
-            <span class="radio"></span>
-            <span class="ctext">
-              <span class="ctitle">Оставить как сейчас</span>
-              <span>У вас уже {settings.rules.length} {plural(settings.rules.length, 'правило', 'правила', 'правил')}, HyRoute ничего не будет менять.</span>
-            </span>
-          </button>
-        {/if}
+      <p class="lead">
+        Отметьте, что должно работать через VPN. Всё неотмеченное пойдёт напрямую, как без VPN. Потом можно добавить что угодно ещё в
+        «Правилах».
+      </p>
+      {#if hasRules}
+        <div class="note info small">
+          У вас уже {settings!.rules.length} {plural(settings!.rules.length, 'правило', 'правила', 'правил')}. Отмеченное добавится к ним, а если ничего не
+          отмечать, правила останутся как есть.
+        </div>
+      {/if}
+      {#each [true, false] as best (best)}
+        <div class="group">{best ? 'Рекомендуем' : 'Ещё'}</div>
+        <div class="tiles" class:dim={rest === 'tunnel'}>
+          {#each services.filter((sv) => !!sv.best === best) as sv (sv.id)}
+            <button class="tile" class:on={picked.includes(sv.id)} onclick={() => toggleService(sv.id)} aria-pressed={picked.includes(sv.id)}>
+              <span class="box-check">{#if picked.includes(sv.id)}<Icon name="check" size={14} stroke={3} />{/if}</span>
+              <span class="ttext"><b>{sv.title}</b><span>{sv.hint}</span></span>
+            </button>
+          {/each}
+        </div>
+      {/each}
+
+      <div class="group">А всё остальное?</div>
+      <div class="seg wide">
+        <button class:on={rest === 'direct'} onclick={() => (rest = 'direct')}>Напрямую, как без VPN</button>
+        <button class:on={rest === 'tunnel'} onclick={() => (rest = 'tunnel')}>Тоже через VPN</button>
       </div>
       <p class="muted small">
-        Списки заблокированных и российских сайтов HyRoute скачает сам при первом подключении и будет обновлять. Если какой-то сайт пойдёт не
-        туда, его можно поправить в «Правилах».
+        {#if rest === 'direct'}
+          Через VPN пойдёт только отмеченное выше, весь остальной интернет — как обычно.
+        {:else}
+          Через VPN пойдёт весь интернет, как в обычном VPN. Домашняя сеть (роутер, принтер) останется напрямую.
+        {/if}
       </p>
+      {#if rest === 'tunnel'}
+        <p class="muted small">Сервисы выше отмечать не нужно: они и так пойдут через VPN.</p>
+        <label class="opt">
+          <input type="checkbox" bind:checked={ruDirect} />
+          <span><b>Российские банки, Госуслуги и сайты, которые работают только из России, — напрямую</b>
+            <span>Они часто не открываются или просят подтверждение, когда видят зарубежный адрес.</span></span
+          >
+        </label>
+      {/if}
+      {#if nothing}
+        <div class="note warn small">Отметьте хотя бы один сервис или выберите «Тоже через VPN»: иначе через VPN ничего не пойдёт.</div>
+      {/if}
     {:else if step === 'launch'}
       <h1>Запуск и защита</h1>
       <p class="lead">Последние настройки. Если не уверены — оставьте как есть.</p>
@@ -581,7 +616,7 @@
     {:else if step === 'check'}
       <button class="primary big" onclick={next} disabled={checking && !check}>{check && !check.ok ? 'Всё равно дальше' : 'Дальше'}<Icon name="arrow" size={16} /></button>
     {:else if step === 'mode'}
-      <button class="primary big" onclick={applyMode} disabled={busy || !settings || !choice}>{busy ? 'Сохраняю…' : 'Дальше'}<Icon name="arrow" size={16} /></button>
+      <button class="primary big" onclick={applyMode} disabled={busy || !settings || nothing}>{busy ? 'Сохраняю…' : 'Дальше'}<Icon name="arrow" size={16} /></button>
     {:else if step === 'launch'}
       <button class="primary big" onclick={applyLaunch} disabled={busy || !auto}>{busy ? 'Сохраняю…' : 'Дальше'}<Icon name="arrow" size={16} /></button>
     {:else if step === 'done'}
@@ -663,29 +698,29 @@
   .steps li.bad { color: var(--block); }
   .link { justify-self: start; align-self: flex-start; }
 
-  .choices { display: grid; gap: 10px; }
-  .choice {
+  .group { font-size: 12px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 6px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 8px; }
+  .tile {
     display: flex;
     align-items: flex-start;
-    gap: 14px;
-    padding: 14px 16px;
+    gap: 12px;
+    padding: 12px 14px;
     text-align: left;
     white-space: normal;
+    justify-content: flex-start;
     background: var(--surface);
     border: 1.5px solid var(--border);
     border-radius: var(--radius);
-    justify-content: flex-start;
   }
-  .choice:hover:not(:disabled) { background: var(--surface); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
-  .choice.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
-  .radio { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--faint); flex: none; margin-top: 2px; }
-  .choice.on .radio { border-color: var(--accent); background: radial-gradient(var(--accent) 45%, transparent 50%); }
-  .ctext { display: grid; gap: 4px; }
-  .ctitle { font-weight: 650; font-size: 15px; display: flex; align-items: center; gap: 8px; }
-  .best { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: #fff; }
-  .pm { font-size: 12.5px; color: var(--muted); }
-  .pm.plus b { color: var(--direct); }
-  .pm.minus b { color: var(--warn); }
+  .tile:hover:not(:disabled) { background: var(--surface); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+  .tile.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+  .box-check { width: 20px; height: 20px; border-radius: 6px; border: 2px solid var(--faint); flex: none; display: grid; place-items: center; margin-top: 1px; color: #fff; }
+  .tile.on .box-check { background: var(--accent); border-color: var(--accent); }
+  .ttext { display: grid; gap: 2px; }
+  .tiles.dim { opacity: 0.45; }
+  .ttext span { color: var(--muted); font-size: 12.5px; }
+  .seg.wide { display: flex; }
+  .seg.wide button { flex: 1; padding: 9px 12px; }
 
   .opts { display: grid; gap: 10px; }
   .opt { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); cursor: pointer; }
