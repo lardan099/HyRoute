@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -257,8 +256,8 @@ func (c *Controller) editRulesIn(g EditGuard, fn func(cfg *rules.Config) (bool, 
 		if err != nil {
 			return settings.Settings{}, false, err
 		}
-		// fn replaces whole elements; the shared inner slices stay intact.
-		st.Rules = slices.Clone(st.Rules)
+		// A deep copy: fn may edit it in place, the live rules stay intact.
+		st.Config = st.Config.Clone()
 		if ok, err := fn(&st.Config); err != nil || !ok {
 			return settings.Settings{}, false, err
 		}

@@ -38,14 +38,19 @@ func rulesAt(c *Controller) uint64 {
 // CLI): it edits the fresh copy.
 func addRule(t *testing.T, c *Controller, dom string) SaveResult {
 	t.Helper()
-	res, err := c.editRules(func(cfg *rules.Config) (bool, error) {
-		cfg.Rules = append(cfg.Rules, rules.Rule{Domains: []string{dom}, Action: rules.Block})
-		return true, nil
-	})
+	res, err := addRuleErr(c, dom)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return res
+}
+
+// addRuleErr is addRule for other goroutines, which may not call t.Fatal.
+func addRuleErr(c *Controller, dom string) (SaveResult, error) {
+	return c.editRules(func(cfg *rules.Config) (bool, error) {
+		cfg.Rules = append(cfg.Rules, rules.Rule{Domains: []string{dom}, Action: rules.Block})
+		return true, nil
+	})
 }
 
 // TestSettingsRevAndEvent: the revision is 1 after Load and grows by one
@@ -289,7 +294,9 @@ func TestEditRulesSerializes(t *testing.T) {
 		wg.Add(3)
 		go func() {
 			defer wg.Done()
-			addRule(t, c, fmt.Sprintf("e%d.example", i))
+			if _, err := addRuleErr(c, fmt.Sprintf("e%d.example", i)); err != nil {
+				t.Error(err)
+			}
 		}()
 		go func() {
 			defer wg.Done()
@@ -420,8 +427,10 @@ func TestOnSettingsMayCallBack(t *testing.T) {
 		}
 	}
 	go func() {
-		addRule(t, c, "a.example")
-		close(done)
+		defer close(done)
+		if _, err := addRuleErr(c, "a.example"); err != nil {
+			t.Error(err)
+		}
 	}()
 	select {
 	case <-done:
@@ -430,5 +439,46 @@ func TestOnSettingsMayCallBack(t *testing.T) {
 	}
 	if c.SettingsRev() != 3 {
 		t.Fatalf("rev %d", c.SettingsRev())
+	}
+}
+
+// TestEditRulesPrivateCopy: fn gets a deep copy, so an edit in place that
+// is not saved (fn returns false or an error) leaves the live rules as
+// they were.
+func TestEditRulesPrivateCopy(t *testing.T) {
+	c, _ := newCtl(t)
+	off := false
+	cfg := rules.Config{DefaultAction: rules.Tunnel, DefaultFallback: []string{""}, Rules: []rules.Rule{{
+		Name: "r", Enabled: &off, Apps: []rules.AppMatch{{Pattern: "a.exe"}}, Domains: []string{"a.example"},
+		Action: rules.Tunnel, Fallback: []string{""},
+	}}}
+	if _, err := c.SaveRulesIn(EditGuard{}, cfg); err != nil {
+		t.Fatal(err)
+	}
+	before, err := json.Marshal(c.Settings().Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev := c.SettingsRev()
+	for _, fail := range []error{nil, errors.New("boom")} {
+		_, err := c.editRules(func(cfg *rules.Config) (bool, error) {
+			cfg.DefaultFallback[0] = "x"
+			r := &cfg.Rules[0]
+			*r.Enabled = true
+			r.Apps[0].Pattern = "b.exe"
+			r.Domains[0] = "b.example"
+			r.Fallback[0] = "x"
+			return fail != nil, fail
+		})
+		if err != fail {
+			t.Fatalf("edit: %v", err)
+		}
+		after, err := json.Marshal(c.Settings().Config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(after) != string(before) || c.SettingsRev() != rev {
+			t.Fatalf("live rules changed: %s", after)
+		}
 	}
 }
