@@ -2,7 +2,8 @@
 // setting (trading terminals, browsers, bots): one port speaks both SOCKS5
 // and HTTP (CONNECT and plain requests), told apart by the first byte.
 // Every connection goes out through Dial, i.e. through one Hysteria
-// profile. UDP is not offered: SOCKS5 UDP ASSOCIATE is refused.
+// profile. SOCKS5 UDP ASSOCIATE goes through Associate (see udp.go), and is
+// refused without it.
 package localproxy
 
 import (
@@ -61,6 +62,11 @@ type Server struct {
 	// set (SOCKS5 user/password, HTTP Proxy-Authorization: Basic).
 	Username, Password string
 	Dial               Dialer
+	// Associate opens a UDP association through the tunnel; nil = SOCKS5
+	// UDP ASSOCIATE is refused.
+	Associate Associator
+	// UDPError: the UDP port did not open (UDP ASSOCIATE is refused).
+	UDPError string
 	// OnError reports failed dials (logging); may be nil.
 	OnError func(dst string, err error)
 	// OnAcceptError reports a failed Accept (logging), at most once per
@@ -89,6 +95,11 @@ type Server struct {
 	mu     sync.Mutex
 	closed bool
 	conn   map[net.Conn]struct{} // clients and their tunnel connections
+	// UDP side (udp.go): the port, bound associations by client address,
+	// associations waiting for their first datagram (guarded by mu).
+	udp        *net.UDPConn
+	byAddr     map[netip.AddrPort]*assoc
+	pendingUDP []*assoc
 	// Refusals not reported yet and the last report (serve only).
 	unreported int64
 	reportedAt time.Time
@@ -111,6 +122,7 @@ func (s *Server) start(ln net.Listener) {
 	s.ln = ln
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.conn = map[net.Conn]struct{}{}
+	s.listenUDP()
 	s.wg.Add(1)
 	go s.serve()
 }
@@ -135,6 +147,9 @@ func (s *Server) Addr() string { return s.ln.Addr().String() }
 func (s *Server) Close() error {
 	err := s.ln.Close()
 	s.cancel()
+	if s.udp != nil {
+		s.udp.Close()
+	}
 	s.mu.Lock()
 	s.closed = true
 	for c := range s.conn {
@@ -394,8 +409,13 @@ func (s *Server) socks(c net.Conn) {
 	// The handshake is over: the dial has its own timeout, and the reply
 	// must not fail on the handshake deadline (it covers writes too).
 	c.SetDeadline(time.Time{})
-	if r[1] != socks5.CmdConnect {
-		socksReply(c, 7) // command not supported (UDP ASSOCIATE, BIND)
+	switch r[1] {
+	case socks5.CmdConnect:
+	case socks5.CmdUDPAssociate:
+		s.associate(c, dst)
+		return
+	default:
+		socksReply(c, 7) // command not supported (BIND)
 		return
 	}
 	up, err := s.dial(dst)

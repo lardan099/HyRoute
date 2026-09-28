@@ -9,6 +9,7 @@
 
   let app = $state('');
   let target = $state('');
+  let proto = $state('tcp');
   // The answer with the query it is for: the fields may have changed since.
   let ex = $state<(Explanation & { q: { app: string; target: string } }) | null>(null);
   let error = $state('');
@@ -20,7 +21,7 @@
     error = '';
     try {
       // A slow answer (the name may wait for DNS) must not replace a newer one.
-      const res = await api.Explain({ ...q, proto: 'tcp' }, current());
+      const res = await api.Explain({ ...q, proto }, current());
       if (my === seq) ex = { ...res, q };
     } catch (e) {
       if (my === seq) error = errText(e);
@@ -37,11 +38,16 @@
 <details class="card check">
   <summary><Icon name="search" size={16} /> Проверить адрес <span class="muted small">— куда пойдёт сайт или программа и почему</span></summary>
   <p class="muted small">
-    Сайт идёт не туда? Введите его адрес (и, если нужно, программу) — HyRoute покажет, какое правило сработает.
+    Сайт идёт не туда? Введите его адрес (и, если нужно, программу) — HyRoute покажет, какое правило сработает. Для правил с портом укажите
+    порт через двоеточие: example.com:22.
   </p>
   <div class="row">
-    <input class="grow" placeholder="Сайт или IP: youtube.com, ссылка, 1.2.3.4" bind:value={target} onkeydown={(e) => e.key === 'Enter' && run()} />
+    <input class="grow" placeholder="Сайт или IP: youtube.com, ссылка, 1.2.3.4:22" bind:value={target} onkeydown={(e) => e.key === 'Enter' && run()} />
     <input class="grow" placeholder="Программа (необязательно): chrome" bind:value={app} onkeydown={(e) => e.key === 'Enter' && run()} />
+    <select bind:value={proto} title="Протокол соединения">
+      <option value="tcp">TCP</option>
+      <option value="udp">UDP</option>
+    </select>
     <button class="primary" onclick={run} disabled={!target.trim() && !app.trim()}>Проверить</button>
   </div>
   {#if error}<div class="note error">{error}</div>{/if}

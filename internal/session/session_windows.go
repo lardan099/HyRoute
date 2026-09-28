@@ -135,6 +135,7 @@ func Start(cfg Config) (_ *Session, err error) {
 	eng.Rules.Swap(cfg.Rules)
 	eng.OnDecision = cfg.OnDecision
 	eng.Flows.OnClose = cfg.OnClose
+	eng.Flows.OnTraffic = cfg.OnTraffic
 	s.eng = eng
 	engp.Store(eng)
 	if err := eng.Start(); err != nil {

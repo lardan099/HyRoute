@@ -150,7 +150,7 @@ export function applyScheme(s: Settings, sc: Scheme): Settings {
   const next: Settings = JSON.parse(JSON.stringify(s));
   const sites = (r: Rule) => [...(r.domains ?? []), ...(r.domain?.pattern ? [r.domain.pattern] : [])];
   const key = (r: Rule) => JSON.stringify(sites(r).sort()) + r.action;
-  const general = (r: Rule) => r.enabled !== false && !r.apps?.length && !r.app?.pattern && !r.protocol;
+  const general = (r: Rule) => r.enabled !== false && !r.apps?.length && !r.app?.pattern && !r.protocol && !r.ports;
   const want = schemeTemplates(sc).map(ruleFromTemplate);
   // The earliest copy of each rule after the previous one's: the fewest
   // rules above it and the most room for the rest.

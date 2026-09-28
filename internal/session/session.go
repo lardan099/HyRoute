@@ -70,6 +70,8 @@ type Config struct {
 	OnStatus    func(profile string, st hysteria.Status)
 	OnDecision  func(flows.View)
 	OnClose     func(flows.View)
+	// OnTraffic: see flows.Registry.OnTraffic.
+	OnTraffic func(profile, process string, sent, recv int64)
 	// OnEngineFail: the packet engine removed its filters after an error.
 	OnEngineFail func()
 }

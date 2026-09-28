@@ -112,6 +112,69 @@ func TestRulesTextRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRulesTextPorts(t *testing.T) {
+	text := `ssh.exe -> DE | tcp 22
+game.exe -> id:nl2 | udp 27000-27200, 27015
+*.example.com -> id:nl2 | порт 443 | порт 8443
+DNS: * -> напрямую | udp 53
+* -> блок | порт 25
+
+[chrome.exe]
+* -> DE | порт 8080
+
+[*]
+* -> vpn
+`
+	res := parseRulesText(text, textProfiles)
+	if len(res.Errors) != 0 {
+		t.Fatalf("%+v", res.Errors)
+	}
+	r := res.Rules
+	if len(r) != 6 || !res.HasDefault {
+		t.Fatalf("%d rules %+v", len(r), res)
+	}
+	if r[0].Protocol != "tcp" || r[0].Ports != "22" || r[0].Apps[0].Pattern != "ssh.exe" {
+		t.Fatalf("%+v", r[0])
+	}
+	if r[1].Protocol != "udp" || r[1].Ports != "27000-27200,27015" {
+		t.Fatalf("%+v", r[1])
+	}
+	if r[2].Protocol != "" || r[2].Ports != "443,8443" || r[2].Domains[0] != "*.example.com" {
+		t.Fatalf("%+v", r[2])
+	}
+	if r[3].Name != "DNS" || len(r[3].Apps)+len(r[3].Domains) != 0 || r[3].Ports != "53" || r[3].Action != rules.Direct {
+		t.Fatalf("%+v", r[3])
+	}
+	if r[4].Name != "" || r[4].Ports != "25" || r[4].Action != rules.Block {
+		t.Fatalf("%+v", r[4])
+	}
+	if r[5].Apps[0].Pattern != "chrome.exe" || len(r[5].Domains) != 0 || r[5].Ports != "8080" {
+		t.Fatalf("%+v", r[5])
+	}
+
+	// Back to text and again: the same rules.
+	cfg := rules.Config{DefaultAction: res.DefaultAction, Rules: res.Rules}
+	out := formatRulesText(cfg, textProfiles)
+	again := parseRulesText(out, textProfiles)
+	if len(again.Errors) != 0 || len(again.Rules) != len(r) {
+		t.Fatalf("%+v\n%s", again.Errors, out)
+	}
+	for i := range r {
+		if again.Rules[i].Ports != r[i].Ports || again.Rules[i].Protocol != r[i].Protocol || again.Rules[i].Name != r[i].Name ||
+			len(again.Rules[i].Apps) != len(r[i].Apps) || len(again.Rules[i].Domains) != len(r[i].Domains) {
+			t.Fatalf("rule %d: %+v vs %+v\n%s", i, again.Rules[i], r[i], out)
+		}
+	}
+	if !strings.Contains(out, "* -> блок | порт 25") || !strings.Contains(out, "| tcp 22") {
+		t.Fatal(out)
+	}
+
+	bad := parseRulesText("a.com -> vpn | порт 70000\nb.com -> vpn | порт\nc.com -> vpn | tcp 5-1", textProfiles)
+	if len(bad.Errors) != 3 {
+		t.Fatalf("%+v", bad.Errors)
+	}
+}
+
 func TestApplyRulesText(t *testing.T) {
 	c, _ := newCtl(t)
 	c.ImportURIs(link)

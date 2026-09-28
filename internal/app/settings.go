@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -382,6 +383,8 @@ type ExplainQuery struct {
 	App    string `json:"app"`
 	Target string `json:"target"` // domain or IP
 	Proto  string `json:"proto"`  // tcp | udp
+	// Port is the destination port (0 = the one in Target, if any).
+	Port int `json:"port,omitempty"`
 }
 
 type Explanation struct {
@@ -406,7 +409,11 @@ func (c *Controller) Explain(q ExplainQuery, st *settings.Settings) Explanation 
 		rq.Proto = 17
 	}
 	var notes []string
-	target := cleanTarget(q.Target)
+	target, port := cleanTarget(q.Target)
+	if q.Port > 0 && q.Port <= 65535 {
+		port = uint16(q.Port)
+	}
+	rq.Port = port
 	if ip, err := netip.ParseAddr(strings.Trim(target, "[]")); err == nil {
 		rq.IP = ip.Unmap()
 		if sess != nil {
@@ -458,13 +465,25 @@ func usesAddresses(cfg rules.Config) bool {
 
 // cleanTarget accepts what people paste: a URL, host:port, a rule-style
 // pattern (.example.com, *.example.com) or an IP.
-func cleanTarget(s string) string {
+func cleanTarget(s string) (string, uint16) {
 	s = strings.TrimSpace(s)
+	var port uint16
 	if u, err := url.Parse(s); err == nil && u.Host != "" {
 		s = u.Hostname()
-	} else if h, _, err := net.SplitHostPort(s); err == nil {
+		if n, err := strconv.ParseUint(u.Port(), 10, 16); err == nil {
+			port = uint16(n)
+		} else if p, ok := schemePorts[strings.ToLower(u.Scheme)]; ok {
+			port = p
+		}
+	} else if h, p, err := net.SplitHostPort(s); err == nil {
 		s = h
+		if n, err := strconv.ParseUint(p, 10, 16); err == nil {
+			port = uint16(n)
+		}
 	}
 	s = strings.TrimPrefix(s, "*.")
-	return strings.Trim(s, ".[]")
+	return strings.Trim(s, ".[]"), port
 }
+
+// schemePorts: the port a link without one goes to.
+var schemePorts = map[string]uint16{"https": 443, "http": 80, "wss": 443, "ws": 80, "ftp": 21, "ssh": 22}

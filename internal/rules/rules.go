@@ -64,7 +64,10 @@ type Rule struct {
 	App      *AppMatch    `json:"app,omitempty"`
 	Domain   *DomainMatch `json:"domain,omitempty"`
 	Protocol string       `json:"protocol,omitempty"` // any|tcp|udp
-	Action   Action       `json:"action"`
+	// Ports limits the rule to destination ports: "443", "80,443",
+	// "27000-27200" ("" = any port).
+	Ports  string `json:"ports,omitempty"`
+	Action Action `json:"action"`
 	// Profile is the profile ID for Tunnel ("" = the main profile).
 	Profile string `json:"profile,omitempty"`
 	// Fallback lists profile IDs ("" = the main profile) tried in order
@@ -204,11 +207,12 @@ func (d *domPat) alt(name string) (string, bool) {
 type compiled struct {
 	src      Rule
 	name     string
-	apps     []appPat // empty = any application
-	doms     []domPat // names; with ips: the destinations (any = none)
-	ips      []ipPat  // addresses
-	warns    []string // unusable geosite:/geoip: items
-	proto    uint8    // 0 any
+	apps     []appPat    // empty = any application
+	doms     []domPat    // names; with ips: the destinations (any = none)
+	ips      []ipPat     // addresses
+	warns    []string    // unusable geosite:/geoip: items
+	proto    uint8       // 0 any
+	ports    []PortRange // empty = any
 	action   Action
 	profile  string   // "" = main
 	fallback []string // "" = main
@@ -335,8 +339,13 @@ func parseDomainPattern(p string) (domPat, error) {
 func compileRule(i int, r Rule) (compiled, error) {
 	cr := compiled{src: r, name: ruleName(i, r), action: r.Action, profile: r.Profile, fallback: r.Fallback}
 	apps, doms := r.AllApps(), r.AllDomains()
-	if len(apps) == 0 && len(doms) == 0 {
-		return cr, fmt.Errorf("%s: укажите программу или сайт", cr.name)
+	ports, err := ParsePorts(r.Ports)
+	if err != nil {
+		return cr, fmt.Errorf("%s: %v", cr.name, err)
+	}
+	cr.ports = ports
+	if len(apps) == 0 && len(doms) == 0 && len(ports) == 0 {
+		return cr, fmt.Errorf("%s: укажите программу, сайт или порт", cr.name)
 	}
 	for _, a := range apps {
 		p := strings.TrimSpace(a.Pattern)
@@ -522,6 +531,9 @@ func runeLen(s string) int {
 
 func (r *compiled) base(sub Subject) bool {
 	if r.proto != 0 && r.proto != sub.Proto {
+		return false
+	}
+	if !r.matchPort(sub.Dst.Port()) {
 		return false
 	}
 	if r.hasApp() && (sub.Proc == nil || !r.matchApp(sub.Proc)) {

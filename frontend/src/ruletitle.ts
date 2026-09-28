@@ -21,5 +21,7 @@ export function ruleTitle(r: Rule): string {
   if (r.name) return r.name;
   const a = (r.apps ?? []).map((x) => appLabel(x.pattern));
   const d = (r.domains ?? []).map((x) => (itemLabel(x)?.geo ? siteLabel(x) : hide(siteLabel(x))));
-  return [...a, ...d].slice(0, 2).join(', ') + (a.length + d.length > 2 ? '…' : '') || 'Правило';
+  const what = [...a, ...d].slice(0, 2).join(', ') + (a.length + d.length > 2 ? '…' : '');
+  if (!what && r.ports?.trim()) return `Порт ${r.ports.split(/[\s,;]+/).filter(Boolean).join(', ')}`;
+  return what || 'Правило';
 }

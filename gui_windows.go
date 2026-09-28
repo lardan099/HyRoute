@@ -31,6 +31,7 @@ import (
 	"github.com/lardan099/hyroute/internal/rules"
 	"github.com/lardan099/hyroute/internal/settings"
 	"github.com/lardan099/hyroute/internal/store"
+	"github.com/lardan099/hyroute/internal/traffic"
 	"github.com/lardan099/hyroute/internal/update"
 )
 
@@ -54,6 +55,9 @@ type GUI struct {
 
 	tray     trayState
 	quitting atomic.Bool // a real exit: the close button no longer hides
+
+	backupMu sync.Mutex
+	backup   []byte // the backup file ChooseBackup read, for RestoreBackup
 }
 
 func (g *GUI) startup(ctx context.Context) {
@@ -472,6 +476,11 @@ func (g *GUI) SetGeoPrefs(source, siteURL, ipURL string, auto bool, hours int) e
 
 // List inspector: which geosite/geoip lists contain a site or IP.
 func (g *GUI) Inspect(query string) (app.InspectResult, error) { return g.ctl.Inspect(query) }
+func (g *GUI) SiteLists(domain string) []app.InspectHit        { return g.ctl.SiteLists(domain) }
+
+// VPN traffic statistics (no sites are kept).
+func (g *GUI) TrafficReport(period string) traffic.Report { return g.ctl.TrafficReport(period) }
+func (g *GUI) ClearTraffic() error                        { return g.ctl.ClearTraffic() }
 func (g *GUI) GeoList(kind, name, filter string, offset, limit int) (geodata.Listing, error) {
 	return g.ctl.GeoList(kind, name, filter, offset, limit)
 }

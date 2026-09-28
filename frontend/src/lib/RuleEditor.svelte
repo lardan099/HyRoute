@@ -16,13 +16,14 @@
   r.apps ??= [];
   r.domains ??= [];
   r.protocol ??= '';
+  r.ports ??= '';
   r.profile ??= '';
   r.fallback ??= [];
   let siteInput = $state('');
   let appInput = $state('');
   let error = $state('');
   let saving = $state(false);
-  let advanced = $state(!!r.protocol);
+  let advanced = $state(!!r.protocol || !!r.ports);
   let picking = $state(false);
   let pickingApps = $state(false);
   loadGeo();
@@ -156,7 +157,17 @@
   const main = $derived(mainProfile());
   // The fallbacks routing uses: struck-through ones go on save.
   const fallback = $derived(cleanFallback(r.fallback, r.profile, main?.id));
-  const empty = $derived(r.apps!.length === 0 && r.domains!.length === 0);
+  const empty = $derived(r.apps!.length === 0 && r.domains!.length === 0 && !r.ports!.trim());
+  const portList = $derived(r.ports!.split(/[\s,;]+/).filter(Boolean));
+  // As Go rules.ParsePorts: "443", "80, 443", "27000-27200".
+  const portsBad = $derived(
+    portList.find((f) => {
+      const m = /^(\d{1,5})(?:-(\d{1,5}))?$/.exec(f);
+      const lo = m ? +m[1] : 0;
+      const hi = m?.[2] ? +m[2] : lo;
+      return !m || lo < 1 || hi > 65535 || lo > hi;
+    }) ?? '',
+  );
 
   const where: { v: Action; l: string; d: string; icon: string }[] = [
     { v: 'tunnel', l: 'Через VPN', d: 'через выбранный сервер', icon: 'shield' },
@@ -173,8 +184,10 @@
     if (apps.length && sites.length) who = `${apps.join(', ')}, когда открывает ${sites.join(', ')}`;
     else if (apps.length) who = `Всё от ${apps.join(', ')}`;
     else if (sites.length) who = `${sites.join(', ')} — в любой программе,`;
-    else return 'Добавьте программу или сайт.';
-    const proto = r.protocol === 'tcp' ? ' (только TCP)' : r.protocol === 'udp' ? ' (только UDP)' : '';
+    else if (portList.length) who = 'Любая программа, любой сайт';
+    else return 'Добавьте программу, сайт или порт.';
+    const p = r.protocol === 'tcp' ? 'TCP' : r.protocol === 'udp' ? 'UDP' : '';
+    const proto = portList.length ? ` (${p ? p + ', ' : ''}порт ${portList.join(', ')})` : p ? ` (только ${p})` : '';
     const to =
       r.action === 'direct'
         ? 'напрямую, мимо VPN'
@@ -188,7 +201,7 @@
   async function save() {
     if (siteInput.trim()) addSites(siteInput);
     if (appInput.trim()) addApps(appInput);
-    if (empty) return;
+    if (empty || portsBad) return;
     saving = true;
     error = '';
     try {
@@ -415,6 +428,17 @@
         </div>
         <span class="muted small">TCP — сайты и большинство программ, UDP — игры, звонки, QUIC. Если не уверены — «Любой».</span>
       </div>
+      <div class="row">
+        <span class="muted">Порт</span>
+        <input class="ports" bind:value={r.ports} placeholder="любой" />
+        <span class="muted small grow">
+          Порт сервера, куда идёт соединение: <code>22</code> (SSH), <code>443, 8443</code> или диапазон <code>27000-27200</code>. Пусто — любой.
+        </span>
+      </div>
+      {#if portsBad}<div class="note error small">«{portsBad}» — не порт: нужно число от 1 до 65535 или диапазон вида 27000-27200.</div>{/if}
+      {#if !r.apps!.length && !r.domains!.length && portList.length}
+        <div class="note info small">Ни программы, ни сайта нет: правило сработает для любой программы и любого сайта на этом порту.</div>
+      {/if}
     </details>
 
     <div class="summary"><Icon name="info" size={16} /> {sentence}</div>
@@ -435,7 +459,7 @@
 
     <div class="actions">
       <button onclick={onclose}>Отмена</button>
-      <button class="primary" onclick={save} disabled={saving || (empty && !siteInput.trim() && !appInput.trim())}>Сохранить</button>
+      <button class="primary" onclick={save} disabled={saving || !!portsBad || (empty && !siteInput.trim() && !appInput.trim())}>Сохранить</button>
     </div>
   </div>
 </div>
@@ -483,6 +507,7 @@
   .server select { font-size: 14px; }
   .adv summary { cursor: pointer; color: var(--muted); font-weight: 500; }
   .adv .row { margin-top: 10px; }
+  .ports { width: 150px; }
   .summary { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--accent-soft); font-size: 13px; }
   .summary :global(svg) { flex: none; margin-top: 1px; color: var(--accent); }
   .actions { margin-top: 4px; }

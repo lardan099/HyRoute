@@ -18,6 +18,8 @@ export interface Rule {
   app?: AppMatch | null;
   domain?: { pattern: string } | null;
   protocol?: string;
+  // Destination ports: "443", "80,443", "27000-27200" ('' = any).
+  ports?: string;
   action: Action;
   profile?: string;
   // Servers tried in order when `profile` is down ('' = main).
@@ -467,7 +469,7 @@ interface GUI {
   ParseRulesText(text: string): Promise<RulesTextResult>;
   ApplyRulesText(text: string, replace: boolean, guard: EditGuard): Promise<RulesTextResult>;
   LintRules(s: Settings): Promise<LintIssue[]>;
-  Explain(q: { app: string; target: string; proto: string }, s: Settings | null): Promise<Explanation>;
+  Explain(q: { app: string; target: string; proto: string; port?: number }, s: Settings | null): Promise<Explanation>;
   BrowseExe(): Promise<string>;
   RunningApps(query: string, all: boolean, limit: number): Promise<RunningApp[]>;
   Proxies(): Promise<ProxyView[]>;
@@ -511,6 +513,17 @@ interface GUI {
   SetGeoPrefs(source: string, siteURL: string, ipURL: string, auto: boolean, hours: number): Promise<void>;
   GeoCategories(kind: 'site' | 'ip', query: string): Promise<string[]>;
   Inspect(query: string): Promise<InspectResult>;
+  // The geosite lists that hold a site (no DNS lookups), most specific first.
+  SiteLists(domain: string): Promise<InspectHit[]>;
+  // Backup: full (servers, subscriptions, rules, proxies, preferences;
+  // encrypted with the password) or rules only. Returns the path ('' =
+  // cancelled). Restore: ChooseBackup reads a file, RestoreBackup applies it.
+  SaveBackup(full: boolean, password: string): Promise<string>;
+  ChooseBackup(): Promise<BackupChoice>;
+  RestoreBackup(password: string): Promise<RestoreResult>;
+  // VPN traffic statistics (no sites are kept).
+  TrafficReport(period: TrafficPeriod): Promise<TrafficReport>;
+  ClearTraffic(): Promise<void>;
   GeoList(kind: 'site' | 'ip', name: string, filter: string, offset: number, limit: number): Promise<GeoListing>;
   ConvertACL(text: string, mode: 'domains' | 'rules', suffix: string, actions: string): Promise<ConvertResult>;
 }
@@ -545,6 +558,44 @@ export interface InspectResult {
   route: Explanation | null;
   sourceName: string;
   list: GeoListing | null;
+}
+
+export interface BackupChoice {
+  name: string; // '' = cancelled
+  kind: 'full' | 'rules';
+  created: string;
+  app: string;
+  encrypted: boolean;
+  rules: number; // -1 = not known before the password
+}
+
+export interface RestoreResult {
+  kind: 'full' | 'rules';
+  rules: number;
+  profiles: number;
+  subscriptions: number;
+  proxies: number;
+  remapped: number;
+}
+
+export type TrafficPeriod ='day' | 'week' | 'month' | 'year';
+
+export interface TrafficItem {
+  id: string; // server ID or program name
+  name: string; // server name
+  sent: number;
+  recv: number;
+}
+
+export interface TrafficReport {
+  period: TrafficPeriod;
+  from: string;
+  total: { sent: number; recv: number };
+  servers: TrafficItem[];
+  apps: TrafficItem[];
+  series: { label: string; sent: number; recv: number }[];
+  appsFrom?: string;
+  since: string;
 }
 
 export interface ConvertResult {
@@ -664,6 +715,8 @@ export function cleanRule(r: Rule, mainId: string | undefined): Rule {
   if (!out.apps.length) delete out.apps;
   if (!out.domains.length) delete out.domains;
   if (!out.protocol) delete out.protocol;
+  out.ports = (out.ports ?? '').trim();
+  if (!out.ports) delete out.ports;
   if (out.enabled !== false) delete out.enabled;
   out.fallback = out.action === 'tunnel' ? cleanFallback(out.fallback, out.profile, mainId) : [];
   if (!out.fallback.length) delete out.fallback;

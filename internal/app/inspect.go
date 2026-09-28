@@ -168,7 +168,7 @@ func (c *Controller) Inspect(query string) (InspectResult, error) {
 	use := usage(c.settings.Config, c.profileName)
 	c.mu.Unlock()
 
-	target := cleanTarget(res.Query)
+	target, _ := cleanTarget(res.Query)
 	var ips []netip.Addr
 	if ip, err := netip.ParseAddr(strings.Trim(target, "[]")); err == nil {
 		ips = []netip.Addr{ip.Unmap()}
@@ -221,10 +221,41 @@ func (c *Controller) Inspect(query string) (InspectResult, error) {
 	sortHits(res.Site)
 	sortHits(res.IP)
 	if res.Host != "" || len(ips) > 0 {
-		ex := c.Explain(ExplainQuery{Target: target}, nil)
+		ex := c.Explain(ExplainQuery{Target: res.Query}, nil) // with its port, if any
 		res.Route = &ex
 	}
 	return res, nil
+}
+
+// SiteLists lists the geosite lists that hold a site, the most specific
+// first, without the DNS lookups of Inspect: for a rule made from a
+// connection. Nothing when the database is not downloaded.
+func (c *Controller) SiteLists(domain string) []InspectHit {
+	out := []InspectHit{}
+	host := rules.NormalizeDomain(domain)
+	if host == "" {
+		return out
+	}
+	c.initGeo()
+	hits, err := c.geo.db.FindSite(host)
+	if err != nil {
+		return out
+	}
+	c.mu.Lock()
+	use := usage(c.settings.Config, c.profileName)
+	c.mu.Unlock()
+	for _, h := range hits {
+		tag := "geosite:" + h.Category
+		p, broad := tagPriority(tag)
+		used := use[tag]
+		if used == nil {
+			used = []string{}
+		}
+		out = append(out, InspectHit{Tag: tag, Title: popularTitle("site", h.Category), Entry: h.Entry, Attrs: h.Attrs,
+			Size: h.Size, Priority: p, Broad: broad, UsedBy: used})
+	}
+	sortHits(out)
+	return out
 }
 
 func geoErr(err error) error {
@@ -380,8 +411,8 @@ func (c *Controller) aclToDomains(list []aclRule, suffix string) ConvertResult {
 func aclToRules(list []aclRule) ConvertResult {
 	res := ConvertResult{Warnings: []string{}}
 	type group struct {
-		action, target, proto string
-		items                 []string
+		action, target, proto, ports string
+		items                        []string
 	}
 	var groups []*group
 	def := ""
@@ -407,7 +438,7 @@ func aclToRules(list []aclRule) ConvertResult {
 			res.Warnings = append(res.Warnings, msg)
 			continue
 		}
-		proto := ""
+		proto, ports := "", ""
 		if r.extra != "" {
 			p, port, _ := strings.Cut(r.extra, "/")
 			switch p {
@@ -418,7 +449,11 @@ func aclToRules(list []aclRule) ConvertResult {
 				res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: непонятный протокол %q, правило без него", r.line, r.extra))
 			}
 			if port != "" && port != "*" {
-				res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: порт %s не поддерживается в правилах HyRoute: правило действует на все порты", r.line, port))
+				if _, err := rules.ParsePorts(port); err != nil {
+					res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: %v, правило действует на все порты", r.line, err))
+				} else {
+					ports = rules.FormatPorts(port)
+				}
 			}
 		}
 		item := ""
@@ -443,17 +478,22 @@ func aclToRules(list []aclRule) ConvertResult {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("строка %d: %s пропущен: не понимаю", r.line, r.resource))
 			continue
 		}
-		if n := len(groups); n > 0 && groups[n-1].action == r.action && groups[n-1].proto == proto {
+		if n := len(groups); n > 0 && groups[n-1].action == r.action && groups[n-1].proto == proto && groups[n-1].ports == ports {
 			groups[n-1].items = append(groups[n-1].items, item)
 			continue
 		}
-		groups = append(groups, &group{action: r.action, target: target, proto: proto, items: []string{item}})
+		groups = append(groups, &group{action: r.action, target: target, proto: proto, ports: ports, items: []string{item}})
 	}
 	var b strings.Builder
 	b.WriteString("# Из Hysteria ACL. direct → напрямую, reject → блок, остальные выходы → vpn (поменяйте на нужный сервер)\n")
 	for _, g := range groups {
 		line := "ACL " + g.action + ": " + strings.Join(g.items, " ") + " -> " + g.target
-		if g.proto != "" {
+		switch {
+		case g.proto != "" && g.ports != "":
+			line += " | " + g.proto + " " + g.ports
+		case g.ports != "":
+			line += " | порт " + g.ports
+		case g.proto != "":
 			line += " | " + g.proto
 		}
 		b.WriteString(line + "\n")

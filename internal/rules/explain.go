@@ -36,6 +36,7 @@ type Query struct {
 	// IP is the destination address when known (for IP and geoip rules).
 	IP    netip.Addr `json:"ip"`
 	Proto uint8      `json:"proto"` // 6 or 17
+	Port  uint16     `json:"port"`  // 0 = not known
 }
 
 // Explanation is the full trace.
@@ -131,7 +132,7 @@ func Explain(c Config, main string, q Query) Explanation {
 			case errs[i] != nil:
 				st.Reason = "ошибка в правиле: " + errs[i].Error()
 			default:
-				st.Matched, st.Reason = crs[i].explainSite(proc, pathKnown, q.Proto, site, q.IP.Unmap())
+				st.Matched, st.Reason = crs[i].explainSite(proc, pathKnown, q.Proto, q.Port, site, q.IP.Unmap())
 			}
 			if !st.Enabled {
 				if st.Matched {
@@ -219,6 +220,14 @@ func Explain(c Config, main string, q Query) Explanation {
 			break
 		}
 	}
+	if q.Port == 0 {
+		for _, r := range c.Rules {
+			if strings.TrimSpace(r.Ports) != "" && (r.Enabled == nil || *r.Enabled) {
+				ex.Notes = append(ex.Notes, "Порт не указан, поэтому правила с портом не сработали. Чтобы их проверить, укажите адрес с портом: example.com:443.")
+				break
+			}
+		}
+	}
 	if ex.Notes == nil {
 		ex.Notes = []string{}
 	}
@@ -243,13 +252,23 @@ func nameRule(c Config, name string) bool {
 	return false
 }
 
-func (r *compiled) explain(p *procinfo.Info, pathKnown bool, proto uint8, domain string, ip netip.Addr) (bool, string) {
+func (r *compiled) explain(p *procinfo.Info, pathKnown bool, proto uint8, port uint16, domain string, ip netip.Addr) (bool, string) {
 	var why []string
 	if r.proto != 0 {
 		if proto != 0 && r.proto != proto {
 			return false, fmt.Sprintf("протокол: правило только для %s", protoName(r.proto))
 		}
 		why = append(why, "протокол "+protoName(r.proto))
+	}
+	if len(r.ports) > 0 {
+		ports := portsText(r.ports)
+		switch {
+		case port == 0:
+			return false, "порт не указан, а правило только для порта " + ports
+		case !r.matchPort(port):
+			return false, fmt.Sprintf("порт %d, а правило только для порта %s", port, ports)
+		}
+		why = append(why, fmt.Sprintf("порт %d", port))
 	}
 	if r.hasApp() {
 		var list []string
@@ -331,10 +350,10 @@ func (r *compiled) explain(p *procinfo.Info, pathKnown bool, proto uint8, domain
 
 // explainSite is explain for a site known by several names (a CNAME
 // chain): the rule matches when any name does.
-func (r *compiled) explainSite(p *procinfo.Info, pathKnown bool, proto uint8, site []string, ip netip.Addr) (bool, string) {
+func (r *compiled) explainSite(p *procinfo.Info, pathKnown bool, proto uint8, port uint16, site []string, ip netip.Addr) (bool, string) {
 	var why []string
 	for _, n := range site {
-		ok, reason := r.explain(p, pathKnown, proto, n, ip)
+		ok, reason := r.explain(p, pathKnown, proto, port, n, ip)
 		if ok {
 			return true, reason
 		}
@@ -424,6 +443,9 @@ func Lint(c Config) []Issue {
 // covers reports whether every connection matching b also matches r.
 func (r *compiled) covers(b *compiled) bool {
 	if r.proto != 0 && r.proto != b.proto {
+		return false
+	}
+	if !r.coversPorts(b) {
 		return false
 	}
 	if r.hasApp() {

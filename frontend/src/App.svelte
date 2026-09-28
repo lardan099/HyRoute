@@ -12,6 +12,7 @@
   import System from './lib/System.svelte';
   import Lists from './lib/Lists.svelte';
   import Proxies from './lib/Proxies.svelte';
+  import Traffic from './lib/Traffic.svelte';
   import UpdateDialog from './lib/UpdateDialog.svelte';
   import Toasts from './lib/Toasts.svelte';
   import Setup from './lib/Setup.svelte';
@@ -25,6 +26,7 @@
     { id: 'proxies', label: 'Прокси', icon: 'zap', expert: true },
     { id: 'lists', label: 'Списки', icon: 'database', expert: true },
     { id: 'connections', label: 'Соединения', icon: 'activity', expert: true },
+    { id: 'traffic', label: 'Статистика', icon: 'chart' },
     { id: 'logs', label: 'Журнал', icon: 'log', expert: true },
     { id: 'settings', label: 'Настройки', icon: 'settings' },
   ];
@@ -262,6 +264,8 @@
         <Lists />
       {:else if page === 'connections'}
         <Connections />
+      {:else if page === 'traffic'}
+        <Traffic />
       {:else if page === 'logs'}
         <Logs />
       {:else}

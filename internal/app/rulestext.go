@@ -38,7 +38,10 @@ import (
 // of it, or id:<id>), напрямую / direct, блок / block. Servers after a
 // comma are fallbacks, tried in order when the first one is down:
 // "-> DE, NL".
-// Options after "|": tcp, udp, выкл / off, без дочерних / nochild.
+// Options after "|": tcp, udp, выкл / off, без дочерних / nochild; ports
+// of the destination: "порт 443", "порт 80,443", "tcp 22", "udp
+// 27000-27200". "* -> … | порт 53" is a rule for any program and site on
+// that port.
 
 // RuleLine is a problem at a line of rules text.
 type RuleLine struct {
@@ -123,7 +126,9 @@ func parseRulesText(text string, profiles []hysteria.Profile) RulesTextResult {
 			continue
 		}
 		lhs = strings.TrimSpace(lhs)
-		if lhs == "*" {
+		// "* -> … | порт 53" is a rule for any program and site on that
+		// port; "* -> …" alone is everything else.
+		if lhs == "*" && !optsHavePort(opts) {
 			if section != nil {
 				fail(n, "«* -> …» (всё остальное) пишется вне блока программы, после [*]")
 				continue
@@ -151,23 +156,44 @@ func parseRulesText(text string, profiles []hysteria.Profile) RulesTextResult {
 			r.Name, lhs = name, rest
 		}
 		inherit, both := true, false
+		var ports []string
 		for _, o := range strings.Split(opts, "|") {
-			switch o := strings.ToLower(strings.TrimSpace(o)); o {
-			case "":
-			case "tcp", "udp":
-				both = both || r.Protocol != "" && r.Protocol != o
-				r.Protocol = o
-			case "выкл", "off", "disabled":
+			o = strings.ToLower(strings.TrimSpace(o))
+			word, rest, _ := strings.Cut(o, " ")
+			rest = strings.TrimSpace(rest)
+			switch {
+			case o == "":
+			case word == "tcp" || word == "udp":
+				both = both || r.Protocol != "" && r.Protocol != word
+				r.Protocol = word
+				if rest != "" {
+					ports = append(ports, rest)
+				}
+			case portWord(word):
+				if rest == "" {
+					fail(n, "после «%s» напишите номер порта: порт 443, порт 80,443 или порт 27000-27200", word)
+					continue
+				}
+				ports = append(ports, rest)
+			case o == "выкл" || o == "off" || o == "disabled":
 				off := false
 				r.Enabled = &off
-			case "без дочерних", "nochild", "nochildren":
+			case o == "без дочерних" || o == "nochild" || o == "nochildren":
 				inherit = false
 			default:
-				fail(n, "непонятная опция %q (есть: tcp, udp, выкл, без дочерних)", strings.TrimSpace(o))
+				fail(n, "непонятная опция %q (есть: tcp, udp, tcp 22, udp 27000-27200, порт 443, выкл, без дочерних)", o)
 			}
 		}
 		if both {
 			fail(n, "tcp и udp вместе — это любой протокол: уберите обе опции")
+		}
+		if len(ports) > 0 {
+			p := strings.Join(ports, ",")
+			if _, err := rules.ParsePorts(p); err != nil {
+				fail(n, "%v", err)
+				continue
+			}
+			r.Ports = rules.FormatPorts(p)
 		}
 		for _, a := range section {
 			a.InheritChildren = a.InheritChildren && inherit
@@ -177,6 +203,9 @@ func parseRulesText(text string, profiles []hysteria.Profile) RulesTextResult {
 		if msg := splitPath(items, quoted); msg != "" {
 			fail(n, "%s", msg)
 			continue
+		}
+		if len(items) == 1 && items[0] == "*" && !quoted[0] && r.Ports != "" {
+			items = nil // any program, any site: only the port counts
 		}
 		errsBefore := len(res.Errors)
 		for _, it := range items {
@@ -226,7 +255,7 @@ func parseRulesText(text string, profiles []hysteria.Profile) RulesTextResult {
 			}
 			r.Domains = append(r.Domains, d)
 		}
-		if len(r.Apps) == 0 && len(r.Domains) == 0 {
+		if len(r.Apps) == 0 && len(r.Domains) == 0 && (r.Ports == "" || len(res.Errors) > errsBefore) {
 			if len(res.Errors) == errsBefore { // not when its items were refused
 				fail(n, "не указано, что направлять")
 			}
@@ -262,6 +291,27 @@ func parseRulesText(text string, profiles []hysteria.Profile) RulesTextResult {
 		res.Summary += ", всё остальное — " + targetWords(res.DefaultAction, res.DefaultProfile, res.DefaultFallback, profiles)
 	}
 	return res
+}
+
+// portWord: the option word before a port list.
+func portWord(w string) bool {
+	switch w {
+	case "порт", "порты", "port", "ports":
+		return true
+	}
+	return false
+}
+
+// optsHavePort reports whether the options give a port ("tcp 22",
+// "порт 443").
+func optsHavePort(opts string) bool {
+	for _, o := range strings.Split(opts, "|") {
+		word, rest, _ := strings.Cut(strings.ToLower(strings.TrimSpace(o)), " ")
+		if strings.TrimSpace(rest) != "" && (word == "tcp" || word == "udp" || portWord(word)) {
+			return true
+		}
+	}
+	return false
 }
 
 // cutArrow cuts at the first arrow of any kind outside quotes: in
@@ -718,7 +768,7 @@ func (c *Controller) RulesText() string {
 func formatRulesText(cfg rules.Config, profiles []hysteria.Profile) string {
 	var b strings.Builder
 	b.WriteString("# Одна строка — одно правило: что -> куда. Проверяются сверху вниз.\n")
-	b.WriteString("# Куда: vpn (основной сервер), имя сервера, напрямую, блок. Опции после |: tcp, udp, выкл.\n\n")
+	b.WriteString("# Куда: vpn (основной сервер), имя сервера, напрямую, блок. Опции после |: tcp, udp, порт 443, udp 27000-27200, выкл.\n\n")
 	section := ""
 	for _, r := range cfg.Rules {
 		apps, doms := r.AllApps(), r.AllDomains()
@@ -755,13 +805,25 @@ func formatRulesText(cfg rules.Config, profiles []hysteria.Profile) string {
 		if name == "" && line == "*" {
 			line = "app:*" // "* ->" alone is everything else
 		}
+		if line == "" && r.Ports != "" {
+			line = "*" // any program and site, on the port below
+		}
 		if name != "" {
 			line = name + ": " + line
 		}
 		line += " -> " + targetWords(r.Action, r.Profile, r.Fallback, profiles)
 		var opts []string
-		if r.Protocol != "" && r.Protocol != "any" {
-			opts = append(opts, strings.ToLower(r.Protocol))
+		proto := strings.ToLower(r.Protocol)
+		if proto == "any" {
+			proto = ""
+		}
+		switch ports := rules.FormatPorts(r.Ports); {
+		case ports != "" && proto != "":
+			opts = append(opts, proto+" "+ports)
+		case ports != "":
+			opts = append(opts, "порт "+ports)
+		case proto != "":
+			opts = append(opts, proto)
 		}
 		if r.Enabled != nil && !*r.Enabled {
 			opts = append(opts, "выкл")

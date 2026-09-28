@@ -67,6 +67,7 @@ func TestNoNullListsForUI(t *testing.T) {
 		"Logs profile":   c.Logs("hysteria:nope", 0),
 		"GeoCategories":  c.GeoCategories("site", "zzz-nothing", 10),
 		"Inspect":        insp,
+		"SiteLists":      c.SiteLists("example.com"),
 		"Settings":       st,
 	} {
 		var bad []string

@@ -68,6 +68,8 @@ func (c *Controller) startLocked(recovering bool) error {
 	cfg.Redactor = c.Redactor
 	cfg.OnEngineFail = func() { c.engineFailed(gen) }
 	cfg.HysteriaLog = c.hysteriaLine
+	cfg.OnTraffic = c.noteTraffic
+	c.startTrafficLoop()
 	cfg.OnStatus = func(id string, s hysteria.Status) {
 		c.Log.Info("hysteria status", "profile", c.profileName(id), "state", s.State.String(), "msg", s.Message, "udp", s.UDPEnabled, "socks", s.SOCKS, "serverIPs", s.ServerIPs)
 		c.changed()
@@ -154,6 +156,11 @@ func (c *Controller) disconnectLocked(release bool) {
 	if s != nil {
 		s.Stop()
 		c.Log.Info("disconnected: filters removed")
+		// Flows left open by the stop are not closed: count them now.
+		if reg := s.Flows(); reg != nil {
+			reg.Sample()
+		}
+		c.flushTraffic()
 	}
 	c.changed()
 }

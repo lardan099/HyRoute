@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import { api, errText, fmtBytes, fmtDuration, fmtTime, actionLabel, type Flow } from '../api';
   import { hide, profileName } from '../state.svelte';
+  import RuleFromFlow from './RuleFromFlow.svelte';
+  import Icon from './Icon.svelte';
 
   function routeText(f: Flow): string {
     const r = actionLabel[f.route] ?? f.route;
@@ -16,6 +18,13 @@
   let paused = $state(false);
   let error = $state('');
   let selected = $state<Flow | null>(null);
+  // The connection a rule is being made from (a snapshot: the row may go).
+  let ruleFrom = $state<Flow | null>(null);
+  // Right-click on a row: the same, at once.
+  let menu = $state<{ f: Flow; x: number; y: number } | null>(null);
+
+  // Mandatory exclusions (HyRoute, Hysteria, the system DNS) take no rules.
+  const canRule = (f: Flow) => !f.excluded && !f.rule.startsWith('exclusion');
 
   async function load() {
     if (paused) return;
@@ -72,7 +81,10 @@
 <div class="wrap">
   <header>
     <h1>Соединения</h1>
-    <p class="muted sub">Что сейчас открывают программы и куда это ушло. Нажмите на строку, чтобы увидеть, почему.</p>
+    <p class="muted sub">
+      Что сейчас открывают программы и куда это ушло. Нажмите на строку, чтобы увидеть, почему; правой кнопкой — создать правило для этой программы или
+      сайта.
+    </p>
   </header>
   <div class="row toolbar">
     <input class="grow" placeholder="Фильтр: процесс, домен, адрес, правило" bind:value={query} />
@@ -99,7 +111,16 @@
       </thead>
       <tbody>
         {#each rows as f (f.id)}
-          <tr class:closed={f.closed} class:sel={selected?.id === f.id} onclick={() => (selected = f)}>
+          <tr
+            class:closed={f.closed}
+            class:sel={selected?.id === f.id}
+            onclick={() => (selected = f)}
+            oncontextmenu={(e) => {
+              e.preventDefault();
+              selected = f;
+              menu = canRule(f) ? { f: JSON.parse(JSON.stringify(f)), x: e.clientX, y: e.clientY } : null;
+            }}
+          >
             <td class="mono">{fmtTime(f.start)}</td>
             <td title={f.path}>{f.process || `PID ${f.pid}`}</td>
             <td class="mono">{f.proto} {hide(f.dst)}</td>
@@ -127,9 +148,31 @@
         <span>{selected.proto} {hide(selected.src)} → {hide(selected.dst)}</span>
         <span>исход: {selected.outcome} · процесс найден: {selected.attrib} · решение: {selected.stage}</span>
       </div>
+      {#if canRule(selected)}
+        <div class="row">
+          <button onclick={() => (ruleFrom = JSON.parse(JSON.stringify(selected)))}><Icon name="plus" size={15} />Создать правило…</button>
+          <span class="muted small">например, пустить эту программу или сайт через другой сервер или напрямую</span>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
+
+{#if menu}
+  <div class="menu-shade" role="presentation" onclick={() => (menu = null)} oncontextmenu={(e) => (e.preventDefault(), (menu = null))}></div>
+  <div class="menu" style="left: {Math.min(menu.x, window.innerWidth - 220)}px; top: {Math.min(menu.y, window.innerHeight - 60)}px">
+    <button
+      onclick={() => {
+        ruleFrom = menu!.f;
+        menu = null;
+      }}><Icon name="plus" size={15} />Создать правило…</button
+    >
+  </div>
+{/if}
+
+{#if ruleFrom}
+  <RuleFromFlow flow={ruleFrom} onclose={() => (ruleFrom = null)} />
+{/if}
 
 <style>
   .wrap { display: flex; flex-direction: column; height: 100%; gap: 10px; }
@@ -165,4 +208,9 @@
   .facts { display: grid; gap: 2px; color: var(--muted); margin-top: 4px; }
   .sub { margin: 4px 0 0; }
   .close { position: absolute; right: 8px; top: 8px; }
+  .details .row { margin-top: 6px; }
+  .menu-shade { position: fixed; inset: 0; z-index: 40; }
+  .menu { position: fixed; z-index: 41; display: grid; padding: 4px; min-width: 200px; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--border); box-shadow: 0 8px 24px rgb(0 0 0 / 0.28); }
+  .menu button { justify-content: flex-start; background: none; }
+  .menu button:hover { background: var(--accent-soft); }
 </style>

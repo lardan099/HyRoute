@@ -268,7 +268,9 @@
                 >
               {/each}
               {#if more}<span class="tag more">+{more}</span>{/if}
-              {#if r.protocol}<span class="tag">{r.protocol.toUpperCase()}</span>{/if}
+              {#if r.protocol || r.ports}<span class="tag"
+                  >{[r.protocol?.toUpperCase(), r.ports ? `порт ${r.ports.split(/[\s,;]+/).filter(Boolean).join(', ')}` : ''].filter(Boolean).join(' ')}</span
+                >{/if}
             </span>
           </button>
           <Icon name="arrow" size={16} />

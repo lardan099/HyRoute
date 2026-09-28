@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/lardan099/hyroute/internal/localproxy"
@@ -299,7 +300,8 @@ func (c *Controller) syncProxies() {
 		if c.proxyRuns[id] != nil {
 			continue
 		}
-		srv := &localproxy.Server{Username: p.Username, Password: p.Password, Dial: c.proxyDialer(p), MaxConns: localproxy.DefaultMaxConns}
+		srv := &localproxy.Server{Username: p.Username, Password: p.Password, Dial: c.proxyDialer(p), Associate: c.proxyAssociator(p),
+			MaxConns: localproxy.DefaultMaxConns}
 		host := "127.0.0.1"
 		if p.LAN {
 			host, srv.MaxConns = lanHost, lanMaxConns
@@ -368,26 +370,96 @@ func (c *Controller) proxyDialer(p store.LocalProxy) localproxy.Dialer {
 			ep.NoteRejected()
 			return nil, err
 		}
-		return &tunnelConn{Conn: conn, ep: ep}, nil
+		return &tunnelConn{Conn: conn, ep: ep, note: c.proxyTraffic(id, p)}, nil
 	}
 }
 
+// proxyAssociator opens UDP associations through the proxy's server, as
+// proxyDialer does connections.
+func (c *Controller) proxyAssociator(p store.LocalProxy) localproxy.Associator {
+	return func(ctx context.Context) (localproxy.UDPTunnel, error) {
+		c.mu.Lock()
+		s := c.sess
+		id := c.proxyProfileLocked(p)
+		c.mu.Unlock()
+		if s == nil {
+			return nil, errors.New("HyRoute не подключён")
+		}
+		ep := s.Endpoint(id)
+		if ep == nil {
+			return nil, errors.New("сервер прокси не запущен")
+		}
+		if !ep.Available() || !ep.UDPAvailable() {
+			ep.NoteRejected()
+			return nil, socks5.ReplyError(1)
+		}
+		a, err := ep.UDPAssociate(ctx)
+		if err != nil {
+			ep.NoteRejected()
+			return nil, err
+		}
+		return &tunnelUDP{UDPAssoc: a, ep: ep, note: c.proxyTraffic(id, p)}, nil
+	}
+}
+
+// tunnelUDP counts a proxy's UDP association like tunnelConn.
+type tunnelUDP struct {
+	*socks5.UDPAssoc
+	ep   *tunnels.Endpoint
+	note func(sent, recv int64)
+}
+
+func (t *tunnelUDP) WriteTo(payload []byte, dst socks5.Addr) error {
+	err := t.UDPAssoc.WriteTo(payload, dst)
+	if err == nil {
+		t.ep.NoteTraffic(int64(len(payload)), 0)
+		t.note(int64(len(payload)), 0)
+	}
+	return err
+}
+
+func (t *tunnelUDP) ReadFrom(buf []byte) (int, socks5.Addr, error) {
+	n, from, err := t.UDPAssoc.ReadFrom(buf)
+	if n > 0 {
+		t.ep.NoteTraffic(0, int64(n))
+		t.note(0, int64(n))
+	}
+	return n, from, err
+}
+
+// proxyTraffic counts a proxy's bytes into the statistics, as a program
+// named after the proxy.
+func (c *Controller) proxyTraffic(profile string, p store.LocalProxy) func(sent, recv int64) {
+	app := "Локальный прокси :" + strconv.Itoa(p.Port)
+	if p.Name != "" {
+		app = "Локальный прокси «" + p.Name + "»"
+	}
+	return func(sent, recv int64) { c.noteTraffic(profile, app, sent, recv) }
+}
+
 // tunnelConn counts a proxy connection into its server's traffic, as the
-// relay does for intercepted ones.
+// relay does for intercepted ones, and into the statistics.
 type tunnelConn struct {
 	net.Conn
-	ep *tunnels.Endpoint
+	ep   *tunnels.Endpoint
+	note func(sent, recv int64)
 }
 
 func (t *tunnelConn) Read(b []byte) (int, error) {
 	n, err := t.Conn.Read(b)
 	t.ep.NoteTraffic(0, int64(n))
+	if n > 0 && t.note != nil {
+		t.note(0, int64(n))
+	}
 	return n, err
 }
 
 func (t *tunnelConn) Write(b []byte) (int, error) {
 	n, err := t.Conn.Write(b)
 	t.ep.NoteTraffic(int64(n), 0)
+	if n > 0 && t.note != nil {
+		t.note(int64(n), 0)
+	}
 	return n, err
 }
 

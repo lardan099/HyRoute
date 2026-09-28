@@ -309,12 +309,17 @@ func TestCallbacksDoNotDeadlock(t *testing.T) {
 }
 
 func TestCleanTarget(t *testing.T) {
-	for in, want := range map[string]string{
-		".2ip.io": "2ip.io", "*.2ip.io": "2ip.io", "https://www.2ip.io/path?x": "www.2ip.io",
-		"2ip.io:443": "2ip.io", "[2001:db8::1]:443": "2001:db8::1", " 1.2.3.4 ": "1.2.3.4",
+	type hp struct {
+		host string
+		port uint16
+	}
+	for in, want := range map[string]hp{
+		".2ip.io": {"2ip.io", 0}, "*.2ip.io": {"2ip.io", 0}, "https://www.2ip.io/path?x": {"www.2ip.io", 443},
+		"http://2ip.io:8080/": {"2ip.io", 8080}, "2ip.io:443": {"2ip.io", 443}, "[2001:db8::1]:22": {"2001:db8::1", 22},
+		" 1.2.3.4 ": {"1.2.3.4", 0},
 	} {
-		if got := cleanTarget(in); got != want {
-			t.Errorf("%q: %q", in, got)
+		if h, p := cleanTarget(in); h != want.host || p != want.port {
+			t.Errorf("%q: %q %d", in, h, p)
 		}
 	}
 }

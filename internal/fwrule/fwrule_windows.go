@@ -90,16 +90,27 @@ func Remove() error {
 // a global IPv6 address or a public IPv4 one).
 const ProxyName = "HyRoute local proxies (TCP)"
 
-// SetProxyPorts makes the proxy rule allow exactly ports; no ports removes
-// it.
+// ProxyUDPName is the same for the proxies' UDP (SOCKS5 UDP ASSOCIATE comes
+// to the proxy's port number).
+const ProxyUDPName = "HyRoute local proxies (UDP)"
+
+// SetProxyPorts makes the proxy rules allow exactly ports; no ports removes
+// them.
 func SetProxyPorts(exe string, ports []int) error {
-	_, err := netsh("show", "rule", "name="+ProxyName)
+	if err := setProxyRule(ProxyName, "TCP", exe, ports); err != nil {
+		return err
+	}
+	return setProxyRule(ProxyUDPName, "UDP", exe, ports)
+}
+
+func setProxyRule(name, proto, exe string, ports []int) error {
+	_, err := netsh("show", "rule", "name="+name)
 	exists := err == nil
 	if len(ports) == 0 {
 		if !exists {
 			return nil
 		}
-		if out, err := netsh("delete", "rule", "name="+ProxyName); err != nil {
+		if out, err := netsh("delete", "rule", "name="+name); err != nil {
 			return fmt.Errorf("netsh delete rule: %v: %s", err, out)
 		}
 		return nil
@@ -108,13 +119,13 @@ func SetProxyPorts(exe string, ports []int) error {
 	for i, p := range ports {
 		list[i] = fmt.Sprint(p)
 	}
-	params := []string{"dir=in", "action=allow", "program=" + exe, "protocol=TCP",
+	params := []string{"dir=in", "action=allow", "program=" + exe, "protocol=" + proto,
 		"localport=" + strings.Join(list, ","), "remoteip=localsubnet", "profile=private,domain", "enable=yes"}
 	var out []byte
 	if exists {
-		out, err = netsh(append([]string{"set", "rule", "name=" + ProxyName, "new"}, params...)...)
+		out, err = netsh(append([]string{"set", "rule", "name=" + name, "new"}, params...)...)
 	} else {
-		out, err = netsh(append([]string{"add", "rule", "name=" + ProxyName}, params...)...)
+		out, err = netsh(append([]string{"add", "rule", "name=" + name}, params...)...)
 	}
 	if err != nil {
 		return fmt.Errorf("netsh: %v: %s", err, out)

@@ -32,6 +32,19 @@ type Record struct {
 	f      Fields
 	end    time.Time
 	closed bool
+	// counted: Sent and Recv already passed to Registry.OnTraffic.
+	counted [2]int64
+}
+
+// take returns the tunneled bytes not counted yet (r.mu held).
+func (r *Record) take() (profile string, sent, recv int64) {
+	if r.f.Route != "tunnel" || r.f.Profile == "" {
+		return "", 0, 0
+	}
+	s, v := r.Sent.Load(), max(r.Recv.Load(), 0)
+	sent, recv = s-r.counted[0], v-r.counted[1]
+	r.counted = [2]int64{s, v}
+	return r.f.Profile, max(sent, 0), max(recv, 0)
 }
 
 // Fields are the mutable descriptive fields.
@@ -102,6 +115,10 @@ func (r *Record) View(now time.Time) View {
 type Registry struct {
 	// OnClose is called once per closed record.
 	OnClose func(View)
+	// OnTraffic receives the bytes tunneled flows moved since the last
+	// call for them: from Sample for live flows, and once more on Close.
+	// Only the server and the program are passed, never the destination.
+	OnTraffic func(profile, process string, sent, recv int64)
 
 	seq    atomic.Uint64
 	mu     sync.Mutex
@@ -137,10 +154,14 @@ func (g *Registry) Close(r *Record, now time.Time) {
 		return
 	}
 	r.closed, r.end = true, now
+	profile, sent, recv := r.take()
 	r.mu.Unlock()
 	g.mu.Lock()
 	delete(g.active, r.ID)
 	g.mu.Unlock()
+	if fn := g.OnTraffic; fn != nil && sent+recv > 0 {
+		fn(profile, r.Process, sent, recv)
+	}
 	v := r.View(now)
 	g.closed.Add(v)
 	if g.OnClose != nil {
@@ -161,6 +182,33 @@ func (g *Registry) Active(now time.Time) []View {
 		out[i] = r.View(now)
 	}
 	return out
+}
+
+// Sample passes the traffic of live tunneled flows since the last call to
+// OnTraffic, so that a long download counts in the hour it happens.
+func (g *Registry) Sample() {
+	fn := g.OnTraffic
+	if fn == nil {
+		return
+	}
+	g.mu.Lock()
+	recs := make([]*Record, 0, len(g.active))
+	for _, r := range g.active {
+		recs = append(recs, r)
+	}
+	g.mu.Unlock()
+	for _, r := range recs {
+		r.mu.Lock()
+		var profile string
+		var sent, recv int64
+		if !r.closed { // Close counts the rest
+			profile, sent, recv = r.take()
+		}
+		r.mu.Unlock()
+		if sent+recv > 0 {
+			fn(profile, r.Process, sent, recv)
+		}
+	}
 }
 
 // Closed returns the retained closed flows, oldest first.

@@ -157,6 +157,7 @@ type Controller struct {
 	rulesAt uint64
 
 	// Feature state (one line per feature, landing order).
+	traffic trafficState // VPN traffic statistics (traffic.go)
 }
 
 // New builds a controller with journals and a logger.

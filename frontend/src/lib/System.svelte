@@ -4,6 +4,7 @@
   import { ui, hide, setTheme, setAccent, settle, setExpert, resetHelp, type Theme, type Accent } from '../state.svelte';
   import Icon from './Icon.svelte';
   import GeoSettings from './GeoSettings.svelte';
+  import Backup from './Backup.svelte';
 
   let {
     updates,
@@ -382,6 +383,8 @@
     </div>
   </section>
   {/if}
+
+  <Backup />
 
   <section class="card">
     <h2><Icon name="info" size={17} /> Диагностика</h2>
