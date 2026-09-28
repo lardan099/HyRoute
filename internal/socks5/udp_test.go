@@ -1,6 +1,8 @@
 package socks5
 
 import (
+	"errors"
+	"io"
 	"math/rand/v2"
 	"net"
 	"net/netip"
@@ -114,5 +116,44 @@ func TestMaxUDPPayloadFloor(t *testing.T) {
 		if got < UDPPayloadAlways || (!v6 && got < 4066) {
 			t.Fatalf("%v: %d", dst, got)
 		}
+	}
+}
+
+// socks-udp: the SOCKS5 UDP header round-trips for every address type and
+// rejects fragments, short input and a bad ATYP.
+func TestUDPHeader(t *testing.T) {
+	for _, dst := range []Addr{
+		{IP: netip.MustParseAddr("1.2.3.4"), Port: 53},
+		{IP: netip.MustParseAddr("2001:db8::1"), Port: 443},
+		{Host: "example.com", Port: 3478},
+	} {
+		b, err := AppendUDPHeader(nil, dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b = append(b, "data"...)
+		got, payload, err := ParseUDPHeader(b)
+		if err != nil || got != dst || string(payload) != "data" {
+			t.Fatalf("%v: %v %q %v", dst, got, payload, err)
+		}
+		b[0], b[1] = 7, 9 // RSV is not checked
+		if _, _, err := ParseUDPHeader(b); err != nil {
+			t.Fatalf("RSV: %v", err)
+		}
+		b[2] = 1
+		if _, _, err := ParseUDPHeader(b); !errors.Is(err, ErrFragmented) {
+			t.Fatalf("FRAG: %v", err)
+		}
+	}
+	for _, b := range [][]byte{nil, {0, 0, 0}, {0, 0, 0, 1, 1, 2}, {0, 0, 0, 3, 10, 'a'}} {
+		if _, _, err := ParseUDPHeader(b); !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("%v: %v", b, err)
+		}
+	}
+	if _, _, err := ParseUDPHeader([]byte{0, 0, 0, 9, 1, 2, 3, 4, 0, 53}); err == nil {
+		t.Fatal("bad ATYP accepted")
+	}
+	if _, err := AppendUDPHeader(nil, Addr{}); err == nil {
+		t.Fatal("empty address accepted")
 	}
 }

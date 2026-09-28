@@ -3,10 +3,39 @@ package socks5
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
 	"strconv"
 )
+
+// ErrFragmented: a SOCKS5 UDP datagram with FRAG != 0. Neither Hysteria nor
+// HyRoute reassembles them.
+var ErrFragmented = errors.New("socks5: fragmented UDP datagram (FRAG != 0)")
+
+// AppendUDPHeader appends the SOCKS5 UDP request header: RSV RSV FRAG=0
+// ATYP ADDR PORT.
+func AppendUDPHeader(b []byte, dst Addr) ([]byte, error) {
+	return AppendAddr(append(b, 0, 0, 0), dst)
+}
+
+// ParseUDPHeader splits a SOCKS5 UDP datagram into its address and payload
+// (which aliases b). It returns ErrFragmented for FRAG != 0 and
+// io.ErrUnexpectedEOF for a short one. RSV is not checked: some clients put
+// garbage there.
+func ParseUDPHeader(b []byte) (dst Addr, payload []byte, err error) {
+	if len(b) < 4 {
+		return Addr{}, nil, io.ErrUnexpectedEOF
+	}
+	if b[2] != 0 {
+		return Addr{}, nil, ErrFragmented
+	}
+	dst, n, err := ParseAddr(b[3:])
+	if err != nil {
+		return Addr{}, nil, err
+	}
+	return dst, b[3+n:], nil
+}
 
 // UDPAssoc is an established UDP ASSOCIATE session. The association lives as
 // long as the control TCP connection; Close tears down both.
@@ -61,7 +90,7 @@ func relayAddr(bound Addr, server string) (*net.UDPAddr, error) {
 
 // WriteTo sends payload to dst through the association.
 func (a *UDPAssoc) WriteTo(payload []byte, dst Addr) error {
-	b, err := AppendAddr([]byte{0, 0, 0}, dst)
+	b, err := AppendUDPHeader(make([]byte, 0, 262+len(payload)), dst)
 	if err != nil {
 		return err
 	}
@@ -79,14 +108,11 @@ func (a *UDPAssoc) ReadFrom(buf []byte) (int, Addr, error) {
 		if src.Addr().Unmap() != a.relay.AddrPort().Addr().Unmap() || src.Port() != uint16(a.relay.Port) {
 			continue
 		}
-		if n < 4 || buf[2] != 0 { // fragmented datagrams are not supported
+		from, payload, err := ParseUDPHeader(buf[:n])
+		if err != nil { // fragmented, short or bad: skipped
 			continue
 		}
-		from, hl, err := ParseAddr(buf[3:n])
-		if err != nil {
-			continue
-		}
-		m := copy(buf, buf[3+hl:n])
+		m := copy(buf, payload)
 		return m, from, nil
 	}
 }

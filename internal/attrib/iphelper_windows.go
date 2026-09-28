@@ -4,6 +4,7 @@ package attrib
 
 import (
 	"encoding/binary"
+	"errors"
 	"net/netip"
 	"unsafe"
 
@@ -90,6 +91,37 @@ func LookupUDPOwner(local netip.AddrPort) (uint32, bool) {
 		}
 	}
 	return 0, false
+}
+
+// LookupUDPOwnerStrict is the single process that can own the UDP source
+// local (see udpOwnerStrict): err is ErrNoOwner when there is none or more
+// than one, another error when a table could not be read. For an IPv4
+// source the IPv6 table is read too: a dual-stack socket appears only there;
+// without an IPv6 stack (the table is unsupported) no such socket can exist,
+// so that table counts as empty rather than failing every lookup.
+func LookupUDPOwnerStrict(local netip.AddrPort) (uint32, error) {
+	local = norm(local)
+	afs := []uint32{windows.AF_INET6}
+	if local.Addr().Is4() {
+		afs = []uint32{windows.AF_INET, windows.AF_INET6}
+	}
+	var rows []UDPRow
+	for _, af := range afs {
+		buf, err := table(procGetExtendedUdpTable, af, udpTableOwnerPID)
+		if err != nil && af == windows.AF_INET6 && local.Addr().Is4() && noStack(err) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		rows = append(rows, parseUDPRows(buf, af == windows.AF_INET6)...)
+	}
+	return udpOwnerStrict(rows, local)
+}
+
+// noStack: the error of a table whose address family is not installed.
+func noStack(err error) bool {
+	return errors.Is(err, windows.ERROR_NOT_SUPPORTED) || errors.Is(err, windows.ERROR_INVALID_PARAMETER) || errors.Is(err, windows.WSAEAFNOSUPPORT)
 }
 
 func tcpTable(af uint32) ([]byte, error) {

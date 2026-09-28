@@ -41,7 +41,7 @@ func TestLocalProxies(t *testing.T) {
 	}
 	nl := res.Added[1].ID
 	var fw [][]int
-	c.ProxyFirewall = func(p []int) error { fw = append(fw, p); return nil }
+	c.ProxyFirewall = func(p, _ []int) error { fw = append(fw, p); return nil }
 
 	port := freePort(t)
 	bad := []ProxyInput{
@@ -131,7 +131,7 @@ func TestLocalProxies(t *testing.T) {
 func TestLANProxyRelayPorts(t *testing.T) {
 	c, _ := newCtl(t)
 	var fw [][]int
-	c.ProxyFirewall = func(p []int) error { fw = append(fw, p); return nil }
+	c.ProxyFirewall = func(p, _ []int) error { fw = append(fw, p); return nil }
 	lan := store.LocalProxy{Enabled: true, Port: relay.PortMin, LAN: true, Username: "u"}
 	if _, err := c.SaveProxy(ProxyInput{LocalProxy: lan, Password: "p"}); err == nil || !strings.Contains(err.Error(), "49151") {
 		t.Fatalf("LAN proxy in the relay's range: %v", err)
@@ -153,7 +153,7 @@ func TestLANProxyRelayPorts(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, _ = newCtlAt(t, c.Store)
-	c.ProxyFirewall = func(p []int) error { fw = append(fw, p); return nil }
+	c.ProxyFirewall = func(p, _ []int) error { fw = append(fw, p); return nil }
 	if err := c.Connect(); err != nil {
 		t.Fatal(err)
 	}
@@ -173,8 +173,8 @@ func TestLANProxyRelayPorts(t *testing.T) {
 // proxy deleted while disconnected takes its port out of the rule.
 func TestProxyFirewallRule(t *testing.T) {
 	c, _ := newCtl(t)
-	var fw [][]int
-	c.ProxyFirewall = func(p []int) error { fw = append(fw, p); return nil }
+	var fw, fwUDP [][]int
+	c.ProxyFirewall = func(p, udp []int) error { fw, fwUDP = append(fw, p), append(fwUDP, udp); return nil }
 	last := func() []int {
 		t.Helper()
 		if len(fw) == 0 {
@@ -183,7 +183,7 @@ func TestProxyFirewallRule(t *testing.T) {
 		return fw[len(fw)-1]
 	}
 	port := freePort(t)
-	v, err := c.SaveProxy(ProxyInput{LocalProxy: store.LocalProxy{Enabled: true, Port: port, LAN: true, Username: "u"}, Password: "p"})
+	v, err := c.SaveProxy(ProxyInput{LocalProxy: store.LocalProxy{Enabled: true, Port: port, LAN: true, Username: "u", UDP: "on"}, Password: "p"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,8 +194,8 @@ func TestProxyFirewallRule(t *testing.T) {
 		if err := c.Connect(); err != nil {
 			t.Fatal(err)
 		}
-		if len(fw) != i+1 || !equalInts(last(), []int{port}) {
-			t.Fatalf("connect %d: %v", i, fw)
+		if len(fw) != i+1 || !equalInts(last(), []int{port}) || !equalInts(fwUDP[i], []int{port}) {
+			t.Fatalf("connect %d: %v %v", i, fw, fwUDP)
 		}
 		if st := c.Proxies()[0].State; st != "listening" {
 			t.Fatal(st)
@@ -208,8 +208,8 @@ func TestProxyFirewallRule(t *testing.T) {
 	if err := c.Connect(); err != nil {
 		t.Fatal(err)
 	}
-	if len(fw) != 3 || len(last()) != 0 {
-		t.Fatalf("after delete: %v", fw)
+	if len(fw) != 3 || len(last()) != 0 || len(fwUDP[2]) != 0 {
+		t.Fatalf("after delete: %v %v", fw, fwUDP)
 	}
 	// Known to be absent: not asked again.
 	c.Disconnect()

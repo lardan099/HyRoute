@@ -14,7 +14,6 @@ import (
 
 	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/hysteria"
-	"github.com/lardan099/hyroute/internal/localproxy"
 	"github.com/lardan099/hyroute/internal/rules"
 	"github.com/lardan099/hyroute/internal/session"
 	"github.com/lardan099/hyroute/internal/socks5"
@@ -1168,34 +1167,6 @@ func (c *Controller) proxyGroupDial(ctx context.Context, s Session, p store.Loca
 		return nil, err
 	}
 	return c.newTunnelConn(conn, ep, c.proxyRecord(p, 6, dst, pk.Member, gid, pk.Failover, "proxied")), nil
-}
-
-// proxyGroupAssociate is proxyGroupDial for a SOCKS5 UDP association: the
-// member is chosen as for a UDP flow (ChooseUDP: never a trial, never a
-// move of the current member) among those whose UDP works.
-func (c *Controller) proxyGroupAssociate(ctx context.Context, s Session, p store.LocalProxy, gid string) (localproxy.UDPTunnel, error) {
-	pk, ok := c.groupsRT.ChooseUDP(gid, groups.Hint{App: "proxy:" + p.ID}, func(id string) bool {
-		ep := s.Endpoint(id)
-		return ep != nil && ep.Available() && ep.UDPAvailable()
-	})
-	var ep *tunnels.Endpoint
-	if ok {
-		ep = s.Endpoint(pk.Member)
-	}
-	if ep == nil {
-		c.groupsRT.NoteRejected(gid)
-		c.proxyRecord(p, 17, socks5.Addr{}, refusedVia(pk, gid), gid, pk.Failover, "rst: tunnel unavailable") // stats
-		return nil, socks5.ReplyError(1)
-	}
-	a, err := ep.UDPAssociate(ctx)
-	if err != nil {
-		if !proxyDialStopped(ctx) { // stats
-			ep.NoteRejected()
-			c.proxyRecord(p, 17, socks5.Addr{}, pk.Member, gid, pk.Failover, "rst: socks5 connect failed")
-		}
-		return nil, err
-	}
-	return c.newTunnelUDP(a, ep, c.proxyRecord(p, 17, socks5.Addr{}, pk.Member, gid, pk.Failover, "proxied")), nil
 }
 
 // groupDialer is the main group as geodata's VPN route: the member is

@@ -96,8 +96,12 @@ type Controller struct {
 	// ListRunning lists running programs (rule editor suggestions).
 	ListRunning func() []procinfo.Running
 	// ProxyFirewall allows exactly these local proxy ports from the local
-	// network (nil = nothing to do).
-	ProxyFirewall func(ports []int) error
+	// network, TCP and UDP (an empty list removes that rule; nil = nothing
+	// to do).
+	ProxyFirewall func(tcp, udp []int) error
+	// LegacyProxyUDP reports the UDP proxy rule of v1.2.0, which served UDP
+	// on every LAN proxy (socks-udp keeps it on for them; nil = unknown).
+	LegacyProxyUDP func() bool
 	// foundation: OnSettings is called, holding no lock, after every
 	// settings commit with the new revision (SettingsRev): pages holding a
 	// copy of the settings reload. It must not block.
@@ -155,7 +159,7 @@ type Controller struct {
 	proxies                    []store.LocalProxy
 	proxyMu                    sync.Mutex // guards proxyRuns, proxyFW; taken after mu, never before
 	proxyRuns                  map[string]*proxyRun
-	proxyFW                    []int
+	proxyFW                    *proxyPorts // nil: the rules are unknown
 	// recoverDelay: how long after an engine failure the automatic
 	// reconnect waits (tests change it).
 	recoverDelay time.Duration
@@ -180,6 +184,7 @@ type Controller struct {
 	dnsState      // dns: DNS policies (dns.go)
 	statsState    // stats: traffic statistics (stats.go)
 	netmodesState // netmodes: «Сети», guarded by netMu (netmodes.go)
+	proxyUDPState // socks-udp (proxies.go)
 }
 
 // New builds a controller with journals and a logger.

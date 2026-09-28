@@ -208,10 +208,7 @@ func (s *Server) associate(c net.Conn) {
 		}
 		if client == nil || (from.IP.Equal(client.IP) && from.Port == client.Port) {
 			client = from
-			if n < 4 || buf[2] != 0 {
-				continue
-			}
-			dst, hl, err := ParseAddr(buf[3:n])
+			dst, payload, err := ParseUDPHeader(buf[:n])
 			if err != nil {
 				continue
 			}
@@ -219,7 +216,7 @@ func (s *Server) associate(c net.Conn) {
 			if err != nil {
 				continue
 			}
-			pc.WriteToUDP(buf[3+hl:n], ua)
+			pc.WriteToUDP(payload, ua)
 			continue
 		}
 		// Reply from a remote: wrap and send to the client.

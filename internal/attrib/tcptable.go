@@ -126,3 +126,9 @@ func (s *TCPSnapshot) Listening(local netip.AddrPort, pid uint32) bool {
 	}
 	return false
 }
+
+// OwnerOf is ownerOf for rows read by ReadTCPTable (both families, IPv6
+// rows unmapped).
+func OwnerOf(rows []TCPRow, local, remote netip.AddrPort) (uint32, bool) {
+	return ownerOf(rows, norm(local), norm(remote))
+}

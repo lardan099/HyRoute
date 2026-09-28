@@ -5,11 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/lardan099/hyroute/internal/flows"
 	"github.com/lardan099/hyroute/internal/groups"
+	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/localproxy"
 	"github.com/lardan099/hyroute/internal/relay"
 	"github.com/lardan099/hyroute/internal/socks5"
@@ -34,12 +38,25 @@ type ProxyView struct {
 	Recv   int64  `json:"recv"`
 	// Address clients use (127.0.0.1:port, or this PC's LAN addresses).
 	Addresses []string `json:"addresses"`
+
+	// socks-udp. Active and Total count TCP connections only: every UDP
+	// session holds a control connection, which the server counts too.
+	UDPEffective bool   `json:"udpOn"`                // the switch's effective value (LocalProxy.UDPOn)
+	UDPServed    bool   `json:"udpServed"`            // UDP ASSOCIATE served now (listening, UDP on, socket open)
+	UDPActive    int64  `json:"udpActive"`            // open UDP sessions
+	UDPTotal     int64  `json:"udpTotal"`             // UDP sessions served
+	UDPDropped   int64  `json:"udpDropped"`           // datagrams dropped
+	UDPError     string `json:"udpError,omitempty"`   // LAN: the shared UDP port did not open (retrying)
+	UDPBlocked   string `json:"udpBlocked,omitempty"` // "server" | "group": the target cannot carry UDP now
 }
 
 type proxyRun struct {
 	cfg store.LocalProxy
 	srv *localproxy.Server
 	err string
+	// socks-udp: udpErr: UDP left off because the firewall rule for the
+	// port is not set (a LAN socket without it makes Windows ask the user).
+	udpErr string
 }
 
 // proxyProfileLocked resolves "" to the main target (a server or a group).
@@ -53,25 +70,30 @@ func (c *Controller) proxyProfileLocked(p store.LocalProxy) string {
 func (c *Controller) Proxies() []ProxyView {
 	c.mu.Lock()
 	list := append([]store.LocalProxy(nil), c.proxies...)
-	connected := c.sess != nil
+	sess := c.sess
+	connected := sess != nil
 	names := map[string]string{}
+	targets := map[string]string{}
 	for _, p := range list {
-		if n := c.targetNameLocked(c.proxyProfileLocked(p)); n != "" {
+		targets[p.ID] = c.proxyProfileLocked(p)
+		if n := c.targetNameLocked(targets[p.ID]); n != "" {
 			names[p.ID] = n
 		}
 	}
 	c.mu.Unlock()
 	c.proxyMu.Lock()
-	defer c.proxyMu.Unlock()
 	out := make([]ProxyView, 0, len(list))
 	for _, p := range list {
-		v := ProxyView{LocalProxy: p, Password: p.Password, ProfileName: names[p.ID], State: "off", Addresses: []string{}}
+		v := ProxyView{LocalProxy: p, Password: p.Password, ProfileName: names[p.ID], State: "off", Addresses: []string{}, UDPEffective: p.UDPOn()}
 		switch r := c.proxyRuns[p.ID]; {
 		case !p.Enabled:
 		case r != nil && r.srv != nil:
 			v.State = "listening"
-			v.Active, v.Total = r.srv.Active.Load(), r.srv.Total.Load()
 			v.Sent, v.Recv = r.srv.Sent.Load(), r.srv.Recv.Load()
+			proxyUDPView(&v, r.srv)
+			if r.udpErr != "" {
+				v.UDPError = r.udpErr
+			}
 		case r != nil && r.err != "":
 			v.State, v.Error = "error", r.err
 		case !connected:
@@ -79,6 +101,13 @@ func (c *Controller) Proxies() []ProxyView {
 		}
 		v.Addresses = proxyAddresses(p)
 		out = append(out, v)
+	}
+	c.proxyMu.Unlock()
+	// Endpoints are asked with no lock held (they take their own).
+	for i := range out {
+		if v := &out[i]; v.State == "listening" && v.UDPServed && sess != nil {
+			v.UDPBlocked = c.proxyUDPBlocked(sess, targets[v.ID])
+		}
 	}
 	return out
 }
@@ -108,6 +137,9 @@ func validateProxy(p store.LocalProxy, others []store.LocalProxy) error {
 		if o.ID != p.ID && o.Port == p.Port {
 			return fmt.Errorf("порт %d уже занят прокси «%s»", p.Port, o.Name)
 		}
+	}
+	if p.UDP != "" && p.UDP != "on" && p.UDP != "off" { // socks-udp
+		return errors.New("UDP: неверное значение")
 	}
 	if (p.Username == "") != (p.Password == "") {
 		return errors.New("укажите и логин, и пароль, или оставьте оба пустыми")
@@ -161,6 +193,7 @@ func (c *Controller) SaveProxy(in ProxyInput) (ProxyView, error) {
 	p.Password = in.Password
 	p.Name = strings.TrimSpace(p.Name)
 	p.Username = strings.TrimSpace(p.Username)
+	p.NormalizeUDP()
 	c.mu.Lock()
 	if p.Profile != "" && !c.targetExistsLocked(p.Profile) {
 		c.mu.Unlock()
@@ -252,7 +285,9 @@ func (c *Controller) syncProxiesLife() {
 }
 
 // syncProxies opens the ports of enabled proxies while connected and
-// closes the rest. A changed proxy is reopened.
+// closes the rest. A changed proxy is reopened. The firewall rules are set
+// before any port opens: a LAN socket bound without its rule can make
+// Windows Firewall ask the user, and the answer creates broad rules.
 func (c *Controller) syncProxies() {
 	c.mu.Lock()
 	connected := c.sess != nil
@@ -286,7 +321,30 @@ func (c *Controller) syncProxies() {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	var lanPorts []int
+	var fw proxyPorts
+	for _, id := range ids {
+		if p := want[id]; p.LAN && lanPortErr(p) == nil {
+			fw.tcp = append(fw.tcp, p.Port)
+			if p.UDPOn() {
+				fw.udp = append(fw.udp, p.Port)
+			}
+		}
+	}
+	// c.proxyFW nil: the rules are unknown (HyRoute just started, or it was
+	// disconnected with LAN ports open and "Remove firewall rule" may have
+	// deleted them since), so the first sync of a connection sets them.
+	have := proxyPorts{}
+	if c.proxyFW != nil {
+		have = *c.proxyFW
+	}
+	if c.ProxyFirewall != nil && ((connected && c.proxyFW == nil) || !equalInts(fw.tcp, have.tcp) || !equalInts(fw.udp, have.udp)) {
+		if err := c.ProxyFirewall(fw.tcp, fw.udp); err != nil {
+			c.Log.Error("firewall rule for local proxies not set: other devices may not reach them", "err", err)
+		} else {
+			c.proxyFW = &proxyPorts{tcp: slices.Clone(fw.tcp), udp: slices.Clone(fw.udp)} // non-nil: known
+		}
+	}
+	c.reopenUDPRuledLocked()
 	for _, id := range ids {
 		p := want[id]
 		if err := lanPortErr(p); err != nil { // saved before the check existed
@@ -294,14 +352,12 @@ func (c *Controller) syncProxies() {
 			c.Log.Error("local proxy not started", "name", p.Name, "port", p.Port, "err", err)
 			continue
 		}
-		if p.LAN {
-			lanPorts = append(lanPorts, p.Port)
-		}
 		if c.proxyRuns[id] != nil {
 			continue
 		}
-		srv := &localproxy.Server{Username: p.Username, Password: p.Password, Dial: c.proxyDialer(p), Associate: c.proxyAssociator(p),
-			MaxConns: localproxy.DefaultMaxConns}
+		srv := &localproxy.Server{Username: p.Username, Password: p.Password, Dial: c.proxyDialer(p), MaxConns: localproxy.DefaultMaxConns}
+		c.proxyUDPServer(srv, p)
+		udpErr := c.proxyUDPUnruledLocked(srv, p)
 		host := "127.0.0.1"
 		if p.LAN {
 			host, srv.MaxConns = lanHost, lanMaxConns
@@ -312,25 +368,18 @@ func (c *Controller) syncProxies() {
 		srv.OnAcceptError = func(err error) {
 			c.Log.Error("local proxy accept failed", "name", p.Name, "port", p.Port, "err", err)
 		}
-		r := &proxyRun{cfg: p}
+		r := &proxyRun{cfg: p, udpErr: udpErr}
 		if err := srv.Listen(fmt.Sprintf("%s:%d", host, p.Port)); err != nil {
 			r.err = fmt.Sprintf("порт %d не открылся: %v (занят другой программой?)", p.Port, err)
 			c.Log.Error("local proxy not started", "name", p.Name, "port", p.Port, "err", err)
 		} else {
 			r.srv = srv
-			c.Log.Info("local proxy listening (SOCKS5 and HTTP)", "name", p.Name, "addr", srv.Addr(), "auth", p.Username != "")
+			c.Log.Info("local proxy listening (SOCKS5 and HTTP)", "name", p.Name, "addr", srv.Addr(), "auth", p.Username != "", "udp", srv.UDPState())
+			if err := srv.UDPError(); err != nil {
+				c.Log.Error("local proxy UDP port not opened: UDP ASSOCIATE refused, retrying", "name", p.Name, "port", p.Port, "err", err)
+			}
 		}
 		c.proxyRuns[id] = r
-	}
-	// c.proxyFW nil: the rule is unknown (HyRoute just started, or it was
-	// disconnected with LAN ports open and "Remove firewall rule" may have
-	// deleted the rule since), so the first sync of a connection sets it.
-	if c.ProxyFirewall != nil && ((connected && c.proxyFW == nil) || !equalInts(lanPorts, c.proxyFW)) {
-		if err := c.ProxyFirewall(lanPorts); err != nil {
-			c.Log.Error("firewall rule for local proxies not set: other devices may not reach them", "err", err)
-		} else {
-			c.proxyFW = append([]int{}, lanPorts...) // non-nil: known
-		}
 	}
 }
 
@@ -379,78 +428,6 @@ func (c *Controller) proxyDialer(p store.LocalProxy) localproxy.Dialer {
 		}
 		return c.newTunnelConn(conn, ep, c.proxyRecord(p, 6, dst, id, "", false, "proxied")), nil
 	}
-}
-
-// proxyAssociator opens UDP associations through the proxy's server, as
-// proxyDialer does connections.
-func (c *Controller) proxyAssociator(p store.LocalProxy) localproxy.Associator {
-	return func(ctx context.Context) (localproxy.UDPTunnel, error) {
-		c.mu.Lock()
-		s := c.sess
-		id := c.proxyProfileLocked(p)
-		c.mu.Unlock()
-		if s == nil {
-			return nil, errors.New("HyRoute не подключён")
-		}
-		if groups.IsGroupID(id) {
-			return c.proxyGroupAssociate(ctx, s, p, id)
-		}
-		ep := s.Endpoint(id)
-		if ep == nil {
-			return nil, errors.New("сервер прокси не запущен")
-		}
-		if !ep.Available() || !ep.UDPAvailable() {
-			ep.NoteRejected()
-			c.proxyRecord(p, 17, socks5.Addr{}, id, "", false, "rst: tunnel unavailable") // stats
-			return nil, socks5.ReplyError(1)
-		}
-		a, err := ep.UDPAssociate(ctx)
-		if err != nil {
-			if !proxyDialStopped(ctx) { // stats
-				ep.NoteRejected()
-				c.proxyRecord(p, 17, socks5.Addr{}, id, "", false, "rst: socks5 connect failed")
-			}
-			return nil, err
-		}
-		return c.newTunnelUDP(a, ep, c.proxyRecord(p, 17, socks5.Addr{}, id, "", false, "proxied")), nil
-	}
-}
-
-// tunnelUDP counts a proxy's UDP association like tunnelConn: one
-// statistics record per association.
-type tunnelUDP struct {
-	*socks5.UDPAssoc
-	ep  *tunnels.Endpoint
-	rec *flows.Record
-	fc  *flowCloser
-}
-
-func (c *Controller) newTunnelUDP(a *socks5.UDPAssoc, ep *tunnels.Endpoint, rec *flows.Record) *tunnelUDP {
-	return &tunnelUDP{UDPAssoc: a, ep: ep, rec: rec, fc: &flowCloser{rec: rec, reg: c.proxyFlows}}
-}
-
-func (t *tunnelUDP) WriteTo(payload []byte, dst socks5.Addr) error {
-	err := t.UDPAssoc.WriteTo(payload, dst)
-	if err == nil {
-		t.ep.NoteTraffic(int64(len(payload)), 0)
-		t.rec.Sent.Add(int64(len(payload)))
-	}
-	return err
-}
-
-func (t *tunnelUDP) ReadFrom(buf []byte) (int, socks5.Addr, error) {
-	n, from, err := t.UDPAssoc.ReadFrom(buf)
-	if n > 0 {
-		t.ep.NoteTraffic(0, int64(n))
-		t.rec.Recv.Add(int64(n))
-	}
-	return n, from, err
-}
-
-// Close ends the association and its record.
-func (t *tunnelUDP) Close() error {
-	t.fc.close()
-	return t.UDPAssoc.Close()
 }
 
 // tunnelConn counts a proxy connection into its server's traffic, as the
@@ -512,9 +489,322 @@ func (c *Controller) stopProxies() {
 		}
 		delete(c.proxyRuns, id)
 	}
-	// "Remove firewall rule" may delete the rule while disconnected: the
-	// next Connect sets it again. A rule known to be absent stays absent.
-	if len(c.proxyFW) > 0 {
+	// "Remove firewall rule" may delete the rules while disconnected: the
+	// next Connect sets them again. Rules known to be absent stay absent.
+	if c.proxyFW != nil && (len(c.proxyFW.tcp) > 0 || len(c.proxyFW.udp) > 0) {
 		c.proxyFW = nil
 	}
+}
+
+// ---- socks-udp: SOCKS5 UDP ASSOCIATE of local proxies ----
+
+// proxyUDPState is socks-udp's controller state.
+type proxyUDPState struct {
+	// proxyWarnMu guards proxyWarned (innermost, held around no call).
+	proxyWarnMu sync.Mutex
+	proxyWarned map[string]time.Time // per proxy ID and message: the last warning
+	// v12Checked: KeepV12ProxyUDP has looked for v1.2.0's rule since the
+	// start (guarded by mu).
+	v12Checked bool
+}
+
+// proxyPorts are the LAN proxy ports the firewall rules allow.
+type proxyPorts struct{ tcp, udp []int }
+
+// lanMaxUDP caps simultaneous UDP sessions of a LAN proxy (DefaultMaxUDP
+// for one on this computer).
+const lanMaxUDP = 32
+
+// proxyUDPUnruledLocked leaves UDP off on a LAN proxy whose UDP firewall
+// rule is not set (ProxyFirewall failed): its socket would bind on every
+// interface and make Windows Firewall ask the user. Returns the reason to
+// show (proxyMu held).
+func (c *Controller) proxyUDPUnruledLocked(srv *localproxy.Server, p store.LocalProxy) string {
+	if !p.LAN || srv.AssociateUDP == nil || c.proxyUDPRuledLocked(p.Port) {
+		return ""
+	}
+	srv.AssociateUDP, srv.SharedUDP = nil, false
+	c.Log.Error("local proxy UDP not served: firewall rule not set", "name", p.Name, "port", p.Port)
+	return "UDP через этот прокси выключен: правило брандмауэра для UDP-порта не установлено (подробности в журнале). TCP работает. HyRoute попробует снова при следующем подключении или изменении прокси."
+}
+
+// proxyUDPRuledLocked: the UDP firewall rule allows this port (proxyMu held).
+func (c *Controller) proxyUDPRuledLocked(port int) bool {
+	return c.ProxyFirewall == nil || (c.proxyFW != nil && slices.Contains(c.proxyFW.udp, port))
+}
+
+// reopenUDPRuledLocked closes proxies started without UDP for want of a
+// firewall rule once the rule is set, so syncProxies reopens them with UDP
+// (proxyMu held).
+func (c *Controller) reopenUDPRuledLocked() {
+	for id, r := range c.proxyRuns {
+		if r.udpErr != "" && c.proxyUDPRuledLocked(r.cfg.Port) {
+			if r.srv != nil {
+				r.srv.Close()
+			}
+			delete(c.proxyRuns, id)
+		}
+	}
+}
+
+// proxyUDPView fills the UDP figures of a listening proxy (proxyMu held).
+func proxyUDPView(v *ProxyView, srv *localproxy.Server) {
+	udpActive, udpTotal := srv.UDPActive.Load(), srv.UDPTotal.Load()
+	// TCP connections only: every UDP ASSOCIATE control connection, refused
+	// ones included, is left out.
+	v.Active = max(0, srv.Active.Load()-srv.UDPCtlActive.Load())
+	v.Total = max(0, srv.Total.Load()-srv.UDPCtlTotal.Load())
+	v.UDPServed = srv.UDP()
+	v.UDPActive, v.UDPTotal, v.UDPDropped = udpActive, udpTotal, srv.UDPDropped.Load()
+	if err := srv.UDPError(); err != nil {
+		v.UDPError = fmt.Sprintf("UDP-порт %d не открылся: %v. TCP работает, UDP через этот прокси — нет (порт занят другой программой?). HyRoute пробует снова каждые 30 секунд.", v.Port, err)
+	}
+}
+
+// proxyUDPBlocked says why the target cannot carry UDP now: "server" (the
+// server does not allow UDP), "group" (no member can) or "". No lock held.
+func (c *Controller) proxyUDPBlocked(s Session, id string) string {
+	if groups.IsGroupID(id) {
+		avail, udp := false, false
+		for _, m := range c.groupsRT.Members(id) {
+			if ep := s.Endpoint(m); ep != nil {
+				avail = avail || ep.Available()
+				udp = udp || ep.UDPAvailable()
+			}
+		}
+		if avail && !udp {
+			return "group"
+		}
+		return ""
+	}
+	if ep := s.Endpoint(id); ep != nil {
+		if st := ep.Status(); st.State == hysteria.Connected && !st.UDPEnabled {
+			return "server"
+		}
+	}
+	return ""
+}
+
+// proxyUDPServer sets up a proxy's UDP side: served when the switch is on;
+// a socket per session on this computer, the TCP port number shared by
+// every session for a LAN proxy (its firewall rule stays exact). The owner
+// check covers sessions from this computer on a proxy with a password
+// (LAN proxies always have one).
+func (c *Controller) proxyUDPServer(srv *localproxy.Server, p store.LocalProxy) {
+	if p.UDPOn() {
+		srv.AssociateUDP = c.proxyUDPDialer(p)
+		srv.MaxUDP = localproxy.DefaultMaxUDP
+		if p.LAN {
+			srv.SharedUDP, srv.MaxUDP, srv.Owners = true, lanMaxUDP, proxyOwners
+		} else if p.Username != "" {
+			srv.Owners = proxyOwners
+		}
+	}
+	srv.OnUDPLimit = func(n int64) {
+		c.Log.Warn("local proxy UDP full: new associations refused", "name", p.Name, "port", p.Port, "limit", srv.MaxUDP, "refused", n)
+	}
+	srv.OnUDPEvent = func(ev localproxy.UDPEvent, n int64, size int) {
+		if ev == localproxy.EventOwnerUnknown {
+			c.Log.Warn("local proxy UDP: owner of the control connection not found", "name", p.Name, "port", p.Port, "count", n)
+			return
+		}
+		c.Log.Warn("local proxy UDP", "name", p.Name, "port", p.Port, "event", string(ev), "count", n, "size", size)
+	}
+	srv.OnUDPPort = func(err error) {
+		if err == nil {
+			c.Log.Info("local proxy UDP port opened", "name", p.Name, "port", p.Port)
+			return
+		}
+		c.Log.Warn("local proxy UDP socket not opened", "name", p.Name, "port", p.Port, "err", err)
+	}
+}
+
+// proxyUDPDialer opens a proxy's UDP association through its server, or
+// through one member of its group chosen once for the association
+// (ChooseUDP). It never goes out directly.
+func (c *Controller) proxyUDPDialer(p store.LocalProxy) localproxy.UDPDialer {
+	return func(ctx context.Context) (localproxy.UDPUpstream, error) {
+		c.mu.Lock()
+		s := c.sess
+		id := c.proxyProfileLocked(p)
+		c.mu.Unlock()
+		if s == nil {
+			return nil, errors.New("HyRoute не подключён")
+		}
+		member, group, failover := id, "", false
+		abandon := func() {} // every committed pick is used by a flow or abandoned
+		if groups.IsGroupID(id) {
+			pk, ok := c.groupsRT.ChooseUDP(id, groups.Hint{App: "proxy:" + p.ID}, func(m string) bool {
+				ep := s.Endpoint(m)
+				return ep != nil && ep.UDPAvailable()
+			})
+			if !ok {
+				c.groupsRT.NoteRejected(id)
+				c.proxyUDPFailed(p, refusedVia(pk, id), id, pk.Failover, "dropped: tunnel unavailable")
+				c.warnProxyUDP(p, "local proxy: no server of the group can carry UDP", "group", c.profileName(id))
+				return nil, socks5.ReplyError(1)
+			}
+			member, group, failover = pk.Member, id, pk.Failover
+			abandon = func() { c.groupsRT.Abandon(pk) }
+		}
+		ep := s.Endpoint(member)
+		if ep == nil {
+			abandon()
+			return nil, errors.New("сервер прокси не запущен")
+		}
+		if !ep.UDPAvailable() { // the member may have gone down since it was chosen
+			abandon()
+			ep.NoteRejected()
+			c.proxyUDPFailed(p, member, group, failover, "dropped: tunnel unavailable")
+			if ep.Available() {
+				c.warnProxyUDP(p, "local proxy: server does not allow UDP", "server", ep.Profile.Name)
+				return nil, socks5.ReplyError(2)
+			}
+			return nil, socks5.ReplyError(1)
+		}
+		a, err := ep.UDPAssociate(ctx) // reported to the group through the endpoint (dst "udp")
+		if err != nil && (errors.Is(err, context.Canceled) || ctx.Err() == context.Canceled) {
+			abandon() // the proxy is closing: not a failure of the server, no record
+			return nil, err
+		}
+		if err != nil {
+			ep.NoteRejected()
+			c.proxyUDPFailed(p, member, group, failover, "dropped: socks5 associate failed")
+			c.warnProxyUDP(p, "local proxy: UDP association through the server failed", "err", err)
+			return nil, err
+		}
+		// One statistics record per association: it has many destinations,
+		// so the record has none.
+		rec := c.proxyRecord(p, 17, socks5.Addr{}, member, group, failover, "proxied")
+		return &tunnelUDP{a: a, ep: ep, rec: rec, fc: &flowCloser{rec: rec, reg: c.proxyFlows}}, nil
+	}
+}
+
+// proxyUDPFailed records a refused UDP association of a local proxy: a
+// record closed at once, which the statistics count as a failed connection
+// (View.Failed). Not connected, no endpoint and a closing proxy leave none.
+func (c *Controller) proxyUDPFailed(p store.LocalProxy, member, group string, failover bool, outcome string) {
+	c.proxyFlows.Close(c.proxyRecord(p, 17, socks5.Addr{}, member, group, failover, outcome), time.Now())
+}
+
+// warnProxyUDP logs a UDP refusal at most once a minute per proxy and
+// message.
+func (c *Controller) warnProxyUDP(p store.LocalProxy, msg string, args ...any) {
+	key := p.ID + "\x00" + msg
+	now := time.Now()
+	c.proxyWarnMu.Lock()
+	if c.proxyWarned == nil {
+		c.proxyWarned = map[string]time.Time{}
+	}
+	last, seen := c.proxyWarned[key]
+	quiet := seen && now.Sub(last) < time.Minute
+	if !quiet {
+		c.proxyWarned[key] = now
+	}
+	c.proxyWarnMu.Unlock()
+	if !quiet {
+		c.Log.Warn(msg, append([]any{"name", p.Name}, args...)...)
+	}
+}
+
+// tunnelUDP counts a proxy UDP association into its server's traffic and
+// its statistics record (payload bytes), as tunnelConn does for TCP.
+type tunnelUDP struct {
+	a   *socks5.UDPAssoc
+	ep  *tunnels.Endpoint
+	rec *flows.Record
+	fc  *flowCloser
+}
+
+func (t *tunnelUDP) WriteTo(b []byte, dst socks5.Addr) error {
+	err := t.a.WriteTo(b, dst)
+	if err == nil {
+		t.ep.NoteTraffic(int64(len(b)), 0)
+		t.rec.Sent.Add(int64(len(b)))
+	}
+	return err
+}
+
+func (t *tunnelUDP) ReadFrom(b []byte) (int, socks5.Addr, error) {
+	n, from, err := t.a.ReadFrom(b)
+	if err == nil {
+		t.ep.NoteTraffic(0, int64(n))
+		t.rec.Recv.Add(int64(n))
+	}
+	return n, from, err
+}
+
+// Close ends the association and, once, its record.
+func (t *tunnelUDP) Close() error {
+	t.fc.close()
+	return t.a.Close()
+}
+
+// KeepV12ProxyUDP keeps UDP on for the LAN proxies of a v1.2.0 user: v1.2.0
+// served UDP on every LAN proxy, enabled or not, and wrote no "udp" field,
+// while a LAN proxy's default is now off. Its UDP firewall rule is the
+// evidence (ours carry a mark, fwrule.LegacyProxyUDP); the first sync of a
+// connection rewrites the rule, so this happens once. main calls it once
+// after Load, before the window can show or edit a proxy, so the card and
+// the editor show the real state from the start. Needs no connection.
+func (c *Controller) KeepV12ProxyUDP() {
+	if c.LegacyProxyUDP == nil {
+		return
+	}
+	c.mu.Lock()
+	if c.v12Checked || c.proxiesBroken != nil {
+		c.mu.Unlock()
+		return
+	}
+	c.v12Checked = true
+	lan := false
+	for _, p := range c.proxies {
+		if p.UDP != "" { // written by this version: nothing of v1.2.0 left
+			c.mu.Unlock()
+			return
+		}
+		lan = lan || p.LAN
+	}
+	c.mu.Unlock()
+	if !lan || !c.LegacyProxyUDP() { // netsh, outside the lock
+		return
+	}
+	c.mu.Lock()
+	next := append([]store.LocalProxy(nil), c.proxies...)
+	var names []string
+	for i := range next {
+		if next[i].LAN && next[i].UDP == "" {
+			next[i].UDP = "on"
+			names = append(names, next[i].Name)
+		}
+	}
+	if len(names) == 0 {
+		c.mu.Unlock()
+		return
+	}
+	err := c.saveProxiesLocked(next)
+	c.mu.Unlock()
+	if err != nil {
+		c.Log.Error("local proxies: UDP of v1.2.0 not kept", "err", err)
+		return
+	}
+	c.Log.Info("local proxies: UDP stays on for LAN proxies set up in v1.2.0", "names", strings.Join(names, ", "))
+	c.changed()
+}
+
+// proxyUDPDiag is the UDP part of a proxy's diagnostics line (no
+// addresses).
+func proxyUDPDiag(p ProxyView) string {
+	mode := "выкл"
+	switch {
+	case p.UDPError != "":
+		mode = "ошибка"
+	case p.UDPEffective && p.LAN:
+		mode = "вкл, проверка программы для этого ПК"
+	case p.UDPEffective && p.Username != "":
+		mode = "вкл, проверка программы"
+	case p.UDPEffective:
+		mode = "вкл"
+	}
+	return fmt.Sprintf(", UDP %s, UDP-сессий %d, отброшено UDP %d%s", mode, p.UDPTotal, p.UDPDropped, msgSuffix(p.UDPError))
 }

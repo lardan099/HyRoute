@@ -223,7 +223,9 @@ func main() {
 	ctl.ListRunning = procinfo.ListRunning
 	// netmodes: New only allocates; nothing is read until «Сети» is used.
 	ctl.NetWatcher = netwatch.New()
-	ctl.ProxyFirewall = func(ports []int) error { return fwrule.SetProxyPorts(exe, ports) }
+	ctl.ProxyFirewall = func(tcp, udp []int) error { return fwrule.SetProxyPorts(exe, tcp, udp) }
+	ctl.LegacyProxyUDP = fwrule.LegacyProxyUDP
+	ctl.KeepV12ProxyUDP() // before the window can show a proxy
 	ctl.Updater = &app.Updater{Repo: updateRepo, Dir: core.DefaultDir("updates"), Core: coreMgr, Client: coreMgr.Client}
 	cleanUpdates(ctl.Updater.Dir)
 

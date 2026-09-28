@@ -2,8 +2,9 @@
 // setting (trading terminals, browsers, bots): one port speaks both SOCKS5
 // and HTTP (CONNECT and plain requests), told apart by the first byte.
 // Every connection goes out through Dial, i.e. through one Hysteria
-// profile. SOCKS5 UDP ASSOCIATE goes through Associate (see udp.go), and is
-// refused without it.
+// profile. SOCKS5 UDP ASSOCIATE is served when AssociateUDP is set: on one
+// shared UDP socket on the TCP port number (SharedUDP, LAN proxies) or on a
+// socket per association (see udp.go); HTTP is TCP only.
 package localproxy
 
 import (
@@ -62,11 +63,6 @@ type Server struct {
 	// set (SOCKS5 user/password, HTTP Proxy-Authorization: Basic).
 	Username, Password string
 	Dial               Dialer
-	// Associate opens a UDP association through the tunnel; nil = SOCKS5
-	// UDP ASSOCIATE is refused.
-	Associate Associator
-	// UDPError: the UDP port did not open (UDP ASSOCIATE is refused).
-	UDPError string
 	// OnError reports failed dials (logging); may be nil.
 	OnError func(dst string, err error)
 	// OnAcceptError reports a failed Accept (logging), at most once per
@@ -82,9 +78,44 @@ type Server struct {
 	// the accept loop and must not block; may be nil.
 	OnLimit func(refused int64)
 
-	Active       atomic.Int64 // open client connections
+	// AssociateUDP serves SOCKS5 UDP ASSOCIATE (nil: refused with reply 7,
+	// no UDP socket is opened).
+	AssociateUDP UDPDialer
+	// SharedUDP: one UDP socket on the TCP port number (same host) serves
+	// every association (LAN proxies: the firewall rule stays exact).
+	// false: each association gets its own socket on <TCP host>:0.
+	SharedUDP bool
+	// Owners, when set, makes every association whose control connection
+	// comes from this computer "owner-checked": it pins only a UDP source
+	// owned by the process that owns the control connection. Without
+	// SharedUDP every peer is local (loopback proxies with a password);
+	// with SharedUDP it applies to peers that are loopback or one of this
+	// PC's addresses (a LAN proxy used locally), decided per association.
+	// Peers on other devices are checked by IP only.
+	Owners OwnerLookup
+	// MaxUDP caps simultaneous associations (0: DefaultMaxUDP).
+	MaxUDP int
+	// OnUDPLimit reports associations refused over MaxUDP; OnUDPEvent
+	// reports datagram drops and association events per kind with the
+	// count since the last report and one example size; OnUDPPort reports
+	// socket results only: the shared socket opening late (err == nil) or
+	// a socket failing to bind. Each at most once per limitReport per key
+	// (an opening at once); called without locks held; may be nil; must
+	// not block.
+	OnUDPLimit func(refused int64)
+	OnUDPEvent func(ev UDPEvent, count int64, size int)
+	OnUDPPort  func(err error)
+
+	UDPActive  atomic.Int64 // open associations
+	UDPTotal   atomic.Int64 // associations served
+	UDPDropped atomic.Int64 // datagrams dropped (Drop* events only)
+	// UDPCtlActive/UDPCtlTotal count UDP ASSOCIATE control connections,
+	// refused ones included (Active/Total minus these = TCP connections).
+	UDPCtlActive, UDPCtlTotal atomic.Int64
+
+	Active       atomic.Int64 // open client connections (UDP control connections included)
 	Total        atomic.Int64 // connections served
-	Sent, Recv   atomic.Int64 // bytes to / from the internet
+	Sent, Recv   atomic.Int64 // bytes to / from the internet (UDP payloads included)
 	AuthFailures atomic.Int64
 	Refused      atomic.Int64 // connections closed over MaxConns
 
@@ -95,11 +126,13 @@ type Server struct {
 	mu     sync.Mutex
 	closed bool
 	conn   map[net.Conn]struct{} // clients and their tunnel connections
-	// UDP side (udp.go): the port, bound associations by client address,
-	// associations waiting for their first datagram (guarded by mu).
-	udp        *net.UDPConn
-	byAddr     map[netip.AddrPort]*assoc
-	pendingUDP []*assoc
+	// UDP side (udp.go). udpMu guards shared, udpErr and nassoc; it is
+	// never nested with mu or a port's mu.
+	udpMu  sync.Mutex
+	shared *udpPort // SharedUDP: nil while not bound
+	udpErr error    // SharedUDP: why shared is nil
+	nassoc int      // reserved + open associations (MaxUDP)
+	udpRep reporter // rate limiting of the UDP callbacks
 	// Refusals not reported yet and the last report (serve only).
 	unreported int64
 	reportedAt time.Time
@@ -122,7 +155,7 @@ func (s *Server) start(ln net.Listener) {
 	s.ln = ln
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.conn = map[net.Conn]struct{}{}
-	s.listenUDP()
+	s.startUDP()
 	s.wg.Add(1)
 	go s.serve()
 }
@@ -147,9 +180,7 @@ func (s *Server) Addr() string { return s.ln.Addr().String() }
 func (s *Server) Close() error {
 	err := s.ln.Close()
 	s.cancel()
-	if s.udp != nil {
-		s.udp.Close()
-	}
+	s.closeUDP()
 	s.mu.Lock()
 	s.closed = true
 	for c := range s.conn {
@@ -412,6 +443,9 @@ func (s *Server) socks(c net.Conn) {
 	switch r[1] {
 	case socks5.CmdConnect:
 	case socks5.CmdUDPAssociate:
+		s.UDPCtlActive.Add(1)
+		s.UDPCtlTotal.Add(1)
+		defer s.UDPCtlActive.Add(-1)
 		s.associate(c, dst)
 		return
 	default:

@@ -44,13 +44,16 @@
     return p;
   }
 
+  // Mirrors LocalProxy.UDPOn: on by default here, off for LAN proxies.
+  const udpOn = (p: ProxyInput) => p.udp === 'on' || (p.udp !== 'off' && !p.lan);
+
   function add() {
-    editing = { id: '', name: '', enabled: true, profile: '', port: nextPort(), lan: false, username: '', password: '' };
+    editing = { id: '', name: '', enabled: true, profile: '', port: nextPort(), lan: false, username: '', password: '', udp: '' };
     showPass = true;
   }
 
   function edit(p: ProxyView) {
-    editing = { id: p.id, name: p.name, enabled: p.enabled, profile: p.profile, port: p.port, lan: p.lan, username: p.username, password: p.password };
+    editing = { id: p.id, name: p.name, enabled: p.enabled, profile: p.profile, port: p.port, lan: p.lan, username: p.username, password: p.password, udp: p.udp ?? '' };
     showPass = false;
   }
 
@@ -71,7 +74,8 @@
   async function toggle(p: ProxyView) {
     error = '';
     try {
-      await api.SaveProxy({ id: p.id, name: p.name, enabled: !p.enabled, profile: p.profile, port: p.port, lan: p.lan, username: p.username, password: p.password });
+      // Field by field: whatever is left out (udp) would return to its default.
+      await api.SaveProxy({ id: p.id, name: p.name, enabled: !p.enabled, profile: p.profile, port: p.port, lan: p.lan, username: p.username, password: p.password, udp: p.udp });
       await load();
     } catch (e) {
       error = errText(e);
@@ -120,7 +124,7 @@
       <h1>Локальные прокси</h1>
       <p class="muted sub">
         Порт на этом компьютере для программ, в которых можно указать прокси: терминалы бирж, браузеры, боты. Каждый прокси ведёт через свой
-        сервер, независимо от правил. Один порт понимает и SOCKS5, и HTTP.
+        сервер, независимо от правил. Один порт понимает и SOCKS5 (с UDP), и HTTP.
       </p>
     </div>
     <button class="primary" onclick={add} disabled={ui.profiles.length === 0}><Icon name="plus" size={16} />Прокси</button>
@@ -139,7 +143,7 @@
         <b>Прокси пока нет</b>
         <p class="muted small">
           Например: терминал Binance через сервер в Японии на порту 10801, а терминал Bybit через Сингапур на 10802. В программе указываете
-          <code>127.0.0.1</code> и порт, тип SOCKS5 или HTTP — подходят оба.
+          <code>127.0.0.1</code> и порт, тип SOCKS5 или HTTP — подходят оба. UDP передаётся только через SOCKS5.
         </p>
       </div>
     </section>
@@ -156,6 +160,7 @@
           <div class="muted small">
             через {via(p)}
             {#if p.username}· с паролем{:else}· без пароля{/if}
+            {#if p.udpOn}· UDP{/if}
             {#if p.lan}· доступен из локальной сети{/if}
           </div>
         </div>
@@ -163,6 +168,12 @@
         <button class="icon danger" onclick={() => remove(p)} title="Удалить"><Icon name="trash" size={16} /></button>
       </div>
       {#if p.error}<div class="note error small">{hide(p.error)}</div>{/if}
+      {#if p.udpError}<div class="note error small">{hide(p.udpError)}</div>{/if}
+      {#if p.udpBlocked === 'server'}
+        <div class="note info small">Сервер {hide(p.profileName)} не разрешает UDP: UDP через этот прокси не передаётся.</div>
+      {:else if p.udpBlocked === 'group'}
+        <div class="note info small">Ни один сервер группы {hide(p.profileName)} сейчас не передаёт UDP.</div>
+      {/if}
       <div class="addrs">
         {#each p.addresses as a, i}
           <div class="addr">
@@ -175,7 +186,15 @@
         {/each}
       </div>
       {#if p.state === 'listening'}
-        <div class="faint small">Соединений сейчас {p.active}, всего {p.total} · ↑ {fmtBytes(p.sent)} ↓ {fmtBytes(p.recv)}</div>
+        <div class="faint small">
+          Соединений сейчас {p.active}, всего {p.total}{#if p.udpServed}
+            · UDP-сессий {p.udpActive} (всего {p.udpTotal}){/if} · ↑ {fmtBytes(p.sent)} ↓ {fmtBytes(p.recv)}{#if p.udpDropped > 0}
+            <span
+              title="Больше предела Hysteria (около 4 КБ, меньше для длинных доменных имён), от чужого адреса или другой программы, разбитые на части (FRAG) или когда сервер недоступен. Подробности — в журнале HyRoute."
+            >
+              · отброшено UDP-пакетов {p.udpDropped}</span
+            >{/if}
+        </div>
       {/if}
     </section>
   {/each}
@@ -220,11 +239,35 @@
         </div>
 
         <span></span>
-        <label class="check"><input type="checkbox" bind:checked={editing.lan} /> Доступен из локальной сети (телефон, другой компьютер)</label>
+        <label class="check"
+          ><input type="checkbox" bind:checked={editing.lan} onchange={() => editing && (editing.udp = '')} /> Доступен из локальной сети (телефон, другой компьютер)</label
+        >
         {#if editing.lan}
           <span></span>
           <p class="muted small">Нужен пароль. Windows пустит подключения только из домашней или рабочей сети, не из общественной.</p>
         {/if}
+
+        <span></span>
+        <label class="check"
+          ><input
+            type="checkbox"
+            checked={udpOn(editing)}
+            onchange={(e) => editing && (editing.udp = e.currentTarget.checked ? 'on' : 'off')}
+          /> Передавать UDP (SOCKS5)</label
+        >
+        <span></span>
+        <p class="muted small">
+          Для игр, звонков, торрент-клиентов и других программ, которые шлют UDP через SOCKS5. HTTP-прокси передаёт только TCP.
+          {#if editing.lan}
+            Из локальной сети UDP принимается только с устройства, которое вошло по паролю (с этого компьютера — только от той же программы);
+            брандмауэр откроет этот порт и для UDP.
+          {:else if editing.username}
+            UDP принимается только от той же программы, которая вошла по паролю.
+          {:else}
+            Без пароля UDP через прокси может передавать любая программа этого компьютера — как и TCP.
+          {/if}
+          При включении или выключении доступа из локальной сети UDP возвращается к значению по умолчанию.
+        </p>
       </div>
       {#if error}<div class="note error">{hide(error)}</div>{/if}
       <div class="actions">

@@ -464,8 +464,11 @@
       <p>
         Правило «{info.firewallRule}»: <b>{info.firewallRuleOK ? 'есть' : 'нет'}</b>. HyRoute создаёт его, чтобы Windows Firewall пропускал
         локальные соединения к relay, и проверяет при каждом подключении.
+        <br />Правила для локальных прокси: {(info.proxyRules ?? []).join(', ') || 'нет'}.
       </p>
-      <button onclick={() => run(() => api.RemoveFirewallRule(), 'Правило удалено')} disabled={!offline || !info.firewallRuleOK}>Удалить правило брандмауэра</button>
+      <button onclick={() => run(() => api.RemoveFirewallRule(), 'Правило удалено')} disabled={!offline || (!info.firewallRuleOK && (info.proxyRules ?? []).length === 0)}
+        >Удалить правило брандмауэра</button
+      >
       {#if !offline}<span class="muted"> сначала отключитесь</span>{/if}
 
       <h3>Данные</h3>

@@ -437,6 +437,11 @@ func (g *GUI) systemLines() []string {
 		rule = "есть"
 	}
 	lines = append(lines, "Правило брандмауэра «"+info.FirewallRule+"»: "+rule)
+	proxyRules := "нет"
+	if len(info.ProxyRules) > 0 {
+		proxyRules = strings.Join(info.ProxyRules, ", ")
+	}
+	lines = append(lines, "Правила брандмауэра для прокси: "+proxyRules)
 	return lines
 }
 
@@ -554,6 +559,9 @@ type SystemInfo struct {
 	ProtectedLocation bool   `json:"protectedLocation"`
 	RuntimeDir        string `json:"runtimeDir"`
 	MoveTarget        string `json:"moveTarget"`
+	// socks-udp: ProxyRules lists the local proxy rules that exist (TCP,
+	// UDP), never nil.
+	ProxyRules []string `json:"proxyRules"`
 }
 
 func (g *GUI) System() SystemInfo {
@@ -564,7 +572,11 @@ func (g *GUI) System() SystemInfo {
 			info.Missing = append(info.Missing, f)
 		}
 	}
+	// Each check runs netsh: side by side, the page waits for one.
+	proxyRules := make(chan []string, 1)
+	go func() { proxyRules <- fwrule.ProxyRules() }()
 	info.FirewallRuleOK = fwrule.Exists()
+	info.ProxyRules = <-proxyRules
 	info.Hysteria, info.HysteriaPath = g.coreVersion(), g.ctl.Base.HysteriaPath()
 	d, err := divert.InspectDriver(filepath.Join(g.runtimeDir, "WinDivert64.sys"))
 	switch {

@@ -1,8 +1,5 @@
 //go:build windows
 
-// Package fwrule manages the inbound Windows Firewall rule the relay needs:
-// reflected SYNs arrive as inbound packets and pass ALE_AUTH_RECV_ACCEPT,
-// where the firewall would otherwise prompt or block.
 package fwrule
 
 import (
@@ -68,10 +65,10 @@ func Exists() bool {
 	return err == nil
 }
 
-// Remove deletes the rule and the proxy rule (uninstaller, "Remove
+// Remove deletes the rule and both proxy rules (uninstaller, "Remove
 // firewall rule" button).
 func Remove() error {
-	if err := SetProxyPorts("", nil); err != nil {
+	if err := SetProxyPorts("", nil, nil); err != nil {
 		return err
 	}
 	if _, err := netsh("show", "rule", "name="+Name); err != nil {
@@ -84,23 +81,13 @@ func Remove() error {
 	return nil
 }
 
-// ProxyName is the rule that lets devices of the local network reach
-// HyRoute's local proxies (private and domain networks only, never public
-// Wi-Fi; and only from the subnets of this PC, not from the internet over
-// a global IPv6 address or a public IPv4 one).
-const ProxyName = "HyRoute local proxies (TCP)"
-
-// ProxyUDPName is the same for the proxies' UDP (SOCKS5 UDP ASSOCIATE comes
-// to the proxy's port number).
-const ProxyUDPName = "HyRoute local proxies (UDP)"
-
-// SetProxyPorts makes the proxy rules allow exactly ports; no ports removes
-// them.
-func SetProxyPorts(exe string, ports []int) error {
-	if err := setProxyRule(ProxyName, "TCP", exe, ports); err != nil {
+// SetProxyPorts makes the proxy rules allow exactly these TCP and UDP
+// ports; an empty list removes that rule.
+func SetProxyPorts(exe string, tcp, udp []int) error {
+	if err := setProxyRule(ProxyName, "TCP", exe, tcp); err != nil {
 		return err
 	}
-	return setProxyRule(ProxyUDPName, "UDP", exe, ports)
+	return setProxyRule(ProxyUDPName, "UDP", exe, udp)
 }
 
 func setProxyRule(name, proto, exe string, ports []int) error {
@@ -115,12 +102,7 @@ func setProxyRule(name, proto, exe string, ports []int) error {
 		}
 		return nil
 	}
-	list := make([]string, len(ports))
-	for i, p := range ports {
-		list[i] = fmt.Sprint(p)
-	}
-	params := []string{"dir=in", "action=allow", "program=" + exe, "protocol=" + proto,
-		"localport=" + strings.Join(list, ","), "remoteip=localsubnet", "profile=private,domain", "enable=yes"}
+	params := proxyParams(exe, proto, ports)
 	var out []byte
 	if exists {
 		out, err = netsh(append([]string{"set", "rule", "name=" + name, "new"}, params...)...)
@@ -131,4 +113,24 @@ func setProxyRule(name, proto, exe string, ports []int) error {
 		return fmt.Errorf("netsh: %v: %s", err, out)
 	}
 	return nil
+}
+
+// ProxyRules lists the proxy rules that exist (System page, diagnostics).
+func ProxyRules() []string {
+	out := []string{}
+	for _, name := range []string{ProxyName, ProxyUDPName} {
+		if _, err := netsh("show", "rule", "name="+name); err == nil {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// LegacyProxyUDP reports a UDP proxy rule written by v1.2.0, which served
+// UDP on every LAN proxy (its rule has no description; ours carries
+// proxyRuleMark). The labels of netsh's output are localized; the mark is
+// ours, so only it is looked for.
+func LegacyProxyUDP() bool {
+	out, err := netsh("show", "rule", "name="+ProxyUDPName, "verbose")
+	return err == nil && !strings.Contains(string(out), proxyRuleMark)
 }

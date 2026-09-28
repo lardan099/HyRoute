@@ -19,9 +19,49 @@ type LocalProxy struct {
 	Port    int    `json:"port"`
 	// LAN: listen on every interface (other devices of the local network);
 	// requires a password.
-	LAN      bool   `json:"lan"`
-	Username string `json:"username"`
-	Password string `json:"-"`
+	LAN bool `json:"lan"`
+	// UDP is the SOCKS5 UDP ASSOCIATE switch: "" = the default (on for a
+	// proxy on this computer, off for a LAN one), "on" or "off". It is
+	// written only when it differs from the default, so a file without it
+	// is v1.0.0's and an upgrade opens no new LAN port.
+	UDP      UDPMode `json:"udp,omitempty"`
+	Username string  `json:"username"`
+	Password string  `json:"-"`
+}
+
+// UDPMode is the SOCKS5 UDP ASSOCIATE switch of a local proxy: "" (the
+// default), "on" or "off". Decoding never fails: any JSON value other than
+// the strings "on" and "off" (another string, a bool, a number, null, an
+// object) reads as "", so a hand-edited proxies.json always loads.
+type UDPMode string
+
+func (m *UDPMode) UnmarshalJSON(b []byte) error {
+	var s string
+	if json.Unmarshal(b, &s) == nil && (s == "on" || s == "off") {
+		*m = UDPMode(s)
+	} else {
+		*m = ""
+	}
+	return nil
+}
+
+// UDPOn reports whether UDP ASSOCIATE is served.
+func (p LocalProxy) UDPOn() bool {
+	switch p.UDP {
+	case "on":
+		return true
+	case "off":
+		return false
+	}
+	return !p.LAN
+}
+
+// NormalizeUDP drops an explicit value equal to the default, so a proxy the
+// user never switched is stored exactly as v1.0.0 stores it.
+func (p *LocalProxy) NormalizeUDP() {
+	if (p.UDP == "on" && !p.LAN) || (p.UDP == "off" && p.LAN) {
+		p.UDP = ""
+	}
 }
 
 type storedProxy struct {

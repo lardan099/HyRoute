@@ -63,8 +63,8 @@ func (c *Controller) Diagnostics(system []string, privacy bool) string {
 		w("   ! правило %q: %s", x.Rule, x.Text)
 	}
 	for _, p := range c.Proxies() {
-		w("   прокси %q: порт %d, сервер %s, %s%s, из сети %v, пароль %v, соединений %d", p.Name, p.Port, orDash(p.ProfileName), p.State,
-			msgSuffix(p.Error), p.LAN, p.Username != "", p.Total)
+		w("   прокси %q: порт %d, сервер %s, %s%s, из сети %v, пароль %v, соединений %d%s", p.Name, p.Port, orDash(p.ProfileName), p.State,
+			msgSuffix(p.Error), p.LAN, p.Username != "", p.Total, proxyUDPDiag(p))
 	}
 
 	w("")

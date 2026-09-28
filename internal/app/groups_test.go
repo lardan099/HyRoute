@@ -886,7 +886,7 @@ func TestProxyUDPThroughGroup(t *testing.T) {
 	c.applyRoutingLocked()
 	s := c.sess
 	c.mu.Unlock()
-	assoc := c.proxyAssociator(p)
+	assoc := c.proxyUDPDialer(p)
 	via := func() *tunnels.Endpoint {
 		t.Helper()
 		u, err := assoc(t.Context())
@@ -909,6 +909,20 @@ func TestProxyUDPThroughGroup(t *testing.T) {
 	}
 	if h := c.groupsRT.Snapshot(g, func(string) bool { return false }); h.Rejected != 1 {
 		t.Fatalf("%+v", h)
+	}
+	// Statistics: each association under the member it went through, the
+	// refusal under the group.
+	recs := proxyUDPViews(c, "p1", true)
+	if len(recs) != 3 || recs[0].Profile != de1 || recs[1].Profile != de2 || recs[1].Failover != true {
+		t.Fatalf("%+v", recs)
+	}
+	for _, v := range recs[:2] {
+		if v.Group != g || v.Outcome != "proxied" || v.Failed() {
+			t.Fatalf("%+v", v)
+		}
+	}
+	if v := recs[2]; v.Group != g || v.Profile != g || v.Outcome != "dropped: tunnel unavailable" || !v.Failed() {
+		t.Fatalf("%+v", v)
 	}
 }
 

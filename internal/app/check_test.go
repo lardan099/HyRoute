@@ -21,15 +21,17 @@ type stubRunner struct {
 	c  socks5.Client
 	mu sync.Mutex
 	up bool
+	// socks-udp: noUDP is a server that does not allow UDP.
+	noUDP bool
 }
 
 func (r *stubRunner) Start() error { r.mu.Lock(); r.up = true; r.mu.Unlock(); return nil }
 func (r *stubRunner) Stop()        { r.mu.Lock(); r.up = false; r.mu.Unlock() }
 func (r *stubRunner) Status() hysteria.Status {
-	return hysteria.Status{State: hysteria.Connected, UDPEnabled: true}
+	return hysteria.Status{State: hysteria.Connected, UDPEnabled: !r.noUDP}
 }
 func (r *stubRunner) Available() bool    { return true }
-func (r *stubRunner) UDPAvailable() bool { return true }
+func (r *stubRunner) UDPAvailable() bool { return !r.noUDP }
 func (r *stubRunner) Dial(ctx context.Context, dst socks5.Addr) (net.Conn, error) {
 	return r.c.Connect(ctx, dst)
 }

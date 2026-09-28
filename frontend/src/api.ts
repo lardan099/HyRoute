@@ -246,6 +246,7 @@ export interface ProxyInput {
   lan: boolean;
   username: string;
   password: string;
+  udp?: '' | 'on' | 'off'; // socks-udp: SOCKS5 UDP ASSOCIATE; ''/absent = default (on here, off for LAN)
 }
 
 export interface ProxyView extends ProxyInput {
@@ -257,6 +258,15 @@ export interface ProxyView extends ProxyInput {
   sent: number;
   recv: number;
   addresses: string[];
+  // socks-udp: active/total count TCP connections only (UDP ASSOCIATE
+  // control connections excluded); sent/recv are TCP + UDP payload bytes.
+  udpOn: boolean; // effective switch value
+  udpServed: boolean; // UDP ASSOCIATE served now
+  udpActive: number;
+  udpTotal: number;
+  udpDropped: number;
+  udpError?: string; // LAN: the UDP port did not open (retrying) or has no firewall rule; TCP works
+  udpBlocked?: 'server' | 'group'; // the target cannot carry UDP right now
 }
 
 // A running program (rule editor suggestions).
@@ -364,6 +374,7 @@ export interface SystemInfo {
   protectedLocation: boolean;
   runtimeDir: string;
   moveTarget: string;
+  proxyRules: string[]; // socks-udp: names of HyRoute's local-proxy firewall rules that exist
 }
 
 export interface Prefs {
