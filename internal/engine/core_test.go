@@ -531,7 +531,11 @@ func TestUDPTunnelEndToEnd(t *testing.T) {
 	if !got["re:ping"] || !got["re:pong"] {
 		t.Fatalf("replies %v", got)
 	}
+	// The record counts a reply after injecting it: wait for it to settle.
 	v := lastRecord(t, h.c)
+	for deadline := time.Now().Add(5 * time.Second); v.Recv != 14 && time.Now().Before(deadline); v = lastRecord(t, h.c) {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if v.Route != "tunnel" || v.Sent != 8 || v.Recv != 14 || h.c.UDPTunneled.Load() != 2 {
 		t.Fatalf("%+v", v)
 	}

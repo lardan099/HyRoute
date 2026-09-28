@@ -166,7 +166,10 @@ func TestUserFileAccessChecks(t *testing.T) {
 	d := t.TempDir()
 	f := filepath.Join(d, "secret")
 	os.WriteFile(f, []byte("x"), 0o600)
-	setDACLOf(t, f, "D:P(A;;0x120080;;;"+sid+")(A;;FA;;;BA)(A;;FA;;;SY)") // read attributes and control only
+	// Read attributes and control only. No Administrators entry: the
+	// token here is this process's own, which on the CI runner is an
+	// elevated administrator that such an entry would let read.
+	setDACLOf(t, f, "D:P(A;;0x120080;;;"+sid+")(A;;FA;;;SY)")
 	t.Cleanup(func() { setDACLOf(t, f, full) })
 	if _, err := readUserFile(f, 10, user); err == nil || !strings.Contains(err.Error(), "Нет доступа") {
 		t.Fatal(err)
