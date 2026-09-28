@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { api, errText, guardOf, isStale, plural, tokenStale, editGone, type RulesTextResult, type RulesTextView, type RulesetsView } from '../api';
   import { ui, hide } from '../state.svelte';
+  import { trackUnsaved } from '../state.svelte'; // backup
   import Icon from './Icon.svelte';
   import { geo, loadGeo, missingText } from '../geo.svelte';
 
@@ -23,6 +24,7 @@
   // sends it back; Go refuses it if the rules changed elsewhere since).
   let view = $state<RulesTextView | null>(null);
   let addText = $state('');
+  trackUnsaved(() => (view != null && allText !== view.text) || addText.trim() !== ''); // backup
   let res = $state<RulesTextResult | null>(null);
   let error = $state('');
   let saving = $state(false);

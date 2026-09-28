@@ -55,9 +55,6 @@ type GUI struct {
 	tray     trayState
 	quitting atomic.Bool // a real exit: the close button no longer hides
 
-	backupMu sync.Mutex
-	backup   []byte // the backup file ChooseBackup read, for RestoreBackup
-
 	cli *cliState // cli: the control pipe (ctl_windows.go)
 }
 

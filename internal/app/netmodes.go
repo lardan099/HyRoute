@@ -168,18 +168,6 @@ func (c *Controller) initNetModes() {
 	c.net.cfg = netmode.Default()
 }
 
-// loadNetModes is called from Load: fills the config or the broken error
-// (which joins errs). A reload (v1.2.0's backup restore calls Load) goes
-// through the same install as any other change: the loop wakes, and
-// turning the feature on takes the current network as the baseline.
-func (c *Controller) loadNetModes(errs *[]string) {
-	cfg, err := c.Store.LoadNetModes()
-	if err != nil {
-		*errs = append(*errs, err.Error())
-	}
-	c.netInstallLoadedLocked(cfg, err)
-}
-
 // fillNetRuleIDs gives rules without an ID (hand-written) one: the ID of
 // the rule of the same name in prev (the config in memory, so a reload
 // keeps them), else a new one.

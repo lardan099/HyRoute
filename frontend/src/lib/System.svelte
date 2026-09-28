@@ -234,6 +234,12 @@
     </div>
   </section>
 
+  {#if ui.expert}
+    <Backup />
+  {:else}
+    <Backup undoOnly />
+  {/if}
+
   <section class="card">
     <h2><Icon name="download" size={17} /> Обновления</h2>
     {#if updates}
@@ -402,8 +408,6 @@
     </div>
   </section>
   {/if}
-
-  <Backup />
 
   <section class="card">
     <h2><Icon name="info" size={17} /> Диагностика</h2>

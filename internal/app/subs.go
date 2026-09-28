@@ -345,7 +345,7 @@ func (c *Controller) AddSubscription(in SubInput) (SubView, error) {
 	}
 	c.subs = subs
 	c.mu.Unlock()
-	if _, err := c.applyFetched(sub.ID, pend.res, false); err != nil {
+	if _, err := c.applyFetched(sub.ID, pend.res, false, time.Time{}); err != nil {
 		// Nothing imported: take the subscription back out. Once its
 		// profiles are saved it stays (only its snapshot or status was not
 		// saved).
@@ -419,7 +419,7 @@ func (c *Controller) EditSubscription(in SubInput) error {
 	if in.Token == "" {
 		return nil
 	}
-	_, err := c.applyFetched(in.ID, pend.res, false)
+	_, err := c.applyFetched(in.ID, pend.res, false, time.Time{})
 	return err
 }
 
@@ -464,6 +464,12 @@ func (c *Controller) lockSub(id string) (unlock func()) {
 // waits for the running one and then downloads again: it answers for the
 // subscription as it is then (an edited link included).
 func (c *Controller) UpdateSubscription(id string) (MergeStats, error) {
+	return c.updateSubscription(id, time.Time{})
+}
+
+// updateSubscription is UpdateSubscription; a non-zero tag marks the
+// refresh a backup's restore started (backup.go refreshAfterRestore).
+func (c *Controller) updateSubscription(id string, tag time.Time) (MergeStats, error) {
 	defer c.lockSub(id)()
 	c.mu.Lock()
 	i := slices.IndexFunc(c.subs, func(s store.Subscription) bool { return s.ID == id })
@@ -477,10 +483,10 @@ func (c *Controller) UpdateSubscription(id string) (MergeStats, error) {
 	defer cancel()
 	res, err := c.fetch(ctx, sub.URL)
 	if err != nil {
-		c.recordSubError(id, err)
+		c.recordSubError(id, err, tag)
 		return MergeStats{}, err
 	}
-	return c.applyFetched(id, res, false)
+	return c.applyFetched(id, res, false, tag)
 }
 
 // RollbackSubscription re-applies the previous successful body (after an
@@ -492,7 +498,7 @@ func (c *Controller) RollbackSubscription(id string) (MergeStats, error) {
 	if err != nil {
 		return MergeStats{}, err
 	}
-	st, err := c.applyFetched(id, FetchResult{Body: body}, true)
+	st, err := c.applyFetched(id, FetchResult{Body: body}, true, time.Time{})
 	if err == nil {
 		c.Log.Info("subscription rolled back to the previous version", "subscription", c.subName(id))
 	}
@@ -510,16 +516,19 @@ func (c *Controller) subName(id string) string {
 	return id
 }
 
-func (c *Controller) recordSubError(id string, err error) {
-	c.recordSubErrorInfo(id, err, "", time.Time{})
+// recordSubError stores a failed update as the subscription's last error
+// (tag: as in updateSubscription).
+func (c *Controller) recordSubError(id string, err error, tag time.Time) {
+	c.recordSubErrorInfo(id, err, "", time.Time{}, tag)
 }
 
 // recordSubErrorInfo is recordSubError that also stores the panel's
 // figures from an answer whose body did not parse (an expired account
 // answered 200 with an empty list or a web page). Empty userInfo keeps the
 // old figures.
-func (c *Controller) recordSubErrorInfo(id string, err error, userInfo string, at time.Time) {
+func (c *Controller) recordSubErrorInfo(id string, err error, userInfo string, at time.Time, tag time.Time) {
 	c.mu.Lock()
+	restoreHashes := c.restoreHashesLocked(tag) // backup: a post-restore refresh that failed
 	next := slices.Clone(c.subs)
 	if i := slices.IndexFunc(next, func(s store.Subscription) bool { return s.ID == id }); i >= 0 {
 		next[i].LastAttempt, next[i].LastError = time.Now(), err.Error()
@@ -529,6 +538,7 @@ func (c *Controller) recordSubErrorInfo(id string, err error, userInfo string, a
 		// Kept even when subscriptions.json cannot be saved: the error
 		// shows, and the scheduler retries at its pace, not every minute.
 		c.saveSubsLocked(next)
+		c.restoreHashesAfterLocked(tag, restoreHashes) // backup
 		c.subs = next
 	}
 	c.mu.Unlock()
@@ -540,10 +550,10 @@ func (c *Controller) recordSubErrorInfo(id string, err error, userInfo string, a
 // and then stores the body as the current snapshot (rollback: res is the
 // previous snapshot, and the two swap). A failure is the subscription's
 // last error.
-func (c *Controller) applyFetched(id string, res FetchResult, rollback bool) (MergeStats, error) {
+func (c *Controller) applyFetched(id string, res FetchResult, rollback bool, tag time.Time) (MergeStats, error) {
 	l, err := parseSubscription(res.Body)
 	if err != nil {
-		c.recordSubErrorInfo(id, err, res.UserInfo, res.At)
+		c.recordSubErrorInfo(id, err, res.UserInfo, res.At, tag)
 		return MergeStats{}, err
 	}
 	source := "sub:" + id
@@ -561,12 +571,13 @@ func (c *Controller) applyFetched(id string, res FetchResult, rollback bool) (Me
 			next.Active = list[0].ID
 		}
 	}
+	restoreHashes := c.restoreHashesLocked(tag) // backup: a post-restore refresh
 	// Profiles first: the snapshots follow only a list that was applied,
 	// so a failed save leaves them, and what a rollback returns to, as
 	// they were.
 	if err := c.saveProfilesLocked(next); err != nil {
 		c.mu.Unlock()
-		c.recordSubError(id, err)
+		c.recordSubError(id, err, tag)
 		return st, err
 	}
 	var snapErr error
@@ -606,6 +617,7 @@ func (c *Controller) applyFetched(id string, res FetchResult, rollback bool) (Me
 	}
 	s.HasPrevious = c.Store.HasPrevious(id)
 	err = c.saveSubsLocked(subs)
+	c.restoreHashesAfterLocked(tag, restoreHashes) // backup
 	// The status is kept even when it cannot be saved (see recordSubError).
 	c.subs = subs
 	c.mu.Unlock()

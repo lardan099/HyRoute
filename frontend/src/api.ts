@@ -584,12 +584,6 @@ interface GUI {
   SetGeoPrefs(source: string, siteURL: string, ipURL: string, auto: boolean, hours: number): Promise<void>;
   GeoCategories(kind: 'site' | 'ip', query: string): Promise<string[]>;
   Inspect(query: string): Promise<InspectResult>;
-  // Backup: full (servers, subscriptions, rules, proxies, preferences;
-  // encrypted with the password) or rules only. Returns the path ('' =
-  // cancelled). Restore: ChooseBackup reads a file, RestoreBackup applies it.
-  SaveBackup(full: boolean, password: string): Promise<string>;
-  ChooseBackup(): Promise<BackupChoice>;
-  RestoreBackup(password: string): Promise<RestoreResult>;
   GeoList(kind: 'site' | 'ip', name: string, filter: string, offset: number, limit: number): Promise<GeoListing>;
   ConvertACL(text: string, mode: 'domains' | 'rules', suffix: string, actions: string): Promise<ConvertResult>;
 }
@@ -624,24 +618,6 @@ export interface InspectResult {
   route: Explanation | null;
   sourceName: string;
   list: GeoListing | null;
-}
-
-export interface BackupChoice {
-  name: string; // '' = cancelled
-  kind: 'full' | 'rules';
-  created: string;
-  app: string;
-  encrypted: boolean;
-  rules: number; // -1 = not known before the password
-}
-
-export interface RestoreResult {
-  kind: 'full' | 'rules';
-  rules: number;
-  profiles: number;
-  subscriptions: number;
-  proxies: number;
-  remapped: number;
 }
 
 export interface ConvertResult {
@@ -1617,4 +1593,108 @@ export function newRuleID(): string {
   const b = new Uint8Array(6);
   crypto.getRandomValues(b);
   return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+// ==== backup ====
+
+// «Резервная копия»: one .hyroute-backup file (HyRoute 1.2.0's .hyroute
+// files are read too). Texts come from Go; the page masks them in Privacy
+// mode (hideMsg, hideFile, hidePath, hidePaths in state.svelte.ts).
+export interface BackupAppearance {
+  theme: string;
+  accent: string;
+}
+export interface BackupSectionInfo {
+  key: string;
+  title: string;
+  detail: string;
+  empty: boolean;
+  available: boolean;
+  reason?: string;
+  default: boolean;
+}
+export interface BackupExportOptions {
+  sections: string[];
+  password: string; // '' = without secrets
+  appearance: BackupAppearance | null;
+}
+export interface BackupItem {
+  text: string;
+  sensitive: boolean; // «***» in Privacy mode
+}
+export interface BackupSectionPreview {
+  key: string;
+  title: string;
+  detail: string;
+  items: BackupItem[];
+  more: number;
+  modes: ('replace' | 'add')[];
+  default: boolean;
+  error?: string; // not importable
+  broken?: string; // the current file did not load
+}
+export interface BackupPreview {
+  token: string;
+  fileName: string;
+  app: string;
+  created: string;
+  secrets: boolean;
+  newer: boolean;
+  legacy: boolean; // a HyRoute 1.2.0 .hyroute file
+  sections: BackupSectionPreview[];
+  unknown: string[];
+}
+export interface BackupOpened {
+  token: string; // '' = cancelled
+  fileName: string;
+  encrypted: boolean;
+  preview: BackupPreview | null;
+}
+export interface BackupChoice {
+  sections: Record<string, 'replace' | 'add'>;
+}
+export interface BackupPart {
+  t: string;
+  s?: boolean; // sensitive: «***» in Privacy mode
+}
+export interface BackupMsg {
+  key: string;
+  text: string;
+  parts: BackupPart[];
+}
+export interface BackupPlan {
+  lines: BackupMsg[];
+  warnings: BackupMsg[];
+  error?: string;
+  digest: string;
+}
+export interface BackupApplyResult {
+  restored: string[];
+  warnings: BackupMsg[];
+  appearance: BackupAppearance | null;
+  needsReconnect: boolean;
+  undo: boolean;
+}
+export interface BackupUndoInfo {
+  available: boolean;
+  created: string;
+  fileName: string;
+  sections: string[];
+  changedSince: string[];
+}
+
+// ApplyBackup rejects with this text when the plan changed meanwhile.
+export const planChangedText = 'Настройки изменились, проверьте план ещё раз';
+
+interface GUI {
+  BackupContents(secrets: boolean): Promise<BackupSectionInfo[]>;
+  ExportBackup(o: BackupExportOptions): Promise<string>; // path, '' = cancelled
+  OpenBackup(): Promise<BackupOpened>; // token '' = cancelled
+  UnlockBackup(token: string, password: string): Promise<BackupPreview>;
+  PlanBackup(token: string, ch: BackupChoice): Promise<BackupPlan>;
+  ApplyBackup(token: string, ch: BackupChoice, cur: BackupAppearance, digest: string): Promise<BackupApplyResult>;
+  CloseBackup(token: string): Promise<void>;
+  RestoreUndoInfo(): Promise<BackupUndoInfo>;
+  UndoRestore(): Promise<BackupApplyResult>;
+  ForgetRestoreUndo(): Promise<void>;
 }

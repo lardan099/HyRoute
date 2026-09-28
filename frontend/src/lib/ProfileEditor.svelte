@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, errText, type Profile } from '../api';
   import { hide } from '../state.svelte';
+  import { trackUnsaved } from '../state.svelte'; // backup
 
   // sourceName is the subscription the server comes from ('' for a server
   // added by hand).
@@ -15,6 +16,7 @@
   // (quic, congestion, ...) are kept.
   // svelte-ignore state_referenced_locally
   let p = $state<Profile>(JSON.parse(JSON.stringify(profile)));
+  trackUnsaved(() => JSON.stringify(p) !== JSON.stringify(profile)); // backup
   let showSecrets = $state(false);
   let error = $state('');
   let saving = $state(false);

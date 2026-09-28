@@ -22,6 +22,9 @@ var rawFiles = map[string]bool{
 	"settings.json":      true,
 	"prefs.json":         true,
 	"rulesets.json":      true, // rulesets
+	"groups.json":        true, // groups (registered by backup)
+	"dns.json":           true, // dns (registered by backup)
+	"networks.json":      true, // netmodes (registered by backup)
 }
 
 // maxRawBytes bounds a raw read: far above any real data file.

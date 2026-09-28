@@ -1263,25 +1263,3 @@ func TestGroupsDiagnostics(t *testing.T) {
 		t.Fatalf("%+v", info)
 	}
 }
-
-// The v1.2.0 backup carries no groups: restoring its rules on the same
-// computer keeps the rules that name a group of this computer, and only
-// the unknown ones go to the main server.
-func TestBackupRestoreKeepsGroupRefs(t *testing.T) {
-	c, _ := newCtl(t)
-	de1, de2, _ := servers(t, c)
-	g := saveGroup(t, c, "Авто", groups.Failover, de1, de2)
-	setRules(t, c, rules.Tunnel, g, curlRule(g, de2), curlRule("grp-00000000000f"))
-	b, err := c.Backup(false, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	r, err := c.RestoreBackup(b, "")
-	if err != nil || r.Remapped != 1 {
-		t.Fatalf("%+v %v", r, err)
-	}
-	st := c.Settings()
-	if st.DefaultProfile != g || st.Rules[0].Profile != g || !slices.Equal(st.Rules[0].Fallback, []string{de2}) || st.Rules[1].Profile != "" {
-		t.Fatalf("%+v", st.Config)
-	}
-}

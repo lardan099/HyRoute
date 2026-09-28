@@ -3,6 +3,7 @@
   // block). Saved as soon as the user presses "Сохранить".
   import { api, errText, cleanFallback, isGroupId, strategyLabel, parsePorts, canonPorts, portsText, portRange, portItems, type Rule, type Action, type RunningApp } from '../api';
   import { ui, hide, mainTarget, mainText, profileName } from '../state.svelte';
+  import { trackUnsaved } from '../state.svelte'; // backup
   import Icon from './Icon.svelte';
   import TargetOptions from './TargetOptions.svelte';
   import GeoPicker from './GeoPicker.svelte';
@@ -25,6 +26,7 @@
 
   // svelte-ignore state_referenced_locally
   let r = $state<Rule>(JSON.parse(JSON.stringify(rule)));
+  trackUnsaved(() => JSON.stringify(r) !== JSON.stringify(rule)); // backup
   r.apps ??= [];
   r.domains ??= [];
   r.protocol ??= '';

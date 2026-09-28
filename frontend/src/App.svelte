@@ -3,6 +3,7 @@
   import { api, onEvent, errText, type Updates } from './api';
   import { ui, hide, setPrivacy, applyTheme, noteSettingsRev, setExpert, setupDone, setupStep } from './state.svelte';
   import { pruneSubAcks, subAlerts } from './state.svelte'; // subinfo
+  import { startRestore } from './state.svelte'; // backup
   import Icon from './lib/Icon.svelte';
   import Home from './lib/Home.svelte';
   import Rules from './lib/Rules.svelte';
@@ -21,6 +22,7 @@
   import { netText } from './state.svelte'; // netmodes
   import { toast } from './toast.svelte'; // netmodes
   import { netAt } from './api'; // netmodes
+  import BackupRestore from './lib/BackupRestore.svelte'; // backup
 
   // expert: the page is shown only in the full interface.
   const pages = [
@@ -274,7 +276,10 @@
         <div class="note ok row"><span class="grow">{notice}</span><button class="icon" onclick={() => (notice = '')}><Icon name="x" size={16} /></button></div>
       {/if}
       {#if st?.loadError}
-        <div class="note error">Настройки не загружены: {netText(st.loadError)}</div>
+        <div class="note error row">
+          <span class="grow">Настройки не загружены: {netText(st.loadError)}</span>
+          <button onclick={startRestore}>Восстановить из копии…</button>
+        </div>
       {/if}
       {#if blocking && page !== 'home'}
         <div class="note warn row">
@@ -299,6 +304,7 @@
     </div>
 
     <div class="page">
+      {#key ui.reloadKey}
       {#if page === 'home'}
         <Home {go} onsetup={() => (setup = true)} />
       {:else if page === 'rules'}
@@ -322,10 +328,15 @@
       {:else}
         <System {updates} onupdates={refreshUpdates} oninstall={() => (showUpdate = true)} {installCore} {coreInstalling} onsetup={() => (setup = true)} />
       {/if}
+      {/key}
     </div>
   </main>
   <Toasts />
 </div>
+
+{#if ui.restore}
+  <BackupRestore onclose={() => (ui.restore = false)} />
+{/if}
 
 {#if setup}
   <Setup {go} onclose={() => (setup = false)} />

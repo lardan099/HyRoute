@@ -72,6 +72,8 @@ func TestNoNullListsForUI(t *testing.T) {
 		"Settings":       st,
 		"Stats":          statsRep,
 		"ConnRuleInfo":   connInfo,
+		"BackupContents": c.BackupContents(false), // backup
+		"RestoreUndo":    c.RestoreUndoInfo(),
 	} {
 		var bad []string
 		nilSlices(reflect.ValueOf(v), name, &bad)

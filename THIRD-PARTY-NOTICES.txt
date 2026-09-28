@@ -18,7 +18,7 @@ Wails v2 (https://github.com/wailsapp/wails), compiled into HyRoute.exe
   License: MIT.
 
 Go modules compiled into HyRoute.exe (see go.mod for the full list),
-including golang.org/x/net and golang.org/x/sys (BSD-3-Clause),
+including golang.org/x/net, golang.org/x/sys and golang.org/x/crypto (BSD-3-Clause),
 gopkg.in/yaml.v3 (MIT and Apache-2.0), github.com/labstack/echo (MIT),
 github.com/google/uuid (BSD-3-Clause), github.com/gorilla/websocket
 (BSD-2-Clause), github.com/tailscale/wf (BSD-3-Clause, Windows Filtering Platform

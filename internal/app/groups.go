@@ -632,16 +632,6 @@ func (c *Controller) targetNameLocked(id string) string {
 	return ""
 }
 
-// noteGroupsLocked adds the IDs of the groups defined here to known: the
-// v1.2.0 backup (backup.go) carries no groups, and its restore keeps rules
-// that name a group of this computer instead of sending them to the main
-// server.
-func (c *Controller) noteGroupsLocked(known map[string]bool) {
-	for _, g := range c.groupsFile.Groups {
-		known[g.ID] = true
-	}
-}
-
 // targetExistsLocked: a server or a loaded group.
 func (c *Controller) targetExistsLocked(id string) bool {
 	return c.profiles.Find(id) != nil || c.groupLocked(id) != nil

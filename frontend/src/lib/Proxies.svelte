@@ -4,6 +4,7 @@
   import { onMount } from 'svelte';
   import { api, errText, fmtBytes, isGroupId, type ProxyInput, type ProxyView } from '../api';
   import { ui, hide, settle, mainTarget, mainText } from '../state.svelte';
+  import { trackUnsaved } from '../state.svelte'; // backup
   import Icon from './Icon.svelte';
   import TargetOptions from './TargetOptions.svelte';
 
@@ -11,6 +12,8 @@
   let error = $state('');
   let ok = $state('');
   let editing = $state<ProxyInput | null>(null);
+  let editingFrom = ''; // backup: the form as opened
+  trackUnsaved(() => editing !== null && JSON.stringify(editing) !== editingFrom); // backup
   let saving = $state(false);
   let showPass = $state(false);
 
@@ -49,11 +52,13 @@
 
   function add() {
     editing = { id: '', name: '', enabled: true, profile: '', port: nextPort(), lan: false, username: '', password: '', udp: '' };
+    editingFrom = JSON.stringify(editing);
     showPass = true;
   }
 
   function edit(p: ProxyView) {
     editing = { id: p.id, name: p.name, enabled: p.enabled, profile: p.profile, port: p.port, lan: p.lan, username: p.username, password: p.password, udp: p.udp ?? '' };
+    editingFrom = JSON.stringify(editing);
     showPass = false;
   }
 

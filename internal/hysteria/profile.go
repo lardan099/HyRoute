@@ -54,6 +54,15 @@ func SameConnection(a, b Profile) bool {
 	return reflect.DeepEqual(strip(a), strip(b))
 }
 
+// SameConnectionNoSecrets is SameConnection with Auth and the obfuscation
+// password ignored: the same server, whatever the credentials. Only a
+// server equal in every other connection field may inherit secrets
+// (backup).
+func SameConnectionNoSecrets(a, b Profile) bool {
+	a.Auth, a.Obfs.Password, b.Auth, b.Obfs.Password = "", "", "", ""
+	return SameConnection(a, b)
+}
+
 type TLS struct {
 	SNI       string `json:"sni,omitempty"`
 	Insecure  bool   `json:"insecure,omitempty"`

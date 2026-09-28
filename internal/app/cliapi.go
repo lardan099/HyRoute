@@ -18,7 +18,8 @@ import (
 // cliState is the controller state of this file.
 type cliState struct {
 	// prefsMu is held across the read and the write of every prefs.json
-	// change (UpdatePrefs; RestoreBackup holds it around its writes).
+	// change (UpdatePrefs; a backup restore and its undo hold it around
+	// their writes, after the subscription locks: backup.go lockRestore).
 	// Order: prefsMu → lifeMu → saveMu → mu; nothing holding lifeMu,
 	// saveMu or mu takes it.
 	prefsMu sync.Mutex

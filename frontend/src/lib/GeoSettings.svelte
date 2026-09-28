@@ -3,6 +3,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { api, errText, fmtDateTime, fmtBytes, type GeoInfo } from '../api';
   import { hide } from '../state.svelte';
+  import { trackUnsaved } from '../state.svelte'; // backup
   import Icon from './Icon.svelte';
   import { loadGeo } from '../geo.svelte';
 
@@ -82,6 +83,7 @@
   const dirty = $derived(
     !!info && (source !== info.source || auto !== info.auto || Number(hours) !== info.hours || siteURL !== info.custom.site || ipURL !== info.custom.ip),
   );
+  trackUnsaved(() => dirty); // backup
   const intervals = [
     { v: 6, l: 'каждые 6 часов' },
     { v: 12, l: 'каждые 12 часов' },

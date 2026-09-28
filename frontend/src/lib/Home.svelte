@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { api, errText, fmtBytes, fmtDuration, cleanSettings, strategyLabel, type GroupView, type RulesetsView, type Settings, type SystemInfo, type TunnelStatus } from '../api';
   import { ui, hide, settle, mainTarget, profileName } from '../state.svelte';
+  import { startRestore } from '../state.svelte'; // backup
   import Icon from './Icon.svelte';
   import CheckProfile from './CheckProfile.svelte';
   import Help from './Help.svelte';
@@ -387,6 +388,10 @@
         <li><b>Решите, что пускать через VPN:</b> весь трафик или только нужные программы и сайты.</li>
         <li><b>Нажмите кнопку включения.</b></li>
       </ol>
+      <p class="muted restore-line">
+        Уже пользовались HyRoute?
+        <button class="link" onclick={startRestore}><Icon name="database" size={16} />Восстановить из резервной копии…</button>
+      </p>
     </section>
   {:else}
     <div class="grid">
@@ -561,4 +566,7 @@
   .unsafe { display: flex; gap: 14px; align-items: center; border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
   .unsafe > :global(svg) { color: var(--warn); flex: none; }
   .unsafe p { margin: 4px 0 0; }
+  /* backup */
+  .restore-line { margin: 10px 0 0; }
+  .restore-line button { display: inline-flex; align-items: center; gap: 6px; }
 </style>

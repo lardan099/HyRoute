@@ -1,6 +1,6 @@
 // Shared UI state: status, profiles, Privacy mode, theme.
 import { maskDomains, maskHosts, maskIPs, maskURLs } from './privacy';
-import { isGroupId, type GroupView, type ProfileSummary, type Rule, type Status, type SubAlert } from './api';
+import { api, isGroupId, type BackupAppearance, type BackupMsg, type GroupView, type ProfileSummary, type Rule, type Status, type SubAlert } from './api';
 import { netUnknownName, type NetState } from './api'; // netmodes
 
 function get(k: string): string | null {
@@ -45,6 +45,15 @@ export const ui = $state({
   // conn-rules: a rule «Правила» opens in its editor when shown (a toast's
   // «Открыть правило»); located by locateRule.
   focusRule: null as { id: string; index: number; rule: Rule; rev?: number } | null,
+  // backup: the restore dialog is open; the page re-mounts when reloadKey
+  // grows (after a restore); editors with unsaved edits (trackUnsaved).
+  restore: false,
+  reloadKey: 0,
+  unsaved: 0,
+  // backup: the «Резервная копия» card's last result (it re-mounts after a
+  // restore); backupPath is masked apart.
+  backupNote: '',
+  backupPath: '',
 });
 
 export function setExpert(on: boolean) {
@@ -249,3 +258,77 @@ export function netText(s: string | undefined | null, st?: NetState | null, name
 }
 
 const netRuleQuote = /([Пп]равил[а-я]* сет(?:и|ей) «)([^»]*)»/g;
+
+// ==== backup ====
+
+// trackUnsaved counts an editor in ui.unsaved while dirty() holds: a
+// restore re-mounts the page, and asks first.
+export function trackUnsaved(dirty: () => boolean) {
+  $effect(() => {
+    if (!dirty()) return;
+    ui.unsaved++;
+    return () => {
+      ui.unsaved--;
+    };
+  });
+}
+
+// confirmUnsaved: nothing unsaved, or the user lets it go.
+export function confirmUnsaved(): boolean {
+  return ui.unsaved <= 0 || confirm('В открытом редакторе есть несохранённые изменения. После восстановления страница обновится и они пропадут. Продолжить?');
+}
+
+// startRestore opens the restore dialog (App.svelte mounts it).
+export function startRestore() {
+  if (confirmUnsaved()) ui.restore = true;
+}
+
+const themeList: Theme[] = ['system', 'light', 'dark', 'midnight'];
+const accentList: Accent[] = ['blue', 'violet', 'teal', 'orange', 'pink', 'rainbow'];
+
+// appearance is the WebView theme and accent (a backup's «Оформление»).
+export function appearance(): BackupAppearance {
+  return { theme: ui.theme, accent: ui.accent };
+}
+
+// applyAppearance takes only the known values.
+export function applyAppearance(a: BackupAppearance | null) {
+  if (!a) return;
+  if (themeList.includes(a.theme as Theme)) setTheme(a.theme as Theme);
+  if (accentList.includes(a.accent as Accent)) setAccent(a.accent as Accent);
+}
+
+// hideMsg masks a plan line or warning: its sensitive parts (SSIDs,
+// network names, file paths) become «***», then hide() the rest.
+export function hideMsg(m: BackupMsg): string {
+  if (!ui.privacy) return m.text;
+  return hide(m.parts.map((p) => (p.s ? '***' : p.t)).join(''));
+}
+
+// hideFile and hidePath mask a backup file's name or path.
+export function hideFile(name: string): string {
+  return ui.privacy ? '***' : name;
+}
+
+export function hidePath(path: string): string {
+  return ui.privacy ? '***' : path;
+}
+
+// hidePaths masks the paths Go writes in «…» inside a message, then hide().
+export function hidePaths(s: string): string {
+  if (!ui.privacy) return s;
+  return hide(s.replace(/«(?:[A-Za-z]:\\|\\\\)[^»]*»/g, '«***»'));
+}
+
+// afterRestore: the configuration changed under the pages: the theme, the
+// server list, and every page re-mounts with fresh data (ui.reloadKey).
+export async function afterRestore(a: BackupAppearance | null) {
+  applyAppearance(a);
+  try {
+    ui.profiles = await api.Profiles();
+  } catch {}
+  try {
+    ui.groups = (await api.Groups()).groups;
+  } catch {}
+  ui.reloadKey++;
+}

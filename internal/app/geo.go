@@ -238,8 +238,12 @@ func geoLinksErr(src geodata.Source) error {
 	return nil
 }
 
-// SetGeoPrefs changes the source and the schedule.
-func (c *Controller) SetGeoPrefs(source, siteURL, ipURL string, auto bool, hours int) error {
+var errGeoHours = errors.New("интервал обновления: от 1 часа до 14 дней")
+
+// validateGeoPrefs is the check of SetGeoPrefs (a backup's «Базы правил»
+// too): source "" (the default preset) and hours 0 (the default interval)
+// are what a file without those keys holds.
+func validateGeoPrefs(source, siteURL, ipURL string, hours int) error {
 	if source == "custom" {
 		if err := geoLinksErr(geodata.Source{ID: "custom", Site: siteURL, IP: ipURL}); err != nil {
 			return err
@@ -247,11 +251,25 @@ func (c *Controller) SetGeoPrefs(source, siteURL, ipURL string, auto bool, hours
 		if siteURL == "" && ipURL == "" {
 			return errors.New("укажите хотя бы одну ссылку: на geosite.dat или geoip.dat")
 		}
-	} else if _, ok := geodata.FindSource(source); !ok {
+	} else if _, ok := geodata.FindSource(source); !ok && source != "" {
 		return fmt.Errorf("неизвестный источник %q", source)
 	}
-	if hours < 1 || hours > 24*14 {
-		return errors.New("интервал обновления: от 1 часа до 14 дней")
+	if hours < 0 || hours > 24*14 {
+		return errGeoHours
+	}
+	return nil
+}
+
+// SetGeoPrefs changes the source and the schedule.
+func (c *Controller) SetGeoPrefs(source, siteURL, ipURL string, auto bool, hours int) error {
+	if source == "" {
+		return fmt.Errorf("неизвестный источник %q", source)
+	}
+	if err := validateGeoPrefs(source, siteURL, ipURL, hours); err != nil {
+		return err
+	}
+	if hours < 1 {
+		return errGeoHours
 	}
 	changedSource := false
 	if err := c.UpdatePrefs(func(p *store.Prefs) error {

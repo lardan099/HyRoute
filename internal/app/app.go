@@ -8,7 +8,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -192,6 +191,7 @@ type Controller struct {
 	cliState      // cli: prefsMu, the exit guard (cliapi.go)
 	// conn-rules: undo entries under their own leaf lock (connrules.go)
 	connRulesState
+	backupState // backup: backupMu and importMu (backup.go)
 }
 
 // New builds a controller with journals and a logger.
@@ -217,83 +217,26 @@ func New(st *store.Store, start Starter, base session.Config, level slog.Leveler
 // Load reads profiles and settings. Errors are kept and shown in the UI;
 // a broken file is never overwritten silently.
 func (c *Controller) Load() error {
-	p, err := c.Store.LoadProfiles()
-	var errs []string
-	c.profilesBroken, c.subsBroken = nil, nil
-	if err != nil {
-		errs = append(errs, err.Error())
-		p = &store.Profiles{}
-		c.profilesBroken = err
+	var ls []loaded
+	for _, name := range loadOrder[:5] { // profiles … dns.json
+		ls = append(ls, c.loadFile(name, nil))
 	}
-	subs, err3 := c.Store.LoadSubscriptions()
-	if err3 != nil {
-		errs = append(errs, err3.Error())
-		subs = nil
-		c.subsBroken = err3
-	}
-	for _, s := range subs {
-		c.Redactor.SetGroup("sub:"+s.ID, urlSecrets(s.URL)...)
-	}
-	prefs, err4 := c.Store.LoadPrefs()
-	if err4 != nil {
-		errs = append(errs, err4.Error())
-		// The user's choices are unknown: logs stay in memory (log files
-		// may have been turned off), and the rule databases are left as
-		// they are (geoDue).
-		off := false
-		prefs = store.Prefs{LogsToDisk: &off}
-	}
-	proxies, err5 := c.Store.LoadProxies()
-	if err5 != nil {
-		errs = append(errs, err5.Error())
-		proxies = nil
-	}
-	for _, p := range proxies {
-		c.Redactor.SetGroup("proxy:"+p.ID, p.Password)
-	}
-	// dns: dns.json (a broken one keeps every option off)
-	dnsCfg, dnsErr := c.loadDNS(&errs)
 	c.initGeo() // categories resolve while the settings compile
-	groupsFile, groupsErr := c.loadGroups(&errs, p)
-	// rulesets: whether settings.json exists, read before LoadSettings.
-	existed := c.Store.HasSettings()
-	st, set, err2 := c.Store.LoadSettings()
-	if err2 != nil {
-		errs = append(errs, err2.Error())
-		st = store.DefaultSettings()
-		set, _ = rules.Compile(st.Config)
-		set.ExactWeb = st.ExactWeb()
-	}
-	rl := c.loadRulesets(st, set, err2, existed) // rulesets: the active rules may come from rulesets.json
-	c.loadNetModes(&errs)                        // netmodes: networks.json
-	if st, set = rl.Settings, rl.Set; rl.RulesUnknown != nil {
-		// The defaults stand in for rules that exist: as with a
-		// settings.json that did not load, nothing connects or saves.
-		errs = append(errs, rl.RulesUnknown.Error())
-		err2 = rl.RulesUnknown
-	} else if rl.Broken != nil {
-		errs = append(errs, rl.Broken.Error())
-	}
+	ls = append(ls, c.loadFile("groups.json", ls[0].profiles), c.loadFile("settings.json", nil), c.loadFile("networks.json", nil))
 	c.mu.Lock()
-	c.profiles, c.settings, c.set, c.subs, c.prefs, c.proxies = p, st, set, subs, prefs, proxies
-	c.settingsBroken, c.proxiesBroken, c.prefsBroken = err2, err5, err4
-	c.rulesAt = c.settingsRev.Add(1)
-	c.loadedGroupsLocked(groupsFile, groupsErr)
-	c.installRulesetsLoadLocked(rl)
-	c.installLoadedDNSLocked(dnsCfg, dnsErr) // dns
-	c.updateNamesLocked()
-	c.loadErr = strings.Join(errs, "; ")
+	c.installLoadedLocked(ls)
+	loadErr := c.loadErr
 	c.mu.Unlock()
-	if rl.Note != "" {
-		c.Log.Info(rl.Note)
+	if note := loadedOf(ls, "settings.json").rules.Note; note != "" {
+		c.Log.Info(note)
 	}
 	c.applyLogPrefs()
-	if dnsErr == nil && dnsCfg.Active() {
+	if d := loadedOf(ls, "dns.json"); d.err == nil && d.dns.Active() {
 		c.flushDNSAsync("start") // dns: answers of a run that crashed
 	}
 	c.loadStats() // stats: the collection mode (creates nothing)
-	if len(errs) > 0 {
-		return errors.New(c.loadErr)
+	if loadErr != "" {
+		return errors.New(loadErr)
 	}
 	return nil
 }
