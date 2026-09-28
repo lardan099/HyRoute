@@ -1,0 +1,5 @@
+Настройки не загружены: settings.json: плохой JSON
+HyRoute v1.3.0 — ошибка
+Основной: 🇩🇪 DE-1
+Причина: драйвер WinDivert не загрузился
+Kill switch: интернет закрыт (kill switch). Подключитесь или выполните hyroutectl disconnect

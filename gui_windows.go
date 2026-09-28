@@ -57,6 +57,8 @@ type GUI struct {
 
 	backupMu sync.Mutex
 	backup   []byte // the backup file ChooseBackup read, for RestoreBackup
+
+	cli *cliState // cli: the control pipe (ctl_windows.go)
 }
 
 func (g *GUI) startup(ctx context.Context) {
@@ -396,13 +398,17 @@ func (g *GUI) OpenLogDir() error {
 func (g *GUI) Prefs() store.Prefs { return g.ctl.Prefs() }
 
 // SavePrefs keeps the fields other calls own: the rule-database ones
-// (SetGeoPrefs) and the postponed version (SkipAppVersion, "Позже"). The
-// settings page may hold an older copy.
+// (SetGeoPrefs), the postponed version (SkipAppVersion, "Позже") and the
+// command line's mode (SetCLIMode). The settings page may hold an older
+// copy; UpdatePrefs holds the prefs lock across the read and the write.
 func (g *GUI) SavePrefs(p store.Prefs) error {
-	cur := g.ctl.Prefs()
-	p.GeoSource, p.GeoSiteURL, p.GeoIPURL, p.GeoAutoOff, p.GeoIntervalHours = cur.GeoSource, cur.GeoSiteURL, cur.GeoIPURL, cur.GeoAutoOff, cur.GeoIntervalHours
-	p.SkipVersion = cur.SkipVersion
-	return g.ctl.SavePrefs(p)
+	return g.ctl.UpdatePrefs(func(cur *store.Prefs) error {
+		p.GeoSource, p.GeoSiteURL, p.GeoIPURL, p.GeoAutoOff, p.GeoIntervalHours = cur.GeoSource, cur.GeoSiteURL, cur.GeoIPURL, cur.GeoAutoOff, cur.GeoIntervalHours
+		p.SkipVersion = cur.SkipVersion
+		p.CLI = cur.CLI
+		*cur = p
+		return nil
+	})
 }
 
 // ---- checks and diagnostics ----
@@ -442,6 +448,7 @@ func (g *GUI) systemLines() []string {
 		proxyRules = strings.Join(info.ProxyRules, ", ")
 	}
 	lines = append(lines, "Правила брандмауэра для прокси: "+proxyRules)
+	lines = append(lines, g.cliLine()) // cli
 	return lines
 }
 
@@ -517,6 +524,9 @@ func (g *GUI) ApplyAppUpdate() error {
 	}
 	// netmodes: no network rule acts between this decision and the exit.
 	g.ctl.StopNetModes()
+	// cli: no connect (hyroutectl, tray, networks) between this check and
+	// the exit.
+	undo := g.ctl.BeginExit()
 	if routingOn(g.ctl.Status()) {
 		// The new version reconnects and reports healthy only once the
 		// driver and filters are up again.
@@ -524,6 +534,7 @@ func (g *GUI) ApplyAppUpdate() error {
 	}
 	cmd := exec.Command(helper, args...)
 	if err := cmd.Start(); err != nil {
+		undo()
 		g.ctl.ResumeNetModes()
 		return fmt.Errorf("программа обновления не запустилась: %w", err)
 	}

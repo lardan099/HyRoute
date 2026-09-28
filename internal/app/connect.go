@@ -20,6 +20,9 @@ func (c *Controller) Connect() error {
 	c.netManual() // netmodes: the user's choice wins until the network changes
 	c.lifeMu.Lock()
 	defer c.lifeMu.Unlock()
+	if err := c.closingLocked(); err != nil { // cli: HyRoute is exiting
+		return err
+	}
 	return c.connectLocked()
 }
 
@@ -142,6 +145,7 @@ func (c *Controller) Disconnect() {
 // the Windows session, see EndSession). The statistics are written after
 // lifeMu is released.
 func (c *Controller) Shutdown() {
+	c.beginShutdown() // cli: no connect after this
 	c.disconnect(false)
 	c.dnsExitFlush()  // dns: the process ends next, a waiting flush runs now
 	c.statsShutdown() // stats
@@ -192,6 +196,9 @@ func (c *Controller) Reconnect() error {
 	c.netManual() // netmodes
 	c.lifeMu.Lock()
 	defer c.lifeMu.Unlock()
+	if err := c.closingLocked(); err != nil { // cli: HyRoute is exiting
+		return err
+	}
 	c.disconnectLocked(false)
 	return c.connectLocked()
 }

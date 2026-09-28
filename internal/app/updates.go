@@ -10,6 +10,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/core"
 	"github.com/lardan099/hyroute/internal/release"
+	"github.com/lardan099/hyroute/internal/store"
 	"github.com/lardan099/hyroute/internal/update"
 )
 
@@ -335,9 +336,7 @@ func (c *Controller) ReadyUpdate() (dir, version string, err error) {
 
 // SkipAppVersion is "Позже": no startup prompt for this version.
 func (c *Controller) SkipAppVersion(v string) error {
-	p := c.Prefs()
-	p.SkipVersion = v
-	return c.SavePrefs(p)
+	return c.UpdatePrefs(func(p *store.Prefs) error { p.SkipVersion = v; return nil })
 }
 
 // RunUpdateChecks checks at start (after a delay) and every 12 hours when

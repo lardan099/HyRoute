@@ -125,7 +125,13 @@ func (c *Controller) Prefs() store.Prefs {
 	return c.prefs
 }
 
+// SavePrefs replaces the prefs (UpdatePrefs, so under prefsMu).
 func (c *Controller) SavePrefs(p store.Prefs) error {
+	return c.UpdatePrefs(func(q *store.Prefs) error { *q = p; return nil })
+}
+
+// savePrefs checks and saves p (c.prefsMu held).
+func (c *Controller) savePrefs(p store.Prefs) error {
 	if p.UpdateCheck != "" && p.UpdateCheck != "auto" && p.UpdateCheck != "manual" {
 		return fmt.Errorf("неизвестный режим проверки обновлений %q", p.UpdateCheck)
 	}
@@ -209,12 +215,4 @@ func (c *Controller) ExportLog(kind string, sanitized bool) string {
 }
 
 // Sanitize applies Privacy mode: public IPs, server hosts and URLs.
-func (c *Controller) Sanitize(s string) string {
-	c.mu.Lock()
-	var hosts []string
-	for _, p := range c.profiles.List {
-		hosts = append(hosts, p.Host, p.TLS.SNI)
-	}
-	c.mu.Unlock()
-	return logx.Sanitize(c.Redactor.Redact(s), hosts)
-}
+func (c *Controller) Sanitize(s string) string { return c.SanitizeFunc()(s) }

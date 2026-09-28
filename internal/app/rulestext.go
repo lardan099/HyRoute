@@ -64,12 +64,10 @@ type RulesTextResult struct {
 	Summary         string     `json:"summary"`
 }
 
-// ParseRulesText parses rules text against the current servers and groups.
+// ParseRulesText parses rules text (or rules JSON, cli) against the
+// current servers and groups, for appending.
 func (c *Controller) ParseRulesText(text string) RulesTextResult {
-	c.mu.Lock()
-	ts := c.targetsLocked()
-	c.mu.Unlock()
-	return parseRulesText(text, ts)
+	return c.ParseRulesTextAs(text, "auto", false)
 }
 
 // target is a server or a server group that rules text can name.
@@ -946,29 +944,7 @@ func nameText(n string) string {
 // Nothing is saved when any line has an error. g is the revision of the
 // text a replace was made from (RulesTextView); appending needs none.
 func (c *Controller) ApplyRulesText(text string, replace bool, g EditGuard) (SaveResult, RulesTextResult, error) {
-	res := c.ParseRulesText(text)
-	if len(res.Errors) > 0 {
-		return SaveResult{}, res, fmt.Errorf("в тексте ошибки (%d): ничего не сохранено", len(res.Errors))
-	}
-	if res.HasDefault && !replace {
-		return SaveResult{}, res, fmt.Errorf("строка «* -> …» меняет «Всё остальное», а «Добавить пачкой» только добавляет правила: уберите её или измените «Всё остальное» в режиме «Все правила»")
-	}
-	if !replace {
-		// Appended rules go after whatever the list is now.
-		g.Rev, g.EditRev = 0, 0
-	}
-	sr, err := c.editRulesIn(g, func(cfg *rules.Config) (bool, error) {
-		if replace {
-			cfg.Rules = res.Rules
-		} else {
-			cfg.Rules = append(cfg.Rules, res.Rules...)
-		}
-		if res.HasDefault {
-			cfg.DefaultAction, cfg.DefaultProfile, cfg.DefaultFallback = res.DefaultAction, res.DefaultProfile, res.DefaultFallback
-		}
-		return true, nil
-	})
-	return sr, res, err
+	return c.ApplyRulesTextAs(text, "auto", replace, g) // cli: rules JSON too
 }
 
 // RulesTextView is the rules as text with the revision it was read at,

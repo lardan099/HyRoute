@@ -1,5 +1,5 @@
-# Builds bin\HyRoute.exe (GUI) and bin\hyroute-updater.exe next to
-# hysteria.exe and WinDivert.
+# Builds bin\HyRoute.exe (GUI), bin\hyroute-updater.exe and
+# bin\hyroutectl.exe (command line) next to hysteria.exe and WinDivert.
 # Needs only Go: frontend\dist is committed.
 #   .\scripts\build.ps1            build
 #   .\scripts\build.ps1 -Frontend  also rebuild the UI (needs Node.js/npm)
@@ -7,7 +7,7 @@
 param([switch]$Frontend)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-foreach ($p in 'HyRoute', 'hyroute-updater') {
+foreach ($p in 'HyRoute', 'hyroute-updater', 'hyroutectl') {
     if (Get-Process $p -ErrorAction SilentlyContinue) {
         throw "$p.exe is running: close it first, otherwise the exe cannot be replaced"
     }
@@ -54,10 +54,16 @@ try {
         if ($num -notmatch '^\d+\.\d+\.\d+$') { $num = '0.0.0' }
         go run "github.com/tc-hib/go-winres@$($deps.tools.goWinres)" make --arch amd64 --in winres.json --out ..\..\rsrc --file-version "$num.0" --product-version "$num.0"
         if ($LASTEXITCODE -ne 0) { throw 'go-winres failed' }
+        # hyroutectl: asInvoker, a console program.
+        go run "github.com/tc-hib/go-winres@$($deps.tools.goWinres)" make --arch amd64 --in hyroutectl.json --out ..\..\cmd\hyroutectl\rsrc --file-version "$num.0" --product-version "$num.0"
+        if ($LASTEXITCODE -ne 0) { throw 'go-winres (hyroutectl) failed' }
     } finally { Pop-Location }
     go build -tags desktop,production -trimpath -ldflags "-H windowsgui $ld" -o bin\HyRoute.exe .
     if ($LASTEXITCODE -ne 0) { throw 'go build (HyRoute) failed' }
     go build -trimpath -ldflags "-H windowsgui" -o bin\hyroute-updater.exe .\cmd\hyroute-updater
     if ($LASTEXITCODE -ne 0) { throw 'go build (updater) failed' }
-    Write-Host "Built bin\HyRoute.exe and bin\hyroute-updater.exe ($ver, $rev)"
+    # Console subsystem: no -H windowsgui.
+    go build -trimpath -ldflags "$ld" -o bin\hyroutectl.exe .\cmd\hyroutectl
+    if ($LASTEXITCODE -ne 0) { throw 'go build (hyroutectl) failed' }
+    Write-Host "Built bin\HyRoute.exe, bin\hyroute-updater.exe and bin\hyroutectl.exe ($ver, $rev)"
 } finally { Pop-Location }

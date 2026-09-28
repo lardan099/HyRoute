@@ -60,7 +60,8 @@ var (
 		"Shows HyRoute when you sign in while its kill switch still blocks the internet; otherwise HyRoute exits at once (HyRoute: Settings, Kill switch)."}
 )
 
-// taskName is the task of kind k of the user with sid.
+// taskName is the task of kind k of the user with sid. cmd/hyroutectl
+// (taskName, for "hyroutectl start") names the start task the same way.
 func (k kind) taskName(sid string) string { return k.name + " (" + sid + ")" }
 
 // AtLogon is called at startup when the sign-in task started HyRoute

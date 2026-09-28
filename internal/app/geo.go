@@ -19,6 +19,7 @@ import (
 	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/rules"
 	"github.com/lardan099/hyroute/internal/socks5"
+	"github.com/lardan099/hyroute/internal/store"
 )
 
 // Rule databases: geosite.dat and geoip.dat in <data>\geo, behind
@@ -252,13 +253,15 @@ func (c *Controller) SetGeoPrefs(source, siteURL, ipURL string, auto bool, hours
 	if hours < 1 || hours > 24*14 {
 		return errors.New("интервал обновления: от 1 часа до 14 дней")
 	}
-	p := c.Prefs()
-	changedSource := p.GeoSource != source || p.GeoSiteURL != siteURL || p.GeoIPURL != ipURL
-	p.GeoSource, p.GeoSiteURL, p.GeoIPURL = source, siteURL, ipURL
-	off := !auto
-	p.GeoAutoOff = &off
-	p.GeoIntervalHours = hours
-	if err := c.SavePrefs(p); err != nil {
+	changedSource := false
+	if err := c.UpdatePrefs(func(p *store.Prefs) error {
+		changedSource = p.GeoSource != source || p.GeoSiteURL != siteURL || p.GeoIPURL != ipURL
+		p.GeoSource, p.GeoSiteURL, p.GeoIPURL = source, siteURL, ipURL
+		off := !auto
+		p.GeoAutoOff = &off
+		p.GeoIntervalHours = hours
+		return nil
+	}); err != nil {
 		return err
 	}
 	if changedSource {

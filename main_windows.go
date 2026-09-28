@@ -99,6 +99,8 @@ func main() {
 	if handedOver {
 		os.Exit(0)
 	}
+	// cli: hyroutectl sees HyRoute starting from here on.
+	cs := initCLI()
 	exe, _ := os.Executable()
 	if *atLogon {
 		// Before the packet engine and hysteria.exe start: a task from an
@@ -230,6 +232,7 @@ func main() {
 	cleanUpdates(ctl.Updater.Dir)
 
 	gui := &GUI{ctl: ctl, dataDir: dataDir, dllDir: dir, runtimeDir: runtimeDir, core: coreMgr, updateEvent: *updEvent}
+	gui.cli = cs
 	// Set before any goroutine below can report a change.
 	ctl.CoreVersion = func() string { return coreMgr.Info().Version }
 	ctl.OnChange = gui.emitStatus
@@ -297,6 +300,7 @@ func main() {
 		}
 	}
 	gui.tray.hidden.Store(startHidden)
+	gui.startCLI() // cli: the control pipe for hyroutectl
 	err = wails.Run(&options.App{
 		Title:            "HyRoute",
 		WindowStartState: startState,
@@ -316,6 +320,7 @@ func main() {
 		OnDomReady: gui.domReady,
 		OnShutdown: func(ctx context.Context) {
 			inst.leaving()
+			gui.stopCLI()
 			gui.shutdown(ctx)
 		},
 		OnBeforeClose: func(ctx context.Context) bool {

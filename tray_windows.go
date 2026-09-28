@@ -374,15 +374,9 @@ func (g *GUI) trayToggle() {
 		g.ctl.Disconnect()
 		return
 	}
-	var err error
-	if st := g.ctl.Status(); st.State == "error" && st.Stats != nil {
-		// The engine failed but the session is still there: Connect would
-		// do nothing.
-		err = g.ctl.Reconnect()
-	} else {
-		err = g.ctl.Connect()
-	}
-	if err != nil {
+	// A session whose engine failed is reconnected (Connect would do
+	// nothing): ConnectOrResume, as hyroutectl connect.
+	if _, err := g.ctl.ConnectOrResume(); err != nil {
 		g.showWindow()
 	}
 }

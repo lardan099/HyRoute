@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, errText, fmtDateTime, plural, type Subscription, type SubPreview, type MergeStats } from '../api';
+  import { api, errText, fmtDateTime, onEvent, plural, type Subscription, type SubPreview, type MergeStats } from '../api';
   import { hide, settle, ui } from '../state.svelte';
   import Help from './Help.svelte';
   import { ackSubAlert, subAlerts } from '../state.svelte'; // subinfo
@@ -45,7 +45,18 @@
   onMount(() => {
     load();
     const t = setInterval(load, 5000);
-    return () => clearInterval(t);
+    // cli: an update from hyroutectl shows at once (not while this page
+    // runs one of its own).
+    let soon: ReturnType<typeof setTimeout> | undefined;
+    const off = onEvent('status', () => {
+      clearTimeout(soon);
+      soon = setTimeout(() => busy === '' && load(), 300);
+    });
+    return () => {
+      clearInterval(t);
+      clearTimeout(soon);
+      off();
+    };
   });
 
   async function step<T>(label: string, f: () => Promise<T>): Promise<T | undefined> {

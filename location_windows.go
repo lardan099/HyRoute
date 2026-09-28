@@ -128,7 +128,8 @@ func moveTarget() string {
 
 // Files of a release folder; the rest of the source folder (it may be
 // Downloads) is left alone.
-var programFilesList = []string{"HyRoute.exe", "hyroute-updater.exe", "hysteria.exe", "WinDivert.dll", "WinDivert64.sys", "LICENSE.txt", "THIRD-PARTY-NOTICES.txt"}
+var programFilesList = []string{"HyRoute.exe", "hyroute-updater.exe", "hysteria.exe", "WinDivert.dll", "WinDivert64.sys", "LICENSE.txt", "THIRD-PARTY-NOTICES.txt",
+	"hyroutectl.exe"}
 
 // runtimeFilesList: files of programFilesList that run from the runtime
 // folder (see runtimefiles.Stage), never from the program folder.
@@ -165,12 +166,14 @@ func (g *GUI) MoveToProgramFiles() error {
 		g.ctl.Log.Warn("start menu shortcut not created", "err", err)
 	}
 	args := []string{"--wait-pid", fmt.Sprint(os.Getpid()), "--moved-from", g.dllDir}
-	g.ctl.StopNetModes() // netmodes: no network rule acts between this decision and the exit
+	g.ctl.StopNetModes()      // netmodes: no network rule acts between this decision and the exit
+	undo := g.ctl.BeginExit() // cli: no connect between this check and the exit
 	if routingOn(g.ctl.Status()) {
 		args = append(args, "--reconnect")
 	}
 	cmd := exec.Command(exe, args...)
 	if err := cmd.Start(); err != nil {
+		undo()
 		g.ctl.ResumeNetModes()
 		return fmt.Errorf("новая копия не запустилась: %w", err)
 	}

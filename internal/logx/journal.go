@@ -56,6 +56,19 @@ func (j *Journal) Since(after uint64, limit int) []Entry {
 	return out
 }
 
+// Tail returns the newest n entries (all when fewer), oldest first; never
+// nil.
+func (j *Journal) Tail(n int) []Entry {
+	all := j.ring.Snapshot()
+	if n >= 0 && len(all) > n {
+		all = all[len(all)-n:]
+	}
+	if all == nil {
+		all = []Entry{}
+	}
+	return all
+}
+
 // Clear drops every entry (sequence numbers keep growing).
 func (j *Journal) Clear() { j.ring.Clear() }
 

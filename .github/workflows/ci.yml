@@ -24,6 +24,15 @@ jobs:
         env:
           # The runner is elevated: test the kill switch with real WFP filters.
           HYROUTE_WFP_TEST: '1'
+      - name: hyroutectl smoke test (no HyRoute on the runner exits 3)
+        shell: pwsh
+        run: |
+          go build -o $env:RUNNER_TEMP\hyroutectl.exe ./cmd/hyroutectl
+          & $env:RUNNER_TEMP\hyroutectl.exe --help
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & $env:RUNNER_TEMP\hyroutectl.exe status
+          if ($LASTEXITCODE -ne 3) { exit 1 }
+          exit 0
       - name: Known vulnerabilities (govulncheck)
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
   linux:

@@ -6,6 +6,7 @@
   import GeoSettings from './GeoSettings.svelte';
   import Backup from './Backup.svelte';
   import DNSSettings from './DNSSettings.svelte'; // dns
+  import CLISettings from './CLISettings.svelte'; // cli
 
   let {
     updates,
@@ -337,6 +338,8 @@
       говорит «не менять» или сети ещё нет.
     </p>
   </section>
+
+  {#if ui.expert}<CLISettings />{/if}
 
   {#if routing}
     <section class="card">

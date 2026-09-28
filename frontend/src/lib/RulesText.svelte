@@ -75,13 +75,50 @@ instagram.com -> vpn`);
   let timer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     const t = text;
+    const all = mode === 'all';
     clearTimeout(timer);
     timer = setTimeout(async () => {
       try {
-        res = t.trim() ? await api.ParseRulesText(t) : null;
+        // cli: a pasted rules JSON counts its «Всё остальное» only in «Все правила».
+        res = t.trim() ? await api.ParseRulesTextFor(t, all) : null;
       } catch {}
     }, 250);
   });
+
+  // cli: «Все правила» as rules JSON (read-only), of the profile the page
+  // shows; read again when shown and when the rules change elsewhere.
+  let shown = $state<'text' | 'json'>('text');
+  let json = $state('');
+  let jsonError = $state('');
+  let jsonSeq = 0; // only the latest read lands (another profile's may still be under way)
+  $effect(() => {
+    if (mode !== 'all' || shown !== 'json') return;
+    void ui.settingsRev;
+    const tok = view?.ruleset ?? target;
+    const seq = ++jsonSeq;
+    api.RulesJSON(tok).then(
+      (j) => {
+        if (seq === jsonSeq) (json = j), (jsonError = '');
+      },
+      (e) => {
+        if (seq === jsonSeq) jsonError = errText(e);
+      },
+    );
+  });
+  const jsonView = $derived(mode === 'all' && shown === 'json');
+  async function copyJSON() {
+    try {
+      await api.CopyText(json);
+    } catch (e) {
+      jsonError = errText(e);
+    }
+  }
+  // Problems of a rules JSON are per rule (0: the file or its «Всё остальное»).
+  const isJSON = $derived(text.trimStart().startsWith('{'));
+  function where(line: number): string {
+    if (!isJSON) return `строка ${line}:`;
+    return line > 0 ? `правило ${line}:` : '';
+  }
 
   async function save() {
     saving = true;
@@ -411,11 +448,25 @@ instagram.com -> vpn`);
       {:else}
         Вставьте сколько угодно правил — они добавятся в конец списка. Текущие правила не меняются.
       {/if}
+      Можно вставить и JSON из «hyroutectl rules export --format json» или из этого окна.
     </p>
 
     <div class="cols">
       <div class="editor">
-        {#if masked}
+        {#if mode === 'all'}
+          <div class="seg small-seg">
+            <button class:on={shown === 'text'} onclick={() => (shown = 'text')}>Текст</button>
+            <button class:on={shown === 'json'} onclick={() => (shown = 'json')}>JSON</button>
+          </div>
+        {/if}
+        {#if jsonView}
+          <pre class="ro">{masked ? hide(json) : json}</pre>
+          <div class="status row">
+            <span class="muted grow">Только для просмотра: так правила выгружает «hyroutectl rules export --format json».</span>
+            <button onclick={copyJSON} disabled={masked || !json}><Icon name="copy" size={15} /> Копировать</button>
+          </div>
+          {#if jsonError}<div class="note error small">{hide(jsonError)}</div>{/if}
+        {:else if masked}
           <pre class="ro">{hide(text)}</pre>
           <div class="status muted privacy">
             <Icon name="eye-off" size={15} />{lines} строк · включено «Скрыть данные»: сайты, адреса и серверы замаскированы, текст только для просмотра
@@ -453,7 +504,7 @@ instagram.com -> vpn`);
             {#if res}
               {#if res.errors.length}
                 <div class="errs">
-                  {#each res.errors.slice(0, 20) as e}<div><b>строка {e.line}:</b> {e.text}</div>{/each}
+                  {#each res.errors.slice(0, 20) as e}<div><b>{where(e.line)}</b> {e.text}</div>{/each}
                   {#if res.errors.length > 20}<div>…и ещё {res.errors.length - 20}</div>{/if}
                 </div>
               {:else if defaultInAdd}
@@ -463,7 +514,7 @@ instagram.com -> vpn`);
               {/if}
               {#if res.warnings?.length}
                 <div class="warns">
-                  {#each res.warnings.slice(0, 8) as w}<div><b>строка {w.line}:</b> {w.text}</div>{/each}
+                  {#each res.warnings.slice(0, 8) as w}<div><b>{where(w.line)}</b> {w.text}</div>{/each}
                 </div>
               {/if}
             {:else}
@@ -530,7 +581,7 @@ instagram.com -> vpn`);
       {#if masked}
         <button class="primary" onclick={reveal}><Icon name="eye" size={16} />Показать и редактировать</button>
       {:else}
-        <button class="primary" onclick={save} disabled={saving || profileStale || !text.trim() || !!res?.errors.length || defaultInAdd}>
+        <button class="primary" onclick={save} disabled={saving || jsonView || profileStale || !text.trim() || !!res?.errors.length || defaultInAdd}>
           {mode === 'all' ? 'Сохранить список' : 'Добавить правила'}
         </button>
       {/if}
@@ -563,6 +614,7 @@ instagram.com -> vpn`);
   .ac .hint { font-size: 11px; color: var(--muted); white-space: nowrap; }
   .ac .keys { font-size: 10.5px; color: var(--faint); padding: 4px 8px 2px; border-top: 1px solid var(--border); margin-top: 2px; }
   textarea { width: 100%; height: 52vh; font-size: 13px; line-height: 1.55; tab-size: 4; resize: none; }
+  .small-seg { align-self: flex-start; margin-bottom: 6px; } /* cli: Текст | JSON */
   .ro {
     margin: 0;
     height: 52vh;

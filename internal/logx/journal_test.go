@@ -2,6 +2,7 @@ package logx
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -84,5 +85,22 @@ func TestHandlerRedactsAndFormats(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "supersecret") || !strings.Contains(buf.String(), "INFO") {
 		t.Fatal(buf.String())
+	}
+}
+
+func TestJournalTail(t *testing.T) {
+	j := NewJournal(10)
+	if got := j.Tail(5); got == nil || len(got) != 0 {
+		t.Fatalf("empty journal: %#v", got)
+	}
+	for i := 0; i < 15; i++ {
+		j.Add(time.Now(), "info", fmt.Sprint(i))
+	}
+	got := j.Tail(3)
+	if len(got) != 3 || got[0].Msg != "12" || got[2].Msg != "14" {
+		t.Fatalf("Tail(3) = %v", got)
+	}
+	if got := j.Tail(100); len(got) != 10 || got[0].Msg != "5" {
+		t.Fatalf("Tail(100) = %v", got)
 	}
 }

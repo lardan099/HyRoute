@@ -185,6 +185,7 @@ type Controller struct {
 	statsState    // stats: traffic statistics (stats.go)
 	netmodesState // netmodes: «Сети», guarded by netMu (netmodes.go)
 	proxyUDPState // socks-udp (proxies.go)
+	cliState      // cli: prefsMu, the exit guard (cliapi.go)
 }
 
 // New builds a controller with journals and a logger.

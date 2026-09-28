@@ -38,6 +38,25 @@ type Prefs struct {
 	// CloseToTray: the close button hides the window to the tray (on
 	// when omitted); "Выход" in the tray menu quits.
 	CloseToTray *bool `json:"closeToTray,omitempty"`
+
+	// cli
+	// CLI: access of hyroutectl.exe over the control pipe: "" = read-only
+	// (the default), "full" = every command, "off" = no pipe. "read" is
+	// accepted for read-only too (CLIMode).
+	CLI string `json:"cli,omitempty"`
+}
+
+// CLIMode is the hyroutectl access CLI stands for: "full", "read" or
+// "off". Unset is read-only; a value written by a newer version reads as
+// "off", so it is never widened.
+func (p Prefs) CLIMode() string {
+	switch p.CLI {
+	case "", "read":
+		return "read"
+	case "full", "off":
+		return p.CLI
+	}
+	return "off"
 }
 
 func (p Prefs) CloseToTrayOn() bool { return p.CloseToTray == nil || *p.CloseToTray }

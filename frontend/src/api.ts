@@ -386,6 +386,7 @@ export interface Prefs {
   skipVersion?: string;
   autoConnect?: boolean;
   closeToTray?: boolean;
+  cli?: '' | CLIMode; // cli: '' (unset) = read-only
 }
 
 export interface AutostartInfo {
@@ -1469,4 +1470,31 @@ export function netUnknownRulesetNote(c: NetModes): string | null {
   if (c.unknown.ruleset) return null;
   if (!c.rules.some((r) => r.enabled !== false && r.ruleset)) return null;
   return 'В других сетях останется профиль правил последней сети.';
+}
+
+// ==== cli ====
+
+// hyroutectl's access: every command, the read-only ones, or no pipe.
+export type CLIMode = 'full' | 'read' | 'off';
+
+// The «Командная строка» card (Settings).
+export interface CLIInfo {
+  mode: CLIMode; // effective: 'off' while prefs.json is broken
+  listening: boolean; // the pipe is up
+  pipe: string; // the pipe's name (its SID)
+  exe: string; // hyroutectl.exe next to HyRoute.exe, '' when missing
+  dir: string; // the program folder (PATH hint)
+  user: string; // DOMAIN\name commands are accepted from
+  userDiffers: boolean; // over-the-shoulder UAC: not the account HyRoute runs as
+  error?: string;
+  prefsError?: string; // prefs.json failed to load: mode is 'off' and cannot be changed
+}
+
+interface GUI {
+  CLIInfo(): Promise<CLIInfo>;
+  SetCLIMode(mode: CLIMode): Promise<void>;
+  // «Правила текстом» → JSON of the profile the page shows (its token).
+  RulesJSON(ruleset: string): Promise<string>;
+  // The «Правила текстом» preview: replace = mode «Все правила».
+  ParseRulesTextFor(text: string, replace: boolean): Promise<RulesTextResult>;
 }

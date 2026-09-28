@@ -283,6 +283,10 @@ func (c *Controller) ConnectAtStart(why string) error {
 }
 
 func (c *Controller) connectAtStartLocked(why string) error {
+	if c.closing { // cli: HyRoute is exiting (BeginExit)
+		c.Log.Info("not connecting at start: HyRoute is exiting")
+		return nil
+	}
 	c.mu.Lock()
 	none, broken := len(c.profiles.List) == 0, c.settingsBroken
 	c.mu.Unlock()
@@ -1028,6 +1032,8 @@ func (c *Controller) netConnectLocked(atStart bool) (done bool, err error) {
 	}
 	switch {
 	case s != nil:
+		return false, nil
+	case c.closing: // cli: HyRoute is exiting; StopNetModes ran already
 		return false, nil
 	case broken != nil:
 		return false, errors.New("settings.json не загружен")
