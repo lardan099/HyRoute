@@ -213,6 +213,7 @@ func (c *Controller) ReleaseKillSwitch() error {
 	if c.KillSwitch == nil {
 		return errors.New("kill switch недоступен")
 	}
+	c.netManual() // netmodes: the user's choice wins until the network changes
 	c.ksMu.Lock()
 	var err error
 	if c.ks.armed {

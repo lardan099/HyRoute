@@ -17,6 +17,7 @@ import (
 // profile the rules use. A Disconnect meanwhile waits for it, then stops
 // what it started.
 func (c *Controller) Connect() error {
+	c.netManual() // netmodes: the user's choice wins until the network changes
 	c.lifeMu.Lock()
 	defer c.lifeMu.Unlock()
 	return c.connectLocked()
@@ -131,7 +132,10 @@ func (c *Controller) profileName(id string) string {
 
 // Disconnect removes the filters and stops every Hysteria. The kill
 // switch opens the internet too.
-func (c *Controller) Disconnect() { c.disconnect(true) }
+func (c *Controller) Disconnect() {
+	c.netManual() // netmodes
+	c.disconnect(true)
+}
 
 // Shutdown stops routing when HyRoute exits. Only Disconnect opens the
 // internet: the kill switch block stays over an exit (not over the end of
@@ -185,6 +189,7 @@ func (c *Controller) disconnectLocked(release bool) {
 // Reconnect applies engine options. The kill switch stays closed while
 // routing restarts, and a Disconnect meanwhile comes after the new start.
 func (c *Controller) Reconnect() error {
+	c.netManual() // netmodes
 	c.lifeMu.Lock()
 	defer c.lifeMu.Unlock()
 	c.disconnectLocked(false)
@@ -235,6 +240,8 @@ type Status struct {
 	SubsOK    bool       `json:"subsOK"`
 	// dns: while connected with a DNS option on (DNSStatus).
 	DNS *DNSStatus `json:"dns,omitempty"`
+	// netmodes: the network rules while «Сети» is on (nil otherwise).
+	Net *NetState `json:"net,omitempty"`
 }
 
 // down reports a profile that cannot carry traffic now: failed, or
@@ -249,10 +256,11 @@ func down(t tunnels.Status) bool {
 	return true
 }
 
-func (c *Controller) Status() Status {
+func (c *Controller) Status() (st Status) {
+	defer func() { st.Net = c.netStatus(st.State) }() // netmodes: every return path
 	c.mu.Lock()
 	s := c.sess
-	st := Status{State: "disconnected", LoadError: c.loadErr, Tunnels: []tunnels.Status{}, Warnings: c.ruleWarningsLocked()}
+	st = Status{State: "disconnected", LoadError: c.loadErr, Tunnels: []tunnels.Status{}, Warnings: c.ruleWarningsLocked()}
 	st.SettingsRev = c.settingsRev.Load()
 	st.Ruleset = c.rulesetRefLocked()
 	c.subStatusLocked(&st) // subinfo

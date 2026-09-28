@@ -4,6 +4,7 @@
 //	                with DPAPI (current user) on Windows
 //	settings.json   rules and routing options (internal/settings format)
 //	rulesets.json   rule profiles (rulesets.go); only once there are two
+//	networks.json   network rules (internal/netmode format)
 //
 // Files are replaced atomically (write to a temp file, then rename).
 package store

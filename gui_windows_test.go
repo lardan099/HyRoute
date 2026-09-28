@@ -34,7 +34,7 @@ func TestAutoConnectSkipsUnloadedSettings(t *testing.T) {
 	if _, err := ctl.ImportURIs("hysteria2://pw@example.com:443#DE"); err != nil {
 		t.Fatal(err)
 	}
-	(&GUI{ctl: ctl}).autoConnect()
+	ctl.ConnectAtStart("test")
 	if started != 0 {
 		t.Fatal("connected at start with the default rules")
 	}
@@ -46,7 +46,7 @@ func TestAutoConnectSkipsUnloadedSettings(t *testing.T) {
 	if err := ctl.Load(); err != nil {
 		t.Fatal(err)
 	}
-	(&GUI{ctl: ctl}).autoConnect()
+	ctl.ConnectAtStart("test")
 	if started != 1 {
 		t.Fatalf("connect at start: %d attempts", started)
 	}

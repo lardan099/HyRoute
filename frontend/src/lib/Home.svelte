@@ -9,6 +9,7 @@
   import { showSwitchResult, showRulesetError } from './RulesetBar.svelte';
   import HomeSubAlerts from './HomeSubAlerts.svelte'; // subinfo
   import HomeDNS, { dnsNotesShown, allTunnelsDown } from './HomeDNS.svelte'; // dns
+  import { hideNet, netText } from '../state.svelte'; // netmodes
 
   let { go, onsetup }: { go: (page: string) => void; onsetup: () => void } = $props();
 
@@ -261,6 +262,28 @@
 
   const tunnelText: Record<string, string> = { connected: 'работает', connecting: 'подключается', failed: 'ошибка', stopped: 'остановлен' };
   const since = $derived(st?.since && !st.since.startsWith('0001') ? Date.now() - new Date(st.since).getTime() : 0);
+
+  // netmodes: the network rule of this network, and why routing is off.
+  // Rule names are free text (often the Wi-Fi name): hideNet.
+  const net = $derived(st?.net);
+  const netLine = $derived.by(() => {
+    const n = net;
+    if (!n) return '';
+    let s = n.pending ? 'определяется' : n.noNet ? 'нет подключения' : n.unknown ? 'неизвестная' : n.rule ? `правило «${hideNet(n.rule)}»` : 'определяется';
+    if (n.restored) s += ' · как до обновления, до смены сети';
+    else if (n.override) s += ' · вручную до смены сети';
+    return s;
+  });
+  const netOffOther = $derived(!!net?.offBy && net.offBy !== net.rule);
+  const netOff = $derived.by(() => {
+    const n = net;
+    if (!n?.off || st?.state !== 'disconnected') return '';
+    const by = hideNet(n.offBy || n.rule);
+    if (n.offBy && n.offBy !== n.rule) {
+      return `Отключено правилом сети «${by}». Правило этой сети («${hideNet(n.rule)}») подключение не меняет — весь трафик идёт напрямую. Кнопка включения подключит до следующей смены сети.`;
+    }
+    return `Отключено правилом сети «${by}»: весь трафик идёт напрямую, kill switch не действует. Кнопка включения подключит до следующей смены сети.`;
+  });
 </script>
 
 <div class="home">
@@ -270,7 +293,15 @@
     </button>
     <div class="grow">
       <h1>{title}</h1>
-      <p class="muted">{hide(subtitle)}</p>
+      <p class="muted">
+        {netOff || hide(subtitle)}{#if netOff && netOffOther && ui.expert}
+          <button class="link" onclick={() => go('networks')}>Сети</button>{/if}
+      </p>
+      {#if netLine}
+        <p class="faint small">
+          {#if ui.expert}<button class="link" onclick={() => go('networks')}>Сеть</button>{:else}Сеть{/if}: {netLine}
+        </p>
+      {/if}
       {#if online && since > 0}<p class="faint small">Работает {fmtDuration(since * 1e6)}{st?.killSwitch === 'armed' ? ' · kill switch включён' : ''}</p>{/if}
       {#if error}<div class="note error">{hide(error)}</div>{/if}
     </div>
@@ -320,6 +351,13 @@
       </div>
       <button class="primary" onclick={move} disabled={moving}>{moving ? 'Переношу…' : 'Перенести'}</button>
     </section>
+  {/if}
+
+  {#if net?.error}
+    <div class="note warn row">
+      <span class="grow">Правило сети «{hideNet(net.rule)}» не выполнено: {netText(net.error, net)}</span>
+      {#if ui.expert}<button onclick={() => go('networks')}>Сети</button>{/if}
+    </div>
   {/if}
 
   <HomeSubAlerts {go} />

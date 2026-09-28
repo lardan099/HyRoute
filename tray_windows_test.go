@@ -94,6 +94,21 @@ func TestTrayViewKillSwitchBlocking(t *testing.T) {
 	}
 }
 
+// netmodes: routing off by a network rule says so (without the rule's
+// name: the tray does not know Privacy mode); a block still wins.
+func TestTrayViewNetOff(t *testing.T) {
+	net := &app.NetState{Off: true, OffBy: "Дом"}
+	if text, on := trayView(app.Status{State: "disconnected", Net: net}); text != "Отключено правилом сети" || on {
+		t.Fatal(text, on)
+	}
+	if text, _ := trayView(app.Status{State: "connected", Net: net}); text != "Подключено" {
+		t.Fatal(text)
+	}
+	if text, _ := trayView(app.Status{State: "disconnected", Net: net, KillSwitch: "blocking"}); text != "Интернет закрыт kill switch" {
+		t.Fatal(text)
+	}
+}
+
 // The notification area refused the icon: systray is started over until
 // the icon is up, and not again while it stays up.
 func TestWatchTrayRestartsUntilTheIconIsUp(t *testing.T) {

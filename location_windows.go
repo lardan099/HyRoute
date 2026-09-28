@@ -165,11 +165,13 @@ func (g *GUI) MoveToProgramFiles() error {
 		g.ctl.Log.Warn("start menu shortcut not created", "err", err)
 	}
 	args := []string{"--wait-pid", fmt.Sprint(os.Getpid()), "--moved-from", g.dllDir}
+	g.ctl.StopNetModes() // netmodes: no network rule acts between this decision and the exit
 	if routingOn(g.ctl.Status()) {
 		args = append(args, "--reconnect")
 	}
 	cmd := exec.Command(exe, args...)
 	if err := cmd.Start(); err != nil {
+		g.ctl.ResumeNetModes()
 		return fmt.Errorf("новая копия не запустилась: %w", err)
 	}
 	g.ctl.Log.Info("moving to Program Files: this copy exits", "to", target)

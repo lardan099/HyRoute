@@ -106,13 +106,14 @@ type Controller struct {
 	// lifeMu serializes Connect, disconnect, kill switch changes, the
 	// automatic reconnect after an engine failure and the ports of local
 	// proxies, so a Disconnect during a start is not lost. Taken before
-	// mu, ksMu, proxyMu and recMu. stats: the statistics' lock
-	// (internal/stats) is taken after all of these. Its I/O lock
-	// (stats.ioMu) is never taken or waited for with any Controller lock
+	// mu, ksMu, proxyMu, recMu and netMu; after netActMu. stats: the
+	// statistics' lock (internal/stats) is taken after all of these. Its I/O
+	// lock (stats.ioMu) is never taken or waited for with any Controller lock
 	// held, lifeMu included; the Disconnect path only samples in memory and
 	// kicks RunStats.
 	lifeMu sync.Mutex
-	// saveMu keeps settings.json and c.settings in the same order.
+	// saveMu keeps settings.json and c.settings in the same order. Taken
+	// after netActMu; before mu and netMu.
 	saveMu sync.Mutex
 	// subMu guards subLocks (see lockSub). A subscription's own lock is
 	// held across its download: taken before mu, never while holding it.
@@ -178,6 +179,7 @@ type Controller struct {
 	rulesetsState // rulesets: guarded by mu (rulesets.go)
 	dnsState      // dns: DNS policies (dns.go)
 	statsState    // stats: traffic statistics (stats.go)
+	netmodesState // netmodes: «Сети», guarded by netMu (netmodes.go)
 }
 
 // New builds a controller with journals and a logger.
@@ -195,7 +197,8 @@ func New(st *store.Store, start Starter, base session.Config, level slog.Leveler
 	}
 	c.Log = slog.New(logx.NewHandler(c.EngineLog, c.Redactor, level, nil))
 	c.initGroups()
-	c.initStats() // stats
+	c.initStats()    // stats
+	c.initNetModes() // netmodes
 	return c
 }
 
@@ -250,6 +253,7 @@ func (c *Controller) Load() error {
 		set.ExactWeb = st.ExactWeb()
 	}
 	rl := c.loadRulesets(st, set, err2, existed) // rulesets: the active rules may come from rulesets.json
+	c.loadNetModes(&errs)                        // netmodes: networks.json
 	if st, set = rl.Settings, rl.Set; rl.RulesUnknown != nil {
 		// The defaults stand in for rules that exist: as with a
 		// settings.json that did not load, nothing connects or saves.

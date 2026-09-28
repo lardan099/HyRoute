@@ -55,7 +55,7 @@
   // opening an inactive one for editing (edit mode is the page's).
   import { onMount, tick } from 'svelte';
   import { defaultLabel, plural, type CreateResult, type RulesetsView, type RulesetView } from '../api';
-  import { ui } from '../state.svelte';
+  import { ui, hideNet } from '../state.svelte';
   import Icon from './Icon.svelte';
   import RulesetDialog from './RulesetDialog.svelte';
 
@@ -197,9 +197,9 @@
   function remove(r: RulesetView) {
     let q = `Удалить профиль правил «${hide(r.name)}» и его правила (${r.rules})? Это не отменить.`;
     if (r.usedBy?.length) {
-      // Empty until netmodes lands; it masks these names with its hideNet
+      // Network rule names are free text (often a Wi-Fi name): hideNet
       // (PLAN §2.14), which hide()'s patterns do not cover.
-      q += `\n\nИспользуется правилами сетей: ${r.usedBy.map((n) => `«${hide(n)}»`).join(', ')}. После удаления они не будут переключать профиль, пока вы не выберете другой.`;
+      q += `\n\nИспользуется правилами сетей: ${r.usedBy.map((n) => `«${hideNet(n)}»`).join(', ')}. После удаления они не будут переключать профиль, пока вы не выберете другой.`;
     }
     if (!confirm(q)) return;
     close(true);

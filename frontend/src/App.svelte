@@ -17,6 +17,10 @@
   import UpdateDialog from './lib/UpdateDialog.svelte';
   import Toasts from './lib/Toasts.svelte';
   import Setup from './lib/Setup.svelte';
+  import Networks from './lib/Networks.svelte'; // netmodes
+  import { netText } from './state.svelte'; // netmodes
+  import { toast } from './toast.svelte'; // netmodes
+  import { netAt } from './api'; // netmodes
 
   // expert: the page is shown only in the full interface.
   const pages = [
@@ -25,6 +29,7 @@
     { id: 'servers', label: 'Серверы', icon: 'server' },
     { id: 'subs', label: 'Подписки', icon: 'rss' },
     { id: 'proxies', label: 'Прокси', icon: 'zap', expert: true },
+    { id: 'networks', label: 'Сети', icon: 'wifi', expert: true }, // netmodes
     { id: 'lists', label: 'Списки', icon: 'database', expert: true },
     { id: 'connections', label: 'Соединения', icon: 'activity', expert: true },
     { id: 'stats', label: 'Статистика', icon: 'chart', expert: true },
@@ -166,6 +171,28 @@
     refresh();
   }
 
+  // netmodes: a network rule acted (a new state.at) while the window is
+  // visible. The texts are thunks: Privacy mode re-renders a shown toast.
+  // netSeen survives the feature being off (status.net absent), so turning
+  // it on again or a restore does not toast an old action.
+  let netSeen: string | null = null; // null until the first status with net
+  $effect(() => {
+    const n = ui.status?.net;
+    if (!n) return;
+    const at = netAt(n)?.toISOString() ?? '';
+    const first = netSeen === null;
+    if (!first && (!at || at <= (netSeen ?? ''))) return;
+    netSeen = at;
+    if (first || !at || document.visibilityState !== 'visible') return;
+    const cur = n;
+    toast({
+      text: () => netText(cur.text || `Правило сети «${cur.rule}» не выполнено`, cur),
+      detail: cur.error ? () => hide(netText(cur.error, cur)) : undefined,
+      tone: cur.error ? 'error' : 'info',
+      actions: ui.expert ? [{ label: () => 'Сети', run: () => go('networks') }] : [],
+    });
+  });
+
   // The kill switch banner on the pages without their own note (Главная
   // and Настройки have one): the same actions as the card on Главная.
   let ksBusy = $state(false);
@@ -247,7 +274,7 @@
         <div class="note ok row"><span class="grow">{notice}</span><button class="icon" onclick={() => (notice = '')}><Icon name="x" size={16} /></button></div>
       {/if}
       {#if st?.loadError}
-        <div class="note error">Настройки не загружены: {hide(st.loadError)}</div>
+        <div class="note error">Настройки не загружены: {netText(st.loadError)}</div>
       {/if}
       {#if blocking && page !== 'home'}
         <div class="note warn row">
@@ -282,6 +309,8 @@
         <Subscriptions onchange={refreshProfiles} />
       {:else if page === 'proxies'}
         <Proxies />
+      {:else if page === 'networks'}
+        <Networks {go} />
       {:else if page === 'lists'}
         <Lists />
       {:else if page === 'connections'}

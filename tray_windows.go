@@ -395,6 +395,10 @@ func trayView(st app.Status) (text string, on bool) {
 		"disconnected": "Отключено", "starting": "Запуск…", "connecting": "Подключение…",
 		"connected": "Подключено", "tunnel-down": "Сервер недоступен", "error": "Ошибка",
 	}[st.State]
+	if st.State == "disconnected" && st.Net != nil && st.Net.Off {
+		// netmodes: no names, the tray does not know Privacy mode.
+		text = "Отключено правилом сети"
+	}
 	if st.KillSwitch == "blocking" {
 		text = "Интернет закрыт kill switch"
 	}

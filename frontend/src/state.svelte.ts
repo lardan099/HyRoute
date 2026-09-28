@@ -1,6 +1,7 @@
 // Shared UI state: status, profiles, Privacy mode, theme.
 import { maskDomains, maskHosts, maskIPs, maskURLs } from './privacy';
 import { isGroupId, type GroupView, type ProfileSummary, type Status, type SubAlert } from './api';
+import { netUnknownName, type NetState } from './api'; // netmodes
 
 function get(k: string): string | null {
   try {
@@ -218,3 +219,30 @@ export function pruneSubAcks(st: Status) {
   const keep = Object.fromEntries(Object.entries(ui.subAck).filter(([id]) => ids.has(id)));
   if (Object.keys(keep).length !== Object.keys(ui.subAck).length) saveSubAcks(keep);
 }
+
+// ==== netmodes ====
+
+// hideNet masks a network name, a Wi-Fi name or a network rule's name (free
+// text, often the Wi-Fi name) in Privacy mode: they are not domain-shaped,
+// so hide() would not. «Неизвестная сеть» is not a secret.
+export function hideNet(s: string | undefined | null): string {
+  if (!s) return s ?? '';
+  return ui.privacy && s !== netUnknownName ? '***' : s;
+}
+
+// netText is a network rule's state text or error for display: in Privacy
+// mode the rule names in it (of st and names, longest first, and any name
+// quoted after «правило сети» — load errors of networks.json name rules
+// the page does not know) become «***», then hide() masks hosts, IPs,
+// domains and URLs.
+export function netText(s: string | undefined | null, st?: NetState | null, names: string[] = []): string {
+  if (!s) return s ?? '';
+  if (!ui.privacy) return s;
+  const all = [st?.rule, st?.offBy, ...names].filter((n): n is string => !!n && n !== netUnknownName);
+  all.sort((a, b) => b.length - a.length);
+  for (const n of all) s = s.split(`«${n}»`).join('«***»');
+  s = s.replace(netRuleQuote, (m, pre: string, n: string) => (n === netUnknownName ? m : `${pre}***»`));
+  return hide(s);
+}
+
+const netRuleQuote = /([Пп]равил[а-я]* сет(?:и|ей) «)([^»]*)»/g;

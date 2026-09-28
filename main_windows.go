@@ -35,6 +35,7 @@ import (
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/killswitch"
 	"github.com/lardan099/hyroute/internal/logx"
+	"github.com/lardan099/hyroute/internal/netwatch"
 	"github.com/lardan099/hyroute/internal/procinfo"
 	"github.com/lardan099/hyroute/internal/release"
 	"github.com/lardan099/hyroute/internal/runtimefiles"
@@ -220,6 +221,8 @@ func main() {
 		ctl.Log.Info("started at sign-in by the kill switch check: a block from before closes the internet")
 	}
 	ctl.ListRunning = procinfo.ListRunning
+	// netmodes: New only allocates; nothing is read until «Сети» is used.
+	ctl.NetWatcher = netwatch.New()
 	ctl.ProxyFirewall = func(ports []int) error { return fwrule.SetProxyPorts(exe, ports) }
 	ctl.Updater = &app.Updater{Repo: updateRepo, Dir: core.DefaultDir("updates"), Core: coreMgr, Client: coreMgr.Client}
 	cleanUpdates(ctl.Updater.Dir)
@@ -234,6 +237,11 @@ func main() {
 	// Automatic reconnects after engine failures stopped: without the
 	// window a user in the tray would not know.
 	ctl.OnGiveUp = gui.showWindow
+	// netmodes: the start checks (a kill switch block from before that
+	// stays shows the window) wait for both what connects at start and the
+	// window.
+	gate := &startGate{fn: gui.startChecks}
+	ctl.OnStartDecided = gate.markDecided
 	schedCtx, stopSched := context.WithCancel(context.Background())
 	defer stopSched()
 	go ctl.RunScheduler(schedCtx)
@@ -242,21 +250,20 @@ func main() {
 	go ctl.RunStats(schedCtx) // stats
 	go gui.syncKillSwitchCheck()
 
-	switch {
-	case *updEvent != "" && *reconnect:
-		go gui.reconnectAfterUpdate()
-	case *updFailed != "" && *reconnect:
-		// The update was rolled back: connected before it, so again now.
-		gui.connUp.Store(true)
-		go gui.reconnectAfterRollback()
-	default:
-		gui.connUp.Store(true)
-		// --reconnect without an update: the copy moved to Program Files
-		// was connected.
-		if ctl.Prefs().AutoConnect || *reconnect {
-			go gui.autoConnect()
-		}
+	// What connects at start follows the launch reason: an update, a
+	// rollback or a move restores the state before it (--reconnect: it was
+	// connected), a normal start lets the network rules or «Подключаться
+	// при запуске» decide.
+	plan := planStart(*updEvent, *updFailed, *movedFrom, *reconnect)
+	gui.connUp.Store(plan.connUp)
+	restore := map[string]func(){"update": gui.reconnectAfterUpdate, "rollback": gui.reconnectAfterRollback, "move": gui.reconnectAfterMove}[plan.restore]
+	if restore != nil {
+		go func() {
+			defer gate.markDecided() // the restore reconnect is the start decision
+			restore()
+		}()
 	}
+	go ctl.RunNetModes(schedCtx, plan.mode)
 	switch {
 	case *movedFrom != "":
 		gui.notice = "HyRoute перенесён в " + dir + " и добавлен в меню «Пуск». Старую папку " + *movedFrom + " можно удалить."
@@ -272,6 +279,13 @@ func main() {
 	// The kill switch check starts HyRoute with its window shown: the
 	// block is what the user has to see, and so does the autostart task
 	// when it finds one.
+	// With network rules on, a block from before may be released by the
+	// rule of a trusted network: the start gate shows the window once the
+	// start decision is made, if the block stays.
+	nm := ctl.NetModes(false)
+	if nm.Config.Enabled && nm.LoadError == "" {
+		blocked = false
+	}
 	startState, startHidden := options.Normal, false
 	if *atLogon && !blocked {
 		if ctl.Prefs().CloseToTrayOn() {
@@ -295,6 +309,7 @@ func main() {
 			gui.startup(ctx)
 			// The window exists: a second start now shows it.
 			inst.serve(gui.showWindow)
+			gate.markUI()
 		},
 		OnDomReady: gui.domReady,
 		OnShutdown: func(ctx context.Context) {

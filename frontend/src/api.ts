@@ -299,6 +299,8 @@ export interface Status {
   subsOK: boolean;
   // dns: while connected with a DNS option on
   dns?: DNSStatus;
+  // netmodes: the network rules while «Сети» is on
+  net?: NetState;
 }
 
 export interface Flow {
@@ -1285,3 +1287,173 @@ interface GUI {
 // refused); statVPN: bytes through the VPN.
 export const statConns = (c: StatCounters) => (c.tc ?? 0) + (c.dc ?? 0) + (c.bc ?? 0) + (c.f ?? 0);
 export const statVPN = (c: StatCounters) => (c.tu ?? 0) + (c.td ?? 0);
+
+// ==== netmodes ====
+
+// «Сети»: network rules (internal/netmode, internal/app/netmodes.go).
+export type NetConnect = '' | 'connect' | 'disconnect';
+export type NetCategory = 'public' | 'private' | 'domain';
+export type NetAdapter = 'wifi' | 'ethernet' | 'mobile' | 'other';
+
+export interface NetAction {
+  connect?: NetConnect;
+  ruleset?: string;
+}
+export interface NetKnown {
+  id: string;
+  name: string;
+}
+export interface NetMatch {
+  networks?: NetKnown[];
+  ssids?: string[];
+  names?: string[];
+  categories?: NetCategory[];
+  adapters?: NetAdapter[];
+}
+export interface NetRule extends NetAction {
+  id: string;
+  name: string;
+  enabled?: boolean;
+  match: NetMatch;
+}
+export interface NetModes {
+  version: number;
+  enabled: boolean;
+  rules: NetRule[];
+  unknown: NetAction;
+}
+
+// netmode.Network (the adapter and gateway fields never reach the UI)
+export interface NetInfo {
+  id: string;
+  name: string;
+  category: NetCategory | '';
+  adapter: NetAdapter;
+  adapterName: string;
+  ssid: string;
+  ssidDenied: boolean;
+  identified: boolean;
+}
+export interface NetSnapshot {
+  active: NetInfo | null;
+  others: NetInfo[] | null;
+  error?: string;
+  nlmDown?: boolean;
+}
+
+export interface NetState {
+  rule: string;
+  ruleId: string;
+  unknown: boolean;
+  noNet: boolean;
+  pending: boolean;
+  text: string;
+  error?: string;
+  at: string;
+  override: boolean;
+  restored: boolean;
+  off: boolean;
+  offBy?: string;
+}
+export interface NetModesView {
+  config: NetModes;
+  current: NetSnapshot;
+  match: ({ ruleId: string; name: string; unknown: boolean } & NetAction) | null;
+  state: NetState;
+  available: boolean;
+  unavailable?: string;
+  loadError?: string;
+  usesSSID: boolean;
+  rulesets: { id: string; name: string }[] | null; // null: no rule profiles
+  rulesetsNote?: string;
+  ruleErrors: Record<string, string> | null; // key: rule id or 'unknown'
+  confirm?: boolean; // ApplyNetModes did not act: match disconnects and was not confirmed
+}
+
+interface GUI {
+  NetModes(refresh: boolean): Promise<NetModesView>; // false: cached read (status events), true: fresh read
+  SaveNetModes(c: NetModes): Promise<NetModesView>; // `enabled` in c is ignored: SetNetModesEnabled is the only toggle
+  SetNetModesEnabled(on: boolean): Promise<NetModesView>;
+  // confirmDisconnect: the key (rule id, 'unknown') of the disconnecting rule
+  // the user confirmed; '' = none. A fresh read's other disconnect → confirm.
+  ApplyNetModes(confirmDisconnect: string): Promise<NetModesView>;
+  CurrentSSID(): Promise<string>;
+}
+
+export const netUnknownName = 'Неизвестная сеть';
+export const netCategoryLabel: Record<NetCategory, string> = { public: 'Общедоступная', private: 'Частная', domain: 'Доменная' };
+export const netAdapterLabel: Record<NetAdapter, string> = { wifi: 'Wi-Fi', ethernet: 'Ethernet (кабель)', mobile: 'Мобильная связь', other: 'Другое' };
+export const netConnectLabel: Record<NetConnect, string> = { '': 'Не менять', connect: 'Подключить', disconnect: 'Отключить — всё напрямую' };
+
+// netAt is state.at as a time, or null when nothing acted yet.
+export function netAt(st: NetState | undefined | null): Date | null {
+  if (!st?.at || st.at.startsWith('0001')) return null;
+  const d = new Date(st.at);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// netActionText: «ничего» / «подключить» / «отключить» / «профиль «X»» /
+// «профиль «X», подключить»; a profile no longer listed: «профиль (удалён)».
+export function netActionText(a: NetAction, rulesets: { id: string; name: string }[] | null): string {
+  const parts: string[] = [];
+  if (a.ruleset) {
+    const rs = rulesets?.find((r) => r.id === a.ruleset);
+    parts.push(rs ? `профиль «${rs.name}»` : 'профиль (удалён)');
+  }
+  if (a.connect === 'connect') parts.push('подключить');
+  if (a.connect === 'disconnect') parts.push('отключить');
+  return parts.length ? parts.join(', ') : 'ничего';
+}
+
+// cleanNetModes drops empty groups and values, trims, and leaves out
+// enabled: true (the default).
+export function cleanNetModes(c: NetModes): NetModes {
+  const list = <T extends string>(v: T[] | undefined, trim = true): T[] | undefined => {
+    const out = (v ?? []).map((x) => (trim ? (x.trim() as T) : x)).filter((x) => x !== '');
+    return out.length ? [...new Set(out)] : undefined;
+  };
+  return {
+    version: 1,
+    enabled: c.enabled,
+    rules: c.rules.map((r) => {
+      const m: NetMatch = {};
+      const nets = (r.match.networks ?? []).filter((k) => k.id);
+      if (nets.length) m.networks = nets.map((k) => ({ id: k.id, name: k.name }));
+      const ssids = list(r.match.ssids, false);
+      if (ssids) m.ssids = ssids;
+      const names = list(r.match.names);
+      if (names) m.names = names;
+      const cats = list(r.match.categories);
+      if (cats) m.categories = cats;
+      const ads = list(r.match.adapters);
+      if (ads) m.adapters = ads;
+      const out: NetRule = { id: r.id, name: r.name.trim(), match: m };
+      if (r.enabled === false) out.enabled = false;
+      if (r.connect) out.connect = r.connect;
+      if (r.ruleset) out.ruleset = r.ruleset;
+      return out;
+    }),
+    unknown: { ...(c.unknown.connect ? { connect: c.unknown.connect } : {}), ...(c.unknown.ruleset ? { ruleset: c.unknown.ruleset } : {}) },
+  };
+}
+
+// emptyNetModes is Go's netmode.Default(): «Неизвестная сеть: подключить».
+export function emptyNetModes(): NetModes {
+  return { version: 1, enabled: false, rules: [], unknown: { connect: 'connect' } };
+}
+
+// netUnknownWarn: «Неизвестная сеть» keeps the connection while a rule
+// disconnects: after that network HyRoute stays off everywhere.
+export function netUnknownWarn(c: NetModes): string | null {
+  if (c.unknown.connect) return null;
+  if (!c.rules.some((r) => r.enabled !== false && r.connect === 'disconnect')) return null;
+  return 'После сети, где правило отключает HyRoute, в других сетях он останется отключённым — весь трафик пойдёт напрямую. Чтобы в незнакомых сетях HyRoute подключался сам, выберите «Подключить».';
+}
+
+// netUnknownRulesetNote: «Неизвестная сеть» keeps the profile while rules
+// switch it.
+export function netUnknownRulesetNote(c: NetModes): string | null {
+  if (c.unknown.ruleset) return null;
+  if (!c.rules.some((r) => r.enabled !== false && r.ruleset)) return null;
+  return 'В других сетях останется профиль правил последней сети.';
+}

@@ -69,6 +69,7 @@ func (g *GUI) startup(ctx context.Context) {
 // as the user's Disconnect: with the kill switch on the internet stays
 // closed until HyRoute connects again or the user opens it.
 func (g *GUI) shutdown(context.Context) {
+	g.ctl.StopNetModes() // netmodes: no network rule acts during the exit
 	g.ctl.Shutdown()
 	g.quitTray()
 }
@@ -168,31 +169,12 @@ func (g *GUI) Connect() error     { return g.ctl.Connect() }
 func (g *GUI) Disconnect()        { g.ctl.Disconnect() }
 func (g *GUI) Reconnect() error   { return g.ctl.Reconnect() }
 
-// autoConnect turns routing on at start ("Подключаться при запуске").
-func (g *GUI) autoConnect() {
-	g.connectAtStart("connecting at start (setting \"connect when HyRoute starts\")")
-}
-
 // reconnectAfterRollback: an update was rolled back and HyRoute was
 // connected before it, so this (previous) version connects again,
-// whatever "Подключаться при запуске" says.
+// whatever "Подключаться при запуске" says. «Подключаться при запуске»
+// itself is the controller's (RunNetModes: the network rules decide first).
 func (g *GUI) reconnectAfterRollback() {
-	g.connectAtStart("connecting again: the update was rolled back, HyRoute was connected before it")
-}
-
-func (g *GUI) connectAtStart(why string) {
-	if len(g.ctl.Profiles()) == 0 {
-		return
-	}
-	// The default rules send everything direct: not what the user set.
-	if err := g.ctl.SettingsError(); err != nil {
-		g.ctl.Log.Error("not connecting at start: settings.json did not load, the rules would be the defaults", "err", err)
-		return
-	}
-	g.ctl.Log.Info(why)
-	if err := g.ctl.Connect(); err != nil {
-		g.ctl.Log.Error("connect at start failed", "err", err)
-	}
+	g.ctl.ConnectAtStart("connecting again: the update was rolled back, HyRoute was connected before it")
 }
 
 // ---- start with Windows ----
@@ -528,6 +510,8 @@ func (g *GUI) ApplyAppUpdate() error {
 	if exe, err := os.Executable(); err == nil && !strings.EqualFold(filepath.Base(exe), update.MainExe) {
 		args = append(args, "--exe", filepath.Base(exe))
 	}
+	// netmodes: no network rule acts between this decision and the exit.
+	g.ctl.StopNetModes()
 	if routingOn(g.ctl.Status()) {
 		// The new version reconnects and reports healthy only once the
 		// driver and filters are up again.
@@ -535,6 +519,7 @@ func (g *GUI) ApplyAppUpdate() error {
 	}
 	cmd := exec.Command(helper, args...)
 	if err := cmd.Start(); err != nil {
+		g.ctl.ResumeNetModes()
 		return fmt.Errorf("программа обновления не запустилась: %w", err)
 	}
 	g.ctl.Log.Info("installing update: HyRoute exits, hyroute-updater replaces the files", "to", ver)
