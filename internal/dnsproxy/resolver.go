@@ -23,6 +23,8 @@ var (
 	ErrUpstreamDown = errors.New("dns: upstream marked down")
 	// errNoUpstream: no server is configured for that way.
 	errNoUpstream = errors.New("dns: no upstream configured")
+	// errClosed: the resolver was closed (its session stopped).
+	errClosed = errors.New("dns: resolver closed")
 )
 
 // Resolver sends queries to «DNS-сервер для VPN» through a profile's
@@ -56,7 +58,10 @@ type Resolver struct {
 	// gen counts the Configure calls that changed a server. A query records
 	// it before its I/O; when it has changed by the time the answer comes,
 	// the answer is neither cached nor reported to the (new) health.
-	gen    uint64
+	gen uint64
+	// closed: Close ran; no client is created after it (a query still
+	// under way would leave one nobody closes).
+	closed bool
 	cache  cache
 	flight flight
 }
@@ -142,11 +147,12 @@ func (r *Resolver) Retain(profiles []string) {
 	}
 }
 
-// Close closes every client.
+// Close closes every client; queries after it fail.
 func (r *Resolver) Close() {
 	r.mu.Lock()
 	old := r.clients
 	r.clients = nil
+	r.closed = true
 	r.mu.Unlock()
 	for _, c := range old {
 		c.Close()
@@ -178,6 +184,10 @@ func (r *Resolver) Exchange(ctx context.Context, via dnspolicy.Via, profile stri
 		}
 	}
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil, 0, errClosed
+	}
 	if r.health == nil {
 		r.health = map[string]*health{}
 	}

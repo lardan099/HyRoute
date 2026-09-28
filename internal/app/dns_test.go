@@ -510,6 +510,16 @@ func TestDNSExitFlush(t *testing.T) {
 	if got := d.flushes.Load(); got != 2 {
 		t.Fatalf("%d flushes when Shutdown returned, want 2", got)
 	}
+	// The disconnect's flush, waiting out the gap, ended without flushing:
+	// no goroutine outlives the test.
+	waitFor(t, "the waiting flush ended", func() bool {
+		d.dnsFlush.mu.Lock()
+		defer d.dnsFlush.mu.Unlock()
+		return d.dnsFlush.pending == 0
+	})
+	if got := d.flushes.Load(); got != 2 {
+		t.Fatalf("%d flushes, want 2", got)
+	}
 	// Nothing due: none.
 	d2 := newDNSCtl(t, nil)
 	d2.Shutdown()

@@ -58,7 +58,9 @@ func waitFor(t *testing.T, what string, ok func() bool) {
 
 func TestWorkerLazyAndIdle(t *testing.T) {
 	f := &fakeWorker{}
-	w := f.worker(time.Second, 30*time.Millisecond)
+	// The idle is long enough not to pass between two calls on a slow
+	// runner.
+	w := f.worker(time.Second, 300*time.Millisecond)
 	if w.starts != 0 || f.opens.Load() != 0 {
 		t.Fatal("started before the first request")
 	}
@@ -74,9 +76,14 @@ func TestWorkerLazyAndIdle(t *testing.T) {
 	}
 }
 
+// testCallTimeout bounds calls that block until released: long enough for
+// a fresh thread to take the job on a slow runner (a hand-over that times
+// out abandons nothing).
+const testCallTimeout = 200 * time.Millisecond
+
 func TestWorkerTimeoutAbandonsAndDown(t *testing.T) {
 	f := &fakeWorker{}
-	w := f.worker(20*time.Millisecond, time.Hour)
+	w := f.worker(testCallTimeout, time.Hour)
 	release := make(chan struct{})
 	f.block = release
 	for i := 1; i <= 3; i++ {
@@ -91,7 +98,7 @@ func TestWorkerTimeoutAbandonsAndDown(t *testing.T) {
 		t.Fatalf("each attempt on a fresh thread: %d opens", f.opens.Load())
 	}
 	start := time.Now()
-	if _, err := w.Do(9); !errors.Is(err, errWorkerDown) || time.Since(start) > 10*time.Millisecond {
+	if _, err := w.Do(9); !errors.Is(err, errWorkerDown) || time.Since(start) >= testCallTimeout/2 {
 		t.Fatal("a down worker does not fail at once", err)
 	}
 	// The hung calls return: their threads close and answer nobody.
@@ -101,7 +108,7 @@ func TestWorkerTimeoutAbandonsAndDown(t *testing.T) {
 
 func TestWorkerTimeoutThenFresh(t *testing.T) {
 	f := &fakeWorker{}
-	w := f.worker(20*time.Millisecond, time.Hour)
+	w := f.worker(testCallTimeout, time.Hour)
 	release := make(chan struct{})
 	f.mu.Lock()
 	f.block = release

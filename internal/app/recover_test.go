@@ -150,6 +150,22 @@ func TestEngineRecoverCancelled(t *testing.T) {
 	}
 }
 
+// While HyRoute is exiting (BeginExit) the planned attempt starts nothing:
+// the Disconnect or Shutdown that follows would only stop it again.
+func TestEngineRecoverNotWhileExiting(t *testing.T) {
+	c, started := recoverCtl(t, time.Hour, nil)
+	started()[0].fail()
+	c.recMu.Lock()
+	gen := c.rec.gen
+	c.recMu.Unlock()
+	undo := c.BeginExit()
+	c.recoverEngine(gen) // the timer fired
+	undo()
+	if n := len(started()); n != 1 {
+		t.Fatalf("%d sessions", n)
+	}
+}
+
 // After the user reconnected nothing reconnects again: not the planned
 // attempt, nor a late failure report of the session replaced.
 func TestEngineRecoverNotAfterManualReconnect(t *testing.T) {

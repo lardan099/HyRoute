@@ -92,6 +92,36 @@ func TestBackupFullRoundTrip(t *testing.T) {
 	c.Disconnect()
 }
 
+// A full copy restores the prefs but never hyroutectl's access: a copy made
+// with «Полный доступ» leaves this computer's choice (the default
+// «Только просмотр», or «Выключено») as it is.
+func TestBackupKeepsCLIMode(t *testing.T) {
+	a, _ := newCtl(t)
+	if err := a.UpdatePrefs(func(p *store.Prefs) error { p.CLI, p.UpdateCheck = "full", "manual"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	b, err := a.Backup(true, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cur := range []string{"", "off"} {
+		c, _ := newCtl(t)
+		if err := c.UpdatePrefs(func(p *store.Prefs) error { p.CLI = cur; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		want, _ := c.CLIMode()
+		if _, err := c.RestoreBackup(b, "correct horse"); err != nil {
+			t.Fatal(err)
+		}
+		c2, _ := newCtlAt(t, c.Store)
+		for _, x := range []*Controller{c, c2} {
+			if mode, _ := x.CLIMode(); mode != want || x.Prefs().UpdateCheck != "manual" {
+				t.Fatalf("%q: %q %+v", cur, mode, x.Prefs())
+			}
+		}
+	}
+}
+
 func TestBackupRulesOnly(t *testing.T) {
 	a, _ := newCtl(t)
 	res, err := a.ImportURIs(link)

@@ -356,8 +356,10 @@ func TestLANProxyUDP(t *testing.T) {
 	}
 }
 
-// SaveProxy stores an explicit value equal to the default as the default;
-// validateProxy refuses unknown values (backup's import calls it too).
+// SaveProxy stores an explicit value equal to the default as the default
+// for a proxy on this computer, while a LAN proxy's is always written (off
+// too: see KeepV12ProxyUDP); validateProxy refuses unknown values (backup's
+// import calls it too).
 func TestSaveProxyUDP(t *testing.T) {
 	c, _ := newCtl(t)
 	setOwners(t, nil)
@@ -365,8 +367,8 @@ func TestSaveProxyUDP(t *testing.T) {
 	if err != nil || local.UDP != "" || !local.UDPEffective {
 		t.Fatalf("%+v %v", local, err)
 	}
-	lan, err := c.SaveProxy(ProxyInput{LocalProxy: store.LocalProxy{Port: freePort(t), LAN: true, Username: "u", UDP: "off"}, Password: "p"})
-	if err != nil || lan.UDP != "" || lan.UDPEffective {
+	lan, err := c.SaveProxy(ProxyInput{LocalProxy: store.LocalProxy{Port: freePort(t), LAN: true, Username: "u"}, Password: "p"})
+	if err != nil || lan.UDP != "off" || lan.UDPEffective {
 		t.Fatalf("%+v %v", lan, err)
 	}
 	on, err := c.SaveProxy(ProxyInput{LocalProxy: store.LocalProxy{ID: lan.ID, Port: lan.Port, LAN: true, Username: "u", UDP: "on"}, Password: "p"})
@@ -374,7 +376,7 @@ func TestSaveProxyUDP(t *testing.T) {
 		t.Fatalf("%+v %v", on, err)
 	}
 	b, _ := os.ReadFile(filepath.Join(c.Store.Dir, "proxies.json"))
-	if strings.Count(string(b), `"udp"`) != 1 {
+	if strings.Count(string(b), `"udp"`) != 1 || !strings.Contains(string(b), `"udp": "on"`) {
 		t.Fatalf("%s", b)
 	}
 	for _, m := range []store.UDPMode{"", "on", "off", "maybe", "ON"} {
@@ -483,17 +485,22 @@ func TestKeepV12ProxyUDP(t *testing.T) {
 	if calls != 1 {
 		t.Fatal(calls)
 	}
-	// Turned off before the first Connect: it stays off.
+	// Turned off before the first Connect: it stays off, also after a
+	// restart before any connection (the rule is still v1.2.0's then).
 	v, err := c.SaveProxy(ProxyInput{LocalProxy: store.LocalProxy{ID: "a", Name: "Телефон", Enabled: true, Port: lanPort, LAN: true, Username: "u", UDP: "off"}, Password: "p"})
 	if err != nil || v.UDPEffective {
 		t.Fatalf("%+v %v", v, err)
+	}
+	start()
+	if v := c.Proxies(); calls != 1 || v[0].UDPEffective || !v[2].UDPEffective {
+		t.Fatalf("calls %d, %+v", calls, v)
 	}
 	if err := c.Connect(); err != nil {
 		t.Fatal(err)
 	}
 	c.Disconnect()
 	list, err := c.Store.LoadProxies()
-	if err != nil || calls != 1 || list[0].UDP != "" || list[1].UDP != "" || list[2].UDP != "on" {
+	if err != nil || calls != 1 || list[0].UDP != "off" || list[1].UDP != "" || list[2].UDP != "on" {
 		t.Fatalf("calls %d, %+v %v", calls, list, err)
 	}
 	// A file this version wrote (a "udp" value) is not v1.2.0's.
@@ -503,12 +510,31 @@ func TestKeepV12ProxyUDP(t *testing.T) {
 		t.Fatal("checked again")
 	}
 	// No v1.2.0 rule: the default (off) stays.
-	list[2].UDP = ""
+	list[0].UDP, list[2].UDP = "", ""
 	c.Store.SaveProxies(list)
 	legacy = false
 	start()
 	if list, _ := c.Store.LoadProxies(); calls != 1 || list[0].UDP != "" || list[2].UDP != "" {
 		t.Fatalf("%+v", list)
+	}
+
+	// The proxies carried over are deleted and a LAN proxy is added before
+	// the first connection: its default (off) survives a restart.
+	legacy = true
+	if err := c.Store.SaveProxies([]store.LocalProxy{{ID: "a", Name: "Телефон", Port: lanPort, LAN: true, Username: "u", Password: "p"}}); err != nil {
+		t.Fatal(err)
+	}
+	calls = 0
+	start()
+	if err := c.DeleteProxy("a"); err != nil || calls != 1 {
+		t.Fatal(calls, err)
+	}
+	if _, err := c.SaveProxy(ProxyInput{LocalProxy: store.LocalProxy{Name: "Планшет", Port: offPort, LAN: true, Username: "u"}, Password: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	start()
+	if v := c.Proxies(); calls != 1 || len(v) != 1 || v[0].UDPEffective {
+		t.Fatalf("calls %d, %+v", calls, v)
 	}
 }
 

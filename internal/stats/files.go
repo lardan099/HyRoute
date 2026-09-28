@@ -287,15 +287,19 @@ func dirErr(err error) error { return fmt.Errorf("папка stats: %s", shortEr
 
 // Configure attaches the files (once, from the controller's Load) and
 // reads the collection mode (mode.json): absent = «Всё» («Без сайтов» for
-// an upgraded user, see legacy.go), written with the first statistics
-// file; unreadable, corrupt or unknown = off until the user picks a mode.
+// an upgraded user, see legacy.go); unreadable, corrupt or unknown = off
+// until the user picks a mode. A new install's «Всё» is written at once:
+// by the next start its servers and prefs would look like an upgrade's.
+// An upgraded user's default is written with the first statistics file
+// (no stats folder until something is collected).
 func (c *Collector) Configure(files Files) {
 	c.ioMu.Lock()
 	defer c.ioMu.Unlock()
 	c.files = files
 	c.legacy, _ = files.(Legacy)
 	mode, imported, absent, err := c.readMode()
-	if absent && c.legacy != nil && c.legacy.Upgraded() {
+	fresh := absent && c.legacy != nil && !c.legacy.Upgraded()
+	if absent && c.legacy != nil && !fresh {
 		mode = ModeNoSites
 	}
 	c.modeUnsaved = absent
@@ -313,6 +317,11 @@ func (c *Collector) Configure(files Files) {
 	c.mu.Unlock()
 	if err != nil {
 		c.Log.Warn("stats: collection mode not read, collection is off", "err", shortErr(err))
+	}
+	if fresh {
+		if err := c.writeMode(mode); err != nil { // the first statistics file retries
+			c.Log.Warn("stats: collection mode not saved", "err", shortErr(err))
+		}
 	}
 }
 

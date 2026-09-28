@@ -167,8 +167,9 @@ func TestStatsSession(t *testing.T) {
 		t.Fatalf("%+v kick %d", rep.Total, len(c.statsFlush))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go c.RunStats(ctx)
+	ran := make(chan struct{})
+	go func() { c.RunStats(ctx); close(ran) }()
+	defer func() { cancel(); <-ran }() // its last flush before the TempDir cleanup
 	waitFor(t, "the day file", func() bool {
 		_, err := os.Stat(filepath.Join(c.Store.Dir, "stats", "day-"+time.Now().Format("2006-01-02")+".json"))
 		return err == nil
@@ -595,10 +596,18 @@ func TestRunStatsFailingPace(t *testing.T) {
 	steady("the flush pace", 3, 2)
 }
 
-// Unused, the statistics create nothing: no folder after Load, reports,
-// the backup info, a sample and a RunStats start and stop.
+// Unused, an upgraded user's statistics create nothing: no folder after
+// Load, reports, the backup info, a sample and a RunStats start and stop.
 func TestStatsCreateNothing(t *testing.T) {
-	c, _ := newCtl(t)
+	// An upgraded folder (a new install writes its mode at once).
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(st.Dir, "prefs.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := newCtlAt(t, st)
 	c.Stats("today")
 	c.Stats("30d")
 	c.StatsBackupInfo()
@@ -617,7 +626,8 @@ func TestStatsCreateNothing(t *testing.T) {
 
 // A folder of v1.2.0 without traffic.json (no VPN traffic yet, or
 // «Очистить» deleted it) still starts collecting without sites; a new
-// install collects everything.
+// install collects everything, also after a restart before any statistics
+// (its servers are not taken for an upgrade's).
 func TestStatsUpgradeDefault(t *testing.T) {
 	c, _ := newCtl(t)
 	if c.stats.Mode() != stats.ModeAll {
@@ -627,15 +637,21 @@ func TestStatsUpgradeDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Shutdown()
+	c1, _ := newCtlAt(t, c.Store)
+	if c1.stats.Mode() != stats.ModeAll {
+		t.Fatalf("new install, restarted: %v", c1.stats.Mode())
+	}
+	c1.Shutdown()
 	// settings.json as v1.2.0 wrote it (ports as a string).
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	v120 := []byte(`{"defaultAction":"direct","rules":[{"name":"Игра","apps":[{"pattern":"game.exe"}],"protocol":"udp","ports":"27000-27200","action":"tunnel"}]}`)
-	if err := os.WriteFile(filepath.Join(c.Store.Dir, "settings.json"), v120, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(st.Dir, "settings.json"), v120, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Lstat(filepath.Join(c.Store.Dir, "traffic.json")); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatal(err)
-	}
-	c2, _ := newCtlAt(t, c.Store)
+	c2, _ := newCtlAt(t, st)
 	if c2.stats.Mode() != stats.ModeNoSites {
 		t.Fatalf("upgrade without traffic.json: %v", c2.stats.Mode())
 	}

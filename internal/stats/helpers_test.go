@@ -186,11 +186,22 @@ type rig struct {
 	src   *Source
 }
 
-func newRig(t *testing.T) *rig {
+func newRig(t *testing.T) *rig { t.Helper(); return newRigWith(t, nil) }
+
+// newRigWith is newRig with the files prepared before the first Configure
+// (an upgraded data folder, a failing disk). writes counts from after it:
+// a new install's Configure writes mode.json.
+func newRigWith(t *testing.T, prep func(*memFiles)) *rig {
 	t.Helper()
 	r := &rig{c: New(nil), files: newFiles(), clk: &clock{t: t0}, reg: flows.NewRegistry(10)}
+	if prep != nil {
+		prep(r.files)
+	}
 	r.c.Now = r.clk.now
 	r.c.Configure(r.files)
+	r.files.mu.Lock()
+	r.files.writes = 0
+	r.files.mu.Unlock()
 	r.src = r.c.NewSource()
 	r.reg.OnClose = r.src.Closed
 	return r

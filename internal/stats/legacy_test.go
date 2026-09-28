@@ -392,12 +392,10 @@ func TestLegacyImportDroppedByReset(t *testing.T) {
 // сайтов»; a new user, or one who picked a mode, keeps «Всё».
 func TestLegacyNoSitesDefault(t *testing.T) {
 	today := dayOf(t0)
-	r := newRig(t)
-	if r.c.Mode() != ModeAll {
+	if r := newRig(t); r.c.Mode() != ModeAll {
 		t.Fatalf("new user: %v", r.c.Mode())
 	}
-	r.files.legacy = legacyOne(today)
-	r.reopen()
+	r := newRigWith(t, func(f *memFiles) { f.legacy = legacyOne(today) })
 	if r.c.Mode() != ModeNoSites {
 		t.Fatalf("upgraded user: %v", r.c.Mode())
 	}
@@ -417,9 +415,7 @@ func TestLegacyNoSitesDefault(t *testing.T) {
 		t.Fatalf("choice lost: %v", r.c.Mode())
 	}
 	// A link or a busy file at the place of traffic.json counts too.
-	r2 := newRig(t)
-	r2.files.legacyErr = fmt.Errorf("%w: traffic.json", ErrCorrupt)
-	r2.reopen()
+	r2 := newRigWith(t, func(f *memFiles) { f.legacyErr = fmt.Errorf("%w: traffic.json", ErrCorrupt) })
 	if r2.c.Mode() != ModeNoSites {
 		t.Fatalf("link: %v", r2.c.Mode())
 	}
@@ -438,9 +434,7 @@ func TestUpgradedNoSitesDefault(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	r := newRig(t)
-	r.files.earlier = true
-	r.reopen()
+	r := newRigWith(t, func(f *memFiles) { f.earlier = true })
 	if r.c.Mode() != ModeNoSites {
 		t.Fatalf("upgraded user: %v", r.c.Mode())
 	}
@@ -451,14 +445,11 @@ func TestUpgradedNoSitesDefault(t *testing.T) {
 	if b := r.files.get("mode"); !bytes.Contains(b, []byte(`"no-sites"`)) {
 		t.Fatalf("mode.json: %s", b)
 	}
-	// A new user: «Всё», kept after the servers and settings appear.
+	// A new user: «Всё», written at the first start (before any
+	// statistics) and kept after the servers and settings appear.
 	r2 := newRig(t)
-	if r2.c.Mode() != ModeAll {
-		t.Fatalf("new user: %v", r2.c.Mode())
-	}
-	traffic(r2)
-	if b := r2.files.get("mode"); b == nil || bytes.Contains(b, []byte(`"no-sites"`)) {
-		t.Fatalf("mode.json: %s", b)
+	if b := r2.files.get("mode"); r2.c.Mode() != ModeAll || b == nil || bytes.Contains(b, []byte(`"no-sites"`)) {
+		t.Fatalf("new user: %v, mode.json: %s", r2.c.Mode(), b)
 	}
 	r2.files.earlier = true
 	r2.reopen()
@@ -466,13 +457,14 @@ func TestUpgradedNoSitesDefault(t *testing.T) {
 		t.Fatalf("decided again: %v", r2.c.Mode())
 	}
 	// A failed mode write is retried with the next file.
-	r3 := newRig(t)
-	r3.files.onWrite = func(name string) error {
-		if name == "mode" {
-			return errors.New("access denied")
+	r3 := newRigWith(t, func(f *memFiles) {
+		f.onWrite = func(name string) error {
+			if name == "mode" {
+				return errors.New("access denied")
+			}
+			return nil
 		}
-		return nil
-	}
+	})
 	traffic(r3)
 	if r3.files.has("mode") {
 		t.Fatal("mode.json written")

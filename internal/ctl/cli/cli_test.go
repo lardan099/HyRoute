@@ -505,6 +505,17 @@ func TestStart(t *testing.T) {
 	if r.run("start") != 0 || !r.hy.started || r.stdout.String() != "HyRoute запущен.\n" {
 		t.Fatal(r.stdout.String())
 	}
+	// --no-wait: launched, one result object with --json.
+	r = newRig(nil)
+	r.hy.dialErr = map[string]error{own: ctl.ErrNotRunning}
+	var res struct {
+		OK     bool
+		Result struct{ Message string }
+	}
+	if r.run("start", "--no-wait", "--json") != 0 || !r.hy.started || strings.Count(r.stdout.String(), "\n") != 1 ||
+		json.Unmarshal(r.stdout.Bytes(), &res) != nil || !res.OK || res.Result.Message != "Запуск HyRoute начат." {
+		t.Fatal(r.stdout.String())
+	}
 	// Launched but the command line is off in it.
 	r = newRig(nil)
 	r.hy.dialErr = map[string]error{}

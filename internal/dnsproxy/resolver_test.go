@@ -190,6 +190,18 @@ func TestResolver(t *testing.T) {
 		t.Fatalf("off: %v", err)
 	}
 	r.Close()
+	// A query that comes after Close (a goroutine of the stopped session)
+	// creates no client nobody would close.
+	r.Configure(tunSpec, &dirSpec)
+	if _, _, err := r.Exchange(ctx, dnspolicy.ViaDirect, "", q); !errors.Is(err, errClosed) {
+		t.Fatalf("closed: %v", err)
+	}
+	r.mu.Lock()
+	n := len(r.clients)
+	r.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d clients after Close", n)
+	}
 }
 
 func TestHealth(t *testing.T) {

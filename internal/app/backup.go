@@ -270,7 +270,12 @@ func (c *Controller) RestoreBackup(b []byte, password string) (RestoreResult, er
 	c.mu.Lock()
 	ksWas := c.settings.KillSwitchOn()
 	c.mu.Unlock()
+	// prefsMu before restore's lifeMu (prefsMu → lifeMu → saveMu → mu):
+	// no UpdatePrefs may read the old prefs.json and write it over the
+	// restored one.
+	c.prefsMu.Lock()
 	res, written, geoChanged, err := c.restore(f, p, st, res)
+	c.prefsMu.Unlock()
 	if !written {
 		return res, err
 	}
@@ -314,6 +319,13 @@ func (c *Controller) restore(f backupFile, p backupPayload, st *settings.Setting
 	oldSubs := slices.Clone(c.subs)
 	oldGeo := c.prefs.GeoSource + "\n" + c.prefs.GeoSiteURL + "\n" + c.prefs.GeoIPURL
 	skip := c.prefs.SkipVersion
+	// hyroutectl's access is this computer's choice, never the copy's: a
+	// copy made with «Полный доступ» must not widen it. A broken prefs.json
+	// reads as off (CLIMode), so it stays off.
+	cli := c.prefs.CLI
+	if c.prefsBroken != nil {
+		cli = "off"
+	}
 	c.mu.Unlock()
 	if busy {
 		return res, false, false, errors.New("сначала отключите VPN: восстановление заменит серверы и правила, которыми он сейчас пользуется")
@@ -362,7 +374,7 @@ func (c *Controller) restore(f backupFile, p backupPayload, st *settings.Setting
 		}
 		if p.Prefs != nil {
 			prefs := *p.Prefs
-			prefs.SkipVersion = skip
+			prefs.SkipVersion, prefs.CLI = skip, cli
 			if err := c.Store.SavePrefs(prefs); err != nil {
 				return c.reloadAfter(res, err)
 			}

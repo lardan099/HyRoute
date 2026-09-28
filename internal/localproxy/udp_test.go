@@ -910,7 +910,9 @@ func TestUDPOwnerCheck(t *testing.T) {
 	}
 	t.Run("other program", func(t *testing.T) {
 		old := ownerNegTTL
-		ownerNegTTL = 300 * time.Millisecond
+		// Far longer than the test: its last datagram must still meet the
+		// cached answer on a slow runner (nothing waits for it to expire).
+		ownerNegTTL = 2 * time.Second
 		t.Cleanup(func() { ownerNegTTL = old })
 		s, f, ev, addr := newSrv(t)
 		_, bnd, _ := rawAssoc(t, addr, "", "", anyAddr, "")

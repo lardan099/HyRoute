@@ -5,6 +5,7 @@
   import { onMount } from 'svelte';
   import { api, errText, fmtBytes, plural, statConns, statVPN, type StatCounters, type StatRow, type StatsMode, type StatsReport } from '../api';
   import { ui, hide, profileName, settle } from '../state.svelte';
+  import Help from './Help.svelte';
 
   type Tab = 'apps' | 'sites' | 'servers' | 'groups';
   type SortKey = 'label' | 'vpn' | 'du' | 'conns' | 'f' | 'tu' | 'td' | 'fo' | 'drops';
@@ -291,6 +292,17 @@
     <h1>Статистика</h1>
     <p class="muted sub">Сколько трафика прошло через HyRoute: по программам, сайтам и серверам.</p>
   </header>
+
+  <Help id="stats" title="Что здесь считается">
+    <p>
+      Сколько трафика прошло через VPN и напрямую: по программам, сайтам и серверам. Статистика хранится только на этом компьютере и никуда не
+      отправляется.
+    </p>
+    <ul>
+      <li>В режиме «Всё» запоминаются и сайты. Не запоминать сайты или выключить сбор можно внизу страницы, в «Сборе статистики».</li>
+      <li>Трафик напрямую считается примерно и только отправленный (↑).</li>
+    </ul>
+  </Help>
 
   <div class="row toolbar">
     <div class="seg" role="group" aria-label="Период">

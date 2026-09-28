@@ -61,9 +61,14 @@ func TestStatsFiles(t *testing.T) {
 	if ok, err := f.present(); ok || err != nil {
 		t.Fatal(ok, err)
 	}
+	// An upgraded folder: its default is written with the first
+	// statistics file, so nothing creates the folder before.
+	if err := os.WriteFile(filepath.Join(s.Dir, "prefs.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	c := stats.New(nil)
 	c.Configure(f)
-	if c.Mode() != stats.ModeAll {
+	if c.Mode() != stats.ModeNoSites {
 		t.Fatal(c.Mode())
 	}
 	if _, err := c.Report(time.Now(), "30d"); err != nil {
@@ -73,6 +78,16 @@ func TestStatsFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	absent("Configure, Report and an empty Flush")
+	// A new install writes its «Всё» at once.
+	s2, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2 := stats.New(nil)
+	c2.Configure(s2.StatsFiles())
+	if b, err := os.ReadFile(filepath.Join(s2.Dir, "stats", "mode.json")); c2.Mode() != stats.ModeAll || err != nil || !bytes.Contains(b, []byte(`"mode":""`)) {
+		t.Fatalf("new install: %v, %s %v", c2.Mode(), b, err)
+	}
 
 	// Write creates it; round trip.
 	if err := f.Write("day-2026-09-28", []byte(`{"v":1}`)); err != nil {

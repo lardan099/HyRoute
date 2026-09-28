@@ -193,7 +193,16 @@ func (c *Controller) SaveProxy(in ProxyInput) (ProxyView, error) {
 	p.Password = in.Password
 	p.Name = strings.TrimSpace(p.Name)
 	p.Username = strings.TrimSpace(p.Username)
-	p.NormalizeUDP()
+	switch {
+	case !p.LAN:
+		p.NormalizeUDP()
+	case p.UDP == "":
+		// A LAN proxy's value is written even when it is the default
+		// (off): a LAN proxy saved by this version must not look like
+		// v1.2.0's to KeepV12ProxyUDP at the next start, which would turn
+		// its UDP back on.
+		p.UDP = "off"
+	}
 	c.mu.Lock()
 	if p.Profile != "" && !c.targetExistsLocked(p.Profile) {
 		c.mu.Unlock()
@@ -743,8 +752,10 @@ func (t *tunnelUDP) Close() error {
 // KeepV12ProxyUDP keeps UDP on for the LAN proxies of a v1.2.0 user: v1.2.0
 // served UDP on every LAN proxy, enabled or not, and wrote no "udp" field,
 // while a LAN proxy's default is now off. Its UDP firewall rule is the
-// evidence (ours carry a mark, fwrule.LegacyProxyUDP); the first sync of a
-// connection rewrites the rule, so this happens once. main calls it once
+// evidence (ours carry a mark, fwrule.LegacyProxyUDP). It happens once: the
+// first sync of a connection rewrites the rule, and until then the "on" it
+// writes, or the explicit value SaveProxy writes for every LAN proxy (off
+// too), marks the file as this version's. main calls it once
 // after Load, before the window can show or edit a proxy, so the card and
 // the editor show the real state from the start. Needs no connection.
 func (c *Controller) KeepV12ProxyUDP() {

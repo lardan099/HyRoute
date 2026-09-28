@@ -618,6 +618,7 @@ func (c *client) start(ctx context.Context) int {
 		return 0
 	}
 	if c.inv.NoWait {
+		say("Запуск HyRoute начат.") // --json promises one result object
 		return 0
 	}
 	limit := c.timeout(60 * time.Second)

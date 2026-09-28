@@ -86,7 +86,9 @@ func (c *Controller) recoverEngine(gen uint64) {
 		c.rec.timer = nil
 	}
 	c.recMu.Unlock()
-	if !current {
+	// Exiting (BeginExit: an update or the move to Program Files): the
+	// Disconnect or Shutdown that follows would only stop a new session.
+	if !current || c.closing {
 		return
 	}
 	c.mu.Lock()

@@ -25,6 +25,20 @@ import (
 	"github.com/lardan099/hyroute/internal/socks5"
 )
 
+// free reports that m can be taken within a second: a lock left held
+// never can, while another goroutine (a pending owner lookup, DNS) may hold
+// it briefly, which a bare TryLock would take for a leak.
+func free(m *sync.Mutex) bool {
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+		if m.TryLock() {
+			m.Unlock()
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
+}
+
 // socksRelay is a loopback SOCKS5 server for UDP ASSOCIATE that never
 // forwards anything: it records every datagram and answers with
 // reply(dst, payload) from dst when that is not nil. Tests can use any
@@ -648,10 +662,9 @@ func TestFragStepPanicReleasesLock(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("engine blocked after a panic")
 		}
-		if !h.c.mu.TryLock() {
+		if !free(&h.c.mu) {
 			t.Fatal("Core.mu held")
 		}
-		h.c.mu.Unlock()
 		h.c.Maintain(time.Now().Add(6 * time.Second))
 		if held, b, _ := h.fragCounters(); held != 0 || b != 0 {
 			t.Fatalf("held %d, bytes %d", held, b)

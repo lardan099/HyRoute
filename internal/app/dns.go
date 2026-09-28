@@ -71,6 +71,18 @@ type flushState struct {
 	scheduled bool
 	pending   int   // flush goroutines not yet done (Shutdown flushes at once while any is)
 	failed    int64 // the session's SERVFAIL and portal-pause counters at the last flush
+	// exit is closed by the exit flush: a flush still waiting out the gap
+	// ends without flushing (the exit flush did it). Made on first use.
+	exit   chan struct{}
+	exited bool
+}
+
+// exitLocked is f.exit, made on first use (f.mu held).
+func (f *flushState) exitLocked() chan struct{} {
+	if f.exit == nil {
+		f.exit = make(chan struct{})
+	}
+	return f.exit
 }
 
 // flushGap is the least time between two flushes (a variable for tests).
@@ -283,6 +295,10 @@ func (c *Controller) dnsExitFlush() {
 	f := &c.dnsFlush
 	f.mu.Lock()
 	due := f.pending > 0
+	if !f.exited {
+		f.exited = true
+		close(f.exitLocked()) // a waiting flush ends: this one replaces it
+	}
 	f.mu.Unlock()
 	if !due {
 		return
@@ -314,10 +330,21 @@ func (c *Controller) flushDNSAsync(reason string) {
 	wait := flushGap - time.Since(f.last)
 	f.scheduled = true
 	f.pending++
+	exit := f.exitLocked()
 	f.mu.Unlock()
 	go func() {
 		if wait > 0 {
-			time.Sleep(wait)
+			t := time.NewTimer(wait)
+			select {
+			case <-t.C:
+			case <-exit: // exiting: the exit flush runs instead
+				t.Stop()
+				f.mu.Lock()
+				f.scheduled = false
+				f.pending--
+				f.mu.Unlock()
+				return
+			}
 		}
 		var failed int64
 		if ref := c.dnsSess.Load(); ref != nil {

@@ -18,7 +18,8 @@ import (
 // cliState is the controller state of this file.
 type cliState struct {
 	// prefsMu is held across the read and the write of every prefs.json
-	// change (UpdatePrefs). Order: prefsMu → mu; nothing holding lifeMu,
+	// change (UpdatePrefs; RestoreBackup holds it around its writes).
+	// Order: prefsMu → lifeMu → saveMu → mu; nothing holding lifeMu,
 	// saveMu or mu takes it.
 	prefsMu sync.Mutex
 	// closing: HyRoute is exiting (BeginExit); Connect and Reconnect
