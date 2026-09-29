@@ -91,8 +91,9 @@ HyRoute, `webview\` — данные WebView2.
 
 | Пакет | Назначение |
 |---|---|
-| `main` (корень) | Wails-привязки (`gui_*.go`), трей, один экземпляр, порядок запуска (`startgate.go`), канал hyroutectl |
+| `cmd/hyroute` | `HyRoute.exe`: Wails-привязки (`gui_*.go`), трей, один экземпляр, порядок запуска (`startgate.go`), канал hyroutectl |
 | `cmd/hyroute-updater`, `cmd/hyroutectl` | программа обновления; командная строка |
+| `build`, `frontend` | встроенные в exe `build/deps.json` и иконка; собранный интерфейс |
 | `internal/app` | контроллер: серверы, подписки, группы, правила, подключение, статус, проверки, DNS, «Сети», статистика, обновления, резервная копия |
 | `internal/session` | одно подключение: relay, движок и Hysteria вместе |
 | `internal/engine`, `engine/nat` | решения по пакетам, NAT, UDP-сессии, DNS-политики в движке; хэндлы WinDivert, горячая замена, watchdog |
@@ -114,13 +115,13 @@ HyRoute, `webview\` — данные WebView2.
 
 ## Сборка и зависимости
 
-- `deps.json` — версии и SHA-256 Hysteria и WinDivert. `scripts/fetch-deps.ps1`
+- `build/deps.json` — версии и SHA-256 Hysteria и WinDivert. `scripts/fetch-deps.ps1`
   скачивает их в `bin\` и сверяет: хэш Hysteria ещё и с `hashes.txt` её
   релиза, у WinDivert — хэш архива и извлечённых файлов. Бинарники в
   репозиторий не коммитятся.
 - `scripts/build.ps1` собирает без wails CLI: `go build -tags desktop,production`,
   ресурсы (манифест `requireAdministrator`, иконка, версия) — `go-winres`.
-  Репозиторий обновлений — `main.updateRepo` (по умолчанию этот), другой
+  Репозиторий обновлений — `main.updateRepo` в `cmd/hyroute` (по умолчанию этот), другой
   задаётся при сборке: `-X main.updateRepo=owner/repo`.
 - Релиз собирает `.github/workflows/release.yml` по тегу `v*`:
   `HyRoute-<версия>-windows-amd64.zip` и `SHA256SUMS`.

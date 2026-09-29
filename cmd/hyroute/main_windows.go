@@ -7,7 +7,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"embed"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -28,6 +27,8 @@ import (
 	wailswin "github.com/wailsapp/wails/v2/pkg/options/windows"
 	"golang.org/x/sys/windows"
 
+	buildfiles "github.com/lardan099/hyroute/build"
+	"github.com/lardan099/hyroute/frontend"
 	"github.com/lardan099/hyroute/internal/app"
 	"github.com/lardan099/hyroute/internal/autostart"
 	"github.com/lardan099/hyroute/internal/core"
@@ -44,15 +45,6 @@ import (
 	"github.com/lardan099/hyroute/internal/sysdns"
 	"github.com/lardan099/hyroute/internal/update"
 )
-
-//go:embed all:frontend/dist
-var assets embed.FS
-
-// deps.json pins the SHA-256 of hysteria.exe and WinDivert: the copies in
-// the program folder are checked against it before they run elevated.
-//
-//go:embed deps.json
-var depsJSON []byte
 
 // Stamped by scripts/build.ps1: build is the git commit, version the
 // release tag (git describe), updateRepo where releases are published.
@@ -127,7 +119,7 @@ func main() {
 	// deps.json (same hash check).
 	runtimeDir := core.DefaultDir("runtime")
 	var staged runtimefiles.Result
-	files, err := runtimefiles.FromDeps(depsJSON)
+	files, err := runtimefiles.FromDeps(buildfiles.Deps)
 	if err == nil {
 		dlCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		get := runtimefiles.HTTPGetter(dlCtx, &http.Client{Timeout: 4 * time.Minute}, "HyRoute/"+version)
@@ -310,7 +302,7 @@ func main() {
 		MinWidth:         900,
 		MinHeight:        560,
 		BackgroundColour: &options.RGBA{R: 24, G: 26, B: 31, A: 255},
-		AssetServer:      &assetserver.Options{Assets: assets},
+		AssetServer:      &assetserver.Options{Assets: frontend.Dist},
 		OnStartup: func(ctx context.Context) {
 			gui.startup(ctx)
 			// The window exists: a second start now shows it.

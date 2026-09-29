@@ -1,5 +1,5 @@
 # Downloads hysteria.exe and WinDivert into bin\ and verifies SHA256.
-# Versions and hashes are pinned in deps.json (single source of truth).
+# Versions and hashes are pinned in build\deps.json (single source of truth).
 # The Hysteria hash is additionally cross-checked against the release's
 # official hashes.txt.
 #Requires -Version 5.1
@@ -8,7 +8,7 @@ $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $root = Split-Path -Parent $PSScriptRoot
-$deps = Get-Content (Join-Path $root 'deps.json') -Raw | ConvertFrom-Json
+$deps = Get-Content (Join-Path $root 'build\deps.json') -Raw | ConvertFrom-Json
 $bin = Join-Path $root 'bin'
 New-Item -ItemType Directory -Force $bin | Out-Null
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("hyroute-deps-" + [guid]::NewGuid())

@@ -22,7 +22,7 @@ import (
 	"github.com/lardan099/hyroute/internal/stats"
 )
 
-// API is what the commands need from HyRoute; ctl_windows.go implements it
+// API is what the commands need from HyRoute; cmd/hyroute/ctl_windows.go implements it
 // over the GUI and the controller. Methods mirror bound GUI methods.
 type API interface {
 	Version() (app, core string)

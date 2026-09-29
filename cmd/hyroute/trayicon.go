@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
-	_ "embed"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -14,14 +13,13 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-)
 
-//go:embed build/windows/icon.png
-var appIconPNG []byte
+	buildfiles "github.com/lardan099/hyroute/build"
+)
 
 // The tray icon: the app icon while routing is on, a grey one otherwise.
 var trayIcons = sync.OnceValues(func() ([]byte, []byte) {
-	src, err := png.Decode(bytes.NewReader(appIconPNG))
+	src, err := png.Decode(bytes.NewReader(buildfiles.Icon))
 	if err != nil {
 		return nil, nil
 	}

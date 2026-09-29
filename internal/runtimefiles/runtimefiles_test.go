@@ -11,7 +11,7 @@ import (
 )
 
 func TestFromRepoDeps(t *testing.T) {
-	b, err := os.ReadFile("../../deps.json")
+	b, err := os.ReadFile("../../build/deps.json")
 	if err != nil {
 		t.Fatal(err)
 	}
