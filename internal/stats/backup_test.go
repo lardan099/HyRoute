@@ -48,7 +48,7 @@ func reports(t *testing.T, r *rig) []Report {
 func TestExportImport(t *testing.T) {
 	src := newRig(t)
 	history(t, src)
-	raw, detail, err := src.c.Export(src.clk.now())
+	raw, detail, _, err := src.c.Export(src.clk.now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestExportImport(t *testing.T) {
 	// A huge history: the oldest days are left out, and said.
 	exportLimit = len(raw) - 100
 	defer func() { exportLimit = MaxExport }()
-	raw2, d2, err := src.c.Export(src.clk.now())
+	raw2, d2, _, err := src.c.Export(src.clk.now())
 	oldest := "без дней до " + ruDate(addDays(dayOf(t0), -5))
 	if err != nil || len(raw2) > exportLimit || !strings.Contains(d2, oldest+": слишком много данных") {
 		t.Fatalf("%d %q %v", len(raw2), d2, err)

@@ -256,3 +256,47 @@ func mustPrefixes(ss ...string) []netip.Prefix {
 	}
 	return out
 }
+
+// OverlapsPrefix reports whether some address of p is in the set.
+func (s *IPSet) OverlapsPrefix(p netip.Prefix) bool {
+	return s.overlaps(NewIPSet([]netip.Prefix{p}))
+}
+
+// OverlapsSet reports whether s and o share an address; known is false
+// when o is not an *IPSet.
+func (s *IPSet) OverlapsSet(o any) (overlap, known bool) {
+	t, ok := o.(*IPSet)
+	if !ok || t == nil {
+		return false, false
+	}
+	return s.overlaps(t), true
+}
+
+// overlaps: a set holding all but some ranges (reverse) is taken to
+// overlap anything.
+func (s *IPSet) overlaps(t *IPSet) bool {
+	if s.reverse || t.reverse {
+		return true
+	}
+	for i, j := 0, 0; i < len(s.v4) && j < len(t.v4); {
+		switch {
+		case s.v4[i].hi < t.v4[j].lo:
+			i++
+		case t.v4[j].hi < s.v4[i].lo:
+			j++
+		default:
+			return true
+		}
+	}
+	for i, j := 0, 0; i < len(s.v6) && j < len(t.v6); {
+		switch {
+		case s.v6[i].hi.cmp(t.v6[j].lo) < 0:
+			i++
+		case t.v6[j].hi.cmp(s.v6[i].lo) < 0:
+			j++
+		default:
+			return true
+		}
+	}
+	return false
+}

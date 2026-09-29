@@ -74,9 +74,9 @@
     loadUndo();
   }
 
-  function saved(path: string) {
+  function saved(path: string, warnings: BackupMsg[] = []) {
     saving = false;
-    if (path) note('Резервная копия сохранена:', path);
+    if (path) note('Резервная копия сохранена:', path, warnings);
   }
 </script>
 

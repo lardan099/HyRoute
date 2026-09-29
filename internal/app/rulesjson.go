@@ -348,7 +348,7 @@ func parseRulesJSON(b []byte, replace bool, ts []target) RulesTextResult {
 			fail(n, "%s%s", what, msg)
 			continue
 		}
-		if r.Enabled == nil || *r.Enabled {
+		if r.On() {
 			for _, w := range set.Warnings {
 				if _, after, ok := strings.Cut(w, ": "); ok {
 					w = after

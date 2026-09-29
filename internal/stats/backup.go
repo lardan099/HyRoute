@@ -132,20 +132,20 @@ func (c *Collector) Summary(now time.Time) (detail string, empty bool) {
 // Export flushes, then returns the section: month files first, then day
 // files newest first while they fit in MaxExport (the oldest days are
 // then left out, and the detail says so). Corrupt, newer and future files
-// are left out.
-func (c *Collector) Export(now time.Time) (json.RawMessage, string, error) {
+// are left out. cut: some days were left out for size.
+func (c *Collector) Export(now time.Time) (_ json.RawMessage, detail string, cut bool, _ error) {
 	if c.files == nil {
-		return nil, "", errors.New("статистика не сохраняется на диск")
+		return nil, "", false, errors.New("статистика не сохраняется на диск")
 	}
 	c.lockIO(now)
 	defer c.ioMu.Unlock()
 	const notSaved = "статистика не сохранена в копию: "
 	if err := c.flushLocked(now); err != nil {
-		return nil, "", errors.New(notSaved + err.Error())
+		return nil, "", false, errors.New(notSaved + err.Error())
 	}
 	files, err := c.loadAll(now)
 	if err != nil {
-		return nil, "", errors.New(notSaved + err.Error())
+		return nil, "", false, errors.New(notSaved + err.Error())
 	}
 	var monthNames, dayNames []string
 	for n := range files {
@@ -160,18 +160,18 @@ func (c *Collector) Export(now time.Time) (json.RawMessage, string, error) {
 	env := envelope{V: 1, Mode: string(c.Mode()), Files: map[string]json.RawMessage{}}
 	kept := map[string]*File{}
 	size := 64 + len(env.Mode)
-	cut := ""
+	cutAt := ""
 	for _, n := range append(monthNames, dayNames...) {
 		if len(kept) >= maxExportFiles {
-			cut = n
+			cutAt = n
 			break
 		}
 		b, err := files[n].marshal()
 		if err != nil {
-			return nil, "", errors.New(notSaved + err.Error())
+			return nil, "", false, errors.New(notSaved + err.Error())
 		}
 		if size+len(n)+len(b)+8 > exportLimit {
-			cut = n
+			cutAt = n
 			break
 		}
 		size += len(n) + len(b) + 8
@@ -181,14 +181,14 @@ func (c *Collector) Export(now time.Time) (json.RawMessage, string, error) {
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(env); err != nil {
-		return nil, "", errors.New(notSaved + err.Error())
+		return nil, "", false, errors.New(notSaved + err.Error())
 	}
-	detail := describe(kept, c.Mode())
-	if cut != "" {
-		_, date, _ := parseName(cut)
+	detail = describe(kept, c.Mode())
+	if cutAt != "" {
+		_, date, _ := parseName(cutAt)
 		detail += " · без дней до " + ruDate(date) + ": слишком много данных"
 	}
-	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n")), detail, nil
+	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n")), detail, cutAt != "", nil
 }
 
 // checked is a validated payload: its files (future ones dropped), mode.

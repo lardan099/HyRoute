@@ -4,11 +4,11 @@
   // it. The password lives only in this dialog and is cleared after every
   // attempt.
   import { onDestroy, untrack } from 'svelte';
-  import { api, errText, type BackupSectionInfo } from '../api';
+  import { api, errText, type BackupMsg, type BackupSectionInfo } from '../api';
   import { appearance, hide, hidePaths } from '../state.svelte';
   import Icon from './Icon.svelte';
 
-  let { onclose }: { onclose: (path: string) => void } = $props();
+  let { onclose }: { onclose: (path: string, warnings?: BackupMsg[]) => void } = $props();
 
   let withPass = $state(true);
   let password = $state('');
@@ -60,8 +60,8 @@
     busy = true;
     error = '';
     try {
-      const path = await api.ExportBackup({ sections: keys, password: withPass ? password : '', appearance: appearance() });
-      if (path) onclose(path); // cancelled in Windows' dialog: this one stays
+      const res = await api.ExportBackup({ sections: keys, password: withPass ? password : '', appearance: appearance() });
+      if (res.path) onclose(res.path, res.warnings); // cancelled in Windows' dialog: this one stays
     } catch (e) {
       error = errText(e);
     } finally {

@@ -656,7 +656,7 @@ func (c *Controller) AddConnRule(req ConnRuleRequest) (ConnRuleResult, error) {
 		oldRoute := connRouteKey(*cfg, w, main)
 		res.Matches, res.Nameless = matches, fl.Nameless
 		switch {
-		case req.Source == "quick" && w >= 0 && p == w && ruleOn(cfg.Rules[w]) && rules.SameMatch(cfg.Rules[w], rule):
+		case req.Source == "quick" && w >= 0 && p == w && cfg.Rules[w].On() && rules.SameMatch(cfg.Rules[w], rule):
 			old := cfg.Rules[w]
 			res.Index = w
 			if old.Action == rule.Action && old.Profile == rule.Profile {
@@ -666,10 +666,10 @@ func (c *Controller) AddConnRule(req ConnRuleRequest) (ConnRuleResult, error) {
 				c.connRuleNotes(*cfg, main, &res, -1, -1)
 				return false, nil
 			}
+			// The route changes ("same" above): the old fallbacks were
+			// for the old server.
 			after := old.Clone()
-			if !(rule.Action == rules.Tunnel && old.Action == rules.Tunnel && rule.Profile == old.Profile) {
-				after.Fallback = nil
-			}
+			after.Fallback = nil
 			after.Action, after.Profile = rule.Action, rule.Profile
 			if after.ID == "" {
 				after.ID = newID()
@@ -714,9 +714,6 @@ func (c *Controller) AddConnRule(req ConnRuleRequest) (ConnRuleResult, error) {
 		"action", res.Rule.Action, "overriddenBy", len(res.OverriddenBy), "shadowed", len(res.Shadowed))
 	return res, nil
 }
-
-// ruleOn reports whether r is enabled.
-func ruleOn(r rules.Rule) bool { return r.Enabled == nil || *r.Enabled }
 
 // connRuleNotes fills AboveIndex, OverriddenBy, Shadowed, Narrowed (the
 // rules in [from, to) when to >= 0) and Refs from the saved cfg.

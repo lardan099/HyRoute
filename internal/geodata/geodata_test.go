@@ -416,3 +416,62 @@ func TestOpenReadRefusesLinks(t *testing.T) {
 		}
 	}
 }
+
+func TestMatchUnder(t *testing.T) {
+	d := &DomainSet{full: []string{"a.cdn.example.com", "x.test"}, suffix: []string{"example.org", "z.net"}}
+	for _, c := range []struct {
+		dom  string
+		self bool
+		want bool
+	}{
+		{"example.com", true, true},  // a.cdn.example.com is below it
+		{"example.com", false, true}, // likewise
+		{"x.test", true, true},
+		{"x.test", false, false},     // only x.test itself is listed
+		{"example.org", false, true}, // suffix entry: its subdomains
+		{"a.example.org", false, true},
+		{"net", false, true}, // z.net is below it
+		{"other.com", true, false},
+	} {
+		if got := d.MatchUnder(c.dom, c.self); got != c.want {
+			t.Errorf("%s %v: %v", c.dom, c.self, got)
+		}
+	}
+	if !(&DomainSet{keyword: []string{"k"}}).MatchUnder("a.com", false) {
+		t.Error("a keyword entry may be below any domain")
+	}
+}
+
+func TestIPSetOverlaps(t *testing.T) {
+	set := func(p ...string) *IPSet {
+		var l []netip.Prefix
+		for _, s := range p {
+			l = append(l, netip.MustParsePrefix(s))
+		}
+		return NewIPSet(l)
+	}
+	g := set("8.8.8.0/24", "2001:4860::/32")
+	for _, c := range []struct {
+		p    string
+		want bool
+	}{
+		{"8.0.0.0/8", true},
+		{"8.8.8.8/32", true},
+		{"9.0.0.0/8", false},
+		{"2001::/16", true},
+		{"2002::/16", false},
+	} {
+		if got := g.OverlapsPrefix(netip.MustParsePrefix(c.p)); got != c.want {
+			t.Errorf("%s: %v", c.p, got)
+		}
+	}
+	if v, ok := g.OverlapsSet(set("1.0.0.0/8", "8.8.0.0/16")); !v || !ok {
+		t.Error("sets sharing 8.8.8.0/24")
+	}
+	if v, ok := g.OverlapsSet(set("1.0.0.0/8", "2002::/16")); v || !ok {
+		t.Error("disjoint sets")
+	}
+	if _, ok := g.OverlapsSet("x"); ok {
+		t.Error("another type is not known")
+	}
+}

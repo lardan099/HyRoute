@@ -377,9 +377,9 @@ func (c *Controller) StatsBackupInfo() (detail string, empty bool) {
 	return c.stats.Summary(c.statsNow())
 }
 
-// ExportStats flushes, then returns the section (≤ stats.MaxExport) and
-// its detail.
-func (c *Controller) ExportStats() (json.RawMessage, string, error) {
+// ExportStats flushes, then returns the section (≤ stats.MaxExport), its
+// detail and whether the oldest days were left out for size.
+func (c *Controller) ExportStats() (json.RawMessage, string, bool, error) {
 	c.statsCheckUnlocked()
 	return c.stats.Export(c.statsNow())
 }

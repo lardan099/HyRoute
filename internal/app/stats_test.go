@@ -435,7 +435,7 @@ func TestStatsBackupUnlocked(t *testing.T) {
 	if _, empty := c.StatsBackupInfo(); empty {
 		t.Fatal("empty with a delta")
 	}
-	raw, detail, err := c.ExportStats()
+	raw, detail, _, err := c.ExportStats()
 	if err != nil || !strings.Contains(detail, "сбор: всё") {
 		t.Fatalf("%q %v", detail, err)
 	}

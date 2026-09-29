@@ -6,8 +6,10 @@ import (
 	"math/rand"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/lardan099/hyroute/internal/geodata"
 	"github.com/lardan099/hyroute/internal/procinfo"
 )
 
@@ -25,8 +27,24 @@ func (connGeo) Site(n string) (DomainMatcher, error) {
 		return nil, fmt.Errorf("x: %w", ErrGeoNoData)
 	case "known":
 		return fakeSite{"known.test": true}, nil
+	case "other":
+		return fakeSite{"other.test": true}, nil
+	case "under":
+		return underSite{fakeSite{"cdn.example.com": true}}, nil
 	}
 	return nil, unknownCat{}
+}
+
+// underSite is a category that answers MatchUnder, as geodata.DomainSet.
+type underSite struct{ fakeSite }
+
+func (u underSite) MatchUnder(dom string, self bool) bool {
+	for n := range u.fakeSite {
+		if self && n == dom || strings.HasSuffix(n, "."+dom) {
+			return true
+		}
+	}
+	return false
 }
 
 func (connGeo) IP(n string) (IPMatcher, error) {
@@ -35,6 +53,12 @@ func (connGeo) IP(n string) (IPMatcher, error) {
 		return nil, ErrGeoNoData
 	case "ru":
 		return fakeIP{netip.MustParsePrefix("77.88.0.0/18")}, nil
+	case "google":
+		return geodata.NewIPSet([]netip.Prefix{netip.MustParsePrefix("8.8.8.0/24")}), nil
+	case "us":
+		return geodata.NewIPSet([]netip.Prefix{netip.MustParsePrefix("8.0.0.0/8")}), nil
+	case "de":
+		return geodata.NewIPSet([]netip.Prefix{netip.MustParsePrefix("5.0.0.0/8")}), nil
 	}
 	return nil, unknownCat{}
 }
@@ -225,7 +249,9 @@ func TestNamelessFlow(t *testing.T) {
 	if w, amb := Winner(c, f); w != 1 || amb {
 		t.Fatalf("nameless: %d %v", w, amb)
 	}
-	if p := Place(c, f); p != 1 {
+	// Placed above the site rule all the same: a site rule made from it
+	// is for the same site over TCP, where rule 0 would take it.
+	if p := Place(c, f); p != 0 {
 		t.Fatalf("nameless: Place = %d", p)
 	}
 	if ok, err := Matches(c.Rules[0], f); !ok || err != nil {
@@ -469,8 +495,21 @@ func TestIntersects(t *testing.T) {
 		{d("geoip:nope"), d("1.2.3.4"), false},
 		{d("geoip:ru"), d("77.88.1.1"), true},
 		{d("geoip:ru"), d("geoip:RU"), true},
-		{d("geoip:ru"), d("geoip:pend"), false},
+		{d("geoip:ru"), d("geoip:pend"), true}, // may share addresses once downloaded
 		{d(".example.com"), d("1.2.3.4"), false},
+		// Two different categories may share names (geosite:google holds
+		// youtube's); a category is checked below a domain, not only at it.
+		{d("geosite:known"), d("geosite:other"), true},
+		{d(".example.com"), d("geosite:under"), true},
+		{d("*.example.com"), d("geosite:under"), true},
+		{d("example.com"), d("geosite:under"), false},
+		{d(".other.com"), d("geosite:under"), false},
+		// Ranges, not a single address: 8.0.0.0/8 holds 8.8.8.0/24.
+		{d("8.0.0.0/8"), d("geoip:google"), true},
+		{d("9.0.0.0/8"), d("geoip:google"), false},
+		{d("geoip:us"), d("geoip:google"), true},
+		{d("geoip:de"), d("geoip:google"), false},
+		{d("8.0.0.0/8"), d("geoip:ru"), true}, // no range test: taken to overlap
 		{Rule{Domains: []string{".x.test"}, Protocol: "tcp"}, Rule{Domains: []string{".x.test"}, Protocol: "udp"}, false},
 		{Rule{Domains: []string{".x.test"}, Ports: PortList{"443"}}, Rule{Domains: []string{".x.test"}, Ports: PortList{"80"}}, false},
 	} {

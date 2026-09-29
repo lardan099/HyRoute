@@ -340,7 +340,7 @@ func TestLegacyImportDroppedByReset(t *testing.T) {
 				t.Fatal(err)
 			}
 		case "replace":
-			raw, _, err := newRig(t).c.Export(t0)
+			raw, _, _, err := newRig(t).c.Export(t0)
 			if err != nil {
 				t.Fatal(err)
 			}

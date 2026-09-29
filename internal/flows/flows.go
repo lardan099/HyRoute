@@ -358,11 +358,11 @@ func (g *Registry) Lookup(id uint64, now time.Time) (View, bool) {
 	// Both closed rings: connections, then DNS rows (dns), so DNS-query
 	// rows can be right-clicked as well.
 	for _, ring := range []*logx.Ring[View]{g.closed, g.dnsClosed.Load()} {
-		closed := ring.Snapshot()
-		for i := len(closed) - 1; i >= 0; i-- {
-			if closed[i].ID == id {
-				return closed[i], true
-			}
+		if ring == nil {
+			continue
+		}
+		if v, ok := ring.FindLast(func(v *View) bool { return v.ID == id }); ok {
+			return v, true
 		}
 	}
 	return View{}, false

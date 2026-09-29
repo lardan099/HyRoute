@@ -267,26 +267,38 @@ func sectionTitles(keys []string) []string {
 
 // ExportBackup builds a backup file of the chosen sections.
 func (c *Controller) ExportBackup(o BackupExportOptions) ([]byte, error) {
+	b, _, err := c.ExportBackupWarn(o)
+	return b, err
+}
+
+// ExportBackupWarn is ExportBackup with what the user should know about
+// the file (statistics left out for size).
+func (c *Controller) ExportBackupWarn(o BackupExportOptions) (_ []byte, warnings []BackupMsg, _ error) {
+	warnings = []BackupMsg{}
 	if len(o.Sections) == 0 {
-		return nil, sentenceError("Ничего не выбрано")
+		return nil, nil, sentenceError("Ничего не выбрано")
 	}
 	if o.Password != "" && utf8.RuneCountInString(o.Password) < backup.MinPassword {
-		return nil, backup.ErrShort
+		return nil, nil, backup.ErrShort
 	}
 	for _, k := range o.Sections {
 		if def := sectionByKey(k); def != nil && def.secret && o.Password == "" {
-			return nil, backup.ErrSecrets
+			return nil, nil, backup.ErrSecrets
 		}
 	}
 	// stats: its own export, before the snapshot and with no Controller
 	// lock held (B1b).
 	var stats json.RawMessage
 	if slices.Contains(o.Sections, "stats") {
-		raw, _, err := c.ExportStats()
+		raw, detail, cut, err := c.ExportStats()
 		if err != nil {
-			return nil, sentencef("Статистика не сохранилась: %v", err)
+			return nil, nil, sentencef("Статистика не сохранилась: %v", err)
 		}
 		stats = raw
+		if cut {
+			warnings = append(warnings, BackupMsg{Key: "stats", Text: "Статистика в копии неполная: " + detail + ".", Parts: []BackupPart{}})
+			c.Log.Warn("backup: oldest statistics left out for size")
+		}
 	}
 	c.mu.Lock()
 	st := c.snapshotLocked()
@@ -298,21 +310,21 @@ func (c *Controller) ExportBackup(o BackupExportOptions) ([]byte, error) {
 	secrets := o.Password != ""
 	sections, targets, err := collectSections(st, o.Sections, secrets, app)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if stats != nil {
 		sections["stats"] = stats
 	}
 	if err := checkLimits(sections, secrets); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	p := &backup.Payload{App: c.Version, Created: time.Now().UTC().Truncate(time.Second), Secrets: secrets, Targets: targets, Sections: sections}
 	b, err := backup.Encode(p, o.Password)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	c.Log.Info("backup exported", "sections", strings.Join(o.Sections, ","), "encrypted", secrets)
-	return b, nil
+	return b, warnings, nil
 }
 
 // ---- open, unlock, preview ----
@@ -646,9 +658,14 @@ func (c *Controller) ApplyBackup(token string, ch BackupChoice, cur BackupAppear
 	env.statsDetail, env.statsErr = c.checkStats(p, ch)
 	var undoStats, stats json.RawMessage
 	if raw, ok := p.Sections["stats"]; ok && ch.Sections["stats"] != "" && env.statsErr == nil {
-		cur, _, err := c.ExportStats()
+		cur, _, cut, err := c.ExportStats()
 		if err != nil {
 			return BackupApplyResult{}, sentencef("Восстановление не выполнено, ничего не изменено: не удалось запомнить текущие настройки для «Вернуть как было»: %v", err)
+		}
+		if cut {
+			// «Вернуть как было» would put back only what fit and delete
+			// the rest.
+			return BackupApplyResult{}, sentenceError("Восстановление не выполнено, ничего не изменено: текущая статистика слишком большая, чтобы её можно было вернуть кнопкой «Вернуть как было». Снимите «Статистику» в списке разделов или удалите старую статистику")
 		}
 		undoStats, stats = cur, raw
 	}

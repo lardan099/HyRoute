@@ -451,7 +451,7 @@ func TestDrops(t *testing.T) {
 func TestConcurrent(t *testing.T) {
 	r := newRig(t)
 	export := func() []byte {
-		raw, _, err := r.c.Export(r.clk.now())
+		raw, _, _, err := r.c.Export(r.clk.now())
 		if err != nil {
 			t.Error(err)
 		}

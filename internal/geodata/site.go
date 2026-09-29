@@ -203,3 +203,38 @@ func decodeDomain(b []byte) (typ int, val string, attrs []string, err error) {
 	}
 	return typ, val, attrs, nil
 }
+
+// MatchUnder reports whether the category may hold a name below dom (a
+// subdomain of it), or dom itself when self is set: for telling whether a
+// rule ".dom" or "*.dom" overlaps the category. A keyword or regexp entry
+// counts as holding one.
+func (d *DomainSet) MatchUnder(dom string, self bool) bool {
+	if dom == "" {
+		return false
+	}
+	if len(d.keyword) > 0 || len(d.regex) > 0 {
+		return true
+	}
+	if self && has(d.full, dom) {
+		return true
+	}
+	for s := dom; ; { // a suffix entry at dom or above it
+		if has(d.suffix, s) {
+			return true
+		}
+		i := strings.IndexByte(s, '.')
+		if i < 0 {
+			break
+		}
+		s = s[i+1:]
+	}
+	tail := "." + dom
+	for _, l := range [][]string{d.full, d.suffix} {
+		for _, e := range l {
+			if strings.HasSuffix(e, tail) {
+				return true
+			}
+		}
+	}
+	return false
+}

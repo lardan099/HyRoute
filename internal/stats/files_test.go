@@ -95,7 +95,7 @@ func TestFutureFiles(t *testing.T) {
 	if err := r.c.Compact(r.clk.now()); err != nil {
 		t.Fatal(err)
 	}
-	raw, _, err := r.c.Export(r.clk.now())
+	raw, _, _, err := r.c.Export(r.clk.now())
 	if err != nil {
 		t.Fatal(err)
 	}

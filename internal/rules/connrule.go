@@ -144,10 +144,12 @@ func (r *compiled) mayMatchDomain(name string) bool {
 // does not end up below it once the database loads. An unknown protocol,
 // port or address (Proto 0, invalid Dst: a DNS-query row, whose connection
 // is still to come) satisfies any condition on it, so an IP rule counts.
-// A Nameless flow counts no names.
+// A Nameless flow counts its names too: the engine decides it without
+// them, but a site rule made from it is for the same site over TCP (the
+// browser's fallback), where a rule above catching those names would win.
 func Place(c Config, f Flow) int {
 	ix := compileIndexed(c, f.Main)
-	sub, names := f.subject(), f.decisionNames()
+	sub, names := f.subject(), f.Names()
 	for k := range ix.set.rules {
 		r := &ix.set.rules[k]
 		if !r.mayBase(sub) {
@@ -447,7 +449,16 @@ func domsOverlap(a, b *domPat) bool {
 			if b.pending {
 				return true
 			}
-			return b.geo != nil && b.geo.Match(a.dom)
+			if b.geo == nil {
+				return false
+			}
+			if a.kind == domExact {
+				return b.geo.Match(a.dom)
+			}
+			if u, ok := b.geo.(underMatcher); ok {
+				return u.MatchUnder(a.dom, a.kind == domSuffix)
+			}
+			return true // some subdomain may be in it
 		case domKeyword, domRegex:
 			if a.kind != domExact {
 				return true // some subdomain may match
@@ -460,14 +471,26 @@ func domsOverlap(a, b *domPat) bool {
 	if !a.usable() || !b.usable() {
 		return false
 	}
-	if a.src == b.src {
-		return true
-	}
-	if a.kind == domGeo && b.kind == domGeo && a.geo != nil && b.geo != nil {
-		return false
-	}
+	// Two different categories may share names (geosite:google holds
+	// youtube's): taken to overlap.
 	return true
 }
+
+// underMatcher is a geosite category that can tell whether it holds a name
+// under a domain (geodata.DomainSet).
+type underMatcher interface {
+	MatchUnder(dom string, self bool) bool
+}
+
+// Geoip categories that can compare ranges (geodata.IPSet).
+type (
+	prefixOverlapper interface {
+		OverlapsPrefix(p netip.Prefix) bool
+	}
+	setOverlapper interface {
+		OverlapsSet(o any) (overlap, known bool)
+	}
+)
 
 // ipsOverlap: whether some address may match both items.
 func ipsOverlap(p, q *ipPat) bool {
@@ -481,10 +504,24 @@ func ipsOverlap(p, q *ipPat) bool {
 		if q.pending {
 			return true
 		}
-		return q.geo != nil && q.geo.Contains(p.pfx.Addr())
+		if q.geo == nil {
+			return false
+		}
+		if o, ok := q.geo.(prefixOverlapper); ok {
+			return o.OverlapsPrefix(p.pfx)
+		}
+		return !p.pfx.IsSingleIP() || q.geo.Contains(p.pfx.Addr())
 	}
 	if !p.pending && p.geo == nil || !q.pending && q.geo == nil {
 		return false
 	}
-	return strings.EqualFold(p.src, q.src)
+	if p.pending || q.pending || strings.EqualFold(p.src, q.src) {
+		return true
+	}
+	if o, ok := p.geo.(setOverlapper); ok {
+		if v, known := o.OverlapsSet(q.geo); known {
+			return v
+		}
+	}
+	return true // two different categories may share addresses
 }

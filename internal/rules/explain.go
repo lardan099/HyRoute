@@ -147,7 +147,7 @@ func Explain(c Config, main string, q Query) Explanation {
 		}
 		won := false
 		for i, r := range c.Rules {
-			st := Step{Index: i, Name: ruleName(i, r), Enabled: r.Enabled == nil || *r.Enabled}
+			st := Step{Index: i, Name: ruleName(i, r), Enabled: r.On()}
 			st.Action, st.Profile = res(r.Action, r.Profile)
 			switch {
 			case errs[i] != nil:
@@ -246,7 +246,7 @@ func Explain(c Config, main string, q Query) Explanation {
 		for _, a := range r.AllApps() {
 			inherit = inherit || a.InheritChildren
 		}
-		if inherit && (r.Enabled == nil || *r.Enabled) {
+		if inherit && r.On() {
 			ex.Notes = append(ex.Notes, "Правила «и дочерние» проверяют и родительские процессы; здесь цепочка родителей неизвестна.")
 			break
 		}
@@ -258,7 +258,10 @@ func Explain(c Config, main string, q Query) Explanation {
 }
 
 // enabled reports whether a rule is on.
-func enabled(r Rule) bool { return r.Enabled == nil || *r.Enabled }
+func enabled(r Rule) bool { return r.On() }
+
+// On reports whether the rule is enabled.
+func (r Rule) On() bool { return r.Enabled == nil || *r.Enabled }
 
 // nameRule reports whether a rule has a program given by this very file
 // name (lower-case).

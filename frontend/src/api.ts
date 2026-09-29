@@ -1659,6 +1659,10 @@ export interface BackupPart {
   t: string;
   s?: boolean; // sensitive: «***» in Privacy mode
 }
+export interface BackupSaved {
+  path: string;
+  warnings: BackupMsg[];
+}
 export interface BackupMsg {
   key: string;
   text: string;
@@ -1690,7 +1694,7 @@ export const planChangedText = 'Настройки изменились, про�
 
 interface GUI {
   BackupContents(secrets: boolean): Promise<BackupSectionInfo[]>;
-  ExportBackup(o: BackupExportOptions): Promise<string>; // path, '' = cancelled
+  ExportBackup(o: BackupExportOptions): Promise<BackupSaved>; // path '' = cancelled
   OpenBackup(): Promise<BackupOpened>; // token '' = cancelled
   UnlockBackup(token: string, password: string): Promise<BackupPreview>;
   PlanBackup(token: string, ch: BackupChoice): Promise<BackupPlan>;

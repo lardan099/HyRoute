@@ -118,6 +118,25 @@ func (r *Ring[T]) Add(v T) {
 	r.mu.Unlock()
 }
 
+// FindLast returns the newest element for which match is true, without
+// copying the ring.
+func (r *Ring[T]) FindLast(match func(*T) bool) (T, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := r.next
+	if r.full {
+		n = len(r.buf)
+	}
+	for k := 1; k <= n; k++ {
+		i := (r.next - k + len(r.buf)) % len(r.buf)
+		if match(&r.buf[i]) {
+			return r.buf[i], true
+		}
+	}
+	var zero T
+	return zero, false
+}
+
 // Snapshot returns the contents oldest first.
 func (r *Ring[T]) Snapshot() []T {
 	r.mu.Lock()

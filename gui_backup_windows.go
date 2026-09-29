@@ -30,12 +30,19 @@ func (g *GUI) BackupContents(secrets bool) []app.BackupSectionInfo {
 	return g.ctl.BackupContents(secrets)
 }
 
+// BackupSaved is where ExportBackup saved the file (Path "" = cancelled)
+// and what the user should know about it.
+type BackupSaved struct {
+	Path     string          `json:"path"`
+	Warnings []app.BackupMsg `json:"warnings"`
+}
+
 // ExportBackup builds the file first (password checks and encryption), then
-// asks where to save it; "" = cancelled.
-func (g *GUI) ExportBackup(o app.BackupExportOptions) (string, error) {
-	b, err := g.ctl.ExportBackup(o)
+// asks where to save it.
+func (g *GUI) ExportBackup(o app.BackupExportOptions) (BackupSaved, error) {
+	b, warnings, err := g.ctl.ExportBackupWarn(o)
 	if err != nil {
-		return "", err
+		return BackupSaved{}, err
 	}
 	path, err := runtime.SaveFileDialog(g.context(), runtime.SaveDialogOptions{
 		Title:           "Сохранить резервную копию HyRoute",
@@ -43,17 +50,20 @@ func (g *GUI) ExportBackup(o app.BackupExportOptions) (string, error) {
 		Filters:         backupFilters,
 	})
 	if err != nil || path == "" {
-		return "", err
+		return BackupSaved{}, err
 	}
 	if !strings.EqualFold(filepath.Ext(path), backup.Ext) {
 		// The dialog asked about overwriting the name it returned, not
 		// this one: never replace a file it did not ask about.
 		path += backup.Ext
 		if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("файл «%s» уже есть: выберите другое имя или сам этот файл", path)
+			return BackupSaved{}, fmt.Errorf("файл «%s» уже есть: выберите другое имя или сам этот файл", path)
 		}
 	}
-	return path, store.WriteUserFile(path, b)
+	if err := store.WriteUserFile(path, b); err != nil {
+		return BackupSaved{}, err
+	}
+	return BackupSaved{Path: path, Warnings: warnings}, nil
 }
 
 // OpenBackup asks for a file and opens it (HyRoute 1.2.0's .hyroute files

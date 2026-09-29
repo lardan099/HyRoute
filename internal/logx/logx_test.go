@@ -53,3 +53,25 @@ func TestRedactEscapedForms(t *testing.T) {
 		}
 	}
 }
+
+func TestRingFindLast(t *testing.T) {
+	r := NewRing[int](3)
+	if _, ok := r.FindLast(func(*int) bool { return true }); ok {
+		t.Fatal("empty ring")
+	}
+	for i := 1; i <= 5; i++ { // holds 3, 4, 5
+		r.Add(i)
+	}
+	if v, ok := r.FindLast(func(v *int) bool { return true }); !ok || v != 5 {
+		t.Fatalf("newest: %d %v", v, ok)
+	}
+	if v, ok := r.FindLast(func(v *int) bool { return *v%2 == 1 }); !ok || v != 5 {
+		t.Fatalf("odd: %d %v", v, ok)
+	}
+	if v, ok := r.FindLast(func(v *int) bool { return *v == 3 }); !ok || v != 3 {
+		t.Fatalf("oldest: %d %v", v, ok)
+	}
+	if _, ok := r.FindLast(func(v *int) bool { return *v == 2 }); ok {
+		t.Fatal("pushed out")
+	}
+}
