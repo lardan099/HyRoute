@@ -65,6 +65,9 @@ type RulesTextResult struct {
 	// Skipped: appended rules left out because the list has them already
 	// (rules.Duplicate), set by ApplyRulesText.
 	Skipped int `json:"skipped,omitempty"`
+	// Repeats: lines (rules text only) whose rule repeats an earlier line
+	// and can go without changing what the rules do («Убрать повторы»).
+	Repeats []int `json:"repeats,omitempty"`
 }
 
 // ParseRulesText parses rules text (or rules JSON, cli) against the
@@ -103,6 +106,7 @@ func parseRulesText(text string, ts []target) RulesTextResult {
 	res := RulesTextResult{Rules: []rules.Rule{}, Errors: []RuleLine{}, Warnings: []RuleLine{}}
 	var section []rules.AppMatch // current [program] block; nil = every program
 	sectionText, defaultLine := "", 0
+	var lines []int // line of each rule in res.Rules
 	fail := func(n int, f string, a ...any) { res.Errors = append(res.Errors, RuleLine{n, fmt.Sprintf(f, a...)}) }
 
 	for i, raw := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
@@ -288,12 +292,44 @@ func parseRulesText(text string, ts []target) RulesTextResult {
 			res.Warnings = append(res.Warnings, RuleLine{n, w})
 		}
 		res.Rules = append(res.Rules, r)
+		lines = append(lines, n)
 	}
+	repeatLines(&res, lines)
 	res.Summary = fmt.Sprintf("Правил: %d", len(res.Rules))
 	if res.HasDefault {
 		res.Summary += ", всё остальное — " + targetWords(res.DefaultAction, res.DefaultProfile, res.DefaultFallback, ts)
 	}
 	return res
+}
+
+// repeatLines finds the rules that repeat an earlier line (rules.RepeatKey:
+// the same conditions and route) and can go without changing what the
+// rules do: the earlier one is on, so the repeat never decides a
+// connection, or the repeat itself is off. An enabled copy of a disabled
+// rule stays: it is the one that works.
+func repeatLines(res *RulesTextResult, lines []int) {
+	first := map[string]int{}   // key -> index of the first rule
+	firstOn := map[string]int{} // key -> index of the first enabled rule
+	for i, r := range res.Rules {
+		k := rules.RepeatKey(r)
+		if k == "" {
+			continue
+		}
+		j, seen := firstOn[k]
+		if !seen && !r.On() {
+			j, seen = first[k]
+		}
+		if seen {
+			res.Repeats = append(res.Repeats, lines[i])
+			res.Warnings = append(res.Warnings, RuleLine{lines[i], fmt.Sprintf("повторяет правило в строке %d (те же условия и тот же маршрут): эту строку можно убрать", lines[j])})
+		}
+		if _, ok := first[k]; !ok {
+			first[k] = i
+		}
+		if _, ok := firstOn[k]; !ok && r.On() {
+			firstOn[k] = i
+		}
+	}
 }
 
 // cutArrow cuts at the first arrow of any kind outside quotes: in

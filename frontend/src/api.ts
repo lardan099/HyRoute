@@ -79,7 +79,8 @@ export interface ProfileSummary {
   usedBy: string[];
   // groups: failed connections through it are invisible to error streaks
   fastOpen: boolean;
-  duplicateOf?: string; // an earlier server with exactly the same connection
+  duplicateOf?: string; // the server with exactly the same connection that is kept
+  duplicateSub?: string; // its subscription: this manual copy can be deleted
 }
 
 export interface ImportResult {
@@ -151,6 +152,8 @@ export interface RulesTextResult {
   errors: { line: number; text: string }[];
   warnings: { line: number; text: string }[];
   summary: string;
+  skipped?: number; // appended rules the list had already
+  repeats?: number[]; // lines that repeat an earlier line and can go («Убрать повторы»)
 }
 
 export interface GeoSource {

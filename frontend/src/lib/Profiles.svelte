@@ -141,6 +141,14 @@
     if (confirm(`Удалить сервер «${hide(p.name)}»?`)) run(() => api.DeleteProfile(p.id));
   }
 
+  // A manual server that a subscription also brings: the subscription's
+  // copy stays up to date, this one can go. Rules and proxies that use it
+  // are named by the refusal (switch them to the subscription's copy).
+  function removeCopy(p: ProfileSummary) {
+    const q = `Удалить ручную копию «${hide(p.name)}»?\n\nТот же сервер есть в подписке «${hide(p.duplicateSub ?? '')}» как «${hide(p.duplicateOf ?? '')}» и обновляется вместе с ней.`;
+    if (confirm(q)) run(() => api.DeleteProfile(p.id), 'Копия удалена');
+  }
+
   function tunnel(id: string) {
     return ui.status?.tunnels?.find((t) => t.id === id);
   }
@@ -233,7 +241,10 @@
             <span class="mono ellipsis">{hide(p.server)}</span>
             {#if p.source}<span class="badge"><Icon name="rss" size={11} />{hide(p.sourceName)}</span>{/if}
             {#if p.missing}<span class="badge warn-b" title="Сервер пропал из подписки, но его используют правила">нет в подписке</span>{/if}
-            {#if p.duplicateOf}<span class="badge warn-b" title="Тот же адрес, пароль и настройки, что у «{hide(p.duplicateOf)}»: копию можно удалить">дубль «{hide(p.duplicateOf)}»</span>{/if}
+            {#if p.duplicateOf && p.duplicateSub && !p.source}
+              <span class="badge warn-b" title="Тот же адрес, пароль и настройки, что у «{hide(p.duplicateOf)}» из подписки «{hide(p.duplicateSub)}»: та копия обновляется вместе с подпиской">есть в подписке «{hide(p.duplicateSub)}»</span>
+              <button class="link small" onclick={() => removeCopy(p)}>Удалить копию</button>
+            {:else if p.duplicateOf}<span class="badge warn-b" title="Тот же адрес, пароль и настройки, что у «{hide(p.duplicateOf)}»: копию можно удалить">дубль «{hide(p.duplicateOf)}»</span>{/if}
             {#if p.obfs}<span class="badge">{p.obfs}</span>{/if}
             {#if p.pinned}<span class="badge" title="Сертификат проверяется по отпечатку">pin</span>{:else if p.insecure}<span class="badge warn-b" title="Сертификат не проверяется">insecure</span>{/if}
           </div>

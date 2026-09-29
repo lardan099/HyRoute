@@ -26,6 +26,7 @@
   let addText = $state('');
   trackUnsaved(() => (view != null && allText !== view.text) || addText.trim() !== ''); // backup
   let res = $state<RulesTextResult | null>(null);
+  let resText = $state(''); // the text res was parsed from
   let error = $state('');
   let saving = $state(false);
 
@@ -83,6 +84,7 @@ instagram.com -> vpn`);
       try {
         // cli: a pasted rules JSON counts its «Всё остальное» only in «Все правила».
         res = t.trim() ? await api.ParseRulesTextFor(t, all) : null;
+        resText = t;
       } catch {}
     }, 250);
   });
@@ -134,6 +136,7 @@ instagram.com -> vpn`);
         mode === 'all' ? guardOf(view ?? { ruleset: target }) : { ruleset: view?.ruleset ?? target, rev: 0, editRev: 0 },
       );
       res = r;
+      resText = text;
       onsaved();
       stale = null;
     } catch (e) {
@@ -231,6 +234,15 @@ instagram.com -> vpn`);
     menu = null;
     geoSeq++;
     appSeq++;
+  }
+
+  // «Убрать повторы»: drops the lines Go found repeating an earlier one
+  // (the same conditions and route; removing them changes nothing), only
+  // while the result is of the text shown.
+  const repeats = $derived(res && resText === text && !res.errors.length ? (res.repeats ?? []) : []);
+  function dropRepeats() {
+    const drop = new Set(repeats);
+    setText(text.split('\n').filter((_, i) => !drop.has(i + 1)).join('\n'));
   }
 
   function setText(v: string) {
@@ -514,6 +526,12 @@ instagram.com -> vpn`);
               {:else}
                 <div class="ok"><Icon name="check" size={15} /> {res.summary}</div>
               {/if}
+              {#if repeats.length && !jsonView}
+                <div class="repeats">
+                  <span>Повторов: {repeats.length} — те же условия и тот же маршрут, что у строки выше.</span>
+                  <button onclick={dropRepeats}>Убрать повторы</button>
+                </div>
+              {/if}
               {#if res.warnings?.length}
                 <div class="warns">
                   {#each res.warnings.slice(0, 8) as w}<div><b>{where(w.line)}</b> {w.text}</div>{/each}
@@ -634,6 +652,7 @@ instagram.com -> vpn`);
   .status { font-size: 12.5px; min-height: 22px; }
   .errs { color: var(--block); display: grid; gap: 2px; max-height: 110px; overflow: auto; }
   .ok { color: var(--direct); display: flex; align-items: center; gap: 6px; }
+  .repeats { display: flex; align-items: center; gap: 8px; margin-top: 4px; color: var(--warn); }
   .warns { color: var(--warn); display: grid; gap: 2px; max-height: 80px; overflow: auto; margin-top: 4px; }
   .help { font-size: 12.5px; background: var(--surface-2); border-radius: var(--radius-sm); padding: 12px 14px; overflow: auto; max-height: 58vh; }
   .help p { margin: 8px 0; }

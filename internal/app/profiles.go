@@ -37,9 +37,13 @@ type ProfileSummary struct {
 	// FastOpen: failed connections are invisible to server groups' error
 	// streaks (Hysteria answers before the remote connects).
 	FastOpen bool `json:"fastOpen"`
-	// DuplicateOf: the name of an earlier server with exactly the same
-	// connection (Profiles only), "" when none.
-	DuplicateOf string `json:"duplicateOf,omitempty"`
+	// DuplicateOf: the name of the server with exactly the same connection
+	// that is kept (Profiles only), "" when none or this is the kept one:
+	// a subscription's server over a manual one, else the first in the
+	// list. DuplicateSub: the kept server's subscription name, so that the
+	// manual copy can be offered for deletion.
+	DuplicateOf  string `json:"duplicateOf,omitempty"`
+	DuplicateSub string `json:"duplicateSub,omitempty"`
 }
 
 func (c *Controller) summaryLocked(p *hysteria.Profile) ProfileSummary {
@@ -145,15 +149,22 @@ func (c *Controller) Profiles() []ProfileSummary {
 	defer c.mu.Unlock()
 	defer c.memoRunningGroupsLocked()()
 	out := []ProfileSummary{}
-	first := map[string]string{} // connKey -> name of the first server
+	kept := map[string]*hysteria.Profile{} // connKey -> the server kept
+	for i := range c.profiles.List {
+		p := &c.profiles.List[i]
+		k := connKey(*p)
+		if o := kept[k]; o == nil || o.Source == "" && p.Source != "" {
+			kept[k] = p
+		}
+	}
 	for i := range c.profiles.List {
 		p := &c.profiles.List[i]
 		s := c.summaryLocked(p)
-		k := connKey(*p)
-		if name, ok := first[k]; ok {
-			s.DuplicateOf = name
-		} else {
-			first[k] = p.Name
+		if o := kept[connKey(*p)]; o != p {
+			s.DuplicateOf = o.Name
+			if o.Source != "" {
+				s.DuplicateSub = c.sourceNameLocked(o.Source)
+			}
 		}
 		out = append(out, s)
 	}

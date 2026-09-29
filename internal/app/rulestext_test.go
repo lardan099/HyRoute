@@ -689,7 +689,7 @@ func TestRulesTextGroups(t *testing.T) {
 }
 
 // Port options after "|" and group targets on the other side of the arrow
-// read and write together (PLAN §6.1, ports ← groups).
+// read and write together.
 func TestRulesTextGroupsWithPorts(t *testing.T) {
 	ts := append(serverTargets(textProfiles), target{ID: "grp-000000000001", Name: "Авто", Group: true})
 	res := parseRulesText("ssh.exe -> группа:Авто, DE | tcp 22\nDNS: * -> группа:Авто | udp 53\ngame.exe -> авто | порт 27000-27200", ts)
@@ -718,5 +718,38 @@ func TestRulesTextGroupsWithPorts(t *testing.T) {
 		if back.Rules[i].Profile != r[i].Profile || !slices.Equal(back.Rules[i].Fallback, r[i].Fallback) || !slices.Equal(back.Rules[i].Ports, r[i].Ports) || back.Rules[i].Protocol != r[i].Protocol {
 			t.Fatalf("rule %d: %+v vs %+v\n%s", i, back.Rules[i], r[i], text)
 		}
+	}
+}
+
+// Repeats are the lines that can go without changing what the rules do.
+func TestRulesTextRepeats(t *testing.T) {
+	text := strings.Join([]string{
+		"youtube.com -> напрямую",        // 1
+		"YouTube: youtube.com -> direct", // 2 repeat of 1
+		"chrome.exe -> блок | выкл",      // 3 off
+		"chrome.exe -> блок",             // 4 the working copy of 3: kept
+		"chrome.exe -> блок | выкл",      // 5 repeat (off)
+		"youtube.com -> блок",            // 6 another route
+		"twitch.tv -> напрямую | выкл",   // 7 off
+		"twitch.tv -> напрямую | выкл",   // 8 repeat of an off one, itself off
+	}, "\n")
+	res := parseRulesText(text, nil)
+	if len(res.Errors) > 0 {
+		t.Fatal(res.Errors)
+	}
+	if !slices.Equal(res.Repeats, []int{2, 5, 8}) {
+		t.Fatalf("repeats %v", res.Repeats)
+	}
+	n := 0
+	for _, w := range res.Warnings {
+		if strings.Contains(w.Text, "повторяет правило в строке") {
+			n++
+		}
+	}
+	if n != 3 {
+		t.Fatalf("%+v", res.Warnings)
+	}
+	if res := parseRulesText("a.com -> напрямую\nb.com -> напрямую", nil); len(res.Repeats) != 0 {
+		t.Fatalf("%v", res.Repeats)
 	}
 }

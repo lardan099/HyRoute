@@ -685,3 +685,31 @@ func TestSubscriptionFetchIgnoresEnvProxy(t *testing.T) {
 		t.Fatal("subscription downloads use the environment's proxy")
 	}
 }
+
+// A manual server that a subscription also brings is the copy marked, and
+// it names the subscription, whatever the order: the subscription's copy
+// is the one kept up to date.
+func TestManualCopyOfSubscriptionServer(t *testing.T) {
+	c, _ := newCtl(t)
+	if res, err := c.ImportURIs("hy2://a@one.example:443#Ручной"); err != nil || len(res.Added) != 1 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	body := "hy2://a@one.example:443#ONE\nhy2://a@two.example:443#TWO\n"
+	addSub(t, c, &body)
+	ps := c.Profiles()
+	if len(ps) != 3 {
+		t.Fatalf("%+v", ps)
+	}
+	for _, p := range ps {
+		switch p.Name {
+		case "Ручной":
+			if p.DuplicateOf != "ONE" || p.DuplicateSub == "" {
+				t.Errorf("manual copy: %+v", p)
+			}
+		default:
+			if p.DuplicateOf != "" || p.DuplicateSub != "" {
+				t.Errorf("subscription server marked: %+v", p)
+			}
+		}
+	}
+}

@@ -366,6 +366,22 @@ func Duplicate(c Config, r Rule, skip int) int {
 	return -1
 }
 
+// RepeatKey is equal for two rules exactly when Duplicate counts one as
+// repeating the other (the same conditions and route), so that repeats in
+// a long list are found in one pass. "" when r does not compile.
+func RepeatKey(r Rule) string {
+	x, err := compileRule(0, r, nil)
+	if err != nil {
+		return ""
+	}
+	route := fmt.Sprint(uint8(r.Action))
+	if r.Action == Tunnel {
+		route += "\x00" + r.Profile
+	}
+	return strings.Join([]string{route, fmt.Sprint(x.proto), fmt.Sprint(x.ports),
+		strings.Join(x.appKeys(), "\x01"), strings.Join(x.destKeys(), "\x01")}, "\x00")
+}
+
 func (r *compiled) sameMatch(y *compiled) bool {
 	return r.proto == y.proto && slices.Equal(r.ports, y.ports) &&
 		slices.Equal(r.appKeys(), y.appKeys()) && slices.Equal(r.destKeys(), y.destKeys())

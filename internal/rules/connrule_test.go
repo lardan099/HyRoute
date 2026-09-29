@@ -599,3 +599,34 @@ func TestDuplicate(t *testing.T) {
 		}
 	}
 }
+
+// RepeatKey agrees with Duplicate on every pair of the table's rules.
+func TestRepeatKey(t *testing.T) {
+	rs := []Rule{
+		{Domains: []string{".example.com", "1.2.3.4"}, Action: Tunnel, Profile: "NL"},
+		{Name: "x", Domains: []string{"1.2.3.4", ".Example.com"}, Action: Tunnel, Profile: "NL", Enabled: off()},
+		{Domains: []string{".example.com", "1.2.3.4"}, Action: Tunnel, Profile: "DE"},
+		{Domains: []string{".example.com", "1.2.3.4"}, Action: Tunnel, Profile: "NL", Fallback: []string{"DE"}},
+		{Apps: []AppMatch{{Pattern: "chrome.exe"}}, Action: Direct},
+		{Apps: []AppMatch{{Pattern: "Chrome.exe"}}, Action: Direct, Profile: "ignored"},
+		{Apps: []AppMatch{{Pattern: "chrome.exe", InheritChildren: true}}, Action: Direct},
+		{Apps: []AppMatch{{Pattern: "chrome.exe"}}, Action: Block},
+		{Domains: []string{".example.com"}, Action: Tunnel, Profile: "NL", Ports: PortList{"443"}},
+		{Domains: []string{".example.com"}, Action: Tunnel, Profile: "NL", Ports: PortList{"443"}, Protocol: "tcp"},
+		{Domains: []string{".example.com"}, Action: Tunnel, Profile: "NL", Ports: PortList{"80-81"}},
+		{Domains: []string{".example.com"}, Action: Tunnel, Profile: "NL", Ports: PortList{"80", "81"}},
+		{Domains: []string{"geoip:ru"}, Action: Direct},
+		{Domains: []string{"geoip:RU"}, Action: Direct},
+	}
+	for i, a := range rs {
+		for j, b := range rs {
+			dup := Duplicate(Config{Rules: []Rule{b}}, a, -1) == 0
+			if same := RepeatKey(a) == RepeatKey(b); same != dup {
+				t.Errorf("rules %d and %d: key equal %v, Duplicate %v", i, j, same, dup)
+			}
+		}
+	}
+	if RepeatKey(Rule{Domains: []string{"regexp:("}, Action: Direct}) != "" {
+		t.Error("a rule that does not compile has a key")
+	}
+}
