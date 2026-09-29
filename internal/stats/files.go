@@ -287,12 +287,11 @@ func dirErr(err error) error { return fmt.Errorf("папка stats: %s", shortEr
 // ---- configuration and mode ----
 
 // Configure attaches the files (once, from the controller's Load) and
-// reads the collection mode (mode.json): absent = «Всё» («Без сайтов» for
-// an upgraded user, see legacy.go); unreadable, corrupt or unknown = off
-// until the user picks a mode. A new install's «Всё» is written at once:
-// by the next start its servers and prefs would look like an upgrade's.
-// An upgraded user's default is written with the first statistics file
-// (no stats folder until something is collected).
+// reads the collection mode (mode.json): absent = on; unreadable, corrupt
+// or unknown = off until the user picks a mode. A new install's mode is
+// written at once: by the next start its servers and prefs would look like
+// an upgrade's. An upgraded user's default is written with the first
+// statistics file (no stats folder until something is collected).
 func (c *Collector) Configure(files Files) {
 	c.ioMu.Lock()
 	defer c.ioMu.Unlock()

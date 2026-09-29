@@ -13,9 +13,8 @@ import (
 
 // HyRoute 1.2.0 kept VPN traffic in traffic.json: bytes per day by server
 // and by program (and by hour for two days). It is imported once into day
-// and month files: tunnel bytes per day, server and program (all under
-// the site «не определён»: 1.2.0 kept no sites). Connections, sites and
-// hours were never in it. The old file is left where it is.
+// and month files: tunnel bytes per day, server and program. Connections,
+// sites and hours were never in it. The old file is left where it is.
 //
 // «Once» is the mark in mode.json, written when the import succeeded or
 // the file turned out not to be importable, and when the user deleted or
