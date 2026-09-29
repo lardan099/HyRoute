@@ -982,7 +982,7 @@ func (c *Controller) netApply(gen, rev uint64, d netmode.Decision, why string, a
 	c.net.last = st
 	c.netMu.Unlock()
 	if st.Error != "" {
-		// A refused or failed connect or profile switch (design §3.7).
+		// A refused or failed connect or profile switch.
 		c.Log.Error("network rule failed", "rule", d.Name, "why", why, "connect", d.Connect, "ruleset", rsName, "err", st.Error)
 	} else {
 		c.Log.Info("network rule applied", "rule", d.Name, "why", why, "connect", d.Connect, "ruleset", rsName)

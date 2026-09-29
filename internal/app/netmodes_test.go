@@ -1649,7 +1649,7 @@ func TestNetLockOrder(t *testing.T) {
 	}
 }
 
-// PLAN §7.1-6: a user who never enables «Сети» gets no file and no reads.
+// A user who never enables «Сети» gets no file and no reads.
 func TestNetUnusedCreatesNothing(t *testing.T) {
 	c, w, _ := netCtl(t)
 	c.NetModes(false)

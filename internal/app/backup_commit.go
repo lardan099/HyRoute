@@ -14,7 +14,7 @@ import (
 	"github.com/lardan099/hyroute/internal/store"
 )
 
-// A restore's writes (backup.md §3.5 «Commit») and the reload of raw bytes
+// A restore's writes and the reload of raw bytes
 // its undo uses. Load reads through the same two halves: loadFile (one
 // data file, no lock) and installLoadedLocked.
 

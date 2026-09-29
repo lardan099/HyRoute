@@ -11,8 +11,8 @@ import (
 	"testing"
 )
 
-// The payload limit mirrors both of Hysteria's 4096-byte buffers (bigudp
-// §0.2): the SOCKS5 datagram and the QUIC UDP message.
+// The payload limit mirrors both of Hysteria's 4096-byte buffers: the
+// SOCKS5 datagram and the QUIC UDP message.
 func TestMaxUDPPayload(t *testing.T) {
 	ip := func(s string) Addr { return AddrFromAddrPort(netip.MustParseAddrPort(s)) }
 	for _, c := range []struct {

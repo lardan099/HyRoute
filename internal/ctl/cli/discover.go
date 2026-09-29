@@ -38,7 +38,7 @@ const (
 // busyWait is how long Dial retries a pipe whose instances are all busy.
 const busyWait = 5 * time.Second
 
-// connect finds the HyRoute to talk to and connects (cli.md §1.5): its own
+// connect finds the HyRoute to talk to and connects: its own
 // user's pipe, waiting while it starts; another account's only from an
 // elevated administrator.
 func (c *client) connect(ctx context.Context) (net.Conn, uint32, *failure) {

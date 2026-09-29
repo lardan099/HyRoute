@@ -518,7 +518,7 @@ func TestPortRuleWarningLabel(t *testing.T) {
 	}
 }
 
-// Explain carries both field sets (PLAN §6.1, ports ← groups): a rule with
+// Explain carries both ports and groups: a rule with
 // ports only that sends to a group names the group and the port checked.
 func TestExplainGroupWithPorts(t *testing.T) {
 	c, _ := newCtl(t)

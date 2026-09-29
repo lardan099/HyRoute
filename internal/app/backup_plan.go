@@ -24,7 +24,7 @@ import (
 	"github.com/lardan099/hyroute/internal/store"
 )
 
-// planRestore (backup.md §3.5) turns a backup and the user's choice into the
+// planRestore turns a backup and the user's choice into the
 // configuration a restore produces, the files it writes and the texts the
 // user confirms. Pure and deterministic given env: it never opens, stats
 // or resolves a path or a host from the backup, and never logs.

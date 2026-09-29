@@ -197,8 +197,8 @@
   function remove(r: RulesetView) {
     let q = `Удалить профиль правил «${hide(r.name)}» и его правила (${r.rules})? Это не отменить.`;
     if (r.usedBy?.length) {
-      // Network rule names are free text (often a Wi-Fi name): hideNet
-      // (PLAN §2.14), which hide()'s patterns do not cover.
+      // Network rule names are free text (often a Wi-Fi name): hideNet,
+      // which hide()'s patterns do not cover.
       q += `\n\nИспользуется правилами сетей: ${r.usedBy.map((n) => `«${hideNet(n)}»`).join(', ')}. После удаления они не будут переключать профиль, пока вы не выберете другой.`;
     }
     if (!confirm(q)) return;

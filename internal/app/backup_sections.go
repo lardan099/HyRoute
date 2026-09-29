@@ -22,7 +22,7 @@ import (
 	"github.com/lardan099/hyroute/internal/store"
 )
 
-// The sections of a backup (backup.md §3.4): what each one holds, how it is
+// The sections of a backup (the table below): what each one holds, how it is
 // collected for an export, decoded (strictly) from a file and described.
 
 type sectionDef struct {
@@ -63,7 +63,7 @@ func sectionByKey(key string) *sectionDef {
 // importLimits are the counts a restore accepts from an (untrusted) file.
 // ExportBackup checks the same numbers on what it collected (checkLimits),
 // so every copy HyRoute writes can be restored. The save paths have no such
-// caps; adding them there is a follow-up (backup.md §10).
+// caps.
 var importLimits = struct{ serversTotal, subs, rules, proxies, nameRunes int }{
 	serversTotal: 10000, // manual + every subscription's servers
 	subs:         100,
@@ -195,7 +195,7 @@ func sectionErr(err error) string {
 
 // parseImportGroups reads a «Группы» section strictly with groups.Parse's
 // rules, except that a malformed group ID («grp-XYZ», «../x») is not an
-// error: planGroups renumbers it (§4.1), so the file keeps it as is.
+// error: planGroups renumbers it, so the file keeps it as is.
 func parseImportGroups(raw json.RawMessage) (*groups.File, error) {
 	var f groups.File
 	if err := strictDecode(raw, &f); err != nil {

@@ -4,8 +4,8 @@ import "encoding/binary"
 
 // FragmentIP splits an IPv4 or IPv6 packet into fragments whose IP length
 // is at most mtu (IPv4: mtu >= 68; IPv6: mtu >= 1280), for injecting a reply
-// larger than the interface MTU if Windows ever refuses it whole (bigudp
-// §0.4). A packet that already fits is returned as the only element. IPv4:
+// larger than the interface MTU if Windows ever refuses it whole. A
+// packet that already fits is returned as the only element. IPv4:
 // the header (options dropped from later fragments unless copied, RFC 791)
 // is repeated with MF/offset set, DF cleared, checksum recomputed; the ID
 // is the packet's own. IPv6: a fragment header (next header = the

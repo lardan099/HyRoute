@@ -591,7 +591,7 @@ func (c *client) export(res json.RawMessage) int {
 	return 0
 }
 
-// start starts HyRoute unless it runs (cli.md §1.6).
+// start starts HyRoute unless it runs.
 func (c *client) start(ctx context.Context) int {
 	d := c.d
 	say := func(s string) {

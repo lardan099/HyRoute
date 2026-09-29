@@ -9,8 +9,8 @@ import (
 	"github.com/lardan099/hyroute/internal/rules"
 )
 
-// Names are the permanent host names the policy passes as before (§1.5
-// step 3 of the design): the controller builds them and they are never
+// Names are the permanent host names the policy passes as before (step 1
+// of the classification): the controller builds them and they are never
 // logged. HyRoute's transient own names live in the engine (Env.Transient).
 type Names struct {
 	Servers []string // Hysteria server hosts (IP literals are skipped)

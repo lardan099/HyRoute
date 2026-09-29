@@ -103,8 +103,8 @@ func sessionUserSID() *windows.SID {
 }
 
 // allowClient: medium integrity or more, and the owner, HyRoute's own
-// account, SYSTEM or an elevated administrator. The session is not checked
-// (cli.md §3.13): the same account over SSH or a scheduled task counts.
+// account, SYSTEM or an elevated administrator. The session is not checked:
+// the same account over SSH or a scheduled task counts.
 func allowClient(owner, self string) func(ctl.Identity) bool {
 	return func(id ctl.Identity) bool {
 		return id.IntegrityRID >= ctl.MediumRID && id.User != "" &&

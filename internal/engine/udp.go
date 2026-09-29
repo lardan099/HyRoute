@@ -199,7 +199,7 @@ func (s *udpSession) read(a *socks5.UDPAssoc) {
 		// One packet even above the MTU (up to ~4.1 KB, Hysteria's bound):
 		// the receive path applies no MTU, and WinDivert re-injects
 		// reassembled inbound packets the same way. packet.FragmentIP is
-		// the fallback should Windows ever refuse them (bigudp §0.4).
+		// the fallback should Windows ever refuse them.
 		pkt := packet.BuildUDP(src, s.local, payload)
 		s.mu.Lock()
 		addr := s.addr

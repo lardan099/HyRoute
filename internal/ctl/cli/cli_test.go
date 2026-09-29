@@ -197,7 +197,7 @@ func jsonOf(v any) string { b, _ := ctl.Marshal(v); return string(b) }
 func TestHelp(t *testing.T) {
 	want, _ := os.ReadFile(filepath.Join("testdata", "help.golden"))
 	if got := HelpText(); got != string(want) {
-		t.Fatalf("help differs from cli.md §1.2:\n%s", got)
+		t.Fatalf("help differs from the expected text:\n%s", got)
 	}
 	r := newRig(nil)
 	if r.run() != 0 || r.stdout.String() != string(want) {

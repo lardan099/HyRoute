@@ -205,7 +205,7 @@
   const empty = $derived(r.apps!.length === 0 && r.domains!.length === 0 && pp.ports.length === 0);
   const ppText = $derived(portsText({ protocol: r.protocol, ports: pp.ports.join(',') }));
   const widened = $derived(hadWho && !r.apps!.length && !r.domains!.length && pp.ports.length > 0);
-  // Replies of local UDP servers go to high ports too (ports §1.1).
+  // Replies of local UDP servers go to high ports too.
   const highUdp = $derived(!r.apps!.length && r.protocol !== 'tcp' && pp.ports.some((x) => portRange(x)[1] >= 49152));
   // A site by name in QUIC (UDP 443) is not seen with the default settings.
   const quicName = $derived(
