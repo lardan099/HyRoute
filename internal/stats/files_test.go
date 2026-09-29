@@ -19,11 +19,11 @@ func TestModeFile(t *testing.T) {
 		want  Mode
 		store bool
 	}{
-		{"absent", nil, nil, ModeAll, false},
-		{"valid", []byte(`{"v":1,"mode":"no-sites"}`), nil, ModeNoSites, false},
-		{"valid all", []byte(`{"v":1,"mode":""}`), nil, ModeAll, false},
+		{"absent", nil, nil, ModeOn, false},
+		{"valid", []byte(`{"v":1,"mode":"no-sites"}`), nil, ModeOn, false},
+		{"valid all", []byte(`{"v":1,"mode":""}`), nil, ModeOn, false},
 		{"newer, known mode", []byte(`{"v":2,"mode":"off","x":1}`), nil, ModeOff, false},
-		{"newer, known all", []byte(`{"v":2,"mode":""}`), nil, ModeAll, false},
+		{"newer, known all", []byte(`{"v":2,"mode":""}`), nil, ModeOn, false},
 		{"newer, unknown mode", []byte(`{"v":2,"mode":"hourly"}`), nil, ModeOff, true},
 		{"corrupt", []byte(`{"v":1,`), nil, ModeOff, true},
 		{"link", nil, ErrCorrupt, ModeOff, true},
@@ -53,9 +53,9 @@ func TestModeFile(t *testing.T) {
 	}
 	// Reset keeps the mode file.
 	r := newRig(t)
-	r.c.SetMode(t0, ModeNoSites)
+	r.c.SetMode(t0, ModeOn)
 	r.c.Reset(t0)
-	if !r.files.has("mode") || r.c.Mode() != ModeNoSites {
+	if !r.files.has("mode") || r.c.Mode() != ModeOn {
 		t.Fatal("reset removed the mode")
 	}
 }
@@ -151,8 +151,8 @@ func TestFlushMergeTrim(t *testing.T) {
 		t.Fatalf("total %+v", got.Total)
 	}
 	// Every row (with «Остальные») sums to the total; the old file had no
-	// site or server row, and nothing went through a group.
-	for i, want := range [nLists]int64{302, 301, 301, 0} {
+	// server row, nothing went through a group, and sites are never kept.
+	for i, want := range [nLists]int64{302, 0, 301, 0} {
 		var sum Counters
 		for _, row := range *got.list(i) {
 			sum.add(row.Counters)

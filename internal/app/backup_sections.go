@@ -997,7 +997,7 @@ func (c *Controller) BackupContents(secrets bool) []BackupSectionInfo {
 		case "stats":
 			in.Detail, in.Empty = statsDetail, statsEmpty
 			if !secrets {
-				in.Available, in.Reason = false, "нужен пароль: в статистике — какие сайты и программы вы открывали"
+				in.Available, in.Reason = false, "нужен пароль: в статистике — какими программами вы пользовались"
 			}
 		}
 		if broken != "" {

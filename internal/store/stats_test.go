@@ -68,7 +68,7 @@ func TestStatsFiles(t *testing.T) {
 	}
 	c := stats.New(nil)
 	c.Configure(f)
-	if c.Mode() != stats.ModeNoSites {
+	if c.Mode() != stats.ModeOn {
 		t.Fatal(c.Mode())
 	}
 	if _, err := c.Report(time.Now(), "30d"); err != nil {
@@ -78,14 +78,14 @@ func TestStatsFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	absent("Configure, Report and an empty Flush")
-	// A new install writes its «Всё» at once.
+	// A new install writes its mode at once.
 	s2, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	c2 := stats.New(nil)
 	c2.Configure(s2.StatsFiles())
-	if b, err := os.ReadFile(filepath.Join(s2.Dir, "stats", "mode.json")); c2.Mode() != stats.ModeAll || err != nil || !bytes.Contains(b, []byte(`"mode":""`)) {
+	if b, err := os.ReadFile(filepath.Join(s2.Dir, "stats", "mode.json")); c2.Mode() != stats.ModeOn || err != nil || !bytes.Contains(b, []byte(`"mode":"no-sites"`)) {
 		t.Fatalf("new install: %v, %s %v", c2.Mode(), b, err)
 	}
 
@@ -277,7 +277,7 @@ func TestStatsGuardRefusalNoPath(t *testing.T) {
 		now := time.Now()
 		_, rerr := c.Report(now, "today")
 		shown := c.StoreError()
-		serr := c.SetMode(now, stats.ModeNoSites)
+		serr := c.SetMode(now, stats.ModeOn)
 		xerr := c.Reset(now)
 		statsGuard = old
 		if rerr != nil || serr == nil || xerr == nil {

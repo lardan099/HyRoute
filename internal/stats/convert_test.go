@@ -1,7 +1,6 @@
 package stats
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/lardan099/hyroute/internal/flows"
@@ -26,7 +25,7 @@ func TestFlowOf(t *testing.T) {
 	}
 	// Rule names are never parsed.
 	f, settled, ok := flowOf(base(func(v *flows.View) { v.Rule = "exclusion: self" }))
-	if !ok || !settled || f.App != `c:\program files\chrome.exe` || f.AppName != "Chrome.exe" || f.Domain != "a.com" ||
+	if !ok || !settled || f.App != `c:\program files\chrome.exe` || f.AppName != "Chrome.exe" ||
 		f.Server != "de" || f.Group != "grp-1" || !f.Failover || f.Route != Tunnel {
 		t.Fatalf("%+v", f)
 	}
@@ -50,27 +49,5 @@ func TestFlowOf(t *testing.T) {
 	}
 	if f, _, _ := flowOf(base(func(v *flows.View) { v.Outcome = "rst: socks5 connect failed" })); !f.Failed {
 		t.Error("failed")
-	}
-}
-
-func TestSiteKey(t *testing.T) {
-	for in, want := range map[string]string{
-		"www.youtube.com":                 "youtube.com",
-		"a.b.bbc.co.uk":                   "bbc.co.uk",
-		"u.github.io":                     "u.github.io",
-		"localhost":                       "localhost",
-		"1.2.3.4":                         "",
-		"::1":                             "",
-		"[::1]":                           "",
-		"":                                "",
-		"xn--80ak6aa92e.com":              "xn--80ak6aa92e.com",
-		"WWW.Example.COM.":                "example.com",
-		"bad host!":                       "",
-		"a..b":                            "",
-		strings.Repeat("a", 300) + ".com": "",
-	} {
-		if got := siteKey(in); got != want {
-			t.Errorf("%q: %q, want %q", in, got, want)
-		}
 	}
 }

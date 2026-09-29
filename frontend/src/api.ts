@@ -1248,7 +1248,7 @@ export interface StatDay extends StatCounters {
   day: string;
 }
 
-export type StatsMode = '' | 'no-sites' | 'off';
+export type StatsMode = 'on' | 'off'; // SetStatsMode; a report says 'no-sites' for on (sites are never kept)
 
 export interface StatsReport {
   period: string;
@@ -1258,12 +1258,11 @@ export interface StatsReport {
   events: { drops?: number; engineFails?: number };
   days: StatDay[];
   apps: StatRow[];
-  sites: StatRow[];
   servers: StatRow[];
   groups: StatRow[];
   months: string[];
   since?: string;
-  mode: StatsMode;
+  mode: 'no-sites' | 'off';
   storeError?: string;
   // mode.json could not be read: collection is off until a mode is picked.
   modeUnread?: boolean;

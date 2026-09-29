@@ -238,7 +238,7 @@ func (f *fakeAPI) Stats(period string) (stats.Report, error) {
 		return stats.Report{}, errors.New("неизвестный период статистики")
 	}
 	return stats.Report{Period: period, From: "2026-09-28", To: "2026-09-28", Total: stats.Counters{TC: 3, TU: 100, TD: 200},
-		Sites: []stats.Row{{Key: "secret.example", Counters: stats.Counters{TC: 3}}}, Days: []stats.DayTotal{}, Apps: []stats.Row{},
+		Days: []stats.DayTotal{}, Apps: []stats.Row{},
 		Servers: []stats.Row{}, Groups: []stats.Row{}, Months: []string{"2026-09"}}, nil
 }
 
@@ -825,7 +825,7 @@ func TestLiteContract(t *testing.T) {
 	c := stats.Counters{TC: 1, TU: 2, TD: 3, DC: 4, DU: 5, BC: 6, F: 7, FO: 8}
 	row := stats.Row{Key: "k", Name: "n", Counters: c, Drops: 1, Gone: true}
 	rep := stats.Report{Period: "7d", From: "2026-09-22", To: "2026-09-28", Total: c, Events: stats.Events{Drops: 1, EngineFails: 2},
-		Apps: []stats.Row{row}, Sites: []stats.Row{row}, Servers: []stats.Row{row}, Groups: []stats.Row{row}, Since: "2026-07-01",
+		Apps: []stats.Row{row}, Servers: []stats.Row{row}, Groups: []stats.Row{row}, Since: "2026-07-01",
 		Mode: "no-sites", StoreError: "e", ModeUnread: true}
 	var rl cli.ReportLite
 	json.Unmarshal(rawJSON(rep), &rl)

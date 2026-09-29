@@ -85,7 +85,7 @@ func TestReportPeriods(t *testing.T) {
 	// Empty: lists are [] (never null for the UI).
 	r4 := newRig(t)
 	rep = r4.report(t, "today")
-	if rep.Apps == nil || rep.Sites == nil || rep.Servers == nil || rep.Groups == nil || rep.Days == nil || len(rep.Months) != 1 {
+	if rep.Apps == nil || rep.Servers == nil || rep.Groups == nil || rep.Days == nil || len(rep.Months) != 1 {
 		t.Fatalf("%+v", rep)
 	}
 }
@@ -116,8 +116,8 @@ func TestReportWhileObserving(t *testing.T) {
 	}()
 	for i := 0; i < 5; i++ {
 		rep, err := r.c.Report(r.clk.now(), "7d")
-		if err != nil || rep.Total.DC < 13000 || len(rep.Sites) != reportCaps[listSites] {
-			t.Errorf("%v %+v %d", err, rep.Total, len(rep.Sites))
+		if err != nil || rep.Total.DC < 13000 || len(rep.Apps) == 0 {
+			t.Errorf("%v %+v %d", err, rep.Total, len(rep.Apps))
 		}
 	}
 	close(stop)

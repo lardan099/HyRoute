@@ -339,8 +339,8 @@ func (c *Controller) ResetStats() error {
 	return nil
 }
 
-// SetStatsMode sets the collection mode: "" (all), "no-sites" or "off"
-// (stats\mode.json; prefs.json is not involved).
+// SetStatsMode sets the collection mode: "on" or "off" (stats\mode.json;
+// prefs.json is not involved). Sites are never kept, see stats.Mode.
 func (c *Controller) SetStatsMode(mode string) error {
 	m, err := stats.ParseMode(mode)
 	if err != nil {

@@ -52,12 +52,12 @@ func TestExportImport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(detail, "с 05.03.2026") || !strings.Contains(detail, "7 дней") || !strings.Contains(detail, "сбор: всё") {
+	if !strings.Contains(detail, "с 05.03.2026") || !strings.Contains(detail, "7 дней") || !strings.Contains(detail, "сбор: включён") {
 		t.Fatalf("detail %q", detail)
 	}
 	// Into an empty collector: the same reports.
 	dst := newRig(t)
-	if d, err := dst.c.CheckImport(dst.clk.now(), raw); err != nil || !strings.Contains(d, "сбор: всё") {
+	if d, err := dst.c.CheckImport(dst.clk.now(), raw); err != nil || !strings.Contains(d, "сбор: включён") {
 		t.Fatalf("%q %v", d, err)
 	}
 	if err := dst.c.Replace(dst.clk.now(), raw); err != nil {
@@ -67,12 +67,15 @@ func TestExportImport(t *testing.T) {
 		t.Fatalf("reports differ:\n%+v\n%+v", a, b)
 	}
 
-	// The backup's mode is named; the stricter one wins.
+	// The backup's mode is named; the stricter one wins. A backup of
+	// 1.3.0 («Всё», mode "") with sites restores without them.
 	var env envelope
 	json.Unmarshal(raw, &env)
-	env.Mode = "no-sites"
+	env.Mode = ""
+	env.Files["month-2026-03"] = mustJSON(t, File{V: 1, Month: "2026-03", Days: []string{"2026-03-05"}, Total: Counters{TC: 50},
+		Sites: []Row{{Key: "old.com", Counters: Counters{TC: 50}}}})
 	noSites := mustJSON(t, env)
-	if d, _ := dst.c.CheckImport(dst.clk.now(), noSites); !strings.Contains(d, "сбор: без сайтов") {
+	if d, _ := dst.c.CheckImport(dst.clk.now(), noSites); !strings.Contains(d, "сбор: включён") {
 		t.Fatalf("%q", d)
 	}
 	off := newRig(t)
@@ -84,11 +87,11 @@ func TestExportImport(t *testing.T) {
 		t.Fatalf("%v %q", err, off.c.Mode())
 	}
 	ns := newRig(t)
-	if err := ns.c.Replace(ns.clk.now(), noSites); err != nil || ns.c.Mode() != ModeNoSites {
+	if err := ns.c.Replace(ns.clk.now(), noSites); err != nil || ns.c.Mode() != ModeOn {
 		t.Fatalf("%v %q", err, ns.c.Mode())
 	}
-	if f := ns.files.file(t, "month-2026-03"); len(f.Sites) != 0 {
-		t.Fatal("sites restored in «без сайтов»")
+	if strings.Contains(string(ns.files.get("month-2026-03")), "old.com") {
+		t.Fatal("sites restored")
 	}
 	if !strings.Contains(string(ns.files.get("mode")), "no-sites") {
 		t.Fatal("mode not written")
@@ -185,7 +188,7 @@ func TestExportImport(t *testing.T) {
 
 func TestSummary(t *testing.T) {
 	r := newRig(t)
-	if d, empty := r.c.Summary(t0); !empty || d != "сбор: всё" {
+	if d, empty := r.c.Summary(t0); !empty || d != "сбор: включён" {
 		t.Fatalf("%q %v", d, empty)
 	}
 	history(t, r)

@@ -77,10 +77,6 @@ func statLabel(t string, r StatRowLite) string {
 			return r.Name
 		}
 		return r.Key[strings.LastIndex(r.Key, `\`)+1:]
-	case "sites":
-		if r.Key == "" {
-			return "Сайт не определён"
-		}
 	case "servers":
 		switch {
 		case r.Key == "":
@@ -184,14 +180,11 @@ func formatStats(b *strings.Builder, r ReportLite) {
 			fmt.Fprintf(b, "%s: %d\n", e.l, e.n)
 		}
 	}
-	if len(r.Apps)+len(r.Sites)+len(r.Servers)+len(r.Groups) == 0 && statConns(t) == 0 && statVPN(t) == 0 && t.DU == 0 {
+	if len(r.Apps)+len(r.Servers)+len(r.Groups) == 0 && statConns(t) == 0 && statVPN(t) == 0 && t.DU == 0 {
 		b.WriteString("За этот период статистики нет. Она собирается, пока HyRoute подключён.\n")
 		return
 	}
 	formatStatTable(b, "Программы", "apps", r.Apps)
-	if r.Mode != "no-sites" {
-		formatStatTable(b, "Сайты", "sites", r.Sites)
-	}
 	formatStatTable(b, "Серверы", "servers", r.Servers)
 	formatStatTable(b, "Группы", "groups", r.Groups)
 }

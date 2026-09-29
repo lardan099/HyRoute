@@ -297,11 +297,10 @@ func TestFormatStats(t *testing.T) {
 		Apps: []StatRowLite{{Key: `c:\program files\google\chrome.exe`, StatCountersLite: c(1204, 1181116006, 10522669875)},
 			{Key: "proxy:p1", Name: "Прокси 1080", StatCountersLite: c(5, 1024, 2048)}, {Key: "*", StatCountersLite: c(1, 1, 1)},
 			{Key: "", StatCountersLite: c(2, 2048, 4096)}},
-		Sites:   []StatRowLite{{Key: "youtube.com", StatCountersLite: c(300, 1, 900000000)}, {Key: "", StatCountersLite: c(1, 0, 0)}},
 		Servers: []StatRowLite{{Key: "a", Name: "🇩🇪 DE-1", StatCountersLite: StatCountersLite{TC: 10, F: 2, TU: 5, TD: 6}}, {Key: "b", Name: "US", Gone: true}},
 	}
 	for i := 0; i < 12; i++ {
-		rep.Sites = append(rep.Sites, StatRowLite{Key: fmt.Sprintf("s%02d.example", i), StatCountersLite: c(1, 0, int64(i))})
+		rep.Servers = append(rep.Servers, StatRowLite{Key: fmt.Sprintf("s%02d", i), Name: fmt.Sprintf("S%02d", i), StatCountersLite: c(1, 0, int64(i))})
 	}
 	out, _ := runOut(t, rep, "stats", "7d")
 	golden(t, "stats", out)

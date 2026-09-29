@@ -227,6 +227,7 @@ func (c *Collector) markBad(name, why string) {
 // write stores a file and remembers it parsed (ioMu held). The first one
 // writes the default mode first (a failure is retried with the next).
 func (c *Collector) write(name string, f *File, now time.Time) error {
+	f.hadSites = false // marshal writes none
 	if c.modeUnsaved {
 		if err := c.writeMode(c.Mode()); err != nil {
 			c.Log.Warn("stats: collection mode not saved", "err", shortErr(err))
@@ -300,7 +301,7 @@ func (c *Collector) Configure(files Files) {
 	mode, imported, absent, err := c.readMode()
 	fresh := absent && c.legacy != nil && !c.legacy.Upgraded()
 	if absent && c.legacy != nil && !fresh {
-		mode = ModeNoSites
+		mode = ModeOn
 	}
 	c.modeUnsaved = absent
 	c.mode.Store(mode)
@@ -331,6 +332,9 @@ type modeFile struct {
 	V        int    `json:"v"`
 	Mode     string `json:"mode"`
 	Imported bool   `json:"imported,omitempty"`
+	// NoSites: every file has been checked and holds no sites
+	// (purgeSitesLocked).
+	NoSites bool `json:"noSites,omitempty"`
 }
 
 // readMode reads mode.json: the mode, the import mark, and whether the
@@ -338,7 +342,8 @@ type modeFile struct {
 func (c *Collector) readMode() (mode Mode, imported, absent bool, err error) {
 	b, err := c.files.Read("mode")
 	if errors.Is(err, fs.ErrNotExist) {
-		return ModeAll, false, true, nil
+		c.sitesClean = true // no mode.json: no files of a version that kept sites
+		return ModeOn, false, true, nil
 	}
 	if err != nil {
 		return ModeOff, false, false, err
@@ -357,12 +362,13 @@ func (c *Collector) readMode() (mode Mode, imported, absent bool, err error) {
 	if err != nil {
 		return ModeOff, false, false, fmt.Errorf("mode.json: mode %q", m.Mode)
 	}
+	c.sitesClean = m.NoSites
 	return mode, m.Imported, false, nil
 }
 
 // writeMode writes mode.json with the import mark (ioMu held).
 func (c *Collector) writeMode(m Mode) error {
-	b, _ := json.Marshal(modeFile{V: 1, Mode: string(m), Imported: c.imported})
+	b, _ := json.Marshal(modeFile{V: 1, Mode: string(m), Imported: c.imported, NoSites: c.sitesClean})
 	err := c.files.Write("mode", b)
 	if err == nil {
 		c.modeUnsaved = false
@@ -384,71 +390,86 @@ func (c *Collector) settleLegacy() (pending bool) {
 func (c *Collector) lockIO(now time.Time) {
 	c.ioMu.Lock()
 	c.importLegacyLocked(now)
+	c.purgeSitesLocked(now)
 }
 
 // SetMode sets the collection mode: mode.json is written first, and the
 // mode applies in memory whether or not that worked (the user's latest
-// choice holds for this run). «Без сайтов» also removes the sites already
-// collected, from memory and from every file (a corrupt file, which may
-// hold sites and cannot be cleaned, is removed). Returns the first error.
+// choice holds for this run). Returns the error of writing it.
 func (c *Collector) SetMode(now time.Time, m Mode) error {
 	if c.files != nil {
 		c.lockIO(now)
 		defer c.ioMu.Unlock()
 	}
-	var first error
-	keep := func(err error) {
-		if err != nil && first == nil {
-			first = err
-		}
-	}
+	var err error
 	if c.files != nil {
-		if err := c.writeMode(m); err != nil {
-			keep(fmt.Errorf("режим применён, но не сохранён: %s", shortErr(err)))
+		if werr := c.writeMode(m); werr != nil {
+			err = fmt.Errorf("режим применён, но не сохранён: %s", shortErr(werr))
 		}
 	}
 	c.mode.Store(m)
 	c.mu.Lock()
 	c.modeErr = ""
-	if m == ModeNoSites {
-		for _, d := range c.delta {
-			d.lists[listSites] = map[string]*Row{}
-		}
-		c.cache.init()
-	}
 	c.mu.Unlock()
-	if m != ModeNoSites || c.files == nil {
-		return first
+	return err
+}
+
+// purgeSitesLocked rewrites without sites every file that still holds
+// them (earlier builds recorded sites; reading drops them already, this
+// removes them from the disk). A corrupt file, which may hold sites and
+// cannot be cleaned, is removed; a file of a newer version is left alone.
+// Once every file is clean, mode.json records it and this is not done
+// again (ioMu held).
+func (c *Collector) purgeSitesLocked(now time.Time) {
+	if c.sitesClean || c.files == nil || now.Before(c.sitesRetry) {
+		return
 	}
-	const notAll = "сайты удалены не из всех файлов статистики: "
 	names, err := c.files.List()
-	if err != nil {
-		keep(fmt.Errorf(notAll+"папка stats: %s", shortErr(err)))
-	}
+	done := err == nil
+	n := 0
 	for _, name := range names {
 		if future(name, now) {
 			continue
 		}
-		f, st, err := c.load(name, now)
+		f, st, lerr := c.load(name, now)
 		switch st {
 		case loadOK:
-			if len(f.Sites) > 0 {
-				f.Sites = nil
-				if err := c.write(name, f, now); err != nil {
-					keep(fmt.Errorf(notAll+"%s.json: %s", name, shortErr(err)))
+			if f.hadSites {
+				if werr := c.write(name, f, now); werr != nil {
+					done, err = false, werr
+				} else {
+					n++
 				}
 			}
 		case loadCorrupt:
-			if err := c.remove(name); err != nil {
-				keep(fmt.Errorf(notAll+"%s.json: %s", name, shortErr(err)))
+			if rerr := c.remove(name); rerr != nil {
+				done, err = false, rerr
 			} else {
 				c.Log.Info("stats: damaged statistics file removed", "file", name)
 			}
 		case loadTransient:
-			keep(fmt.Errorf(notAll+"%s.json: %s", name, shortErr(err)))
+			done, err = false, lerr
 		}
 	}
-	return first
+	if n > 0 {
+		c.Log.Info("stats: sites removed from the statistics", "files", n)
+	}
+	if !done {
+		c.sitesRetry = now.Add(time.Minute)
+		c.Log.Warn("stats: sites not removed from every file yet, will retry", "err", shortErr(err))
+		return
+	}
+	c.sitesClean = true
+	// An unreadable mode.json stays until the user picks a mode (SetMode
+	// then records this too).
+	c.mu.Lock()
+	unread := c.modeErr != ""
+	c.mu.Unlock()
+	if !unread {
+		if werr := c.writeMode(c.Mode()); werr != nil {
+			c.Log.Warn("stats: collection mode not saved", "err", shortErr(werr))
+		}
+	}
 }
 
 // ---- flush ----
@@ -503,7 +524,6 @@ func (c *Collector) flushLocked(now time.Time) error {
 	if len(taken) == 0 {
 		return nil
 	}
-	mode := c.Mode()
 	days := make([]string, 0, len(taken))
 	for d := range taken {
 		days = append(days, d)
@@ -564,9 +584,6 @@ func (c *Collector) flushLocked(now time.Time) error {
 				f.Days = append(f.Days, d)
 				sort.Strings(f.Days)
 			}
-		}
-		if mode == ModeNoSites {
-			f.Sites = nil
 		}
 		f.trim(caps)
 		f.Updated = now

@@ -412,7 +412,7 @@ func TestSetStatsMode(t *testing.T) {
 	}
 	// The mode survives a restart.
 	c2, _ := newCtlAt(t, c.Store)
-	if c2.stats.Mode() != stats.ModeNoSites {
+	if c2.stats.Mode() != stats.ModeOn {
 		t.Fatal(c2.stats.Mode())
 	}
 }
@@ -436,7 +436,7 @@ func TestStatsBackupUnlocked(t *testing.T) {
 		t.Fatal("empty with a delta")
 	}
 	raw, detail, _, err := c.ExportStats()
-	if err != nil || !strings.Contains(detail, "сбор: всё") {
+	if err != nil || !strings.Contains(detail, "сбор: включён") {
 		t.Fatalf("%q %v", detail, err)
 	}
 	if _, err := c.CheckStatsImport(raw); err != nil {
@@ -630,7 +630,7 @@ func TestStatsCreateNothing(t *testing.T) {
 // (its servers are not taken for an upgrade's).
 func TestStatsUpgradeDefault(t *testing.T) {
 	c, _ := newCtl(t)
-	if c.stats.Mode() != stats.ModeAll {
+	if c.stats.Mode() != stats.ModeOn {
 		t.Fatalf("new install: %v", c.stats.Mode())
 	}
 	if _, err := c.ImportURIs("hysteria2://a@hy1.example:443#one"); err != nil {
@@ -638,7 +638,7 @@ func TestStatsUpgradeDefault(t *testing.T) {
 	}
 	c.Shutdown()
 	c1, _ := newCtlAt(t, c.Store)
-	if c1.stats.Mode() != stats.ModeAll {
+	if c1.stats.Mode() != stats.ModeOn {
 		t.Fatalf("new install, restarted: %v", c1.stats.Mode())
 	}
 	c1.Shutdown()
@@ -652,10 +652,10 @@ func TestStatsUpgradeDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	c2, _ := newCtlAt(t, st)
-	if c2.stats.Mode() != stats.ModeNoSites {
+	if c2.stats.Mode() != stats.ModeOn {
 		t.Fatalf("upgrade without traffic.json: %v", c2.stats.Mode())
 	}
-	if rep := today(t, c2); rep.Mode != string(stats.ModeNoSites) {
+	if rep := today(t, c2); rep.Mode != string(stats.ModeOn) {
 		t.Fatal(rep.Mode)
 	}
 }
@@ -707,7 +707,7 @@ func TestStatsDiag(t *testing.T) {
 	os.WriteFile(filepath.Join(c.Store.Dir, "stats", bad+".json"), []byte("{"), 0o600)
 	c.Stats("7d")
 	diag := c.Diagnostics(nil, false)
-	if !strings.Contains(diag, "   статистика: сбор всё; файлы: файл "+bad+".json повреждён, пропущен") {
+	if !strings.Contains(diag, "   статистика: сбор включён; файлы: файл "+bad+".json повреждён, пропущен") {
 		t.Fatalf("%s", diag)
 	}
 	if strings.Contains(diag, "private.example") || strings.Contains(diag, "secret-app") {

@@ -7,7 +7,7 @@
   import { ui, hide, profileName, settle } from '../state.svelte';
   import Help from './Help.svelte';
 
-  type Tab = 'apps' | 'sites' | 'servers' | 'groups';
+  type Tab = 'apps' | 'servers' | 'groups';
   type SortKey = 'label' | 'vpn' | 'du' | 'conns' | 'f' | 'tu' | 'td' | 'fo' | 'drops';
 
   const periods = [
@@ -29,7 +29,7 @@
   function storedTab(): Tab {
     try {
       const v = localStorage.getItem('hyroute.stats.tab');
-      if (v === 'apps' || v === 'sites' || v === 'servers' || v === 'groups') return v;
+      if (v === 'apps' || v === 'servers' || v === 'groups') return v;
     } catch {}
     return 'apps';
   }
@@ -140,7 +140,7 @@
   const disconnected = $derived(ui.status?.state === 'disconnected' || ui.status?.state === 'error');
   const total = $derived<StatCounters>(report?.total ?? {});
   const empty = $derived(
-    !!report && !report.apps.length && !report.sites.length && !report.servers.length && !report.groups.length && !statConns(total) && !statVPN(total) && !total.du,
+    !!report && !report.apps.length && !report.servers.length && !report.groups.length && !statConns(total) && !statVPN(total) && !total.du,
   );
 
   const refusedTitle =
@@ -167,9 +167,10 @@
   // ---- tables ----
 
   const tabs = $derived.by(() => {
-    const t: { v: Tab; l: string }[] = [{ v: 'apps', l: 'Программы' }];
-    if (report?.mode !== 'no-sites') t.push({ v: 'sites', l: 'Сайты' });
-    t.push({ v: 'servers', l: 'Серверы' });
+    const t: { v: Tab; l: string }[] = [
+      { v: 'apps', l: 'Программы' },
+      { v: 'servers', l: 'Серверы' },
+    ];
     // History of deleted groups stays reachable.
     if ((report?.groups.length ?? 0) > 0 || ui.groups.length > 0) t.push({ v: 'groups', l: 'Группы' });
     return t;
@@ -178,7 +179,7 @@
 
   function label(t: Tab, r: StatRow): { text: string; title: string } {
     if (r.k === '*') {
-      const what = { apps: 'Программы', sites: 'Сайты', servers: 'Серверы', groups: 'Группы' }[t];
+      const what = { apps: 'Программы', servers: 'Серверы', groups: 'Группы' }[t];
       return { text: 'Остальные', title: `${what}, не вошедшие в список за этот период` };
     }
     switch (t) {
@@ -186,9 +187,6 @@
         if (r.k === '') return { text: 'Программа не определена', title: 'Соединения, владельца которых HyRoute не нашёл' };
         if (r.k.startsWith('proxy:')) return { text: `Прокси «${hide(r.n || r.k.slice(6))}»${r.gone ? ' (удалён)' : ''}`, title: 'Локальный прокси' };
         return { text: hide(r.n || r.k.split('\\').pop() || r.k), title: hide(r.k) };
-      case 'sites':
-        if (r.k === '') return { text: 'Сайт не определён', title: 'Соединения по IP-адресу: домена не было ни в SNI/Host, ни в кэше DNS' };
-        return { text: hide(r.k), title: hide(r.k) };
       case 'servers':
         if (r.k === '') return { text: 'Сервер не выбран', title: 'Соединения, которые правила отправили в VPN, когда основной сервер не был выбран: они отклонены' };
         if (r.gone) return { text: `${hide(r.n) || 'сервер'} (удалён)`, title: '' };
@@ -252,15 +250,14 @@
 
   // The select's value: «Не выбран» while mode.json could not be read (the
   // collection is off then, and «Выключен» must still be choosable).
-  const modeValue = () => (report?.modeUnread ? '?' : (report?.mode ?? ''));
+  const modeValue = () => (report?.modeUnread ? '?' : report?.mode === 'off' ? 'off' : 'on');
 
   async function setMode(e: Event) {
     await settle(
       e,
       async (el) => {
         const m = el.value as StatsMode;
-        if (m === report?.mode && !report?.modeUnread) return;
-        if (m === 'no-sites' && !confirm('Статистика по сайтам за всё время будет удалена. Продолжить?')) return;
+        if (m === modeValue()) return;
         try {
           await api.SetStatsMode(m);
           modeError = '';
@@ -290,16 +287,17 @@
 <div class="page-wrap">
   <header>
     <h1>Статистика</h1>
-    <p class="muted sub">Сколько трафика прошло через HyRoute: по программам, сайтам и серверам.</p>
+    <p class="muted sub">Сколько трафика прошло через HyRoute: по программам и серверам.</p>
   </header>
 
   <Help id="stats" title="Что здесь считается">
     <p>
-      Сколько трафика прошло через VPN и напрямую: по программам, сайтам и серверам. Статистика хранится только на этом компьютере и никуда не
+      Сколько трафика прошло через VPN и напрямую: по программам и серверам. Статистика хранится только на этом компьютере и никуда не
       отправляется.
     </p>
     <ul>
-      <li>В режиме «Всё» запоминаются и сайты. Не запоминать сайты или выключить сбор можно внизу страницы, в «Сборе статистики».</li>
+      <li>Какие сайты вы открывали, статистика не запоминает: только сколько трафика прошло и через какую программу и сервер.</li>
+      <li>Выключить сбор можно внизу страницы, в «Сборе статистики».</li>
       <li>Трафик напрямую считается примерно и только отправленный (↑).</li>
     </ul>
   </Help>
@@ -314,7 +312,7 @@
       {#if !isMonth}<option value="">Месяц…</option>{/if}
       {#each months as m}<option value={m}>{monthName(m)}</option>{/each}
     </select>
-    <input class="grow search" placeholder="Поиск: программа, сайт, сервер" bind:value={query} />
+    <input class="grow search" placeholder="Поиск: программа, сервер" bind:value={query} />
   </div>
 
   {#if report}
@@ -402,8 +400,8 @@
         <table>
           <thead>
             <tr>
-              {#if shownTab === 'apps' || shownTab === 'sites'}
-                <th><button class="th" onclick={() => sortBy('label')}>{shownTab === 'apps' ? 'Программа' : 'Сайт'}{arrow('label')}</button></th>
+              {#if shownTab === 'apps'}
+                <th><button class="th" onclick={() => sortBy('label')}>Программа{arrow('label')}</button></th>
                 <th class="num"><button class="th" onclick={() => sortBy('vpn')}>Через VPN{arrow('vpn')}</button></th>
                 <th class="num"><button class="th" title="примерно, не меньше" onclick={() => sortBy('du')}>Напрямую ↑{arrow('du')}</button></th>
                 <th class="num"><button class="th" onclick={() => sortBy('conns')}>Соединений{arrow('conns')}</button></th>
@@ -430,7 +428,7 @@
               {@const r = x.r}
               <tr>
                 <td class="name" title={x.title || x.text}>{x.text}</td>
-                {#if shownTab === 'apps' || shownTab === 'sites'}
+                {#if shownTab === 'apps'}
                   <td class="num" title="↑ {fmtBytes(r.tu ?? 0)} ↓ {fmtBytes(r.td ?? 0)}">{fmtBytes(statVPN(r))}</td>
                   <td class="num" title="примерно, не меньше">{r.du ? fmtBytes(r.du) : ''}</td>
                   <td class="num" title="VPN {r.tc ?? 0} · напрямую (попыток) {r.dc ?? 0} · блок {r.bc ?? 0} · отклонено {r.f ?? 0}">{statConns(r)}</td>
@@ -459,8 +457,7 @@
       <div class="row">
         <select aria-label="Сбор статистики" value={modeValue()} onchange={setMode}>
           {#if report.modeUnread}<option value="?" disabled>Не выбран</option>{/if}
-          <option value="">Всё</option>
-          <option value="no-sites">Без сайтов</option>
+          <option value="on">Включён</option>
           <option value="off">Выключен</option>
         </select>
         <span class="grow"></span>

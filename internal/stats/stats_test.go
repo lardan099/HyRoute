@@ -209,9 +209,6 @@ func TestRoutes(t *testing.T) {
 	if g := rowOf(rep.Groups, "grp-1"); g.TC != 1 || g.TU != 10 || len(rep.Groups) != 1 {
 		t.Fatalf("groups %+v", rep.Groups)
 	}
-	if s := rowOf(rep.Sites, "youtube.com"); s.TC != 1 || s.TU != 10 {
-		t.Fatalf("site %+v", rep.Sites)
-	}
 	if a := rowOf(rep.Apps, `c:\f.exe`); a.F != 1 || a.TU != 0 {
 		t.Fatalf("failed flow's head counted: %+v", a)
 	}
@@ -285,7 +282,7 @@ func TestModeOff(t *testing.T) {
 	if got := r.today(t); got.TC != 1 || got.TU != 10 {
 		t.Fatalf("off: %+v", got)
 	}
-	if err := r.c.SetMode(r.clk.now(), ModeAll); err != nil {
+	if err := r.c.SetMode(r.clk.now(), ModeOn); err != nil {
 		t.Fatal(err)
 	}
 	old.Sent.Add(5)
@@ -297,52 +294,58 @@ func TestModeOff(t *testing.T) {
 		t.Fatalf("on again: %+v", got.Total)
 	}
 	// The mode is written.
-	if b := r.files.get("mode"); !strings.Contains(string(b), `"mode":""`) {
+	if b := r.files.get("mode"); !strings.Contains(string(b), `"mode":"no-sites"`) {
 		t.Fatalf("%s", b)
 	}
 }
 
-// «Без сайтов» keeps no site rows and strips sites from every file; a
-// corrupt file (which may hold sites) is removed.
-func TestModeNoSites(t *testing.T) {
-	r := newRig(t)
+// Sites are never recorded, and the statistics of HyRoute 1.3.0 (which
+// kept them) lose theirs on the first use of the disk: every file is
+// rewritten without them, a corrupt file (which may hold sites) is
+// removed, and mode.json records that it is done.
+func TestNoSites(t *testing.T) {
+	past := "day-" + addDays(dayOf(t0), -3)
+	bad := "day-" + addDays(dayOf(t0), -4)
+	r := newRigWith(t, func(m *memFiles) {
+		m.put("mode", []byte(`{"v":1,"mode":"","imported":true}`)) // 1.3.0's «Всё»
+		m.put(past, mustJSON(t, File{V: 1, Day: past[4:], Total: Counters{TC: 1}, Sites: []Row{{Key: "b.com", Counters: Counters{TC: 1}}}}))
+		m.put(bad, []byte("{garbage"))
+	})
+	if r.c.Mode() != ModeOn {
+		t.Fatalf("mode %q", r.c.Mode())
+	}
 	rec := r.open(`C:\a.exe`, func(f *flows.Fields) {
 		f.Route, f.Profile, f.Outcome, f.Domain = "tunnel", "de", "relayed", "a.example.com"
 	})
 	rec.Sent.Add(1)
 	r.sample()
+	r.close(rec)
 	if err := r.c.Flush(r.clk.now()); err != nil {
 		t.Fatal(err)
 	}
-	past := "day-" + addDays(dayOf(t0), -3)
-	r.files.put(past, mustJSON(t, File{V: 1, Day: past[4:], Sites: []Row{{Key: "b.com", Counters: Counters{TC: 1}}}}))
-	r.files.put("day-"+addDays(dayOf(t0), -4), []byte("{garbage"))
-	rec.Sent.Add(1)
-	r.sample() // an unflushed site row
-	if err := r.c.SetMode(r.clk.now(), ModeNoSites); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"day-" + dayOf(t0), past} {
+		if b := r.files.get(name); strings.Contains(string(b), "example.com") || strings.Contains(string(b), "b.com") {
+			t.Fatalf("%s: %s", name, b)
+		}
 	}
-	if f := r.files.file(t, "day-"+dayOf(t0)); len(f.Sites) != 0 {
-		t.Fatalf("today: %+v", f.Sites)
+	if f := r.files.file(t, past); f.Total.TC != 1 {
+		t.Fatalf("past lost its totals: %+v", f)
 	}
-	if f := r.files.file(t, past); len(f.Sites) != 0 {
-		t.Fatalf("past: %+v", f.Sites)
-	}
-	if r.files.has("day-" + addDays(dayOf(t0), -4)) {
+	if r.files.has(bad) {
 		t.Fatal("corrupt file kept")
 	}
-	other := r.open(`C:\b.exe`, func(f *flows.Fields) { f.Route, f.Outcome, f.Domain = "direct", "passed", "c.example.org" })
-	other.Sent.Add(3)
-	r.close(other)
-	rep := r.report(t, "7d")
-	if len(rep.Sites) != 0 || rep.Mode != "no-sites" {
-		t.Fatalf("%+v", rep.Sites)
+	if b := string(r.files.get("mode")); !strings.Contains(b, `"noSites":true`) || !strings.Contains(b, `"mode":"no-sites"`) {
+		t.Fatalf("mode.json: %s", b)
 	}
-	if err := r.c.Flush(r.clk.now()); err != nil {
-		t.Fatal(err)
+	if rep := r.report(t, "7d"); rep.Total.TC != 2 || rep.Total.TU != 1 {
+		t.Fatalf("%+v", rep.Total)
 	}
-	if f := r.files.file(t, "day-"+dayOf(t0)); len(f.Sites) != 0 || f.Total.DU != 3 {
-		t.Fatalf("%+v", f)
+	// Done once: a file with sites that appears later is not searched for
+	// again, but is still read and written without them.
+	r.files.put(past, mustJSON(t, File{V: 1, Day: past[4:], Total: Counters{TC: 1}, Sites: []Row{{Key: "c.com", Counters: Counters{TC: 1}}}}))
+	r.c.cache.init()
+	if rep := r.report(t, "7d"); rep.Total.TC != 2 {
+		t.Fatalf("%+v", rep.Total)
 	}
 }
 
@@ -435,12 +438,12 @@ func TestDrops(t *testing.T) {
 	feed(true, 0, st)
 	r.c.SetMode(r.clk.now(), ModeOff)
 	feed(false, 0, st)
-	r.c.SetMode(r.clk.now(), ModeAll)
+	r.c.SetMode(r.clk.now(), ModeOn)
 	feed(false, 0, st)
 	feed(true, 0, st)
 	r.c.SetMode(r.clk.now(), ModeOff)
 	feed(true, 1, st)
-	r.c.SetMode(r.clk.now(), ModeAll)
+	r.c.SetMode(r.clk.now(), ModeOn)
 	feed(true, 1, st)
 	if rep := r.report(t, "today"); rep.Events.Drops != 2 {
 		t.Fatalf("counted while off: %+v", rep.Events)
@@ -490,8 +493,8 @@ func TestConcurrent(t *testing.T) {
 	raw := export()
 	run(func() { r.c.Replace(r.clk.now(), raw) })
 	run(func() {
-		r.c.SetMode(r.clk.now(), ModeNoSites)
-		r.c.SetMode(r.clk.now(), ModeAll)
+		r.c.SetMode(r.clk.now(), ModeOn)
+		r.c.SetMode(r.clk.now(), ModeOn)
 	})
 	run(func() { r.c.Reset(r.clk.now()) })
 	time.Sleep(300 * time.Millisecond)

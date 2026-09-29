@@ -192,7 +192,6 @@ type ReportLite struct {
 	Total      StatCountersLite `json:"total"`
 	Events     StatEventsLite   `json:"events"`
 	Apps       []StatRowLite    `json:"apps"`
-	Sites      []StatRowLite    `json:"sites"`
 	Servers    []StatRowLite    `json:"servers"`
 	Groups     []StatRowLite    `json:"groups"`
 	Since      string           `json:"since"`

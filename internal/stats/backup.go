@@ -295,11 +295,6 @@ func (c *Collector) Replace(now time.Time, raw []byte) error {
 	c.compactAt = ""
 	c.modeErr = ""
 	c.mode.Store(mode)
-	if mode == ModeNoSites {
-		for _, d := range c.delta {
-			d.lists[listSites] = map[string]*Row{}
-		}
-	}
 	c.mu.Unlock()
 	fail := func(name string, err error) error {
 		return fmt.Errorf("часть файлов статистики не записана: %s.json: %s", name, shortErr(err))
@@ -315,9 +310,6 @@ func (c *Collector) Replace(now time.Time, raw []byte) error {
 			continue
 		}
 		f := p.files[n]
-		if mode == ModeNoSites {
-			f.Sites = nil
-		}
 		if err := c.write(n, f, now); err != nil {
 			return fail(n, err)
 		}

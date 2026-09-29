@@ -52,10 +52,6 @@ func TestLegacyImport(t *testing.T) {
 	if a := rowOf(rep.Apps, ""); a.TU != 1 {
 		t.Fatalf("unknown program: %+v", rep.Apps)
 	}
-	// No site is known: the list still sums to the total.
-	if len(rep.Sites) != 1 || rep.Sites[0].Key != "" || rep.Sites[0].Counters != rep.Total {
-		t.Fatalf("%+v", rep.Sites)
-	}
 	d2 := r.files.file(t, "day-"+addDays(today, -2))
 	if d2.Total.TU != 0 || d2.Total.TD != 3 || rowOf(d2.Apps, Others).TD != 3 || !d2.Imported {
 		t.Fatalf("%+v", d2)
@@ -214,7 +210,7 @@ func TestLegacyImportMapping(t *testing.T) {
 		}
 		return "", "", false
 	}
-	if err := r.c.SetMode(t0, ModeNoSites); err != nil {
+	if err := r.c.SetMode(t0, ModeOn); err != nil {
 		t.Fatal(err)
 	}
 	r.files.legacy = legacy
@@ -225,9 +221,6 @@ func TestLegacyImportMapping(t *testing.T) {
 	}
 	if a := rowOf(rep.Apps, "локальный прокси :1081"); a.TU != 6 || a.Name != "Локальный прокси :1081" {
 		t.Fatalf("%+v", rep.Apps)
-	}
-	if len(rep.Sites) != 0 {
-		t.Fatalf("%+v", rep.Sites)
 	}
 	if !bytes.Contains(r.files.get("mode"), []byte(`"no-sites"`)) {
 		t.Fatalf("mode lost: %s", r.files.get("mode"))
@@ -265,7 +258,7 @@ func TestLegacyImportCompacted(t *testing.T) {
 	// A damaged mode.json, then the user picks a mode again.
 	r.files.put("mode", []byte("{"))
 	r.reopen()
-	if err := r.c.SetMode(r.clk.now(), ModeAll); err != nil {
+	if err := r.c.SetMode(r.clk.now(), ModeOn); err != nil {
 		t.Fatal(err)
 	}
 	if !imported(r.files) {
@@ -373,7 +366,7 @@ func TestLegacyImportDroppedByReset(t *testing.T) {
 	}
 	r.files.put("mode", []byte("{"))
 	r.reopen()
-	if err := r.c.SetMode(r.clk.now(), ModeNoSites); err != nil {
+	if err := r.c.SetMode(r.clk.now(), ModeOn); err != nil {
 		t.Fatal(err)
 	}
 	r.reopen()
@@ -392,31 +385,31 @@ func TestLegacyImportDroppedByReset(t *testing.T) {
 // сайтов»; a new user, or one who picked a mode, keeps «Всё».
 func TestLegacyNoSitesDefault(t *testing.T) {
 	today := dayOf(t0)
-	if r := newRig(t); r.c.Mode() != ModeAll {
+	if r := newRig(t); r.c.Mode() != ModeOn {
 		t.Fatalf("new user: %v", r.c.Mode())
 	}
 	r := newRigWith(t, func(f *memFiles) { f.legacy = legacyOne(today) })
-	if r.c.Mode() != ModeNoSites {
+	if r.c.Mode() != ModeOn {
 		t.Fatalf("upgraded user: %v", r.c.Mode())
 	}
 	rep := r.report(t, "today")
-	if rep.Total.TU != 7 || len(rep.Sites) != 0 || rep.Mode != string(ModeNoSites) {
-		t.Fatalf("%+v %+v", rep.Total, rep.Sites)
+	if rep.Total.TU != 7 || rep.Mode != string(ModeOn) {
+		t.Fatalf("%+v", rep.Total)
 	}
 	if b := r.files.get("mode"); !bytes.Contains(b, []byte(`"no-sites"`)) || !imported(r.files) {
 		t.Fatalf("mode.json: %s", b)
 	}
 	// The user's choice holds over the default.
-	if err := r.c.SetMode(r.clk.now(), ModeAll); err != nil {
+	if err := r.c.SetMode(r.clk.now(), ModeOn); err != nil {
 		t.Fatal(err)
 	}
 	r.reopen()
-	if r.c.Mode() != ModeAll {
+	if r.c.Mode() != ModeOn {
 		t.Fatalf("choice lost: %v", r.c.Mode())
 	}
 	// A link or a busy file at the place of traffic.json counts too.
 	r2 := newRigWith(t, func(f *memFiles) { f.legacyErr = fmt.Errorf("%w: traffic.json", ErrCorrupt) })
-	if r2.c.Mode() != ModeNoSites {
+	if r2.c.Mode() != ModeOn {
 		t.Fatalf("link: %v", r2.c.Mode())
 	}
 }
@@ -435,7 +428,7 @@ func TestUpgradedNoSitesDefault(t *testing.T) {
 		}
 	}
 	r := newRigWith(t, func(f *memFiles) { f.earlier = true })
-	if r.c.Mode() != ModeNoSites {
+	if r.c.Mode() != ModeOn {
 		t.Fatalf("upgraded user: %v", r.c.Mode())
 	}
 	if r.files.has("mode") {
@@ -448,12 +441,12 @@ func TestUpgradedNoSitesDefault(t *testing.T) {
 	// A new user: «Всё», written at the first start (before any
 	// statistics) and kept after the servers and settings appear.
 	r2 := newRig(t)
-	if b := r2.files.get("mode"); r2.c.Mode() != ModeAll || b == nil || bytes.Contains(b, []byte(`"no-sites"`)) {
+	if b := r2.files.get("mode"); r2.c.Mode() != ModeOn || b == nil || !bytes.Contains(b, []byte(`"no-sites"`)) {
 		t.Fatalf("new user: %v, mode.json: %s", r2.c.Mode(), b)
 	}
 	r2.files.earlier = true
 	r2.reopen()
-	if r2.c.Mode() != ModeAll {
+	if r2.c.Mode() != ModeOn {
 		t.Fatalf("decided again: %v", r2.c.Mode())
 	}
 	// A failed mode write is retried with the next file.
@@ -504,7 +497,7 @@ func TestLegacyImportLarge(t *testing.T) {
 		return b.Bytes()
 	}
 	start := time.Now()
-	files, n, err := legacyFiles(t0, big(maxLegacyRows, 0), ModeAll, nil)
+	files, n, err := legacyFiles(t0, big(maxLegacyRows, 0), ModeOn, nil)
 	if took := time.Since(start); took > 3*time.Second {
 		t.Fatalf("%d programs took %v", maxLegacyRows, took)
 	}
@@ -519,7 +512,7 @@ func TestLegacyImportLarge(t *testing.T) {
 		t.Fatalf("others: %+v", o)
 	}
 	for _, b := range [][]byte{big(maxLegacyRows+1, 0), big(1, maxLegacyDays)} {
-		if _, _, err := legacyFiles(t0, b, ModeAll, nil); !errors.Is(err, errLegacyFormat) {
+		if _, _, err := legacyFiles(t0, b, ModeOn, nil); !errors.Is(err, errLegacyFormat) {
 			t.Fatalf("over the bounds: %v", err)
 		}
 	}

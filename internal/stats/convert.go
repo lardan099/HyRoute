@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/lardan099/hyroute/internal/flows"
-	"github.com/lardan099/hyroute/internal/rules"
 )
 
 // Route is where a counted flow went.
@@ -19,7 +18,6 @@ const (
 // Flow is what the collector needs from one flow (see flowOf).
 type Flow struct {
 	App, AppName string // key (lower-case path | lower-case exe | "proxy:<id>" verbatim | ""), display name
-	Domain       string // first name of the record or ""; the site key is derived from it (siteKey)
 	Server       string // profile ID (tunnel only; "" = no server chosen)
 	Group        string // group ID ("" none; tunnel only)
 	Route        Route
@@ -47,12 +45,7 @@ func flowOf(v flows.View) (f Flow, settled, ok bool) {
 	default:
 		f.App = strings.ToLower(v.Process)
 	}
-	f.AppName = v.Process
-	if i := strings.IndexByte(v.Domain, ','); i >= 0 {
-		f.Domain = v.Domain[:i] // DNS names are joined with ","
-	} else {
-		f.Domain = v.Domain
-	}
+	f.AppName = v.Process // the flow's site is never read: statistics keep no sites
 	switch v.Route {
 	case "tunnel":
 		f.Route = Tunnel
@@ -66,15 +59,4 @@ func flowOf(v flows.View) (f Flow, settled, ok bool) {
 	}
 	f.Failed = v.Failed()
 	return f, v.Settled(), true
-}
-
-// siteKey is the site a domain counts under: the registrable domain of a
-// valid host name (the grouping of rules' «Весь сайт» and of sticky
-// groups), "" for no name, an IP literal or anything that is not a host
-// name.
-func siteKey(domain string) string {
-	if n, ok := rules.HostName(strings.TrimSpace(domain)); ok {
-		return rules.Site(n)
-	}
-	return ""
 }

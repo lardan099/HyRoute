@@ -185,10 +185,6 @@ func legacyFiles(now time.Time, b []byte, mode Mode, proxy func(string) (string,
 			legacyRow(apps, Others, "", rest)
 		}
 		f.Apps = legacyRows(apps)
-		if mode != ModeNoSites {
-			// Every list sums to the total: no site is known.
-			f.Sites = []Row{{Key: "", Counters: f.Total}}
-		}
 		f.trim(dayCaps)
 		days++
 		if d >= oldestDay {
@@ -282,9 +278,6 @@ func (c *Collector) importLegacy(now time.Time, b []byte) (int, error) {
 						sort.Strings(cur.Days)
 					}
 				}
-			}
-			if mode == ModeNoSites {
-				cur.Sites = nil
 			}
 			cur.trim(caps)
 			cur.Updated = now

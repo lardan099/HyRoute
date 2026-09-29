@@ -135,6 +135,11 @@ type File struct {
 	// Imported: the file holds its share of HyRoute 1.2.0's statistics (a
 	// repeated import leaves it alone).
 	Imported bool `json:"imported,omitempty"`
+
+	// hadSites: the file as read held sites (earlier builds kept them);
+	// they are dropped on reading, and the file is rewritten without them
+	// (purgeSitesLocked).
+	hadSites bool
 }
 
 func (f *File) list(i int) *[]Row {
@@ -319,6 +324,8 @@ func parseFile(name string, b []byte) (*File, error) {
 	if err := f.validate(name); err != nil {
 		return nil, fmt.Errorf("%w: %v", errInvalid, err)
 	}
+	// Sites are never kept (see Mode): whatever a file holds is dropped.
+	f.hadSites, f.Sites = len(f.Sites) > 0, nil
 	return &f, nil
 }
 
@@ -381,8 +388,9 @@ func (f *File) validate(name string) error {
 	return nil
 }
 
-// marshal is the file's JSON (lists never null).
+// marshal is the file's JSON (lists never null, sites always empty).
 func (f *File) marshal() ([]byte, error) {
+	f.Sites = nil
 	for i := range nLists {
 		if l := f.list(i); *l == nil {
 			*l = []Row{}

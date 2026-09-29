@@ -47,6 +47,5 @@ history, `main`; nobody works on long-lived branches.
 
 ## Product decisions to respect
 
-- Statistics must not record which sites were visited (the owner's
-  requirement). See docs/HANDOFF.md for the open decision on the current
-  "Всё" collection mode.
+- Statistics never record which sites were visited, in any mode (the
+  owner's requirement): only programs, servers and groups.

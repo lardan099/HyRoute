@@ -21,51 +21,45 @@ import (
 	"github.com/lardan099/hyroute/internal/flows"
 )
 
-// Mode is the collection mode (stats\mode.json).
+// Mode is the collection mode (stats\mode.json). Sites are never
+// recorded, in any mode: which sites were visited is not statistics
+// HyRoute keeps. ModeOn is written as "no-sites" so that an earlier build
+// (which had a mode with sites, "") started on the same folder does not
+// start recording them either.
 type Mode string
 
 const (
-	ModeAll     Mode = ""
-	ModeNoSites Mode = "no-sites"
-	ModeOff     Mode = "off"
+	ModeOn  Mode = "no-sites"
+	ModeOff Mode = "off"
 )
 
-// ParseMode checks a mode from the UI or a file.
+// ParseMode checks a mode from the UI or a file: "" (an earlier build's
+// «Всё»), "on" and "no-sites" are all ModeOn.
 func ParseMode(s string) (Mode, error) {
-	switch m := Mode(s); m {
-	case ModeAll, ModeNoSites, ModeOff:
-		return m, nil
+	switch s {
+	case "", "on", string(ModeOn):
+		return ModeOn, nil
+	case string(ModeOff):
+		return ModeOff, nil
 	}
 	return ModeOff, errors.New("неизвестный режим статистики")
 }
 
-// Stricter is the stricter of two modes: off > no-sites > all (a restore
-// never turns collection or site history back on).
+// Stricter is the stricter of two modes: off wins (a restore never turns
+// collection back on).
 func Stricter(a, b Mode) Mode {
-	rank := func(m Mode) int {
-		switch m {
-		case ModeOff:
-			return 2
-		case ModeNoSites:
-			return 1
-		}
-		return 0
+	if a == ModeOff || b == ModeOff {
+		return ModeOff
 	}
-	if rank(b) > rank(a) {
-		return b
-	}
-	return a
+	return ModeOn
 }
 
 // Label is the mode as the UI names it.
 func (m Mode) Label() string {
-	switch m {
-	case ModeNoSites:
-		return "без сайтов"
-	case ModeOff:
+	if m == ModeOff {
 		return "выключен"
 	}
-	return "всё"
+	return "включён"
 }
 
 const (
@@ -108,6 +102,11 @@ type Collector struct {
 	legacyRetry time.Time
 	legacyWait  time.Duration
 	modeUnsaved bool // mode.json was absent: the default mode goes in with the first write into the folder
+	// sitesClean: no file holds sites any more (mode.json noSites);
+	// until then purgeSitesLocked runs with the disk lock, every
+	// sitesRetry after a failure.
+	sitesClean bool
+	sitesRetry time.Time
 
 	mode atomic.Value // Mode; read lock-free by the sampler and the close hook
 
@@ -135,14 +134,14 @@ type srvState struct {
 	restarts  int
 }
 
-// New returns a memory-only collector in mode «Всё» (Configure attaches
+// New returns a memory-only collector, collecting (Configure attaches
 // the files and reads the mode).
 func New(log *slog.Logger) *Collector {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	c := &Collector{Log: log, delta: map[string]*mem{}, bad: map[string]string{}, srvs: map[string]srvState{}}
-	c.mode.Store(ModeAll)
+	c.mode.Store(ModeOn)
 	c.cache.init()
 	return c
 }
@@ -244,7 +243,6 @@ type Source struct {
 
 type flowState struct {
 	f          Flow
-	site       string
 	ignored    bool  // first seen while collection was off: never counted
 	sent, recv int64 // offsets already accounted
 }
@@ -261,8 +259,6 @@ type obs struct {
 	id              uint64
 	full            bool
 	f               Flow
-	site            string
-	siteSet         bool
 	settled, closed bool
 	sent, recv      int64
 }
@@ -376,10 +372,9 @@ func (s *Source) Closed(v flows.View) {
 	s.c.mu.Unlock()
 }
 
-// prepare computes what a first observation needs, outside c.mu: the site
-// key and the names of the server and group.
+// prepare computes what a first observation needs, outside c.mu: the
+// names of the server and group.
 func (c *Collector) prepare(o *obs) {
-	o.site, o.siteSet = siteKey(o.f.Domain), true
 	if c.Names != nil && o.f.Route == Tunnel {
 		if o.f.Server != "" {
 			o.f.ServerName = c.Names(o.f.Server)
@@ -414,11 +409,7 @@ func (s *Source) applyLocked(now time.Time, o *obs) {
 			// Not counted: unsettled, service traffic, or a flow this
 			// source forgot.
 		default:
-			site := o.site
-			if !o.siteSet {
-				site = siteKey(o.f.Domain)
-			}
-			st = &flowState{f: o.f, site: site}
+			st = &flowState{f: o.f}
 			s.seen[o.id] = st
 			c.countConnLocked(now, st, mode)
 		}
@@ -446,14 +437,11 @@ func (s *Source) applyLocked(now time.Time, o *obs) {
 	}
 }
 
-// rows returns the rows of a flow in day d (site unless mode no-sites;
-// server and group for tunnel flows only).
+// rows returns the rows of a flow in day d: its program, and server and
+// group for tunnel flows. Never its site.
 func (c *Collector) rowsLocked(d *mem, st *flowState, mode Mode) []*Row {
-	rows := make([]*Row, 0, 4)
+	rows := make([]*Row, 0, 3)
 	rows = append(rows, d.row(listApps, st.f.App, st.f.AppName))
-	if mode != ModeNoSites {
-		rows = append(rows, d.row(listSites, st.site, ""))
-	}
 	if st.f.Route == Tunnel {
 		rows = append(rows, d.row(listServers, st.f.Server, st.f.ServerName))
 		if st.f.Group != "" {

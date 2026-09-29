@@ -22,7 +22,6 @@ type Report struct {
 	Events     Events     `json:"events"`
 	Days       []DayTotal `json:"days"` // one per day in From..To, zero-filled, except days already rolled into a month file
 	Apps       []Row      `json:"apps"` // sorted as trim, capped, "*" last
-	Sites      []Row      `json:"sites"`
 	Servers    []Row      `json:"servers"`
 	Groups     []Row      `json:"groups"`
 	Months     []string   `json:"months"`          // "YYYY-MM" with data, newest first; the current month always
@@ -137,7 +136,7 @@ func (c *Collector) Report(now time.Time, period string) (Report, error) {
 		}
 		*agg.list(i) = l
 	}
-	r.Apps, r.Sites, r.Servers, r.Groups = agg.Apps, agg.Sites, agg.Servers, agg.Groups
+	r.Apps, r.Servers, r.Groups = agg.Apps, agg.Servers, agg.Groups
 	if r.Days == nil {
 		r.Days = []DayTotal{}
 	}
