@@ -22,7 +22,7 @@ import (
 	"github.com/lardan099/hyroute/internal/sysdns"
 )
 
-// DNS policies («Настройки» → «DNS», dns.json; ARCHITECTURE §6.1). The
+// DNS policies («Настройки» → «DNS», dns.json; docs/architecture/dns.md). The
 // settings are global (not per rule profile). They apply at once to a
 // running session; the Windows DNS cache is flushed whenever what HyRoute
 // answers may have changed, so programs ask again.

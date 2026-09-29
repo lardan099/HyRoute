@@ -27,7 +27,7 @@ import (
 	"github.com/lardan099/hyroute/internal/socks5"
 )
 
-// DNS policies (dns, ARCHITECTURE §6.1). With a policy (Core.DNSPol) the
+// DNS policies (dns, docs/architecture/dns.md). With a policy (Core.DNSPol) the
 // engine takes standard recursive queries off the wire: UDP ones on the
 // packet loop (udpOut), TCP ones as connections reflected into the relay
 // in DNS mode (Core.ServeDNS). A query is passed on as before, answered at

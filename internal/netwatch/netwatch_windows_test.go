@@ -76,7 +76,7 @@ func TestSSIDNoPanic(t *testing.T) {
 }
 
 // TestIdentitySmoke checks what «Именно эта сеть» and every relaxing
-// action rest on (ARCHITECTURE §16): the ID NLM gives a network is the
+// action rest on (docs/architecture/networks.md): the ID NLM gives a network is the
 // GUID of its NetworkList profile, and a signature names it as ProfileGuid
 // exactly when Windows identified the network. The tester says what the
 // active network is: HYROUTE_NETWATCH_EXPECT=identified (a network Windows

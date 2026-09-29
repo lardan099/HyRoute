@@ -1,6 +1,6 @@
 // Package update downloads and verifies HyRoute releases and swaps the
 // program files with a rollback. The swap runs in hyroute-updater.exe
-// after HyRoute has exited; see docs/ARCHITECTURE.md §15.6.
+// after HyRoute has exited; see docs/architecture/updates.md.
 package update
 
 import (

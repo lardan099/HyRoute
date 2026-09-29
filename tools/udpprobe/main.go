@@ -1,5 +1,5 @@
 // Command udpprobe checks large UDP datagrams through HyRoute: the manual
-// release check of ARCHITECTURE §5 «UDP» (bigudp). Dev-only, not shipped.
+// release check of docs/architecture/routing.md «UDP» (bigudp). Dev-only, not shipped.
 //
 // On a server with IPv4 and IPv6 (echo):
 //

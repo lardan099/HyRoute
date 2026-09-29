@@ -13,7 +13,7 @@ import "encoding/binary"
 // are not supported (ErrFragInvalid): BuildUDP never writes any.
 //
 // Not called by the engine in this release: replies are injected whole, as
-// in 1.0.0 (ARCHITECTURE §5 «UDP»).
+// in 1.0.0 (docs/architecture/routing.md «UDP»).
 func FragmentIP(pkt []byte, mtu int, id uint32) ([][]byte, error) {
 	if len(pkt) < 1 {
 		return nil, ErrShort
