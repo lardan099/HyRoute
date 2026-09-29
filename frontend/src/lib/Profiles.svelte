@@ -64,11 +64,12 @@
     try {
       result = fromClipboard ? await api.ImportClipboard() : await api.ImportURIs(text);
       // The clipboard import leaves the field alone. After the field's own
-      // import it keeps only the links that failed, to fix them in place:
-      // added ones would be added again (there is no dedup).
+      // import it keeps only the links that failed, to fix them in place
+      // (added and already known ones are done with).
       if (!fromClipboard && result.added.length > 0) text = failedLinks(text, result.errors);
       await after();
-      if (result.added.length && !result.errors.length && !result.warnings.length) adding = false;
+      if (!fromClipboard && !result.added.length && result.skipped.length && !result.errors.length) text = '';
+      if ((result.added.length || result.skipped.length) && !result.errors.length && !result.warnings.length) adding = false;
       if (result.added.length) info = `Добавлено серверов: ${result.added.length} — ${result.added.map((p) => p.name).join(', ')}`;
     } catch (e) {
       error = errText(e);
@@ -201,6 +202,12 @@
 
   {#if result}
     {#each result.warnings as w}<div class="note warn">{hide(w)}</div>{/each}
+    {#if result.skipped.length}
+      <div class="note info">
+        Не добавлены — такие серверы уже есть:
+        <ul class="skipped">{#each result.skipped as w}<li>{hide(w)}</li>{/each}</ul>
+      </div>
+    {/if}
     {#each result.errors as w}<div class="note error">{hide(w)}</div>{/each}
   {/if}
   {#if error}<div class="note error">{hide(error)}</div>{/if}
@@ -226,6 +233,7 @@
             <span class="mono ellipsis">{hide(p.server)}</span>
             {#if p.source}<span class="badge"><Icon name="rss" size={11} />{hide(p.sourceName)}</span>{/if}
             {#if p.missing}<span class="badge warn-b" title="Сервер пропал из подписки, но его используют правила">нет в подписке</span>{/if}
+            {#if p.duplicateOf}<span class="badge warn-b" title="Тот же адрес, пароль и настройки, что у «{hide(p.duplicateOf)}»: копию можно удалить">дубль «{hide(p.duplicateOf)}»</span>{/if}
             {#if p.obfs}<span class="badge">{p.obfs}</span>{/if}
             {#if p.pinned}<span class="badge" title="Сертификат проверяется по отпечатку">pin</span>{:else if p.insecure}<span class="badge warn-b" title="Сертификат не проверяется">insecure</span>{/if}
           </div>
@@ -279,6 +287,7 @@
   .srv { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
   .srv.main { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
   .srv.missing { border-style: dashed; }
+  .skipped { margin: 4px 0 0; padding-left: 18px; }
   .star { color: var(--faint); }
   .star.on { color: var(--warn); }
   .star.on :global(svg) { fill: currentColor; }

@@ -418,6 +418,13 @@ func (c *Controller) ruleWarningsFor(cfg *rules.Config) []RuleWarning {
 	return out
 }
 
+// DuplicateRule is the index in list of a rule that repeats r (the same
+// conditions and route, rules.Duplicate), skip aside (the rule being
+// edited); -1 when none. For the editors: a rule is not added twice.
+func (c *Controller) DuplicateRule(list []rules.Rule, r rules.Rule, skip int) int {
+	return rules.Duplicate(rules.Config{Rules: list}, r, skip)
+}
+
 // LintRules checks an edited (unsaved) rule list with its engine options.
 func (c *Controller) LintRules(st settings.Settings) []rules.Issue {
 	return rules.LintWith(st.Config, rules.LintOptions{QUICNameless: rules.QUICNameless(st.ExactWeb(), st.QUICBlocked())})

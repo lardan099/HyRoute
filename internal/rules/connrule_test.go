@@ -569,3 +569,33 @@ func TestPending(t *testing.T) {
 		t.Fatal("sentinel")
 	}
 }
+
+func TestDuplicate(t *testing.T) {
+	c := Config{Rules: []Rule{
+		{Name: "a", Domains: []string{".example.com", "1.2.3.4"}, Action: Tunnel, Profile: "NL"},
+		{Name: "b", Apps: []AppMatch{{Pattern: "Chrome.exe"}}, Action: Direct},
+		{Name: "c", Domains: []string{".example.com"}, Action: Tunnel, Profile: "NL", Ports: PortList{"443"}},
+	}}
+	for i, tc := range []struct {
+		r    Rule
+		skip int
+		want int
+	}{
+		// order, case and another name do not matter
+		{Rule{Name: "x", Domains: []string{"1.2.3.4", ".Example.com"}, Action: Tunnel, Profile: "NL"}, -1, 0},
+		{Rule{Apps: []AppMatch{{Pattern: "chrome.exe"}}, Action: Direct}, -1, 1},
+		{Rule{Apps: []AppMatch{{Pattern: "chrome.exe"}}, Action: Direct, Enabled: off()}, -1, 1},
+		// another route, server or condition is not a duplicate
+		{Rule{Domains: []string{".example.com", "1.2.3.4"}, Action: Tunnel, Profile: "DE"}, -1, -1},
+		{Rule{Apps: []AppMatch{{Pattern: "chrome.exe"}}, Action: Block}, -1, -1},
+		{Rule{Apps: []AppMatch{{Pattern: "chrome.exe", InheritChildren: true}}, Action: Direct}, -1, -1},
+		{Rule{Domains: []string{".example.com"}, Action: Tunnel, Profile: "NL"}, -1, -1},
+		{Rule{Domains: []string{".example.com"}, Action: Tunnel, Profile: "NL", Ports: PortList{"443"}}, -1, 2},
+		// the rule being edited is not its own duplicate
+		{c.Rules[1], 1, -1},
+	} {
+		if got := Duplicate(c, tc.r, tc.skip); got != tc.want {
+			t.Errorf("case %d: %d, want %d", i, got, tc.want)
+		}
+	}
+}

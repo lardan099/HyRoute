@@ -195,11 +195,23 @@ func TestApplyRulesText(t *testing.T) {
 	if st := c.Settings(); len(st.Rules) != 3 || st.DefaultAction != rules.Direct {
 		t.Fatalf("%+v", st)
 	}
+	// Adding what the list has already (or a line twice) adds it once.
+	_, res, err := c.ApplyRulesText("[chrome.exe]\nb.com -> блок\nd.com -> блок\nd.com -> блок", false, EditGuard{})
+	if err != nil || res.Skipped != 2 || !strings.Contains(res.Summary, "не добавлены: 2") {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if st := c.Settings(); len(st.Rules) != 4 {
+		t.Fatalf("%+v", st.Rules)
+	}
+	c.ApplyRulesText("d.com -> блок", false, EditGuard{}) // another rule: without chrome.exe
+	if _, res, err = c.ApplyRulesText("[chrome.exe]\na.com -> блок", false, EditGuard{}); err != nil || res.Skipped != 1 || len(c.Settings().Rules) != 5 {
+		t.Fatalf("nothing new: %+v %v", res, err)
+	}
 	// Adding rules never changes "Всё остальное": "* ->" is refused there.
 	if _, _, err := c.ApplyRulesText("c.com -> блок\n* -> vpn", false, EditGuard{}); err == nil || !strings.Contains(err.Error(), "Всё остальное") {
 		t.Fatalf("default changed by adding: %v", err)
 	}
-	if st := c.Settings(); len(st.Rules) != 3 || st.DefaultAction != rules.Direct {
+	if st := c.Settings(); len(st.Rules) != 5 || st.DefaultAction != rules.Direct {
 		t.Fatalf("%+v", st)
 	}
 }

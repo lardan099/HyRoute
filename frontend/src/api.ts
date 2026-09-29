@@ -79,12 +79,14 @@ export interface ProfileSummary {
   usedBy: string[];
   // groups: failed connections through it are invisible to error streaks
   fastOpen: boolean;
+  duplicateOf?: string; // an earlier server with exactly the same connection
 }
 
 export interface ImportResult {
   added: ProfileSummary[];
   warnings: string[];
   errors: string[];
+  skipped: string[]; // servers already there, not added again
 }
 
 export interface Stats {
@@ -540,6 +542,7 @@ interface GUI {
   ParseRulesText(text: string): Promise<RulesTextResult>;
   ApplyRulesText(text: string, replace: boolean, guard: EditGuard): Promise<RulesTextResult>;
   LintRules(s: Settings): Promise<LintIssue[]>;
+  DuplicateRule(list: Rule[], r: Rule, skip: number): Promise<number>; // index, -1 = none
   Explain(q: { app: string; target: string; proto: string; port?: number }, s: Settings | null): Promise<Explanation>;
   BrowseExe(): Promise<string>;
   RunningApps(query: string, all: boolean, limit: number): Promise<RunningApp[]>;
@@ -1537,7 +1540,7 @@ export interface ConnRuleRef {
 }
 
 export interface ConnRuleResult {
-  kind: 'added' | 'changed' | 'same';
+  kind: 'added' | 'changed' | 'moved' | 'same'; // moved: an existing copy put where it decides
   index: number;
   ruleId: string;
   rule: Rule;
@@ -1547,6 +1550,7 @@ export interface ConnRuleResult {
   notEffective: boolean;
   nameless: boolean; // the connection is decided without a site name (ConnRuleInfo.nameless)
   unchanged: boolean;
+  wasOff: boolean; // moved: the copy was turned off (now on)
   overriddenBy: number[] | null;
   shadowed: number[] | null;
   narrowed: number[] | null;

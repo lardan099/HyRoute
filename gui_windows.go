@@ -307,6 +307,9 @@ func (g *GUI) ApplyRulesText(text string, replace bool, guard app.EditGuard) (ap
 	return res, err
 }
 
+func (g *GUI) DuplicateRule(list []rules.Rule, r rules.Rule, skip int) int {
+	return g.ctl.DuplicateRule(list, r, skip)
+}
 func (g *GUI) LintRules(s settings.Settings) []rules.Issue {
 	return g.ctl.LintRules(s)
 }

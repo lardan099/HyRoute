@@ -178,14 +178,26 @@ func (c *Controller) ApplyRulesTextAs(text, format string, replace bool, g EditG
 			for _, r := range cfg.Rules {
 				used[r.ID] = true
 			}
-			add := make([]rules.Rule, len(res.Rules))
-			copy(add, res.Rules)
-			for i := range add {
-				if add[i].ID != "" && used[add[i].ID] {
-					add[i].ID = newID() // taken by a current rule
+			skipped := 0
+			for _, r := range res.Rules {
+				// One the list has already (or an earlier line added) is
+				// not added a second time.
+				if rules.Duplicate(*cfg, r, -1) >= 0 {
+					skipped++
+					continue
 				}
+				if r.ID != "" && used[r.ID] {
+					r.ID = newID() // taken by a current rule
+				}
+				cfg.Rules = append(cfg.Rules, r)
 			}
-			cfg.Rules = append(cfg.Rules, add...)
+			if skipped > 0 {
+				res.Skipped = skipped
+				res.Summary += fmt.Sprintf(", из них уже были в списке и не добавлены: %d", skipped)
+			}
+			if skipped == len(res.Rules) && !res.HasDefault {
+				return false, nil // nothing new
+			}
 		}
 		if res.HasDefault {
 			cfg.DefaultAction, cfg.DefaultProfile, cfg.DefaultFallback = res.DefaultAction, res.DefaultProfile, res.DefaultFallback

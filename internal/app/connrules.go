@@ -46,8 +46,9 @@ type connRulesState struct {
 }
 
 type connUndo struct {
-	token, kind   string // kind: added | changed
+	token, kind   string // kind: added | changed | moved
 	id            string // the rule's ID
+	from          int    // moved: where the rule was
 	before, after rules.Rule
 	ruleset       string // token of the rules written
 	rulesetName   string
@@ -125,7 +126,7 @@ type ConnRuleRef struct {
 }
 
 type ConnRuleResult struct {
-	Kind         string        `json:"kind"`         // added | changed | same
+	Kind         string        `json:"kind"`         // added | changed | moved (an existing copy put where it decides) | same
 	Index        int           `json:"index"`        // where the rule is now
 	RuleID       string        `json:"ruleId"`       // "" only for a same result on a rule without ID
 	Rule         rules.Rule    `json:"rule"`         // the rule as saved
@@ -135,6 +136,7 @@ type ConnRuleResult struct {
 	NotEffective bool          `json:"notEffective"` // matches, but the engine still decides the flow otherwise
 	Nameless     bool          `json:"nameless"`     // the flow is decided without a site name (ConnRuleInfo.Nameless)
 	Unchanged    bool          `json:"unchanged"`    // the rule decides the connection and it already went this way
+	WasOff       bool          `json:"wasOff"`       // moved: the existing copy was turned off (now on)
 	OverriddenBy []int         `json:"overriddenBy"` // enabled rules above that take part of its connections
 	Shadowed     []int         `json:"shadowed"`     // rules below that can no longer match
 	Narrowed     []int         `json:"narrowed"`     // rules it was put above only as may-matchers and now partly overrides
@@ -678,11 +680,32 @@ func (c *Controller) AddConnRule(req ConnRuleRequest) (ConnRuleResult, error) {
 			res.Kind = "changed"
 			entry = connUndo{kind: "changed", id: after.ID, before: old.Clone(), after: after.Clone()}
 		default:
-			rule.ID = newID()
 			at := p
 			if !matches {
 				at, res.PlacedByRule = rules.PlaceRule(*cfg, rule), true
 			}
+			// The same rule is there already: it is put where the new one
+			// would go (and turned on), not added a second time. Above
+			// that place it would have decided the connection itself.
+			if d := rules.Duplicate(*cfg, rule, -1); d >= at {
+				old := cfg.Rules[d]
+				moved := old.Clone()
+				moved.Enabled = nil
+				if moved.ID == "" {
+					moved.ID = newID()
+				}
+				if d == at && old.On() && old.ID != "" {
+					res.Kind, res.Index, res.Rule, res.RuleID = "same", d, old.Clone(), old.ID
+					res.Rev = c.SettingsRev()
+					c.connRuleNotes(*cfg, main, &res, -1, -1)
+					return false, nil
+				}
+				cfg.Rules = slices.Insert(slices.Delete(cfg.Rules, d, d+1), at, moved)
+				res.Kind, res.Index, res.WasOff = "moved", at, !old.On()
+				entry = connUndo{kind: "moved", id: moved.ID, from: d, before: old.Clone(), after: moved.Clone()}
+				break
+			}
+			rule.ID = newID()
 			cfg.Rules = slices.Insert(cfg.Rules, at, rule)
 			res.Kind, res.Index = "added", at
 			entry = connUndo{kind: "added", id: rule.ID, after: rule.Clone()}
@@ -693,10 +716,13 @@ func (c *Controller) AddConnRule(req ConnRuleRequest) (ConnRuleResult, error) {
 		res.NotEffective = matches && !effective
 		res.Unchanged = effective && oldRoute == connRouteKey(*cfg, w2, main)
 		wNew := -1
-		if res.Kind == "added" && !res.PlacedByRule {
+		if (res.Kind == "added" || res.Kind == "moved") && !res.PlacedByRule {
 			wNew = len(cfg.Rules)
 			if w >= 0 {
 				wNew = w + 1
+				if res.Kind == "moved" && w > entry.from {
+					wNew = w // below the old place: not shifted
+				}
 			}
 		}
 		c.connRuleNotes(*cfg, main, &res, res.Index+1, wNew)
@@ -833,9 +859,13 @@ func (c *Controller) UndoConnRule(token string) error {
 			return false, errUndoEdited
 		}
 		at = i
-		if e.kind == "added" {
+		switch e.kind {
+		case "added":
 			cfg.Rules = slices.Delete(cfg.Rules, i, i+1)
-		} else {
+		case "moved":
+			cfg.Rules = slices.Delete(cfg.Rules, i, i+1)
+			cfg.Rules = slices.Insert(cfg.Rules, min(e.from, len(cfg.Rules)), e.before.Clone())
+		default:
 			cfg.Rules[i] = e.before.Clone()
 		}
 		return true, nil

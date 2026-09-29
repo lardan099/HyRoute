@@ -37,6 +37,9 @@ type ProfileSummary struct {
 	// FastOpen: failed connections are invisible to server groups' error
 	// streaks (Hysteria answers before the remote connects).
 	FastOpen bool `json:"fastOpen"`
+	// DuplicateOf: the name of an earlier server with exactly the same
+	// connection (Profiles only), "" when none.
+	DuplicateOf string `json:"duplicateOf,omitempty"`
 }
 
 func (c *Controller) summaryLocked(p *hysteria.Profile) ProfileSummary {
@@ -142,10 +145,39 @@ func (c *Controller) Profiles() []ProfileSummary {
 	defer c.mu.Unlock()
 	defer c.memoRunningGroupsLocked()()
 	out := []ProfileSummary{}
+	first := map[string]string{} // connKey -> name of the first server
 	for i := range c.profiles.List {
-		out = append(out, c.summaryLocked(&c.profiles.List[i]))
+		p := &c.profiles.List[i]
+		s := c.summaryLocked(p)
+		k := connKey(*p)
+		if name, ok := first[k]; ok {
+			s.DuplicateOf = name
+		} else {
+			first[k] = p.Name
+		}
+		out = append(out, s)
 	}
 	return out
+}
+
+// sameServerLocked is the server other than skip with exactly the
+// connection of p (its name aside), nil when none.
+func (c *Controller) sameServerLocked(p hysteria.Profile, skip string) *hysteria.Profile {
+	k := connKey(p)
+	for i := range c.profiles.List {
+		if o := &c.profiles.List[i]; o.ID != skip && connKey(*o) == k {
+			return o
+		}
+	}
+	return nil
+}
+
+// duplicateServerText says where the same server already is.
+func (c *Controller) duplicateServerText(o *hysteria.Profile) string {
+	if o.Source != "" {
+		return fmt.Sprintf("«%s» из подписки «%s»", o.Name, c.sourceNameLocked(o.Source))
+	}
+	return "«" + o.Name + "»"
 }
 
 // Profile returns the full profile, secrets included (for the editor).
@@ -162,23 +194,42 @@ type ImportResult struct {
 	Added    []ProfileSummary `json:"added"`
 	Warnings []string         `json:"warnings"`
 	Errors   []string         `json:"errors"`
+	// Skipped: links of servers that are already there (or repeat an
+	// earlier link of the text), not added again.
+	Skipped []string `json:"skipped"`
 }
 
 // ImportURIs adds every hysteria2:// / hy2:// link found in text (one per
-// line or separated by spaces). The first imported profile becomes the
-// main one when there is none.
+// line or separated by spaces). A server that is already there (the same
+// connection, whatever its name) is not added again. The first imported
+// profile becomes the main one when there is none.
 func (c *Controller) ImportURIs(text string) (ImportResult, error) {
-	res := ImportResult{Added: []ProfileSummary{}, Warnings: []string{}, Errors: []string{}}
+	res := ImportResult{Added: []ProfileSummary{}, Warnings: []string{}, Errors: []string{}, Skipped: []string{}}
 	parsed := ParseLinks(text)
 	res.Warnings, res.Errors = parsed.Warnings, parsed.Errors
 	if len(parsed.Profiles) == 0 && len(res.Errors) == 0 {
 		return res, errors.New("не найдено ни одной ссылки hysteria2:// или hy2://")
 	}
-	added := parsed.Profiles
-	for i := range added {
-		added[i].ID = newID()
-	}
 	c.mu.Lock()
+	var added []hysteria.Profile
+	seen := map[string]string{} // connKey -> name, within the text
+	for _, p := range parsed.Profiles {
+		k := connKey(p)
+		switch o := c.sameServerLocked(p, ""); {
+		case o != nil:
+			res.Skipped = append(res.Skipped, fmt.Sprintf("«%s» уже есть: %s", p.Name, c.duplicateServerText(o)))
+		case seen[k] != "":
+			res.Skipped = append(res.Skipped, fmt.Sprintf("«%s» повторяет ссылку «%s» выше", p.Name, seen[k]))
+		default:
+			seen[k] = p.Name
+			p.ID = newID()
+			added = append(added, p)
+		}
+	}
+	if len(added) == 0 {
+		c.mu.Unlock()
+		return res, nil
+	}
 	next := cloneProfiles(c.profiles)
 	next.List = append(next.List, added...)
 	if next.Active == "" && len(added) > 0 {
@@ -289,6 +340,14 @@ func (c *Controller) SaveProfile(p hysteria.Profile) (ProfileSummary, error) {
 		p.Name = p.Host
 	}
 	c.mu.Lock()
+	// Only an edit that makes a duplicate is refused: a server that
+	// already was one can still be renamed (or changed to another).
+	cur := c.profiles.Find(p.ID)
+	unchanged := p.ID != "" && cur != nil && connKey(*cur) == connKey(p)
+	if o := c.sameServerLocked(p, p.ID); o != nil && !unchanged {
+		c.mu.Unlock()
+		return ProfileSummary{}, fmt.Errorf("такой сервер уже есть: %s — с тем же адресом, паролем и настройками", c.duplicateServerText(o))
+	}
 	next := cloneProfiles(c.profiles)
 	if p.ID == "" {
 		p.ID = newID()

@@ -79,6 +79,8 @@
   async function saveRule(r: Rule) {
     const s = await api.Settings();
     s.rules = (s.rules ?? []).map(toLists);
+    const d = await api.DuplicateRule(s.rules, r, -1);
+    if (d >= 0) throw new Error(`Такое правило уже есть: №${d + 1}${s.rules[d].name ? ` «${s.rules[d].name}»` : ''}${s.rules[d].enabled === false ? ' (выключено)' : ''}.`);
     s.rules.unshift(r);
     // With the revision of the copy just read (only a true race refuses it).
     await api.SaveSettings({ ...cleanSettings(s, mainTarget()?.id), rev: s.rev ?? 0 });

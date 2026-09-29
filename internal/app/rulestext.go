@@ -62,6 +62,9 @@ type RulesTextResult struct {
 	Errors          []RuleLine `json:"errors"`
 	Warnings        []RuleLine `json:"warnings"`
 	Summary         string     `json:"summary"`
+	// Skipped: appended rules left out because the list has them already
+	// (rules.Duplicate), set by ApplyRulesText.
+	Skipped int `json:"skipped,omitempty"`
 }
 
 // ParseRulesText parses rules text (or rules JSON, cli) against the

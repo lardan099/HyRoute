@@ -355,3 +355,51 @@ func TestConnectAfterReloadStartsProfiles(t *testing.T) {
 		t.Fatalf("profiles %q main %q", ids(started[0].cfg.Profiles), started[0].cfg.Rules.Main)
 	}
 }
+
+// A server that is already there (the same connection, whatever its name)
+// is not added again, by a link or by the editor.
+func TestServerDuplicates(t *testing.T) {
+	c, _ := newCtl(t)
+	if res, err := c.ImportURIs(link); err != nil || len(res.Added) != 1 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	renamed := strings.Replace(link, "DE%20one", "Other", 1)
+	res, err := c.ImportURIs(renamed)
+	if err != nil || len(res.Added) != 0 || len(res.Skipped) != 1 || !strings.Contains(res.Skipped[0], "«DE one»") {
+		t.Fatalf("again: %+v %v", res, err)
+	}
+	fresh := strings.Replace(link, "user:pass", "user:pass2", 1)
+	if res, err := c.ImportURIs(fresh + "\n" + fresh); err != nil || len(res.Added) != 1 || len(res.Skipped) != 1 {
+		t.Fatalf("twice in the text: %+v %v", res, err)
+	}
+	if n := len(c.Profiles()); n != 2 {
+		t.Fatalf("%d servers", n)
+	}
+
+	first, _ := c.Profile(c.Profiles()[0].ID)
+	dup := first
+	dup.ID, dup.Name = "", "Копия"
+	if _, err := c.SaveProfile(dup); err == nil || !strings.Contains(err.Error(), "уже есть") {
+		t.Fatalf("editor saved a duplicate: %v", err)
+	}
+	second, _ := c.Profile(c.Profiles()[1].ID)
+	second.Auth = first.Auth // now the same as the first
+	if _, err := c.SaveProfile(second); err == nil {
+		t.Fatal("an edit made a duplicate")
+	}
+
+	// One saved before the check: marked, and it can still be renamed.
+	c.mu.Lock()
+	old := first
+	old.ID, old.Name = newID(), "Старая копия"
+	c.profiles.List = append(c.profiles.List, old)
+	c.mu.Unlock()
+	l := c.Profiles()
+	if l[2].DuplicateOf != "DE one" || l[0].DuplicateOf != "" {
+		t.Fatalf("%+v", l)
+	}
+	old.Name = "Переименована"
+	if _, err := c.SaveProfile(old); err != nil {
+		t.Fatalf("rename of an old duplicate: %v", err)
+	}
+}

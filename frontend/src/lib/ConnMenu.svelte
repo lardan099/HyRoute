@@ -83,11 +83,13 @@
     const text = () => {
       if (res.kind === 'added') return `Правило добавлено: ${what()} → ${whereText(saved)}.`;
       if (res.kind === 'changed') return `Правило «${hide(ruleTitle(saved))}» изменено: теперь ${whereText(saved)}.`;
+      if (res.kind === 'moved')
+        return `Такое правило уже было — «${hide(ruleTitle(saved))}»: оно ${res.wasOff ? 'включено и ' : ''}поставлено туда, где решает, копия не создана. Теперь ${whereText(saved)}.`;
       return `Уже так: правило «${hide(ruleTitle(saved))}» ведёт ${whereText(saved)}.`;
     };
     const detail = () => {
       const l: string[] = [];
-      if (res.kind === 'added')
+      if (res.kind === 'added' || res.kind === 'moved')
         l.push(res.aboveIndex >= 0 ? `Стоит над правилом «${refTitle(res, res.aboveIndex)}».` : 'Стоит в конце списка, над «Всё остальное».');
       if (res.overriddenBy?.length) l.push(`Выше остаются правила, которые забирают часть этих соединений: ${titles(res, res.overriddenBy)}.`);
       if (res.narrowed?.length) l.push(`Правило стоит выше этих правил и забирает часть их соединений: ${titles(res, res.narrowed, true)}.`);

@@ -950,3 +950,33 @@ func TestConnRuleSettingsReadByV1(t *testing.T) {
 	json.Unmarshal(b, &v)
 	walk(v)
 }
+
+// TestAddConnRuleMovesDuplicate: the same rule further down is put where
+// the new one would go (and turned on) instead of being added again; the
+// undo puts it back as it was.
+func TestAddConnRuleMovesDuplicate(t *testing.T) {
+	c, s, s1, _ := connCtl(t)
+	dup := siteRule("a.example.com", rules.Tunnel, s1)
+	dup.Name, dup.Enabled = "старое", new(bool)
+	setConnRules(t, c, siteRule(".example.com", rules.Direct, ""), appRule("x.exe", rules.Block), dup)
+	f := sniRow(s, "x.exe", "1.2.3.4:443", "a.example.com")
+	res, err := c.AddConnRule(quick(f, siteRule("a.example.com", rules.Tunnel, s1)))
+	if err != nil || res.Kind != "moved" || res.Index != 0 || !res.WasOff || res.Undo == "" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	st := c.Settings()
+	if len(st.Rules) != 3 || st.Rules[0].Name != "старое" || !st.Rules[0].On() || st.Rules[1].Action != rules.Direct {
+		t.Fatalf("%+v", st.Rules)
+	}
+	// Once more: it is there already.
+	if res2, err := c.AddConnRule(quick(f, siteRule("a.example.com", rules.Tunnel, s1))); err != nil || res2.Kind != "same" || len(c.Settings().Rules) != 3 {
+		t.Fatalf("%+v %v", res2, err)
+	}
+	if err := c.UndoConnRule(res.Undo); err != nil {
+		t.Fatal(err)
+	}
+	st = c.Settings()
+	if len(st.Rules) != 3 || st.Rules[2].Name != "старое" || st.Rules[2].On() || st.Rules[0].Action != rules.Direct {
+		t.Fatalf("after undo: %+v", st.Rules)
+	}
+}

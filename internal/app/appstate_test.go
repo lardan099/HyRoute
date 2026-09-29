@@ -99,7 +99,8 @@ func TestSaveProfileAddress(t *testing.T) {
 		{"[fe80::1%eth0]:8443", "", "fe80::1%eth0", "8443"},
 		{"впн.пример.рф.", "", "впн.пример.рф.", "443"},
 	} {
-		sum, err := c.SaveProfile(hysteria.Profile{Host: tc.host, Ports: tc.ports})
+		// A password of its own: two cases give the same server.
+		sum, err := c.SaveProfile(hysteria.Profile{Host: tc.host, Ports: tc.ports, Auth: tc.host})
 		if err != nil {
 			t.Fatalf("%q: %v", tc.host, err)
 		}
@@ -132,7 +133,7 @@ func TestProfileRefsUnknownWithUnloadedFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 		c, _ := newCtlAt(t, st)
-		if _, err := c.ImportURIs(link + "\n" + strings.Replace(link, "DE%20one", "NL", 1)); err != nil {
+		if _, err := c.ImportURIs(link + "\n" + strings.Replace(strings.Replace(link, "DE%20one", "NL", 1), "@", "2@", 1)); err != nil {
 			t.Fatal(err)
 		}
 		s := c.Settings()

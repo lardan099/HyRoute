@@ -342,8 +342,33 @@ func SameMatch(a, b Rule) bool {
 	if err1 != nil || err2 != nil {
 		return false
 	}
-	return x.proto == y.proto && slices.Equal(x.ports, y.ports) &&
-		slices.Equal(x.appKeys(), y.appKeys()) && slices.Equal(x.destKeys(), y.destKeys())
+	return x.sameMatch(&y)
+}
+
+// Duplicate is the index of the first rule in c.Rules other than skip that
+// repeats r: the same conditions (SameMatch) and the same route (action,
+// and server for Tunnel). Name, fallbacks and on/off do not count. -1 when
+// none.
+func Duplicate(c Config, r Rule, skip int) int {
+	x, err := compileRule(0, r, nil)
+	if err != nil {
+		return -1
+	}
+	for i, o := range c.Rules {
+		if i == skip || o.Action != r.Action || r.Action == Tunnel && o.Profile != r.Profile {
+			continue
+		}
+		y, err := compileRule(i, o, nil)
+		if err == nil && x.sameMatch(&y) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (r *compiled) sameMatch(y *compiled) bool {
+	return r.proto == y.proto && slices.Equal(r.ports, y.ports) &&
+		slices.Equal(r.appKeys(), y.appKeys()) && slices.Equal(r.destKeys(), y.destKeys())
 }
 
 func (r *compiled) appKeys() []string {

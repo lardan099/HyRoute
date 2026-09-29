@@ -119,6 +119,10 @@
           added = `Добавлено: ${r.added.map((p) => hide(p.name)).join(', ')}.`;
           link = '';
         }
+        if (!r.added.length && r.skipped.length && !r.errors.length) {
+          added = `Такой сервер уже добавлен: ${r.skipped.map(hide).join('; ')}.`;
+          link = '';
+        }
         if (r.errors.length) error = `Не все ссылки подошли: ${r.errors.map(hide).join('; ')}`;
       } else if (/^https?:\/\//i.test(t)) {
         const pv = await api.PreviewSubscription(t);

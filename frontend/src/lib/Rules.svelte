@@ -248,6 +248,12 @@
       }
       ed.index = at;
     }
+    // The same conditions and route as another rule: not saved twice.
+    const d = await api.DuplicateRule(next.rules, r, ed.orig && !ed.lost ? ed.index : -1);
+    if (d >= 0) {
+      const off = next.rules[d].enabled === false ? ' (выключено — включите его)' : '';
+      throw new Error(`Такое правило уже есть: №${d + 1} «${title(next.rules[d])}»${off}. Измените условия или действие, или закройте редактор.`);
+    }
     if (ed.orig && !ed.lost) next.rules[ed.index] = r;
     else next.rules.push({ ...r, id: r.id || newRuleID() });
     await persist(next);
