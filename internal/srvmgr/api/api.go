@@ -15,6 +15,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
+	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
@@ -25,6 +26,7 @@ type Deps struct {
 	Auth    *auth.Service
 	Servers *servers.Service
 	Connect *connect.Connector
+	Jobs    *jobs.Engine
 	Log     *slog.Logger
 	Version string
 	// TrustProxy: believe X-Forwarded-For/-Proto from a reverse proxy on
@@ -66,6 +68,11 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("DELETE /api/v1/servers/{id}", s.authed(anyRole, s.deleteServer))
 	mux.HandleFunc("POST /api/v1/servers/{id}/check", s.authed(anyRole, s.checkServer))
 	mux.HandleFunc("POST /api/v1/servers/{id}/host-key", s.authed(anyRole, s.trustHostKey))
+	mux.HandleFunc("GET /api/v1/jobs", s.authed(anyRole, s.listJobs))
+	mux.HandleFunc("GET /api/v1/jobs/{id}", s.authed(anyRole, s.getJob))
+	mux.HandleFunc("GET /api/v1/jobs/{id}/logs", s.authed(anyRole, s.jobLogs))
+	mux.HandleFunc("GET /api/v1/jobs/{id}/events", s.authed(anyRole, s.jobEvents))
+	mux.HandleFunc("POST /api/v1/jobs/{id}/retry", s.authed(anyRole, s.retryJob))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { writeError(w, errNotFound) })
 	if d.UI != nil {
 		mux.Handle("/", uiHandler(d.UI))

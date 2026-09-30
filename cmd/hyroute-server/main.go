@@ -22,6 +22,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/config"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
+	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
@@ -81,6 +82,20 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	}
 	go cleanupSessions(ctx, authSvc, log)
 	inventory := servers.New(db, keys)
+	conn := connect.New(inventory, db, red)
+	engine := jobs.New(db, keys, red, conn, log)
+	jobsCtx, stopJobs := context.WithCancel(context.WithoutCancel(ctx))
+	jobsDone := make(chan struct{})
+	go func() {
+		engine.Run(jobsCtx)
+		close(jobsDone)
+	}()
+	defer func() {
+		// Jobs stop after the HTTP server: a stopped job is recovered on
+		// the next start.
+		stopJobs()
+		<-jobsDone
+	}()
 
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
@@ -89,12 +104,18 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	if !cfg.Loopback() {
 		log.Warn("the admin listens beyond this machine: put it behind a TLS reverse proxy or reach it through an SSH tunnel", "listen", cfg.Listen)
 	}
+	// Requests get a context that ends when shutdown starts: live event
+	// streams return instead of holding Shutdown for its whole timeout.
+	baseCtx, endRequests := context.WithCancel(context.WithoutCancel(ctx))
+	defer endRequests()
 	srv := &http.Server{
+		BaseContext: func(net.Listener) context.Context { return baseCtx },
 		Handler: api.New(api.Deps{
 			Store:      db,
 			Auth:       authSvc,
 			Servers:    inventory,
-			Connect:    connect.New(inventory, db, red),
+			Connect:    conn,
+			Jobs:       engine,
 			Log:        log,
 			Version:    version,
 			TrustProxy: cfg.TrustProxy,
@@ -123,6 +144,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	case <-ctx.Done():
 	}
 	log.Info("shutting down")
+	endRequests()
 	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(sctx); err != nil {

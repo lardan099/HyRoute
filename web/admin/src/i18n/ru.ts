@@ -130,6 +130,47 @@ export const ru = {
 
   'overview.serversCount': 'Всего серверов: {n}',
 
+  'jobs.empty': 'Заданий пока не было. Развёртывание, импорт и проверка сервера появятся здесь со всеми шагами и журналом.',
+  'jobs.kind': 'Задание',
+  'jobs.server': 'Сервер',
+  'jobs.state': 'Состояние',
+  'jobs.started': 'Начато',
+  'jobs.duration': 'Длительность',
+  'jobs.retry': 'Повторить',
+  'jobs.attempt': 'попытка {n}',
+  'jobs.live': 'идёт',
+  'jobs.details': 'Подробности',
+  'jobs.steps': 'Шаги',
+  'jobs.log': 'Журнал',
+  'jobs.noLog': 'Журнал пуст.',
+
+  'kind.preflight': 'Проверка сервера',
+  'kind.deploy': 'Развёртывание',
+  'kind.import': 'Импорт',
+
+  'jstate.queued': 'В очереди',
+  'jstate.connecting': 'Подключение',
+  'jstate.preflight': 'Проверка',
+  'jstate.downloading': 'Загрузка',
+  'jstate.installing': 'Установка',
+  'jstate.configuring': 'Настройка',
+  'jstate.firewall': 'Брандмауэр',
+  'jstate.starting': 'Запуск',
+  'jstate.verifying': 'Проверка работы',
+  'jstate.rolling_back': 'Откат',
+  'jstate.recovering': 'Восстановление',
+  'jstate.completed': 'Выполнено',
+  'jstate.failed': 'Ошибка',
+
+  'sstate.pending': 'ждёт',
+  'sstate.running': 'идёт',
+  'sstate.done': 'готово',
+  'sstate.skipped': 'уже было',
+  'sstate.failed': 'ошибка',
+  'sstate.rolled_back': 'откачено',
+
+  'step.connect': 'Подключение по SSH',
+
   'error.network': 'Нет связи с controller.',
   'error.unknown': 'Неизвестная ошибка.',
 } as const;

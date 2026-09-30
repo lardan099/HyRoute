@@ -259,14 +259,22 @@ func (e *Engine) saveStep(ctx context.Context, s model.JobStep) {
 
 // fail ends a job with a message for people and redacted details.
 func (e *Engine) fail(ctx context.Context, j *model.Job, env *Env, err error) {
-	msg := "Задание не выполнено."
+	msg, details := "Задание не выполнено.", err.Error()
 	var se *StepError
 	if errors.As(err, &se) {
-		msg = se.Message
+		// Details are the technical cause; the message is already shown.
+		msg, details = se.Message, ""
+		if se.Err != nil {
+			details = se.Err.Error()
+		}
 	}
-	j.State, j.ErrorMessage, j.ErrorDetails = model.JobFailed, msg, e.Redact.String(err.Error())
+	j.State, j.ErrorMessage, j.ErrorDetails = model.JobFailed, msg, e.Redact.String(details)
 	j.FinishedAt, j.LeaseOwner, j.LeaseUntil = e.Now(), "", time.Time{}
-	e.log(j.ID, "error", j.CurrentStep, msg+" "+j.ErrorDetails)
+	line := msg
+	if j.ErrorDetails != "" {
+		line += " (" + j.ErrorDetails + ")"
+	}
+	e.log(j.ID, "error", j.CurrentStep, line)
 	e.save(ctx, j, env)
 }
 

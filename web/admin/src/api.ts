@@ -136,6 +136,63 @@ export interface CheckResult {
   warning?: { code: string; message: string };
 }
 
+export type JobState =
+  | 'queued'
+  | 'connecting'
+  | 'preflight'
+  | 'downloading'
+  | 'installing'
+  | 'configuring'
+  | 'firewall'
+  | 'starting'
+  | 'verifying'
+  | 'rolling_back'
+  | 'recovering'
+  | 'completed'
+  | 'failed';
+
+export type StepState = 'pending' | 'running' | 'done' | 'skipped' | 'failed' | 'rolled_back';
+
+export interface Job {
+  id: number;
+  kind: string;
+  serverId: number;
+  state: JobState;
+  currentStep: string;
+  params: Record<string, unknown>;
+  attempt: number;
+  errorMessage: string;
+  errorDetails: string;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface JobStep {
+  idx: number;
+  name: string;
+  phase: JobState;
+  state: StepState;
+  attempt: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string;
+}
+
+export interface JobDetail extends Job {
+  steps: JobStep[];
+}
+
+export interface JobLog {
+  seq: number;
+  time: string;
+  level: string;
+  step: string;
+  message: string;
+}
+
+export const jobEventsURL = (id: number) => `/api/v1/jobs/${id}/events`;
+
 // ServerInput: credentials left undefined keep the stored ones on update.
 export interface ServerInput {
   name: string;
@@ -171,4 +228,7 @@ export const api = {
   deleteServer: (id: number) => request<void>('DELETE', `/servers/${id}`),
   checkServer: (id: number) => request<CheckResult>('POST', `/servers/${id}/check`),
   trustHostKey: (id: number, fingerprint: string, replace: boolean) => request<HostKey>('POST', `/servers/${id}/host-key`, { fingerprint, replace }),
+  jobs: (serverId = 0) => request<Job[]>('GET', '/jobs' + (serverId ? `?server=${serverId}` : '')),
+  job: (id: number) => request<JobDetail>('GET', `/jobs/${id}`),
+  retryJob: (id: number) => request<Job>('POST', `/jobs/${id}/retry`),
 };

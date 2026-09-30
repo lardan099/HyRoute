@@ -12,3 +12,9 @@ export function t(key: Key, params?: Record<string, string | number>): string {
   }
   return s;
 }
+
+// tOr is t for keys built at run time (job kinds, step names): unknown keys
+// give fallback instead of the key itself.
+export function tOr(key: string, fallback: string): string {
+  return (dict as Record<string, string>)[key] ?? fallback;
+}

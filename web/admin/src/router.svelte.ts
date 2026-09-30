@@ -5,19 +5,23 @@ export type Page = 'overview' | 'servers' | 'cascades' | 'rules' | 'presets' | '
 
 export const pages: Page[] = ['overview', 'servers', 'cascades', 'rules', 'presets', 'deployments', 'logs', 'settings'];
 
-function fromPath(path: string): Page {
-  const first = path.split('/').filter(Boolean)[0] ?? '';
-  return (pages as string[]).includes(first) ? (first as Page) : 'overview';
+// fromPath reads "/deployments/42" as page deployments, id 42.
+function fromPath(path: string): { page: Page; id: number | null } {
+  const [first = '', second] = path.split('/').filter(Boolean);
+  const page = (pages as string[]).includes(first) ? (first as Page) : 'overview';
+  const id = second && /^\d+$/.test(second) ? Number(second) : null;
+  return { page, id };
 }
 
-export const route = $state({ page: fromPath(location.pathname) });
+export const route = $state(fromPath(location.pathname));
 
-export function go(page: Page) {
-  const path = page === 'overview' ? '/' : '/' + page;
+export function go(page: Page, id: number | null = null) {
+  const path = (page === 'overview' ? '/' : '/' + page) + (id ? '/' + id : '');
   if (location.pathname !== path) history.pushState(null, '', path);
   route.page = page;
+  route.id = id;
 }
 
 addEventListener('popstate', () => {
-  route.page = fromPath(location.pathname);
+  Object.assign(route, fromPath(location.pathname));
 });

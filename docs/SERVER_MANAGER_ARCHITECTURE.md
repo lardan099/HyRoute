@@ -345,8 +345,9 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | GET | `/api/v1/servers/{id}/journal` (SSE) | любая | журнал Hysteria через redaction |
 | GET/POST | `/api/v1/servers/{id}/config` | читать: любая; применить: operator+ | текущий конфиг (секреты скрыты), diff, apply |
 | GET | `/api/v1/servers/{id}/client` | любая | ссылка/QR/конфиг без секретов; `?reveal=1` — operator+, пишется в audit log |
-| GET | `/api/v1/jobs`, `/api/v1/jobs/{id}` | любая | список, детали, шаги |
-| GET | `/api/v1/jobs/{id}/events` (SSE) | любая | живой журнал |
+| GET | `/api/v1/jobs`, `/api/v1/jobs/{id}` | любая | список (`?server=`, `?before=`), детали с шагами |
+| GET | `/api/v1/jobs/{id}/logs` | любая | строки журнала после `?after=` |
+| GET | `/api/v1/jobs/{id}/events` (SSE) | любая | сохранённый журнал после `Last-Event-ID`, затем события `log`/`step`/`job` до конца задания, `end` |
 | POST | `/api/v1/jobs/{id}/retry` | operator+ | повтор с безопасного шага |
 | GET | `/api/v1/logs` | любая | журнал controller и jobs с фильтрами |
 

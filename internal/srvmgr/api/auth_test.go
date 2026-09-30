@@ -13,6 +13,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
+	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
@@ -29,6 +30,7 @@ type testEnv struct {
 	auth    *auth.Service
 	servers *servers.Service
 	connect *connect.Connector
+	jobs    *jobs.Engine
 	clock   time.Time
 }
 
@@ -45,7 +47,9 @@ func newEnv(t *testing.T) *testEnv {
 	e.servers = servers.New(db, keys)
 	e.connect = connect.New(e.servers, db, redact.New())
 	e.connect.Timeout = 5 * time.Second
-	e.h = New(Deps{Store: db, Auth: e.auth, Servers: e.servers, Connect: e.connect})
+	e.jobs = jobs.New(db, keys, redact.New(), e.connect, nil)
+	e.jobs.Poll = 20 * time.Millisecond
+	e.h = New(Deps{Store: db, Auth: e.auth, Servers: e.servers, Connect: e.connect, Jobs: e.jobs})
 	return e
 }
 

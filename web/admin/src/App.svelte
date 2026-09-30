@@ -6,6 +6,7 @@
   import Auth from './pages/Auth.svelte';
   import Settings from './pages/Settings.svelte';
   import Servers from './pages/Servers.svelte';
+  import Deployments from './pages/Deployments.svelte';
   import { session, loadSession } from './session.svelte';
 
   const title = (p: Page) => t(`nav.${p}` as Key);
@@ -58,6 +59,8 @@
         <Settings />
       {:else if route.page === 'servers'}
         <Servers />
+      {:else if route.page === 'deployments'}
+        <Deployments />
       {:else}
         <Soon title={title(route.page)} text={t(`soon.${route.page}` as Key)} />
       {/if}
