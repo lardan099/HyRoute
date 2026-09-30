@@ -157,3 +157,41 @@
 - Тест: в файлах БД (основной, WAL, SHM) нет пароля, пароля ключа и тела
   ключа; запечатанное значение не открывается для другого сервера.
 - Ошибка поля ввода вынесена в `model.FieldError` (общая для auth и servers).
+
+### P1-05 Безопасный SSH-слой — выполнено
+
+- `internal/srvmgr/remote`: `Executor` (Run argv, Stream, ReadFile,
+  атомарный WriteFile), ошибки (`HostKeyUnknownError`,
+  `HostKeyChangedError`, `ErrAuthFailed`, `ErrSudoRequired`,
+  `UnreachableError`, `ExitError`), `Quote`/`CommandLine` — каждый аргумент
+  в одинарных кавычках, окружение `env LC_ALL=C LANG=C`, `sudo -n --`
+  (без запроса пароля). Тест прогоняет враждебные аргументы (`$(…)`,
+  обратные кавычки, `;`, перевод строки) через настоящий `/bin/sh`.
+  Первая typed operation — `RunProbe` (кто мы, root/sudo, ядро, архитектура).
+- `remote/sshexec`: `x/crypto/ssh` + `pkg/sftp`. Ключ перед паролем,
+  keyboard-interactive для паролей, keepalive, отмена по контексту
+  (SIGKILL + закрытие сессии), лимит вывода 32 МБ. `WriteFile`: SFTP во
+  временный каталог `mktemp -d` → `install -m/-o/-g` рядом с целью →
+  `mv -f` (атомарно). `FetchHostKey` — только ключ хоста, без входа.
+- `remote/fake` — сценарный executor (правила по префиксу argv, файлы в
+  памяти, журнал вызовов, режим «только чтение» для импорта).
+- `remote/sshtest` — SSH-сервер внутри процесса: пароль/ключ, счётчик
+  попыток входа, exec через функцию (по умолчанию локальный `/bin/sh`),
+  SFTP, смена ключа хоста, сигналы.
+- `internal/srvmgr/connect`: `Connect` (учётные данные из инвентаря,
+  проверка ключа, регистрация паролей в redactor), `Check` (probe;
+  без root/sudo — `ErrSudoRequired` вместе с данными probe), `Trust`
+  (TOFU и явный re-trust, audit log).
+- Миграция 0004: `host_keys`. Смена адреса/порта сервера забывает ключ.
+- API: `POST /servers/{id}/check`, `POST /servers/{id}/host-key`; ошибки
+  ключа несут отпечатки в поле `data`. UI: «Проверить» в списке серверов,
+  диалог сверки отпечатка (с командой `ssh-keygen -lf` для типа ключа),
+  отдельное предупреждение со флажком «я понимаю» при смене ключа.
+  Проверено в Chromium против SSH-сервера в отдельном процессе.
+- Тесты Done: первое подключение требует подтверждения и не отправляет
+  учётные данные (счётчик попыток входа = 0), смена ключа блокирует
+  подключение до явного re-trust, неверный пароль → `ErrAuthFailed`,
+  без sudo → `ErrSudoRequired`, закрытый порт → `UnreachableError`.
+- Решение: пользователь SSH — root или с `sudo -n` (NOPASSWD); sudo с
+  паролем не поддерживается (понятная ошибка).
+- Новая зависимость: `github.com/pkg/sftp` (+ `github.com/kr/fs`).

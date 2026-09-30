@@ -5,12 +5,14 @@
   import { canWrite, session } from '../session.svelte';
   import Dialog from '../lib/Dialog.svelte';
   import ServerDialog from '../lib/ServerDialog.svelte';
+  import CheckDialog from '../lib/CheckDialog.svelte';
   import { flag, stateTone } from '../lib/format';
 
   let list = $state<Server[] | null>(null);
   let error = $state<ApiError | null>(null);
   let editing = $state<Server | null | undefined>(undefined); // undefined: closed, null: new
   let deleting = $state<Server | null>(null);
+  let checking = $state<Server | null>(null);
   let deleteError = $state<ApiError | null>(null);
   let writable = $derived(canWrite(session.user));
 
@@ -73,9 +75,13 @@
             </td>
             <td class="mono">{s.sshUser}@{s.host}{s.sshPort !== 22 ? ':' + s.sshPort : ''}</td>
             <td>{t(`srvrole.${s.role}` as Key)}</td>
-            <td><span class="dot {stateTone(s.state)}"></span> {t(`state.${s.state}` as Key)}</td>
+            <td>
+              <span class="dot {stateTone(s.state)}"></span> {t(`state.${s.state}` as Key)}
+              {#if !s.hostKey}<div class="small faint">{t('servers.keyNotConfirmed')}</div>{/if}
+            </td>
             <td class="act">
               {#if writable}
+                <button class="ghost" onclick={() => (checking = s)}>{t('check.button')}</button>
                 <button class="ghost" onclick={() => (editing = s)}>{t('common.edit')}</button>
                 <button class="ghost danger" onclick={() => ((deleting = s), (deleteError = null))}>{t('common.delete')}</button>
               {/if}
@@ -96,6 +102,10 @@
       load();
     }}
   />
+{/if}
+
+{#if checking}
+  <CheckDialog server={checking} onclose={() => (checking = null)} onchanged={load} />
 {/if}
 
 {#if deleting}

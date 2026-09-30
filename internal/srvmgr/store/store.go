@@ -26,6 +26,7 @@ type Store interface {
 	Sessions
 	Audit
 	Servers
+	HostKeys
 	Close() error
 }
 
@@ -88,4 +89,12 @@ type Servers interface {
 	ListServers(ctx context.Context) ([]model.Server, error)
 	// ServerCredentials returns the sealed credentials of a server.
 	ServerCredentials(ctx context.Context, id int64) ([]model.Credential, error)
+}
+
+// HostKeys stores the trusted SSH host key of each server.
+type HostKeys interface {
+	HostKey(ctx context.Context, serverID int64) (model.HostKey, error)
+	// SetHostKey trusts k, replacing any key trusted before.
+	SetHostKey(ctx context.Context, k model.HostKey) error
+	DeleteHostKey(ctx context.Context, serverID int64) error
 }

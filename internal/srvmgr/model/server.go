@@ -86,3 +86,13 @@ type Credential struct {
 func CredContext(serverID int64, kind CredKind) string {
 	return "server/" + strconv.FormatInt(serverID, 10) + "/" + string(kind)
 }
+
+// HostKey is the trusted SSH host key of a server.
+type HostKey struct {
+	ServerID    int64
+	Type        string // ssh-ed25519, ecdsa-sha2-nistp256, ssh-rsa…
+	Key         []byte // SSH wire format
+	Fingerprint string // SHA256:…
+	TrustedAt   time.Time
+	TrustedBy   int64
+}

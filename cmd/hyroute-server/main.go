@@ -21,6 +21,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/api"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/config"
+	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
@@ -79,6 +80,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		return err
 	}
 	go cleanupSessions(ctx, authSvc, log)
+	inventory := servers.New(db, keys)
 
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
@@ -91,7 +93,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		Handler: api.New(api.Deps{
 			Store:      db,
 			Auth:       authSvc,
-			Servers:    servers.New(db, keys),
+			Servers:    inventory,
+			Connect:    connect.New(inventory, db, red),
 			Log:        log,
 			Version:    version,
 			TrustProxy: cfg.TrustProxy,

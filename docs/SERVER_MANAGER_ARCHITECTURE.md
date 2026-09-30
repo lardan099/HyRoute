@@ -192,10 +192,16 @@ P1-04 сканирует файл БД на открытые значения т
   сообщает об этом понятной ошибкой).
 - **Host key — TOFU.** Нет сохранённого ключа → операция возвращает
   `host_key_unknown` с отпечатком SHA-256; UI показывает его и ждёт
-  подтверждения (`POST /servers/{id}/host-key/trust` с тем же отпечатком).
-  Ключ изменился → `host_key_changed` со старым и новым отпечатком;
-  подключение запрещено, пока пользователь явно не выполнит re-trust.
-  `InsecureIgnoreHostKey` не используется нигде.
+  подтверждения (`POST /servers/{id}/host-key` с тем же отпечатком).
+  Подтверждение заново читает ключ сервера (`sshexec.FetchHostKey`:
+  рукопожатие обрывается на проверке ключа, учётные данные не
+  отправляются) и сохраняет его, только если отпечаток совпал с
+  подтверждённым. Ключ изменился → `host_key_changed` со старым и новым
+  отпечатком; подключение запрещено, пока пользователь явно не выполнит
+  re-trust (`replace: true`). Проверка ключа идёт до аутентификации:
+  непроверенный сервер не видит ни пароля, ни ключа. Смена адреса или
+  порта сервера забывает доверенный ключ. `InsecureIgnoreHostKey` не
+  используется нигде.
 - Тесты: `remote/fake` (сценарии ответов, журнал вызовов, запрет записи
   для импорта) и in-process SSH-сервер на `x/crypto/ssh` для sshexec.
   Docker-тесты — только за build tag `integration`.
@@ -329,7 +335,8 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | GET/DELETE | `/api/v1/sessions[/{id}]` | owner/admin | список и отзыв сессий |
 | GET/POST | `/api/v1/servers` | читать: любая; создать: operator+ | инвентарь |
 | GET/PATCH/DELETE | `/api/v1/servers/{id}` | | |
-| POST | `/api/v1/servers/{id}/host-key/trust` | operator+ | TOFU / re-trust с отпечатком |
+| POST | `/api/v1/servers/{id}/check` | operator+ | подключение и проверка прав (ничего не меняет) |
+| POST | `/api/v1/servers/{id}/host-key` | operator+ | TOFU / re-trust с отпечатком (`replace`) |
 | POST | `/api/v1/servers/{id}/preflight` | operator+ | job preflight |
 | POST | `/api/v1/servers/{id}/deploy` | operator+ | job Quick Deploy |
 | POST | `/api/v1/servers/{id}/import` | operator+ | job импорта |

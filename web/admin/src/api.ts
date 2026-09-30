@@ -10,6 +10,7 @@ export class ApiError extends Error {
     public code: string,
     message: string,
     public details = '',
+    public data: Record<string, string> = {},
   ) {
     super(message);
   }
@@ -50,7 +51,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const err = data?.error;
-    const e = new ApiError(res.status, err?.code ?? 'unknown', err?.message ?? t('error.unknown'), err?.details ?? '');
+    const e = new ApiError(res.status, err?.code ?? 'unknown', err?.message ?? t('error.unknown'), err?.details ?? '', err?.data ?? {});
     if (e.code === 'unauthorized' && !path.startsWith('/session')) onUnauthorized();
     throw e;
   }
@@ -111,6 +112,28 @@ export interface Server {
   hasPassword: boolean;
   hasKey: boolean;
   hasKeyPassphrase: boolean;
+  hostKey: HostKey | null;
+}
+
+export interface HostKey {
+  type: string;
+  fingerprint: string;
+  trustedAt: string;
+}
+
+export interface Probe {
+  user: string;
+  root: boolean;
+  sudo: boolean;
+  hostname: string;
+  kernel: string;
+  arch: string;
+}
+
+export interface CheckResult {
+  ok: boolean;
+  probe: Probe;
+  warning?: { code: string; message: string };
 }
 
 // ServerInput: credentials left undefined keep the stored ones on update.
@@ -146,4 +169,6 @@ export const api = {
   createServer: (s: ServerInput) => request<Server>('POST', '/servers', s),
   updateServer: (id: number, s: ServerInput) => request<Server>('PATCH', `/servers/${id}`, s),
   deleteServer: (id: number) => request<void>('DELETE', `/servers/${id}`),
+  checkServer: (id: number) => request<CheckResult>('POST', `/servers/${id}/check`),
+  trustHostKey: (id: number, fingerprint: string, replace: boolean) => request<HostKey>('POST', `/servers/${id}/host-key`, { fingerprint, replace }),
 };

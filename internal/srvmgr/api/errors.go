@@ -16,6 +16,9 @@ type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Details string `json:"details,omitempty"`
+	// Data carries machine-readable fields of some errors (host key
+	// fingerprints to show for confirmation).
+	Data any `json:"data,omitempty"`
 }
 
 func (e *Error) Error() string {

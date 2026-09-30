@@ -247,3 +247,21 @@ func TestNoPlaintextSecretsInDatabase(t *testing.T) {
 		}
 	}
 }
+
+func TestAddressChangeForgetsHostKey(t *testing.T) {
+	s, db, _ := newService(t)
+	ctx := context.Background()
+	info, _ := s.Create(ctx, 1, base())
+	db.SetHostKey(ctx, model.HostKey{ServerID: info.ID, Type: "ssh-ed25519", Key: []byte{1}, Fingerprint: "SHA256:fake", TrustedAt: time.Unix(1, 0)})
+	in := base()
+	in.Password, in.Notes = nil, "same address"
+	got, _ := s.Update(ctx, 1, info.ID, in)
+	if got.HostKey == nil || got.HostKey.Fingerprint != "SHA256:fake" {
+		t.Fatal("host key dropped without an address change")
+	}
+	in.Host = "other.example.com"
+	got, _ = s.Update(ctx, 1, info.ID, in)
+	if got.HostKey != nil {
+		t.Fatal("host key kept for another address")
+	}
+}

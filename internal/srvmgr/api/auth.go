@@ -59,7 +59,7 @@ func mapError(err error) error {
 	case errors.Is(err, store.ErrNotFound):
 		return errNotFound
 	}
-	return err
+	return remoteError(err)
 }
 
 // readJSON decodes a JSON body; only application/json is accepted, which

@@ -29,6 +29,7 @@ type serverJSON struct {
 	HasPassword      bool              `json:"hasPassword"`
 	HasKey           bool              `json:"hasKey"`
 	HasKeyPassphrase bool              `json:"hasKeyPassphrase"`
+	HostKey          *hostKeyJSON      `json:"hostKey"`
 }
 
 func toServerJSON(in servers.Info) serverJSON {
@@ -41,6 +42,7 @@ func toServerJSON(in servers.Info) serverJSON {
 		Host: in.Host, SSHPort: in.SSHPort, SSHUser: in.SSHUser, AuthType: in.AuthType,
 		Role: in.Role, Notes: in.Notes, State: in.State, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt,
 		HasPassword: in.HasPassword, HasKey: in.HasKey, HasKeyPassphrase: in.HasKeyPassphrase,
+		HostKey: toHostKeyJSON(in.HostKey),
 	}
 }
 

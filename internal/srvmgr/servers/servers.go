@@ -25,6 +25,7 @@ import (
 // Store is what the service needs from storage.
 type Store interface {
 	store.Servers
+	store.HostKeys
 	store.Audit
 }
 
@@ -59,12 +60,14 @@ type Input struct {
 	KeyPassphrase *string
 }
 
-// Info is a server with which credentials it has (never their values).
+// Info is a server with which credentials it has (never their values) and
+// its trusted host key, if any.
 type Info struct {
 	model.Server
 	HasPassword      bool
 	HasKey           bool
 	HasKeyPassphrase bool
+	HostKey          *model.HostKey
 }
 
 // Credentials are the opened SSH credentials of a server.
@@ -313,6 +316,13 @@ func (s *Service) Update(ctx context.Context, actor, id int64, in Input) (Info, 
 		}
 		return Info{}, err
 	}
+	// Another address is another machine: its host key must be confirmed
+	// again rather than compared with the old one.
+	if cur.Host != srv.Host || cur.SSHPort != srv.SSHPort {
+		if err := s.Store.DeleteHostKey(ctx, id); err != nil {
+			return Info{}, err
+		}
+	}
 	s.audit(ctx, actor, "server_updated", srv)
 	return s.Get(ctx, id)
 }
@@ -336,6 +346,11 @@ func (s *Service) info(ctx context.Context, srv model.Server) (Info, error) {
 		return Info{}, err
 	}
 	in := Info{Server: srv}
+	if hk, err := s.Store.HostKey(ctx, srv.ID); err == nil {
+		in.HostKey = &hk
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return Info{}, err
+	}
 	for _, c := range cs {
 		switch c.Kind {
 		case model.CredSSHPassword:
