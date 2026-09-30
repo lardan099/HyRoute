@@ -2,6 +2,7 @@ package apply
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -206,5 +207,79 @@ func TestDiff(t *testing.T) {
 	}
 	if Changed(Diff("a\n", "a")) || !Changed(Diff("", "a")) {
 		t.Fatal("Changed")
+	}
+}
+
+// Secrets that do not sit under a secret-named key: an anchored value
+// used as a password through an alias, a userpass map behind an alias, a
+// password inside a URL of an unknown field, a share link in a comment.
+const tricky = `shared: &pw fake-anchored-pass
+users: &u
+  alice: fake-alice-pass
+auth:
+  type: password
+  password: *pw
+extra:
+  upstream: https://bob:fake-url-pass@proxy.example.com/
+  second:
+    type: userpass
+    userpass: *u
+masquerade:
+  type: proxy
+  proxy:
+    url: https://example.com/ # old: hysteria2://fake-comment-pass@203.0.113.1:443
+listen: :443
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+`
+
+func TestMaskFollowsAliasesURLsAndComments(t *testing.T) {
+	m, paths, err := Mask([]byte(tricky))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(m)
+	for _, secret := range []string{"fake-anchored-pass", "fake-alice-pass", "fake-url-pass", "fake-comment-pass"} {
+		if strings.Contains(s, secret) {
+			t.Fatalf("%s visible:\n%s", secret, s)
+		}
+	}
+	for _, p := range []string{"shared", "users.alice", "extra.upstream"} {
+		if !slices.Contains(paths, p) {
+			t.Errorf("%s not listed: %q", p, paths)
+		}
+	}
+	// Kept as they were when the editor does not touch them, comments
+	// included.
+	back, err := Unmask(m, []byte(tricky))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"fake-anchored-pass", "fake-alice-pass", "fake-url-pass", "fake-comment-pass", "*pw", "*u"} {
+		if !strings.Contains(string(back), secret) {
+			t.Fatalf("%s lost:\n%s", secret, back)
+		}
+	}
+	if cs := ChangedSecrets([]byte(tricky), back); len(cs) != 0 {
+		t.Fatalf("changed %q", cs)
+	}
+	// Through the typed model (the form), where aliases are resolved.
+	mc, err := hyconfig.ParseServer(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := FieldsOf(mc)
+	f.Listen = ":8443"
+	ch, cand, err := Build([]byte(tricky), s, &f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := hyconfig.ParseServer(cand)
+	if c.Auth.Password != "fake-anchored-pass" || c.Listen != ":8443" {
+		t.Fatalf("candidate %+v", c.Auth)
+	}
+	if strings.Contains(ch.YAML, "fake-") || strings.Contains(fmt.Sprint(ch.Diff), "fake-") {
+		t.Fatalf("secret in the check:\n%s\n%v", ch.YAML, ch.Diff)
 	}
 }

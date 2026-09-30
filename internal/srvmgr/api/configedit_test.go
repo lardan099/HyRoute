@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
+	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 )
 
@@ -51,6 +52,15 @@ func TestConfigEditAPI(t *testing.T) {
 	}
 	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/render", map[string]any{"revision": 1, "yaml": "listen: ["}, nil), http.StatusBadRequest, "invalid")
 	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/render", map[string]any{"revision": 7, "yaml": v.YAML}, nil), http.StatusConflict, "config_changed")
+
+	// Read-only users do not get the editor's text at all.
+	var u model.User
+	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
+	e.db.CreateUser(ctx, &u)
+	ro := e.login("viewer")
+	code(t, ro.do("GET", "/api/v1/servers/"+id+"/config/edit", nil, nil), http.StatusForbidden, "forbidden")
+	code(t, ro.do("POST", "/api/v1/servers/"+id+"/config/render", map[string]any{"revision": 1, "yaml": v.YAML}, nil), http.StatusForbidden, "forbidden")
 }
 
 func TestConfigApplyAPI(t *testing.T) {

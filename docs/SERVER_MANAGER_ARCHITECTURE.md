@@ -418,7 +418,7 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | POST | `/api/v1/servers/{id}/service/{start,stop,restart}` | operator+ | с подтверждением в UI |
 | GET | `/api/v1/servers/{id}/journal` | любая | журнал Hysteria через redaction (шаблоны + пароли текущего конфига): JSON последних записей или SSE с `?follow=1` |
 | GET | `/api/v1/servers/{id}/config` | любая | сводка текущей ревизии (версия, порты, TLS, pin, obfs; без конфига и паролей) |
-| GET | `/api/v1/servers/{id}/config/edit` | любая | конфиг для редактора: секреты `[REDACTED]`, основные поля |
+| GET | `/api/v1/servers/{id}/config/edit` | operator+ | конфиг для редактора: секреты `[REDACTED]` (под секретными ключами, за alias, пароли в URL, шаблоны redactor, комментарии), основные поля |
 | POST | `/api/v1/servers/{id}/config/render` | operator+ | кандидат из текста и полей: проверка, diff, меняющиеся секреты (ничего не сохраняет) |
 | POST | `/api/v1/servers/{id}/config/apply` | operator+ | задание `apply` с откатом |
 | GET | `/api/v1/servers/{id}/client` | любая | сводка для клиентов без секретов; `?reveal=1[&user=]` — operator+: ссылки (официальная и совместимая), `config.yaml`, QR; пишется в audit log |

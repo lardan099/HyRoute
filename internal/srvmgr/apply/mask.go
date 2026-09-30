@@ -26,21 +26,108 @@ func secretValue(key, parent string) bool {
 	return strings.EqualFold(parent, "userpass") || redact.IsSecretKey(key)
 }
 
-// Mask hides the secret values of a config: fields named like secrets
-// and every password of userpass. Order and comments stay. It also lists
-// the paths of the secrets it hid.
+// secret is a scalar of a document that holds a secret, at the path where
+// the document defines it.
+type secret struct {
+	path string
+	node *yaml.Node
+}
+
+// secretsOf lists the secret scalars of a document in document order:
+//   - values under secret-named keys and every password of userpass;
+//   - the anchored value an alias in such a place points to (the value is
+//     defined under a harmless key and only used as a password);
+//   - any string that carries a secret pattern: a password inside a URL,
+//     a share link, a private key.
+func secretsOf(doc *yaml.Node) []secret {
+	var out []secret
+	seen := map[*yaml.Node]bool{}
+	pathOf := map[*yaml.Node]string{}
+	add := func(n *yaml.Node) {
+		if n.Kind == yaml.ScalarNode && n.Value != "" && !seen[n] {
+			seen[n] = true
+			out = append(out, secret{pathOf[n], n})
+		}
+	}
+	// values adds every value inside n (the keys of a userpass mapping
+	// are user names).
+	var values func(n *yaml.Node)
+	values = func(n *yaml.Node) {
+		switch n.Kind {
+		case yaml.ScalarNode:
+			add(n)
+		case yaml.MappingNode:
+			for i := 1; i < len(n.Content); i += 2 {
+				values(n.Content[i])
+			}
+		case yaml.SequenceNode:
+			for _, c := range n.Content {
+				values(c)
+			}
+		case yaml.AliasNode:
+			if n.Alias != nil {
+				values(n.Alias)
+			}
+		}
+	}
+	walk(doc, "", "", func(n *yaml.Node, p, key, parent string) {
+		if _, ok := pathOf[n]; !ok {
+			pathOf[n] = p
+		}
+		switch n.Kind {
+		case yaml.ScalarNode:
+			if secretValue(key, parent) || redact.String(n.Value) != n.Value {
+				add(n)
+			}
+		case yaml.AliasNode:
+			if n.Alias == nil {
+				return
+			}
+			switch {
+			case strings.EqualFold(key, "userpass") && parent != "userpass":
+				values(n.Alias)
+			case secretValue(key, parent) && n.Alias.Kind == yaml.ScalarNode:
+				add(n.Alias)
+			}
+		}
+	})
+	return out
+}
+
+// maskComments redacts secret patterns in the comments of every node.
+func maskComments(doc *yaml.Node) {
+	walk(doc, "", "", func(n *yaml.Node, _, _, _ string) {
+		n.HeadComment, n.LineComment, n.FootComment = redact.String(n.HeadComment), redact.String(n.LineComment), redact.String(n.FootComment)
+	})
+	// Keys carry comments of their own.
+	var keys func(n *yaml.Node)
+	keys = func(n *yaml.Node) {
+		for i, c := range n.Content {
+			if n.Kind == yaml.MappingNode && i%2 == 0 {
+				c.HeadComment, c.LineComment, c.FootComment = redact.String(c.HeadComment), redact.String(c.LineComment), redact.String(c.FootComment)
+			}
+			keys(c)
+		}
+	}
+	keys(doc)
+}
+
+func hide(n *yaml.Node) { n.Value, n.Tag, n.Style = Hidden, "!!str", 0 }
+
+// Mask hides the secret values of a config (see secretsOf) and secret
+// patterns in its comments. Order and comments stay. It also lists the
+// paths of the secrets it hid.
 func Mask(b []byte) ([]byte, []string, error) {
 	doc, err := parse(b)
 	if err != nil {
 		return nil, nil, err
 	}
 	var paths []string
-	walk(doc, "", "", func(n *yaml.Node, p, key, parent string) {
-		if n.Kind == yaml.ScalarNode && n.Value != "" && secretValue(key, parent) {
-			n.Value, n.Tag, n.Style = Hidden, "!!str", 0
-			paths = append(paths, p)
-		}
-	})
+	for _, s := range secretsOf(doc) {
+		hide(s.node)
+		paths = append(paths, s.path)
+	}
+	maskComments(doc)
 	out, err := encode(doc)
 	return out, paths, err
 }
@@ -57,18 +144,24 @@ func MaskUnchanged(candidate, current []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	walk(cand, "", "", func(n *yaml.Node, p, key, parent string) {
-		if n.Kind != yaml.ScalarNode || n.Value == "" || !secretValue(key, parent) {
-			return
+	// The secrets of either side: a value that was a secret through an
+	// alias in current is a plain copy after the typed model.
+	for _, s := range secretsOf(cand) {
+		if v := lookup(cur, s.path); v != nil && v.Kind == yaml.ScalarNode && v.Value == s.node.Value {
+			hide(s.node)
 		}
-		if v := lookup(cur, p); v != nil && v.Kind == yaml.ScalarNode && v.Value == n.Value {
-			n.Value, n.Tag, n.Style = Hidden, "!!str", 0
+	}
+	for _, s := range secretsOf(cur) {
+		if n := lookup(cand, s.path); n != nil && n.Kind == yaml.ScalarNode && n.Value == s.node.Value {
+			hide(n)
 		}
-	})
+	}
+	maskComments(cand)
 	return encode(cand)
 }
 
-// Unmask puts the current secrets back where the candidate keeps Hidden.
+// Unmask puts the current secrets back where the candidate keeps Hidden,
+// and the current comments where the candidate keeps their masked form.
 // Lists are matched by the "name" of their items (outbounds), else by
 // position. A Hidden with nothing behind it is a *model.FieldError.
 func Unmask(candidate, current []byte) ([]byte, error) {
@@ -82,10 +175,20 @@ func Unmask(candidate, current []byte) ([]byte, error) {
 	}
 	var bad []string
 	walk(cand, "", "", func(n *yaml.Node, p, key, parent string) {
-		if n.Kind != yaml.ScalarNode || n.Value != Hidden {
+		if n.Kind == yaml.DocumentNode {
 			return
 		}
 		v := lookup(cur, p)
+		if v != nil {
+			for _, c := range [][2]*string{{&n.HeadComment, &v.HeadComment}, {&n.LineComment, &v.LineComment}, {&n.FootComment, &v.FootComment}} {
+				if *c[0] != *c[1] && *c[0] == redact.String(*c[1]) {
+					*c[0] = *c[1]
+				}
+			}
+		}
+		if n.Kind != yaml.ScalarNode || n.Value != Hidden {
+			return
+		}
 		if v == nil || v.Kind != yaml.ScalarNode {
 			bad = append(bad, p)
 			return
@@ -109,15 +212,15 @@ func ChangedSecrets(before, after []byte) []string {
 	var out []string
 	seen := map[string]bool{}
 	check := func(x, y *yaml.Node) {
-		walk(x, "", "", func(n *yaml.Node, p, key, parent string) {
-			if n.Kind != yaml.ScalarNode || !secretValue(key, parent) || seen[p] {
-				return
+		for _, s := range secretsOf(x) {
+			if seen[s.path] {
+				continue
 			}
-			seen[p] = true
-			if o := lookup(y, p); o == nil || o.Kind != yaml.ScalarNode || o.Value != n.Value {
-				out = append(out, p)
+			seen[s.path] = true
+			if o := lookup(y, s.path); o == nil || o.Kind != yaml.ScalarNode || o.Value != s.node.Value {
+				out = append(out, s.path)
 			}
-		})
+		}
 	}
 	check(b, a)
 	check(a, b)
@@ -193,13 +296,48 @@ func itemID(n *yaml.Node, i int) string {
 	return strconv.Itoa(i)
 }
 
-// lookup finds the node at path p (as walk writes paths).
+// lookup finds the node at path p (as walk writes paths), following
+// aliases: the typed model writes an alias out as a copy of its value.
 func lookup(doc *yaml.Node, p string) *yaml.Node {
 	var found *yaml.Node
-	walk(doc, "", "", func(n *yaml.Node, q, _, _ string) {
-		if found == nil && q == p && n.Kind != yaml.DocumentNode {
-			found = n
+	inside := map[*yaml.Node]bool{} // aliases being followed (no cycles)
+	var visit func(n *yaml.Node, q, key, parent string)
+	visit = func(n *yaml.Node, q, key, parent string) {
+		if found != nil {
+			return
 		}
-	})
+		if n.Kind == yaml.AliasNode && n.Alias != nil {
+			if inside[n] {
+				return
+			}
+			inside[n] = true
+			visit(n.Alias, q, key, parent)
+			delete(inside, n)
+			return
+		}
+		if q == p && n.Kind != yaml.DocumentNode {
+			found = n
+			return
+		}
+		if q != "" && !strings.HasPrefix(p, q) {
+			return // not on the way to p
+		}
+		switch n.Kind {
+		case yaml.DocumentNode:
+			for _, c := range n.Content {
+				visit(c, q, key, parent)
+			}
+		case yaml.MappingNode:
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				k := n.Content[i].Value
+				visit(n.Content[i+1], join(q, k), k, key)
+			}
+		case yaml.SequenceNode:
+			for i, c := range n.Content {
+				visit(c, q+"["+itemID(c, i)+"]", key, parent)
+			}
+		}
+	}
+	visit(doc, "", "", "")
 	return found
 }

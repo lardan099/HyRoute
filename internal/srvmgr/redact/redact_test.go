@@ -168,3 +168,10 @@ func TestSlogHandler(t *testing.T) {
 		}
 	}
 }
+
+func TestYAMLAliasedSecret(t *testing.T) {
+	out, err := New().YAML([]byte("shared: &pw fake-anchored-pass\nauth:\n  password: *pw\n"))
+	if err != nil || strings.Contains(string(out), "fake-anchored-pass") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}

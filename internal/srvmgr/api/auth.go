@@ -182,6 +182,9 @@ const (
 	ownSession
 	// manageUsers: owners and admins.
 	manageUsers
+	// writers: roles that may change servers, reads included (the config
+	// editor: masking is a second line, not the only one).
+	writers
 )
 
 // authed wraps a handler that needs a session: 401 without one, CSRF check
@@ -210,6 +213,10 @@ func (s *server) authed(need access, h http.HandlerFunc) http.HandlerFunc {
 				writeError(w, errForbidden)
 				return
 			}
+		}
+		if need == writers && !p.User.Role.CanWrite() {
+			writeError(w, errForbidden)
+			return
 		}
 		if need == manageUsers && !p.User.Role.CanManageUsers() {
 			writeError(w, errForbidden)

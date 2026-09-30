@@ -15,6 +15,23 @@ func (r *Redactor) YAML(data []byte) ([]byte, error) {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
+	// A value used as a secret through an alias is a secret where it is
+	// defined, whatever its own key.
+	var aliases func(n *yaml.Node)
+	aliases = func(n *yaml.Node) {
+		if n.Kind == yaml.MappingNode {
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				k, v := n.Content[i], n.Content[i+1]
+				if v.Kind == yaml.AliasNode && v.Alias != nil && (k.Value == "userpass" || IsSecretKey(k.Value)) {
+					r.node(v.Alias, true)
+				}
+			}
+		}
+		for _, c := range n.Content {
+			aliases(c)
+		}
+	}
+	aliases(&doc)
 	r.node(&doc, false)
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
@@ -63,6 +80,7 @@ func (r *Redactor) node(n *yaml.Node, secret bool) {
 			n.Value, n.Style = red, 0
 		}
 	case yaml.AliasNode:
-		// Aliases point at anchored nodes that are redacted where defined.
+		// Aliases point at anchored nodes, redacted where defined (YAML
+		// marks the ones used as secrets).
 	}
 }
