@@ -23,6 +23,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/config"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
+	"github.com/lardan099/hyroute/internal/srvmgr/preflight"
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
@@ -84,6 +85,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	inventory := servers.New(db, keys)
 	conn := connect.New(inventory, db, red)
 	engine := jobs.New(db, keys, red, conn, log)
+	engine.Register(preflight.Kind())
 	jobsCtx, stopJobs := context.WithCancel(context.WithoutCancel(ctx))
 	jobsDone := make(chan struct{})
 	go func() {

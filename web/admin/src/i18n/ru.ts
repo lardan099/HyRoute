@@ -68,7 +68,7 @@ export const ru = {
   'common.delete': 'Удалить',
   'common.close': 'Закрыть',
 
-  'check.button': 'Проверить',
+  'check.button': 'Подключение',
   'check.title': 'Подключение к «{name}»',
   'check.connecting': 'Подключение к {host}…',
   'check.ok': 'Подключение работает, права администратора есть.',
@@ -145,6 +145,13 @@ export const ru = {
   'jobs.noLog': 'Журнал пуст.',
 
   'kind.preflight': 'Проверка сервера',
+
+  'preflight.button': 'Проверить',
+  'preflight.title': 'Готовность к развёртыванию',
+  'preflight.ready': 'Можно развёртывать',
+  'preflight.blocked': 'Есть препятствия',
+  'preflight.cpu': 'ядер: {n}',
+  'preflight.disk': 'свободно {n} МБ',
   'kind.deploy': 'Развёртывание',
   'kind.import': 'Импорт',
 
@@ -170,6 +177,7 @@ export const ru = {
   'sstate.rolled_back': 'откачено',
 
   'step.connect': 'Подключение по SSH',
+  'step.inspect': 'Проверка системы',
 
   'error.network': 'Нет связи с controller.',
   'error.unknown': 'Неизвестная ошибка.',

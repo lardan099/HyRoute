@@ -68,6 +68,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("DELETE /api/v1/servers/{id}", s.authed(anyRole, s.deleteServer))
 	mux.HandleFunc("POST /api/v1/servers/{id}/check", s.authed(anyRole, s.checkServer))
 	mux.HandleFunc("POST /api/v1/servers/{id}/host-key", s.authed(anyRole, s.trustHostKey))
+	mux.HandleFunc("POST /api/v1/servers/{id}/preflight", s.authed(anyRole, s.startPreflight))
 	mux.HandleFunc("GET /api/v1/jobs", s.authed(anyRole, s.listJobs))
 	mux.HandleFunc("GET /api/v1/jobs/{id}", s.authed(anyRole, s.getJob))
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs", s.authed(anyRole, s.jobLogs))

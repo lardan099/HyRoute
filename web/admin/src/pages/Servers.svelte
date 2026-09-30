@@ -7,6 +7,7 @@
   import ServerDialog from '../lib/ServerDialog.svelte';
   import CheckDialog from '../lib/CheckDialog.svelte';
   import { flag, stateTone } from '../lib/format';
+  import { go } from '../router.svelte';
 
   let list = $state<Server[] | null>(null);
   let error = $state<ApiError | null>(null);
@@ -25,6 +26,15 @@
     }
   }
   onMount(load);
+
+  async function preflight(s: Server) {
+    try {
+      const j = await api.startPreflight(s.id);
+      go('deployments', j.id);
+    } catch (e) {
+      error = asApiError(e);
+    }
+  }
 
   async function remove() {
     if (!deleting) return;
@@ -82,6 +92,7 @@
             <td class="act">
               {#if writable}
                 <button class="ghost" onclick={() => (checking = s)}>{t('check.button')}</button>
+                <button class="ghost" onclick={() => preflight(s)}>{t('preflight.button')}</button>
                 <button class="ghost" onclick={() => (editing = s)}>{t('common.edit')}</button>
                 <button class="ghost danger" onclick={() => ((deleting = s), (deleteError = null))}>{t('common.delete')}</button>
               {/if}

@@ -10,21 +10,24 @@ import (
 
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/preflight"
 )
 
 type jobJSON struct {
-	ID           int64           `json:"id"`
-	Kind         string          `json:"kind"`
-	ServerID     int64           `json:"serverId"`
-	State        model.JobState  `json:"state"`
-	CurrentStep  string          `json:"currentStep"`
-	Params       json.RawMessage `json:"params"`
-	Attempt      int             `json:"attempt"`
-	ErrorMessage string          `json:"errorMessage"`
-	ErrorDetails string          `json:"errorDetails"`
-	CreatedAt    time.Time       `json:"createdAt"`
-	StartedAt    *time.Time      `json:"startedAt"`
-	FinishedAt   *time.Time      `json:"finishedAt"`
+	ID          int64           `json:"id"`
+	Kind        string          `json:"kind"`
+	ServerID    int64           `json:"serverId"`
+	State       model.JobState  `json:"state"`
+	CurrentStep string          `json:"currentStep"`
+	Params      json.RawMessage `json:"params"`
+	// Data are results steps stored (the preflight report); no secrets.
+	Data         map[string]string `json:"data"`
+	Attempt      int               `json:"attempt"`
+	ErrorMessage string            `json:"errorMessage"`
+	ErrorDetails string            `json:"errorDetails"`
+	CreatedAt    time.Time         `json:"createdAt"`
+	StartedAt    *time.Time        `json:"startedAt"`
+	FinishedAt   *time.Time        `json:"finishedAt"`
 }
 
 func optTime(t time.Time) *time.Time {
@@ -39,7 +42,11 @@ func toJobJSON(j model.Job) jobJSON {
 	if len(params) == 0 {
 		params = json.RawMessage("{}")
 	}
-	return jobJSON{ID: j.ID, Kind: j.Kind, ServerID: j.ServerID, State: j.State, CurrentStep: j.CurrentStep, Params: params,
+	data := j.Data
+	if data == nil {
+		data = map[string]string{}
+	}
+	return jobJSON{ID: j.ID, Kind: j.Kind, ServerID: j.ServerID, State: j.State, CurrentStep: j.CurrentStep, Params: params, Data: data,
 		Attempt: j.Attempt, ErrorMessage: j.ErrorMessage, ErrorDetails: j.ErrorDetails, CreatedAt: j.CreatedAt,
 		StartedAt: optTime(j.StartedAt), FinishedAt: optTime(j.FinishedAt)}
 }
@@ -228,6 +235,15 @@ func (s *server) jobEvents(w http.ResponseWriter, r *http.Request) {
 	if send("job", 0, toJobJSON(j)) != nil {
 		return
 	}
+	// The steps as they are now: step events sent before the subscription
+	// are not replayed.
+	if steps, err := s.Store.JobSteps(r.Context(), id); err == nil {
+		for _, st := range steps {
+			if send("step", 0, toStepJSON(st)) != nil {
+				return
+			}
+		}
+	}
 	// The job may have ended between reading it and subscribing.
 	if cur, err := s.Store.JobByID(r.Context(), id); err == nil {
 		j = cur
@@ -277,4 +293,33 @@ func (s *server) jobEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func (s *server) startPreflight(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, errNotFound)
+		return
+	}
+	var opt preflight.Options
+	if r.ContentLength > 0 {
+		if err := readJSON(r, &opt); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+	if opt.UDPPort < 0 || opt.UDPPort > 65535 {
+		writeError(w, &Error{Status: http.StatusBadRequest, Code: "invalid", Message: "Порт: от 1 до 65535.", Details: "udpPort"})
+		return
+	}
+	if _, err := s.Servers.Get(r.Context(), id); err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	j, err := s.Jobs.Submit(r.Context(), preflight.JobKind, id, opt, nil, principal(r).User.ID)
+	if err != nil {
+		s.fail(w, r, jobError(err))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, toJobJSON(j))
 }

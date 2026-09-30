@@ -5,6 +5,7 @@
   import { t, tOr, type Key } from '../i18n';
   import { canWrite, session } from '../session.svelte';
   import { duration, jobTone, stepTone, when } from './format';
+  import PreflightReport from './PreflightReport.svelte';
 
   let { id, servers }: { id: number; servers: Record<number, Server> } = $props();
 
@@ -16,6 +17,13 @@
   let logBox = $state<HTMLElement | null>(null);
   let follow = $state(true);
   let source: EventSource | null = null;
+  let report = $derived.by(() => {
+    try {
+      return job?.data?.report ? JSON.parse(job.data.report) : null;
+    } catch {
+      return null;
+    }
+  });
 
   const stepName = (n: string) => tOr(`step.${n}`, n);
   const kindName = (k: string) => tOr(`kind.${k}`, k);
@@ -46,9 +54,13 @@
       const j: Job = JSON.parse((e as MessageEvent).data);
       if (job) Object.assign(job, j);
     });
-    source.addEventListener('end', () => {
+    source.addEventListener('end', async () => {
       source?.close();
       live = false;
+      // The final word: steps, data (reports) and errors as stored.
+      try {
+        job = await api.job(id);
+      } catch {}
     });
     source.onerror = () => {
       // The browser reconnects by itself with Last-Event-ID; a finished
@@ -110,6 +122,8 @@
       {#if job.errorDetails}<details><summary class="small">{t('jobs.details')}</summary><pre class="mono small">{job.errorDetails}</pre></details>{/if}
     </div>
   {/if}
+
+  {#if report}<PreflightReport {report} />{/if}
 
   <div class="cols">
     <section class="card steps">

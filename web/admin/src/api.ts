@@ -160,6 +160,7 @@ export interface Job {
   state: JobState;
   currentStep: string;
   params: Record<string, unknown>;
+  data: Record<string, string>;
   attempt: number;
   errorMessage: string;
   errorDetails: string;
@@ -189,6 +190,30 @@ export interface JobLog {
   level: string;
   step: string;
   message: string;
+}
+
+export interface PreflightCheck {
+  id: string;
+  level: 'ok' | 'warn' | 'fail';
+  title: string;
+  details?: string;
+}
+
+export interface PreflightReport {
+  user: string;
+  root: boolean;
+  os: string;
+  kernel: string;
+  arch: string;
+  hysteriaArch: string;
+  cpus: number;
+  memoryMiB: number;
+  diskFreeMiB: number;
+  firewall: string;
+  github: boolean;
+  hysteria: { installed: boolean; version?: string; unit?: string; active?: boolean };
+  checks: PreflightCheck[];
+  blocked: boolean;
 }
 
 export const jobEventsURL = (id: number) => `/api/v1/jobs/${id}/events`;
@@ -231,4 +256,5 @@ export const api = {
   jobs: (serverId = 0) => request<Job[]>('GET', '/jobs' + (serverId ? `?server=${serverId}` : '')),
   job: (id: number) => request<JobDetail>('GET', `/jobs/${id}`),
   retryJob: (id: number) => request<Job>('POST', `/jobs/${id}/retry`),
+  startPreflight: (serverId: number, udpPort = 443) => request<Job>('POST', `/servers/${serverId}/preflight`, { udpPort }),
 };
