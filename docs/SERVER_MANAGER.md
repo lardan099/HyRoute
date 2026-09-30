@@ -30,6 +30,8 @@ go build -o hyroute-server ./cmd/hyroute-server
 | `master.key` | мастер-ключ, которым зашифрованы пароли и ключи SSH и конфиги Hysteria |
 | `setup-token` | код первого запуска; исчезает, когда создан владелец |
 
+Доступ к этим файлам должен быть только у пользователя, от которого работает панель. В Linux и других Unix панель проверяет это при запуске: каталог — не шире `0700`, база и ключ — не шире `0600`, владелец — сам этот пользователь. Иначе она не запустится и напишет команду, которая это исправит (`chmod 700 …`, `chmod 600 …` или `chown`). В Windows каталог и ключ получают права только для SYSTEM, «Администраторов» и пользователя панели.
+
 Параметры задаются флагами или переменными окружения:
 
 | Флаг | Переменная | По умолчанию |
@@ -37,6 +39,8 @@ go build -o hyroute-server ./cmd/hyroute-server
 | `-listen` | `HYROUTE_SERVER_LISTEN` | `127.0.0.1:8480` |
 | `-data-dir` | `HYROUTE_SERVER_DATA_DIR` | `/var/lib/hyroute-server` |
 | `-master-key-file` | `HYROUTE_SERVER_MASTER_KEY_FILE` | `<data-dir>/master.key` |
+| `-tls-cert`, `-tls-key` | `HYROUTE_SERVER_TLS_CERT`, `HYROUTE_SERVER_TLS_KEY` | нет (HTTP) |
+| `-insecure-http` | `HYROUTE_SERVER_INSECURE_HTTP` | выключено |
 | `-trust-proxy` | `HYROUTE_SERVER_TRUST_PROXY` | выключено |
 | `-log-level` | `HYROUTE_SERVER_LOG_LEVEL` | `info` |
 
@@ -78,7 +82,7 @@ sudo cat /var/lib/hyroute-server/setup-token
 
 ## Доступ
 
-Панель управляет вашими серверами и знает их пароли, поэтому открытой в интернет по HTTP её оставлять нельзя. Два способа:
+Панель управляет вашими серверами и знает их пароли, поэтому открытой в интернет по HTTP её оставлять нельзя. На адресе, доступном из сети (например, `0.0.0.0:8480`), панель без TLS не запустится; обойти это можно только явным флагом `-insecure-http`, для сети, которой вы доверяете. Три способа:
 
 **SSH-туннель** — ничего не нужно настраивать. Если controller работает на машине `admin.example.com`:
 
@@ -96,7 +100,15 @@ panel.example.com {
 }
 ```
 
-Запустите controller с `-trust-proxy`: тогда он верит заголовкам `X-Forwarded-For` и `X-Forwarded-Proto` от прокси на этой машине (для журнала входов и защиты от перебора), и cookie сессии помечаются как только для HTTPS. Если controller слушает не loopback-адрес, он предупреждает об этом в журнале.
+Запустите controller с `-trust-proxy`: тогда он верит заголовкам `X-Forwarded-For` и `X-Forwarded-Proto` от прокси на этой машине (для журнала входов и защиты от перебора), и cookie сессии помечаются как только для HTTPS.
+
+**Свой TLS** — без прокси: укажите сертификат и ключ в формате PEM, и панель будет отвечать по HTTPS на любом адресе.
+
+```sh
+hyroute-server -listen 0.0.0.0:8443 -tls-cert /etc/hyroute-server/fullchain.pem -tls-key /etc/hyroute-server/privkey.pem
+```
+
+Когда файлы сертификата меняются (например, после продления), панель подхватывает их сама, перезапуск не нужен.
 
 ## Мастер-ключ и резервная копия
 

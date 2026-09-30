@@ -16,7 +16,7 @@ import (
 // The controller starts on a clean data directory, serves the admin and
 // the health endpoint, and stops when its context ends.
 func TestRunServesHealthAndUI(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "data") // created by the controller, 0700
 	ctx, cancel := context.WithCancel(context.Background())
 	ready := make(chan string, 1)
 	done := make(chan error, 1)

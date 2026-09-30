@@ -19,6 +19,12 @@ type Config struct {
 	// Listen is the HTTP address. The default is loopback only: access
 	// from outside goes through an SSH tunnel or a TLS reverse proxy.
 	Listen string
+	// TLSCert and TLSKey are PEM files: set, the admin is served over
+	// HTTPS (the files are read again when they change).
+	TLSCert, TLSKey string
+	// InsecureHTTP allows plaintext HTTP on an address reachable from the
+	// network. Without it, a non-loopback Listen needs TLS.
+	InsecureHTTP bool
 	// DataDir holds the database, the master key file and the setup token.
 	DataDir string
 	// MasterKeyFile is used when HYROUTE_MASTER_KEY is not set.
@@ -62,8 +68,10 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 	fs.StringVar(&c.Listen, "listen", env("LISTEN", DefaultListen), "HTTP address (env HYROUTE_SERVER_LISTEN)")
 	fs.StringVar(&c.DataDir, "data-dir", env("DATA_DIR", DefaultDataDir()), "data directory (env HYROUTE_SERVER_DATA_DIR)")
 	fs.StringVar(&c.MasterKeyFile, "master-key-file", env("MASTER_KEY_FILE", ""), "master key file, when HYROUTE_MASTER_KEY is not set (default <data-dir>/master.key)")
-	trust := env("TRUST_PROXY", "false")
-	fs.BoolVar(&c.TrustProxy, "trust-proxy", trust == "1" || strings.EqualFold(trust, "true"), "trust X-Forwarded-* from a reverse proxy on loopback (env HYROUTE_SERVER_TRUST_PROXY)")
+	fs.StringVar(&c.TLSCert, "tls-cert", env("TLS_CERT", ""), "TLS certificate chain (PEM) to serve HTTPS (env HYROUTE_SERVER_TLS_CERT)")
+	fs.StringVar(&c.TLSKey, "tls-key", env("TLS_KEY", ""), "TLS private key (PEM) (env HYROUTE_SERVER_TLS_KEY)")
+	fs.BoolVar(&c.InsecureHTTP, "insecure-http", isTrue(env("INSECURE_HTTP", "")), "allow plaintext HTTP on an address reachable from the network (env HYROUTE_SERVER_INSECURE_HTTP)")
+	fs.BoolVar(&c.TrustProxy, "trust-proxy", isTrue(env("TRUST_PROXY", "")), "trust X-Forwarded-* from a reverse proxy on loopback (env HYROUTE_SERVER_TRUST_PROXY)")
 	fs.StringVar(&c.LogLevel, "log-level", env("LOG_LEVEL", "info"), "debug, info, warn or error (env HYROUTE_SERVER_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -77,9 +85,22 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 	return c, c.validate()
 }
 
+func isTrue(v string) bool { return v == "1" || strings.EqualFold(v, "true") }
+
+// TLS reports whether the admin is served over HTTPS.
+func (c Config) TLS() bool { return c.TLSCert != "" }
+
 func (c Config) validate() error {
 	if _, port, err := net.SplitHostPort(c.Listen); err != nil || port == "" {
 		return fmt.Errorf("listen %q: want host:port", c.Listen)
+	}
+	if (c.TLSCert == "") != (c.TLSKey == "") {
+		return errors.New("tls-cert and tls-key go together")
+	}
+	if !c.Loopback() && !c.TLS() && !c.InsecureHTTP {
+		return fmt.Errorf("listen %s is reachable from the network, and passwords and sessions would cross it in plaintext: "+
+			"serve HTTPS with -tls-cert and -tls-key, or keep the admin on 127.0.0.1 behind a TLS reverse proxy or an SSH tunnel "+
+			"(-insecure-http allows plaintext anyway, for a network you trust)", c.Listen)
 	}
 	if c.DataDir == "" {
 		return errors.New("data-dir is empty")

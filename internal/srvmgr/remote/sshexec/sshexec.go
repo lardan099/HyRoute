@@ -53,8 +53,12 @@ type Options struct {
 	Keepalive time.Duration
 }
 
-// maxOutput bounds what Run keeps of stdout and stderr, and ReadFile.
+// maxOutput bounds what Run keeps of stdout and stderr.
 const maxOutput = 32 << 20
+
+// maxFile bounds ReadFile: a larger file is an error, not a truncated
+// read (a variable for tests).
+var maxFile = maxOutput
 
 // Client is a connected remote.Executor.
 type Client struct {
@@ -220,22 +224,27 @@ func (c *Client) Close() error {
 	return c.ssh.Close()
 }
 
-// limitedBuffer keeps the first max bytes.
+// limitedBuffer keeps the first max bytes; over says more came. The
+// buffer is a field, not embedded: an embedded bytes.Buffer would give it
+// ReadFrom, and io.Copy would fill it past max without calling Write.
 type limitedBuffer struct {
-	bytes.Buffer
-	max int
+	buf  bytes.Buffer
+	max  int
+	over bool
 }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
-	if room := b.max - b.Len(); room > 0 {
-		if len(p) > room {
-			b.Buffer.Write(p[:room])
-		} else {
-			b.Buffer.Write(p)
-		}
+	n := len(p)
+	if room := b.max - b.buf.Len(); n > room {
+		b.over = true
+		p = p[:max(room, 0)]
 	}
-	return len(p), nil
+	b.buf.Write(p)
+	return n, nil // the rest is dropped, not an error for the session
 }
+
+func (b *limitedBuffer) Bytes() []byte  { return b.buf.Bytes() }
+func (b *limitedBuffer) String() string { return b.buf.String() }
 
 // start opens a session and starts cmd; stop is closed-over cleanup that
 // kills the program when ctx ends first.
@@ -281,22 +290,29 @@ func exitCode(err error) (int, error) {
 
 // Run implements remote.Executor.
 func (c *Client) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
-	out := &limitedBuffer{max: maxOutput}
+	res, _, err := c.run(ctx, cmd, maxOutput)
+	return res, err
+}
+
+// run keeps up to limit bytes of stdout; over reports that there was
+// more.
+func (c *Client) run(ctx context.Context, cmd remote.Cmd, limit int) (res remote.Result, over bool, err error) {
+	out := &limitedBuffer{max: limit}
 	errb := &limitedBuffer{max: 1 << 20}
 	s, done, err := c.start(ctx, cmd, out, errb)
 	if err != nil {
-		return remote.Result{}, err
+		return remote.Result{}, false, err
 	}
 	defer done()
 	werr := s.Wait()
 	if ctx.Err() != nil {
-		return remote.Result{}, ctx.Err()
+		return remote.Result{}, false, ctx.Err()
 	}
 	code, err := exitCode(werr)
 	if err != nil {
-		return remote.Result{}, err
+		return remote.Result{}, false, err
 	}
-	return remote.Result{Stdout: out.Bytes(), Stderr: errb.Bytes(), ExitCode: code}, nil
+	return remote.Result{Stdout: out.Bytes(), Stderr: errb.Bytes(), ExitCode: code}, out.over, nil
 }
 
 // Stream implements remote.Executor.
@@ -354,9 +370,12 @@ func (c *Client) ReadFile(ctx context.Context, p string, sudo bool) ([]byte, err
 		return nil, err
 	}
 	if sudo {
-		res, err := c.Run(ctx, remote.Cmd{Args: []string{"cat", "--", p}, Sudo: true})
+		res, over, err := c.run(ctx, remote.Cmd{Args: []string{"cat", "--", p}, Sudo: true}, maxFile)
 		if err != nil {
 			return nil, err
+		}
+		if over {
+			return nil, tooLarge(p)
 		}
 		if !res.OK() {
 			if strings.Contains(string(res.Stderr), "No such file") {
@@ -375,7 +394,15 @@ func (c *Client) ReadFile(ctx context.Context, p string, sudo bool) ([]byte, err
 		return nil, err
 	}
 	defer f.Close()
-	return io.ReadAll(io.LimitReader(f, maxOutput))
+	b, err := io.ReadAll(io.LimitReader(f, int64(maxFile)+1))
+	if err == nil && len(b) > maxFile {
+		return nil, tooLarge(p)
+	}
+	return b, err
+}
+
+func tooLarge(p string) error {
+	return fmt.Errorf("%s: %w (more than %d MB)", p, remote.ErrFileTooLarge, maxFile>>20)
 }
 
 // WriteFile implements remote.Executor. The data goes by SFTP into a

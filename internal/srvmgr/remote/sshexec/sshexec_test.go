@@ -123,6 +123,22 @@ func TestFiles(t *testing.T) {
 	if err := c.WriteFile(ctx, "relative/path", data, remote.FileSpec{Mode: 0o600}); err == nil {
 		t.Fatal("relative path accepted")
 	}
+
+	// A file over the limit is an error, never a cut-short read.
+	old := maxFile
+	maxFile = len(data) - 1
+	t.Cleanup(func() { maxFile = old })
+	for _, sudo := range []bool{false, true} {
+		if b, err := c.ReadFile(ctx, target, sudo); !errors.Is(err, remote.ErrFileTooLarge) || b != nil {
+			t.Fatalf("large file (sudo %v): %d bytes, %v", sudo, len(b), err)
+		}
+	}
+	maxFile = len(data)
+	for _, sudo := range []bool{false, true} {
+		if b, err := c.ReadFile(ctx, target, sudo); err != nil || !bytes.Equal(b, data) {
+			t.Fatalf("file at the limit (sudo %v): %d bytes, %v", sudo, len(b), err)
+		}
+	}
 }
 
 func TestStreamAndCancel(t *testing.T) {

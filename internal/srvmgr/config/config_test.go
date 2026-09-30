@@ -3,6 +3,7 @@ package config
 import (
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -32,6 +33,8 @@ func TestFlagsOverrideEnv(t *testing.T) {
 		"HYROUTE_SERVER_DATA_DIR":    "/srv/a",
 		"HYROUTE_SERVER_TRUST_PROXY": "true",
 		"HYROUTE_SERVER_LOG_LEVEL":   "debug",
+		"HYROUTE_SERVER_TLS_CERT":    "/srv/a/cert.pem",
+		"HYROUTE_SERVER_TLS_KEY":     "/srv/a/key.pem",
 	})
 	c, err := Load([]string{"-listen", "127.0.0.1:9100"}, e, io.Discard)
 	if err != nil {
@@ -44,8 +47,28 @@ func TestFlagsOverrideEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Loopback() {
-		t.Fatal("0.0.0.0 is not loopback")
+	if c.Loopback() || !c.TLS() || c.TLSKey != "/srv/a/key.pem" {
+		t.Fatalf("%+v", c)
+	}
+}
+
+// The admin is not served in plaintext beyond this machine unless asked.
+func TestPlaintextBeyondLoopback(t *testing.T) {
+	for _, l := range []string{"0.0.0.0:8480", ":8480", "192.0.2.5:8480", "[::]:8480"} {
+		if _, err := Load([]string{"-listen", l}, env(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "-tls-cert") {
+			t.Errorf("%s: %v", l, err)
+		}
+		if c, err := Load([]string{"-listen", l, "-insecure-http"}, env(nil), io.Discard); err != nil || !c.InsecureHTTP {
+			t.Errorf("%s -insecure-http: %v", l, err)
+		}
+		if _, err := Load([]string{"-listen", l}, env(map[string]string{"HYROUTE_SERVER_INSECURE_HTTP": "1"}), io.Discard); err != nil {
+			t.Errorf("%s with the env: %v", l, err)
+		}
+	}
+	for _, l := range []string{"127.0.0.1:8480", "localhost:8480", "[::1]:8480"} {
+		if _, err := Load([]string{"-listen", l}, env(nil), io.Discard); err != nil {
+			t.Errorf("%s: %v", l, err)
+		}
 	}
 }
 
@@ -54,6 +77,8 @@ func TestLoadErrors(t *testing.T) {
 		{"-listen", "8480"},
 		{"-log-level", "loud"},
 		{"-data-dir", ""},
+		{"-tls-cert", "/a/cert.pem"},
+		{"-tls-key", "/a/key.pem"},
 		{"extra"},
 	} {
 		if _, err := Load(args, env(nil), io.Discard); err == nil {

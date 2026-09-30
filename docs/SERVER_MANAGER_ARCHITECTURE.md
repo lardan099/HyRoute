@@ -147,7 +147,11 @@ P1-04 сканирует файл БД на открытые значения т
 - **Master key** — 32 байта, base64: `HYROUTE_MASTER_KEY` или файл
   (`--master-key-file`, по умолчанию `<data-dir>/master.key`). Файл должен
   иметь права 0600 и принадлежать пользователю controller, иначе запуск
-  отказывается (на Windows права не проверяются: документируется). Если
+  отказывается. То же для каталога данных (0700) и файлов БД (0600, с
+  `-wal` и `-shm`) — пакет `datadir`, проверка до чтения чего-либо и с
+  командой исправления в ошибке. На Windows права не проверяются, а
+  ставятся: защищённый ACL только для SYSTEM, Administrators и
+  пользователя controller (у каталога — наследуемый). Если
   ни ключа, ни файла нет, первый запуск создаёт файл и пишет в журнал, что
   его нужно сохранить. Потеря ключа = потеря всех сохранённых credentials
   и конфигов в БД; серверы продолжают работать, их можно импортировать
@@ -191,7 +195,8 @@ P1-04 сканирует файл БД на открытые значения т
 - `remote.Executor` — низкоуровневый интерфейс: запуск argv (не строки
   shell) с опциональным sudo, чтение файла, атомарная запись файла
   (временный файл + `rename`, владелец и права), stat, потоковый вывод.
-  Он внутренний: API и UI до него не доходят.
+  Файл больше 32 МБ не читается: `remote.ErrFileTooLarge`, а не
+  обрезанные данные. Он внутренний: API и UI до него не доходят.
 - Над ним — **typed operations**: `RunProbe`, `ReadOSRelease`, `Memory`,
   `DiskFree`, `Uptime`, `LoadAverage`, `Listeners`, `ReadFirewall`,
   `Unit`, `ServiceUnits`, `UnitOfPID`, `ActiveState`, `Systemctl`,
@@ -449,7 +454,7 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 |---|---|
 | SSH без проверки ключа хоста (AutoAddPolicy, `InsecureIgnoreHostKey`) | TOFU с подтверждением отпечатка, отказ при смене ключа, re-trust только явно |
 | Секреты в коде, логах, чатах | Envelope encryption в БД, `redact` на журналы controller, jobs и journal сервера, ответы API без секретов, фейковые значения в тестах |
-| Открытый management API | Bind `127.0.0.1` по умолчанию; setup token для первого пользователя; сессии + CSRF + rate limit; доступ извне — SSH-туннель или reverse proxy с TLS (документируется) |
+| Открытый management API | Bind `127.0.0.1` по умолчанию; setup token для первого пользователя; сессии + CSRF + rate limit; доступ извне — SSH-туннель, reverse proxy с TLS или встроенный TLS (`-tls-cert`/`-tls-key`); plaintext HTTP на не-loopback адресе — только с явным `-insecure-http` |
 | Произвольные shell-команды | Только typed operations с проверкой аргументов и экранированием; в API нет «выполнить команду» |
 | Правка YAML через sed/regex | Typed-модель + сериализация, diff перед применением, откат |
 | Persistent iptables руками | Port hopping встроенный в Hysteria (снимается вместе с сервисом); firewall — через ufw/firewalld, если они активны |

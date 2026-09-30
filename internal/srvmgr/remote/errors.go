@@ -36,6 +36,9 @@ var (
 	// ErrSudoRequired: the SSH user is not root and cannot sudo without a
 	// password.
 	ErrSudoRequired = errors.New("root or passwordless sudo required")
+	// ErrFileTooLarge: a file on the server is larger than the controller
+	// reads; it is never cut short.
+	ErrFileTooLarge = errors.New("file is too large to read")
 )
 
 // UnreachableError: no SSH connection (DNS, refused, timeout).

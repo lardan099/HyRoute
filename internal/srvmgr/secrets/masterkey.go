@@ -125,7 +125,8 @@ func readKeyFile(file string) ([]byte, error) {
 	if !st.Mode().IsRegular() {
 		return nil, fmt.Errorf("master key file %s is not a regular file", file)
 	}
-	// Windows has no Unix modes: its ACLs are the admin's job (documented).
+	// Windows has no Unix modes: the controller sets the file's ACL
+	// (package datadir).
 	if runtime.GOOS != "windows" && st.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("master key file %s has mode %v: allow only its owner (chmod 600)", file, st.Mode().Perm())
 	}

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/config"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
+	"github.com/lardan099/hyroute/internal/srvmgr/datadir"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
 	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
 	"github.com/lardan099/hyroute/internal/srvmgr/importer"
@@ -65,9 +67,30 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return fmt.Errorf("data directory: %w", err)
 	}
+	// Only the controller's user may reach the database and the key.
+	if err := datadir.Dir(cfg.DataDir); err != nil {
+		return fmt.Errorf("data directory: %w", err)
+	}
+	keyFile := getenv(secrets.EnvMasterKey) == ""
+	if keyFile {
+		if err := datadir.File(cfg.MasterKeyFile); err != nil {
+			return fmt.Errorf("master key: %w", err)
+		}
+	}
+	for _, p := range []string{cfg.DBPath(), cfg.DBPath() + "-wal", cfg.DBPath() + "-shm"} {
+		if err := datadir.File(p); err != nil {
+			return fmt.Errorf("database: %w", err)
+		}
+	}
 	keys, src, err := secrets.Load(getenv, cfg.MasterKeyFile)
 	if err != nil {
 		return fmt.Errorf("master key: %w", err)
+	}
+	if src == secrets.Created {
+		// A key outside the data directory gets its own ACL on Windows.
+		if err := datadir.File(cfg.MasterKeyFile); err != nil {
+			return fmt.Errorf("master key: %w", err)
+		}
 	}
 	switch src {
 	case secrets.Created:
@@ -111,12 +134,18 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		<-jobsDone
 	}()
 
+	var certs *certFiles
+	if cfg.TLS() {
+		if certs, err = loadCert(cfg.TLSCert, cfg.TLSKey, log); err != nil {
+			return err
+		}
+	}
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return err
 	}
-	if !cfg.Loopback() {
-		log.Warn("the admin listens beyond this machine: put it behind a TLS reverse proxy or reach it through an SSH tunnel", "listen", cfg.Listen)
+	if !cfg.Loopback() && !cfg.TLS() {
+		log.Warn("the admin serves plaintext HTTP beyond this machine (-insecure-http): passwords and sessions cross the network unencrypted", "listen", cfg.Listen)
 	}
 	// Requests get a context that ends when shutdown starts: live event
 	// streams return instead of holding Shutdown for its whole timeout.
@@ -150,8 +179,13 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
 	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(ln) }()
-	log.Info("hyroute-server started", "version", version, "listen", ln.Addr().String(), "data", cfg.DataDir)
+	if certs != nil {
+		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: certs.GetCertificate}
+		go func() { errc <- srv.ServeTLS(ln, "", "") }()
+	} else {
+		go func() { errc <- srv.Serve(ln) }()
+	}
+	log.Info("hyroute-server started", "version", version, "listen", ln.Addr().String(), "tls", cfg.TLS(), "data", cfg.DataDir)
 	if ready != nil {
 		ready <- ln.Addr().String()
 	}
