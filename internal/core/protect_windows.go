@@ -87,11 +87,60 @@ func ProtectDir(dir string) error {
 		if err != nil {
 			return err
 		}
-		if err := windows.SetNamedSecurityInfo(d, windows.SE_FILE_OBJECT, info, owner, nil, dacl, nil); err != nil {
-			return fmt.Errorf("%s: %w", d, err)
+		set := func() error {
+			return windows.SetNamedSecurityInfo(d, windows.SE_FILE_OBJECT, info, owner, nil, dacl, nil)
+		}
+		err = set()
+		if errors.Is(err, windows.ERROR_INVALID_OWNER) {
+			err = withRestorePrivilege(set)
+		}
+		if err != nil {
+			return dirError(d, err)
 		}
 	}
 	return nil
+}
+
+// dirError is a failure to create or protect d, explained for people when
+// Windows refused Administrators as its owner.
+func dirError(d string, err error) error {
+	if errors.Is(err, windows.ERROR_INVALID_OWNER) {
+		return fmt.Errorf("%s: Windows не дала сделать группу «Администраторы» владельцем папки (%w). "+
+			"Проверьте в командной строке от имени администратора: whoami /groups — у группы «Администраторы» (S-1-5-32-544) должен быть атрибут «Владелец группы»", d, err)
+	}
+	return fmt.Errorf("%s: %w", d, err)
+}
+
+// withRestorePrivilege runs fn with SeRestorePrivilege enabled and then
+// puts it back as it was. Administrators hold it, disabled; it is what
+// lets icacls /setowner name any owner. HyRoute needs it only when Windows
+// refuses Administrators as the owner of a folder (ERROR_INVALID_OWNER:
+// the elevated token does not mark the group as one that may own
+// objects). Without the privilege fn runs as it is and fails the same way.
+func withRestorePrivilege(fn func() error) error {
+	name, err := windows.UTF16PtrFromString("SeRestorePrivilege")
+	if err != nil {
+		return fn()
+	}
+	var luid windows.LUID
+	if err := windows.LookupPrivilegeValue(nil, name, &luid); err != nil {
+		return fn()
+	}
+	var t windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_ADJUST_PRIVILEGES|windows.TOKEN_QUERY, &t); err != nil {
+		return fn()
+	}
+	defer t.Close()
+	tp := windows.Tokenprivileges{PrivilegeCount: 1}
+	tp.Privileges[0] = windows.LUIDAndAttributes{Luid: luid, Attributes: windows.SE_PRIVILEGE_ENABLED}
+	var prev windows.Tokenprivileges
+	var n uint32
+	if err := windows.AdjustTokenPrivileges(t, false, &tp, uint32(unsafe.Sizeof(prev)), &prev, &n); err != nil {
+		return fn()
+	}
+	// prev lists the privilege only if this call changed it.
+	defer windows.AdjustTokenPrivileges(t, false, &prev, 0, nil, nil)
+	return fn()
 }
 
 // createProtected creates d with sd; a folder already there is kept.
@@ -102,9 +151,13 @@ func createProtected(d string, sd *windows.SECURITY_DESCRIPTOR) error {
 	}
 	sa := &windows.SecurityAttributes{SecurityDescriptor: sd}
 	sa.Length = uint32(unsafe.Sizeof(*sa))
-	if err := windows.CreateDirectory(p, sa); err != nil {
+	err = windows.CreateDirectory(p, sa)
+	if errors.Is(err, windows.ERROR_INVALID_OWNER) {
+		err = withRestorePrivilege(func() error { return windows.CreateDirectory(p, sa) })
+	}
+	if err != nil {
 		if !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
-			return fmt.Errorf("%s: %w", d, err)
+			return dirError(d, err)
 		}
 		// Already there: it must be a directory.
 		if err := os.MkdirAll(d, 0o755); err != nil {
