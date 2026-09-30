@@ -3,10 +3,24 @@
   import { route, go, pages, type Page } from './router.svelte';
   import Overview from './pages/Overview.svelte';
   import Soon from './pages/Soon.svelte';
+  import Auth from './pages/Auth.svelte';
+  import Settings from './pages/Settings.svelte';
+  import { session, loadSession } from './session.svelte';
 
   const title = (p: Page) => t(`nav.${p}` as Key);
+
+  loadSession();
 </script>
 
+{#if session.status === 'loading'}
+  <div class="center muted">{t('overview.checking')}</div>
+{:else if session.status === 'offline'}
+  <div class="center">
+    <div class="note error">{t('error.network')} <button class="link" onclick={loadSession}>{t('common.retry')}</button></div>
+  </div>
+{:else if session.status === 'setup' || session.status === 'login'}
+  <Auth mode={session.status} />
+{:else}
 <div class="app">
   <aside>
     <div class="brand">
@@ -28,17 +42,26 @@
         >
       {/each}
     </nav>
+    {#if session.user}
+      <div class="who small">
+        <span class="ellipsis">{session.user.username}</span>
+        <span class="faint">{t(`role.${session.user.role}` as Key)}</span>
+      </div>
+    {/if}
   </aside>
   <main>
     <div class="page">
       {#if route.page === 'overview'}
         <Overview />
+      {:else if route.page === 'settings'}
+        <Settings />
       {:else}
         <Soon title={title(route.page)} text={t(`soon.${route.page}` as Key)} />
       {/if}
     </div>
   </main>
 </div>
+{/if}
 
 <style>
   .app { display: flex; height: 100%; }
@@ -78,6 +101,9 @@
   }
   .nav:hover { background: var(--surface-2); color: var(--text); }
   .nav.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+  .who { margin-top: auto; display: flex; flex-direction: column; padding: 8px 12px; min-width: 0; }
+  .center { min-height: 100%; display: grid; place-items: center; padding: 24px; }
 
   main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .page { flex: 1; min-height: 0; overflow: auto; padding: 24px 28px 28px; }

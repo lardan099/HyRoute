@@ -14,10 +14,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/api"
+	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/config"
 	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
 	admin "github.com/lardan099/hyroute/web/admin"
@@ -55,6 +57,13 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	}
 	defer db.Close()
 
+	authSvc := auth.New(db)
+	tokenFile := filepath.Join(cfg.DataDir, "setup-token")
+	if err := prepareSetup(ctx, authSvc, tokenFile, log); err != nil {
+		return err
+	}
+	go cleanupSessions(ctx, authSvc, log)
+
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return err
@@ -63,7 +72,18 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		log.Warn("the admin listens beyond this machine: put it behind a TLS reverse proxy or reach it through an SSH tunnel", "listen", cfg.Listen)
 	}
 	srv := &http.Server{
-		Handler: api.New(api.Deps{Store: db, Log: log, Version: version, UI: admin.FS()}),
+		Handler: api.New(api.Deps{
+			Store:      db,
+			Auth:       authSvc,
+			Log:        log,
+			Version:    version,
+			TrustProxy: cfg.TrustProxy,
+			UI:         admin.FS(),
+			OnSetupDone: func() {
+				os.Remove(tokenFile)
+				log.Info("owner created, setup token removed")
+			},
+		}),
 		// No ReadTimeout/WriteTimeout: live logs are long-lived event
 		// streams. Bodies are bounded by size in the API instead.
 		ReadHeaderTimeout: 10 * time.Second,
@@ -89,6 +109,51 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		log.Warn("shutdown", "err", err)
 	}
 	return nil
+}
+
+// prepareSetup issues the one-time setup token while there are no users:
+// it goes to the log and to a 0600 file, so only someone with access to
+// the machine can create the first owner. A leftover file is removed once
+// setup is done.
+func prepareSetup(ctx context.Context, a *auth.Service, tokenFile string, log *slog.Logger) error {
+	tok, err := a.PrepareSetup(ctx)
+	if err != nil {
+		return err
+	}
+	if tok == "" {
+		os.Remove(tokenFile)
+		return nil
+	}
+	os.Remove(tokenFile) // a stale file of another owner or mode
+	f, err := os.OpenFile(tokenFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("setup token file: %w", err)
+	}
+	_, err = f.WriteString(tok + "\n")
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return fmt.Errorf("setup token file: %w", err)
+	}
+	log.Warn("no administrator yet: open the admin and create one with this setup token", "setup_token", tok, "file", tokenFile)
+	return nil
+}
+
+// cleanupSessions drops long-ended sessions every hour.
+func cleanupSessions(ctx context.Context, a *auth.Service, log *slog.Logger) {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		if err := a.Cleanup(ctx); err != nil && ctx.Err() == nil {
+			log.Warn("session cleanup", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 func newLogger(w io.Writer, level string) *slog.Logger {

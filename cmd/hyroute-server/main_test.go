@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +59,29 @@ func TestRunServesHealthAndUI(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != 200 || !strings.Contains(string(body), "<div id=\"app\">") {
 		t.Fatalf("UI %d %q", res.StatusCode, body)
+	}
+
+	// First run: the setup token is in a 0600 file.
+	tok, err := os.ReadFile(filepath.Join(dir, "setup-token"))
+	if err != nil || len(strings.TrimSpace(string(tok))) < 32 {
+		t.Fatalf("setup token file: %q %v", tok, err)
+	}
+	if runtime.GOOS != "windows" {
+		if st, _ := os.Stat(filepath.Join(dir, "setup-token")); st.Mode().Perm() != 0o600 {
+			t.Fatalf("setup token mode %v", st.Mode())
+		}
+	}
+	setup := `{"token":"` + strings.TrimSpace(string(tok)) + `","username":"owner","password":"correct horse battery"}`
+	res, err = http.Post("http://"+addr+"/api/v1/setup", "application/json", strings.NewReader(setup))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("setup %d", res.StatusCode)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "setup-token")); !os.IsNotExist(err) {
+		t.Fatal("setup token file left after setup")
 	}
 
 	cancel()

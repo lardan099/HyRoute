@@ -31,6 +31,38 @@ export const ru = {
   'soon.logs': 'Журналы controller, заданий и Hysteria на серверах — с фильтрами и без секретов.',
   'soon.settings': 'Пользователи, сессии, ключ шифрования и параметры controller.',
 
+  'auth.setupTitle': 'Первый запуск',
+  'auth.setupHint': 'Создайте владельца. Код первого запуска напечатан в журнале hyroute-server и лежит в файле setup-token в каталоге данных.',
+  'auth.setupToken': 'Код первого запуска',
+  'auth.loginTitle': 'Вход',
+  'auth.username': 'Имя пользователя',
+  'auth.password': 'Пароль',
+  'auth.password2': 'Пароль ещё раз',
+  'auth.mismatch': 'Пароли не совпадают.',
+  'auth.setupSubmit': 'Создать и войти',
+  'auth.loginSubmit': 'Войти',
+
+  'role.owner': 'владелец',
+  'role.admin': 'администратор',
+  'role.operator': 'оператор',
+  'role.readonly': 'только чтение',
+
+  'settings.account': 'Учётная запись',
+  'settings.logout': 'Выйти',
+  'settings.sessions': 'Мои сессии',
+  'settings.allSessions': 'Сессии',
+  'settings.user': 'Пользователь',
+  'settings.ip': 'Адрес',
+  'settings.lastSeen': 'Последняя активность',
+  'settings.browser': 'Браузер',
+  'settings.current': 'эта',
+  'settings.revoke': 'Завершить',
+  'settings.users': 'Пользователи',
+  'settings.disabled': 'отключён',
+  'settings.addUser': 'Добавить',
+
+  'common.retry': 'Повторить',
+
   'error.network': 'Нет связи с controller.',
   'error.unknown': 'Неизвестная ошибка.',
 } as const;

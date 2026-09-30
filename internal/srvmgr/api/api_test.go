@@ -7,18 +7,31 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
 )
 
-type fakeStore struct {
-	version int
-	err     error
+// brokenStore fails SchemaVersion, as a database with a disk error would.
+type brokenStore struct {
+	*sqlite.DB
+	err error
 }
 
-func (f fakeStore) SchemaVersion(context.Context) (int, error) { return f.version, f.err }
-func (f fakeStore) Close() error                               { return nil }
+func (b brokenStore) SchemaVersion(context.Context) (int, error) { return 0, b.err }
+
+func openDB(t *testing.T) *sqlite.DB {
+	t.Helper()
+	db, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
 
 var testUI = fstest.MapFS{
 	"index.html":       {Data: []byte("<!doctype html><title>admin</title>")},
@@ -45,14 +58,16 @@ func decodeError(t *testing.T, rec *httptest.ResponseRecorder) Error {
 }
 
 func TestHealth(t *testing.T) {
-	h := New(Deps{Store: fakeStore{version: 3}, Version: "v1.2.3"})
+	db := openDB(t)
+	h := New(Deps{Store: db, Version: "v1.2.3"})
+	wantVersion, _ := db.SchemaVersion(context.Background())
 	rec := do(h, "GET", "/api/v1/health")
 	if rec.Code != 200 {
 		t.Fatalf("status %d", rec.Code)
 	}
 	var body map[string]any
 	json.Unmarshal(rec.Body.Bytes(), &body)
-	if body["status"] != "ok" || body["version"] != "v1.2.3" || body["schemaVersion"] != float64(3) {
+	if body["status"] != "ok" || body["version"] != "v1.2.3" || body["schemaVersion"] != float64(wantVersion) {
 		t.Fatalf("%v", body)
 	}
 	if rec.Header().Get("Cache-Control") != "no-store" {
@@ -61,7 +76,7 @@ func TestHealth(t *testing.T) {
 }
 
 func TestHealthDBDown(t *testing.T) {
-	h := New(Deps{Store: fakeStore{err: errors.New("disk I/O error")}})
+	h := New(Deps{Store: brokenStore{DB: openDB(t), err: errors.New("disk I/O error")}})
 	rec := do(h, "GET", "/api/v1/health")
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status %d", rec.Code)
@@ -73,7 +88,7 @@ func TestHealthDBDown(t *testing.T) {
 }
 
 func TestUnknownAPIIsJSON404(t *testing.T) {
-	h := New(Deps{Store: fakeStore{}, UI: testUI})
+	h := New(Deps{Store: openDB(t), UI: testUI})
 	for _, p := range []string{"/api/v1/nope", "/api/v2/health"} {
 		rec := do(h, "GET", p)
 		if rec.Code != 404 {
@@ -91,7 +106,7 @@ func TestUnknownAPIIsJSON404(t *testing.T) {
 }
 
 func TestUIServingAndFallback(t *testing.T) {
-	h := New(Deps{Store: fakeStore{}, UI: testUI})
+	h := New(Deps{Store: openDB(t), UI: testUI})
 	for _, p := range []string{"/", "/servers", "/deployments/42"} {
 		rec := do(h, "GET", p)
 		if rec.Code != 200 || !strings.Contains(rec.Body.String(), "<title>admin</title>") {
@@ -114,7 +129,7 @@ func TestUIServingAndFallback(t *testing.T) {
 }
 
 func TestSecurityHeaders(t *testing.T) {
-	h := New(Deps{Store: fakeStore{}, UI: testUI})
+	h := New(Deps{Store: openDB(t), UI: testUI})
 	for _, p := range []string{"/", "/api/v1/health"} {
 		rec := do(h, "GET", p)
 		for _, k := range []string{"Content-Security-Policy", "X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy"} {
@@ -129,7 +144,7 @@ func TestSecurityHeaders(t *testing.T) {
 }
 
 func TestPanicBecomesInternalError(t *testing.T) {
-	s := &server{Deps: Deps{Store: fakeStore{}, Log: slog.New(slog.DiscardHandler)}}
+	s := &server{Deps: Deps{Log: slog.New(slog.DiscardHandler)}}
 	h := s.recoverPanics(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("boom")
 	}))

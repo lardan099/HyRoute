@@ -13,14 +13,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
 
 // Deps is what the API needs.
 type Deps struct {
 	Store   store.Store
+	Auth    *auth.Service
 	Log     *slog.Logger
 	Version string
+	// TrustProxy: believe X-Forwarded-For/-Proto from a reverse proxy on
+	// a loopback address.
+	TrustProxy bool
+	// OnSetupDone runs after the first owner is created (main removes the
+	// setup token file).
+	OnSetupDone func()
 	// UI is the built admin app (a directory with index.html); nil
 	// serves no UI.
 	UI fs.FS
@@ -38,6 +46,15 @@ func New(d Deps) http.Handler {
 	s := &server{Deps: d}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.health)
+	mux.HandleFunc("GET /api/v1/setup", s.public(s.getSetup))
+	mux.HandleFunc("POST /api/v1/setup", s.public(s.postSetup))
+	mux.HandleFunc("POST /api/v1/session", s.public(s.postSession))
+	mux.HandleFunc("GET /api/v1/session", s.authed(anyRole, s.getSession))
+	mux.HandleFunc("DELETE /api/v1/session", s.authed(ownSession, s.deleteSession))
+	mux.HandleFunc("GET /api/v1/sessions", s.authed(anyRole, s.listSessions))
+	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.authed(ownSession, s.revokeSession))
+	mux.HandleFunc("GET /api/v1/users", s.authed(anyRole, s.listUsers))
+	mux.HandleFunc("POST /api/v1/users", s.authed(manageUsers, s.createUser))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { writeError(w, errNotFound) })
 	if d.UI != nil {
 		mux.Handle("/", uiHandler(d.UI))

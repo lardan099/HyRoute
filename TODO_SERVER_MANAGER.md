@@ -107,11 +107,11 @@
 **Done:** `hyroute-server` запускается, отдаёт UI и `/api/v1/health`; миграции применяются на чистой БД; тесты на миграции.
 
 ### P1-02 Аутентификация админки
-- [ ] First-run создание администратора (только если пользователей нет).
-- [ ] argon2id, сессии в БД, secure/HttpOnly/SameSite cookies, CSRF-защита.
-- [ ] Rate limiting логина, logout, отзыв сессий.
-- [ ] Роли в data model: Owner/Admin, Operator, Read-only (enforcement минимальный: Read-only не может менять).
-- [ ] Все API, кроме login/first-run/health, требуют сессию.
+- [x] First-run создание администратора (только если пользователей нет).
+- [x] argon2id, сессии в БД, secure/HttpOnly/SameSite cookies, CSRF-защита.
+- [x] Rate limiting логина, logout, отзыв сессий.
+- [x] Роли в data model: Owner/Admin, Operator, Read-only (enforcement минимальный: Read-only не может менять).
+- [x] Все API, кроме login/first-run/health, требуют сессию.
 
 **Done:** тесты: first-run нельзя повторить, неверный пароль, rate limit, истёкшая/отозванная сессия, CSRF, Read-only получает 403 на изменение.
 

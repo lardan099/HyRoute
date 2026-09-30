@@ -1,0 +1,410 @@
+// Package auth handles admin accounts of the server manager: first-run
+// setup with a one-time token, argon2id passwords, sessions stored by the
+// hash of their token, CSRF tokens derived from the session token, login
+// rate limiting and roles.
+package auth
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/store"
+)
+
+// Errors of the service; the API maps them to codes and statuses.
+var (
+	ErrBadCredentials  = errors.New("wrong username or password")
+	ErrUnauthenticated = errors.New("no valid session")
+	ErrForbidden       = errors.New("not allowed for this role")
+	ErrSetupDone       = errors.New("setup already done")
+	ErrBadSetupToken   = errors.New("wrong setup token")
+)
+
+// RateLimitedError: too many failed attempts; retry after Wait.
+type RateLimitedError struct{ Wait time.Duration }
+
+func (e *RateLimitedError) Error() string {
+	return fmt.Sprintf("too many failed attempts, retry in %s", e.Wait.Round(time.Second))
+}
+
+// InvalidError: the input does not pass validation; Msg is for people.
+type InvalidError struct{ Field, Msg string }
+
+func (e *InvalidError) Error() string { return e.Field + ": " + e.Msg }
+
+// Store is what the service needs from storage.
+type Store interface {
+	store.Users
+	store.Sessions
+	store.Audit
+}
+
+// Meta describes the client of a request.
+type Meta struct {
+	IP        string
+	UserAgent string
+}
+
+// Principal is the authenticated user of a request.
+type Principal struct {
+	User    model.User
+	Session model.Session
+	// Token is the session token from the cookie (for the CSRF token).
+	Token string
+}
+
+// Issued is a new session: Token goes into the cookie, CSRF to the page.
+type Issued struct {
+	Token   string
+	CSRF    string
+	User    model.User
+	Session model.Session
+}
+
+// Service is the authentication service.
+type Service struct {
+	Store  Store
+	Params Params
+	Now    func() time.Time
+	// IdleTimeout ends a session not used for this long; MaxAge ends it
+	// regardless.
+	IdleTimeout time.Duration
+	MaxAge      time.Duration
+
+	byIP   *Limiter
+	byUser *Limiter
+
+	mu        sync.Mutex
+	setupHash []byte // SHA-256 of the one-time setup token, nil if none
+	dummy     string // hash verified for unknown users (same timing)
+}
+
+// New returns a service with the default parameters.
+func New(st Store) *Service {
+	return &Service{
+		Store:       st,
+		Params:      DefaultParams,
+		Now:         time.Now,
+		IdleTimeout: 12 * time.Hour,
+		MaxAge:      7 * 24 * time.Hour,
+		byIP:        &Limiter{Max: 20, Window: 15 * time.Minute},
+		byUser:      &Limiter{Max: 5, Window: 5 * time.Minute},
+	}
+}
+
+func randomToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func tokenHash(token string) []byte {
+	h := sha256.Sum256([]byte(token))
+	return h[:]
+}
+
+// CSRFToken is derived from the session token: the page gets it from the
+// API, a cross-site attacker cannot read the HttpOnly cookie to compute it.
+func CSRFToken(sessionToken string) string {
+	m := hmac.New(sha256.New, []byte(sessionToken))
+	m.Write([]byte("hyroute-server csrf v1"))
+	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
+}
+
+// CheckCSRF compares the header value with the token of the session.
+func CheckCSRF(sessionToken, header string) bool {
+	return header != "" && subtle.ConstantTimeCompare([]byte(CSRFToken(sessionToken)), []byte(header)) == 1
+}
+
+// SetupNeeded reports whether no user exists yet.
+func (s *Service) SetupNeeded(ctx context.Context) (bool, error) {
+	n, err := s.Store.CountUsers(ctx)
+	return n == 0, err
+}
+
+// PrepareSetup creates the one-time setup token when there are no users
+// (the caller shows it in the log and writes it to a 0600 file); it
+// returns "" when setup is done.
+func (s *Service) PrepareSetup(ctx context.Context) (string, error) {
+	need, err := s.SetupNeeded(ctx)
+	if err != nil || !need {
+		return "", err
+	}
+	tok, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	s.setupHash = tokenHash(tok)
+	s.mu.Unlock()
+	return tok, nil
+}
+
+var usernameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// MinPasswordLen and MaxPasswordLen bound passwords (the upper bound keeps
+// hashing cheap for an attacker's huge inputs).
+const (
+	MinPasswordLen = 10
+	MaxPasswordLen = 1024
+)
+
+func validateCredentials(username, password string) error {
+	if !usernameRe.MatchString(username) {
+		return &InvalidError{"username", "Имя пользователя: от 1 до 64 символов, латинские буквы, цифры, точка, дефис и подчёркивание."}
+	}
+	if n := utf8.RuneCountInString(password); n < MinPasswordLen || len(password) > MaxPasswordLen {
+		return &InvalidError{"password", fmt.Sprintf("Пароль: не короче %d символов.", MinPasswordLen)}
+	}
+	return nil
+}
+
+// Setup creates the owner with the setup token and logs them in.
+func (s *Service) Setup(ctx context.Context, token, username, password string, m Meta) (Issued, error) {
+	now := s.Now()
+	if w := s.byIP.Wait(m.IP, now); w > 0 {
+		return Issued{}, &RateLimitedError{w}
+	}
+	s.mu.Lock()
+	want := s.setupHash
+	s.mu.Unlock()
+	if want == nil {
+		if need, err := s.SetupNeeded(ctx); err != nil {
+			return Issued{}, err
+		} else if !need {
+			return Issued{}, ErrSetupDone
+		}
+		return Issued{}, ErrBadSetupToken
+	}
+	if subtle.ConstantTimeCompare(tokenHash(strings.TrimSpace(token)), want) != 1 {
+		s.byIP.Fail(m.IP, now)
+		s.audit(ctx, 0, "setup_failed", "", "wrong setup token from "+m.IP)
+		return Issued{}, ErrBadSetupToken
+	}
+	if err := validateCredentials(username, password); err != nil {
+		return Issued{}, err
+	}
+	hash, err := HashPassword(password, s.Params)
+	if err != nil {
+		return Issued{}, err
+	}
+	u := model.User{Username: username, PasswordHash: hash, Role: model.RoleOwner, CreatedAt: now, UpdatedAt: now}
+	if err := s.Store.CreateFirstUser(ctx, &u); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			return Issued{}, ErrSetupDone
+		}
+		return Issued{}, err
+	}
+	s.mu.Lock()
+	s.setupHash = nil
+	s.mu.Unlock()
+	s.audit(ctx, u.ID, "setup", u.Username, "owner created")
+	return s.issue(ctx, u, m, now)
+}
+
+// SetupDone reports whether the setup token was used (the caller removes
+// the token file).
+func (s *Service) SetupDone() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setupHash == nil
+}
+
+// Login checks the password and opens a session.
+func (s *Service) Login(ctx context.Context, username, password string, m Meta) (Issued, error) {
+	now := s.Now()
+	userKey := strings.ToLower(username)
+	w := max(s.byIP.Wait(m.IP, now), s.byUser.Wait(userKey, now))
+	if w > 0 {
+		// Not audited: a flood of attempts must not fill the database.
+		return Issued{}, &RateLimitedError{w}
+	}
+	if len(password) > MaxPasswordLen || len(username) > 64 {
+		return Issued{}, ErrBadCredentials
+	}
+	u, err := s.Store.UserByName(ctx, username)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return Issued{}, err
+	}
+	hash := u.PasswordHash
+	if err != nil {
+		hash = s.dummyHash()
+	}
+	ok, stale, verr := VerifyPassword(hash, password, s.Params)
+	if err != nil || verr != nil || !ok || u.Disabled {
+		s.byIP.Fail(m.IP, now)
+		s.byUser.Fail(userKey, now)
+		s.audit(ctx, 0, "login_failed", username, "from "+m.IP)
+		return Issued{}, ErrBadCredentials
+	}
+	s.byUser.Reset(userKey)
+	if stale {
+		if h, err := HashPassword(password, s.Params); err == nil {
+			s.Store.UpdatePasswordHash(ctx, u.ID, h, now)
+		}
+	}
+	s.audit(ctx, u.ID, "login", u.Username, "from "+m.IP)
+	return s.issue(ctx, u, m, now)
+}
+
+// dummyHash is a real hash with the current parameters, so a login with an
+// unknown name takes as long as with a known one.
+func (s *Service) dummyHash() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dummy == "" {
+		s.dummy, _ = HashPassword("not a password of anybody", s.Params)
+	}
+	return s.dummy
+}
+
+func (s *Service) issue(ctx context.Context, u model.User, m Meta, now time.Time) (Issued, error) {
+	tok, err := randomToken()
+	if err != nil {
+		return Issued{}, err
+	}
+	ua := m.UserAgent
+	if len(ua) > 256 {
+		ua = ua[:256]
+	}
+	sess := model.Session{TokenHash: tokenHash(tok), UserID: u.ID, CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(s.MaxAge), IP: m.IP, UserAgent: ua}
+	if err := s.Store.CreateSession(ctx, &sess); err != nil {
+		return Issued{}, err
+	}
+	return Issued{Token: tok, CSRF: CSRFToken(tok), User: u, Session: sess}, nil
+}
+
+// touchEvery limits last-seen writes to one per minute per session.
+const touchEvery = time.Minute
+
+// Authenticate resolves a session token to its user.
+func (s *Service) Authenticate(ctx context.Context, token string) (Principal, error) {
+	if token == "" || len(token) > 128 {
+		return Principal{}, ErrUnauthenticated
+	}
+	sess, err := s.Store.SessionByTokenHash(ctx, tokenHash(token))
+	if errors.Is(err, store.ErrNotFound) {
+		return Principal{}, ErrUnauthenticated
+	}
+	if err != nil {
+		return Principal{}, err
+	}
+	now := s.Now()
+	if !sess.RevokedAt.IsZero() || !now.Before(sess.ExpiresAt) || now.Sub(sess.LastSeenAt) > s.IdleTimeout {
+		return Principal{}, ErrUnauthenticated
+	}
+	u, err := s.Store.UserByID(ctx, sess.UserID)
+	if errors.Is(err, store.ErrNotFound) || u.Disabled {
+		return Principal{}, ErrUnauthenticated
+	}
+	if err != nil {
+		return Principal{}, err
+	}
+	if now.Sub(sess.LastSeenAt) >= touchEvery {
+		if err := s.Store.TouchSession(ctx, sess.ID, now); err == nil {
+			sess.LastSeenAt = now
+		}
+	}
+	return Principal{User: u, Session: sess, Token: token}, nil
+}
+
+// Logout revokes the session of p.
+func (s *Service) Logout(ctx context.Context, p Principal) error {
+	s.audit(ctx, p.User.ID, "logout", p.User.Username, "")
+	return s.Store.RevokeSession(ctx, p.Session.ID, s.Now())
+}
+
+// Sessions lists live sessions: all of them for owners and admins when all
+// is set, otherwise those of p.
+func (s *Service) Sessions(ctx context.Context, p Principal, all bool) ([]model.Session, error) {
+	uid := p.User.ID
+	if all {
+		if !p.User.Role.CanManageUsers() {
+			return nil, ErrForbidden
+		}
+		uid = 0
+	}
+	now := s.Now()
+	ss, err := s.Store.ListSessions(ctx, uid, now)
+	if err != nil {
+		return nil, err
+	}
+	// Idle sessions are dead for Authenticate, so they are not listed.
+	live := ss[:0]
+	for _, x := range ss {
+		if now.Sub(x.LastSeenAt) <= s.IdleTimeout {
+			live = append(live, x)
+		}
+	}
+	return live, nil
+}
+
+// RevokeSession ends a session: one's own, or anyone's for owners and
+// admins.
+func (s *Service) RevokeSession(ctx context.Context, p Principal, id int64) error {
+	sess, err := s.Store.SessionByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if sess.UserID != p.User.ID && !p.User.Role.CanManageUsers() {
+		return ErrForbidden
+	}
+	s.audit(ctx, p.User.ID, "session_revoked", fmt.Sprint(id), "")
+	return s.Store.RevokeSession(ctx, id, s.Now())
+}
+
+// CreateUser adds an admin, operator or read-only user; only owners and
+// admins may, and nobody creates a second owner.
+func (s *Service) CreateUser(ctx context.Context, p Principal, username, password string, role model.Role) (model.User, error) {
+	if !p.User.Role.CanManageUsers() {
+		return model.User{}, ErrForbidden
+	}
+	if !role.Valid() || role == model.RoleOwner {
+		return model.User{}, &InvalidError{"role", "Роль: admin, operator или readonly."}
+	}
+	if err := validateCredentials(username, password); err != nil {
+		return model.User{}, err
+	}
+	hash, err := HashPassword(password, s.Params)
+	if err != nil {
+		return model.User{}, err
+	}
+	now := s.Now()
+	u := model.User{Username: username, PasswordHash: hash, Role: role, CreatedAt: now, UpdatedAt: now}
+	if err := s.Store.CreateUser(ctx, &u); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			return model.User{}, &InvalidError{"username", "Пользователь с таким именем уже есть."}
+		}
+		return model.User{}, err
+	}
+	s.audit(ctx, p.User.ID, "user_created", u.Username, string(role))
+	return u, nil
+}
+
+// Users lists accounts (any logged-in user may see who has access).
+func (s *Service) Users(ctx context.Context) ([]model.User, error) {
+	return s.Store.ListUsers(ctx)
+}
+
+// Cleanup deletes sessions that ended more than a day ago.
+func (s *Service) Cleanup(ctx context.Context) error {
+	return s.Store.DeleteSessionsBefore(ctx, s.Now().Add(-24*time.Hour))
+}
+
+func (s *Service) audit(ctx context.Context, uid int64, action, target, details string) {
+	s.Store.AddAudit(ctx, model.AuditEntry{Time: s.Now(), UserID: uid, Action: action, Target: target, Details: details})
+}
