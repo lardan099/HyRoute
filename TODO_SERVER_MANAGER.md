@@ -234,9 +234,9 @@
 - [x] Страница сервера: статус, действия с подтверждением для stop/restart, живой журнал. Страница Logs: controller (буфер записей), задания, journal Hysteria; фильтры сервер, уровень, текст.
 
 ### P1-13 Базовый редактор конфига с безопасным применением
-- [ ] Structured editor для основных полей + Raw YAML editor, синхронизация через typed model.
-- [ ] Pipeline apply: read current → backup → candidate → validate (включая проверку самой Hysteria, если возможно) → diff → atomic install → restart → health check → commit revision; при ошибке — rollback → restart предыдущей версии → понятный отчёт.
-- [ ] Diff viewer в UI перед применением.
+- [x] Structured editor для основных полей + Raw YAML editor, синхронизация через typed model.
+- [x] Pipeline apply: read current → backup → candidate → validate (включая проверку самой Hysteria, если возможно) → diff → atomic install → restart → health check → commit revision; при ошибке — rollback → restart предыдущей версии → понятный отчёт.
+- [x] Diff viewer в UI перед применением.
 
 **Done:** тесты: успешное применение, невалидный конфиг отклонён до установки, сервис не стартовал → автоматический rollback.
 
@@ -249,7 +249,7 @@
 - [x] Задание `apply`: сверка файла на сервере с базовой ревизией → проверка → копия → атомарная установка с прежними правами → restart → health check → ревизия `edit`; при ошибке — прежний файл и прежняя служба, журнал в отчёте. `POST /servers/{id}/config/apply`.
 
 #### P1-13c UI редактора
-- [ ] Страница конфига сервера: основные поля и raw YAML (синхронизация через controller), проблемы, diff перед применением, применение с прогрессом.
+- [x] Страница конфига сервера: основные поля и raw YAML (синхронизация через controller), проблемы, diff перед применением, применение с прогрессом.
 
 ### P1-14 Профиль для клиента
 - [ ] После deploy/import: URI, QR code, скачать config, кнопка «Добавить в HyRoute» (через стабильный формат/URI, без чтения файлов друг друга).

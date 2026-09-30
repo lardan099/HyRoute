@@ -10,6 +10,7 @@
   import Dialog from '../lib/Dialog.svelte';
   import DeployDialog from '../lib/DeployDialog.svelte';
   import JournalView from '../lib/JournalView.svelte';
+  import ConfigEditor from '../lib/ConfigEditor.svelte';
 
   let { id }: { id: number } = $props();
 
@@ -21,6 +22,7 @@
   let loadingStatus = $state(false);
   let confirming = $state<ServiceAction | null>(null);
   let deploying = $state(false);
+  let editing = $state(false);
   let action = $state<{ name: ServiceAction; job: Job; done: boolean; ok: boolean } | null>(null);
   let writable = $derived(canWrite(session.user));
   let poll: ReturnType<typeof setTimeout> | undefined;
@@ -132,6 +134,9 @@
     </div>
   {/if}
 
+  {#if editing}
+    <ConfigEditor {server} onclose={() => (editing = false)} />
+  {:else}
   <div class="grid">
     <section class="card">
       <div class="row">
@@ -196,7 +201,10 @@
         </section>
       {/if}
       <section class="card">
-        <h2>{t('srv.config')}</h2>
+        <div class="row">
+          <h2 class="grow">{t('srv.config')}</h2>
+          {#if config && writable}<button class="ghost" onclick={() => (editing = true)}>{t('cfg.edit')}</button>{/if}
+        </div>
         {#if config}
           <dl>
             <dt>{t('deploy.ports')}</dt>
@@ -221,6 +229,7 @@
 
   {#if status || statusError?.code !== 'no_installation'}
     {#key id}<JournalView serverId={id} />{/key}
+  {/if}
   {/if}
 
   {#if confirming}

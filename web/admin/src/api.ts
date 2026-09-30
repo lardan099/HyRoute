@@ -325,6 +325,69 @@ export interface LogEntry {
 
 export type ServiceAction = 'start' | 'stop' | 'restart';
 
+// Hidden stands for a secret the editor does not show; keeping it keeps
+// the current value.
+export const HIDDEN = '[REDACTED]';
+
+// ConfigFields are the main settings of a server config.
+export interface ConfigFields {
+  listen: string;
+  tls: '' | 'file' | 'acme';
+  cert: string;
+  key: string;
+  sniGuard: string;
+  acmeDomains: string[];
+  acmeEmail: string;
+  authType: string;
+  authPassword: string;
+  obfs: string;
+  obfsPassword: string;
+  masquerade: string;
+  masqueradeUrl: string;
+  rewriteHost: boolean;
+  bandwidthUp: string;
+  bandwidthDown: string;
+  ignoreClientBandwidth: boolean;
+  speedTest: boolean;
+  disableUDP: boolean;
+  udpIdleTimeout: string;
+}
+
+export interface ConfigView {
+  revision: number;
+  sha256: string;
+  yaml: string;
+  fields: ConfigFields;
+  unknown: string[];
+}
+
+export interface DiffLine {
+  op: ' ' | '-' | '+';
+  text: string;
+}
+
+export interface ConfigProblem {
+  field: string;
+  message: string;
+  warning?: boolean;
+}
+
+export interface ConfigCheck {
+  yaml: string;
+  fields: ConfigFields;
+  problems: ConfigProblem[];
+  diff: DiffLine[];
+  secrets: string[];
+  unknown: string[];
+  ok: boolean;
+}
+
+export interface ConfigInput {
+  revision: number;
+  yaml: string;
+  fields?: ConfigFields;
+}
+
 export const journalURL = (serverId: number, lines = 200) => `/api/v1/servers/${serverId}/journal?follow=1&lines=${lines}`;
 
 export const jobEventsURL = (id: number) => `/api/v1/jobs/${id}/events`;
@@ -380,6 +443,9 @@ export const api = {
     if (p.limit) q.set('limit', String(p.limit));
     return request<LogEntry[]>('GET', '/logs?' + q.toString());
   },
+  configEdit: (serverId: number) => request<ConfigView>('GET', `/servers/${serverId}/config/edit`),
+  renderConfig: (serverId: number, input: ConfigInput) => request<ConfigCheck>('POST', `/servers/${serverId}/config/render`, input),
+  applyConfig: (serverId: number, input: ConfigInput) => request<Job>('POST', `/servers/${serverId}/config/apply`, input),
   serverConfig: (serverId: number) => request<ServerConfig>('GET', `/servers/${serverId}/config`),
   startPreflight: (serverId: number, udpPort = 443) => request<Job>('POST', `/servers/${serverId}/preflight`, { udpPort }),
 };
