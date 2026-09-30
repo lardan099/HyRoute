@@ -344,3 +344,32 @@
   Фикстуры в `internal/hyconfig/testdata` — только example.com,
   адреса из документационных диапазонов и пароли `fake-…`.
   `reference/server-snapshot/` в репозитории нет.
+
+### P1-09 Общая модель Hysteria URI — выполнено
+
+- `internal/hy2uri`: `Link` (имя, auth, host, порты, obfs, SNI,
+  insecure, pinSHA256, ECH, а также интервал hopping и скорости, которых
+  нет в официальной схеме), `Parse`, `String` (официальная схема),
+  `Compat` (первый порт в адресе + `mport`/`mportHopInt`), `ParsePorts`,
+  `ServerString`, `ValidPin`. Разбор перенесён из клиента целиком (Xray
+  `pcs`/`fm`, v2rayN `mport`/`allowInsecure`/`peer`, obfs-password без
+  obfs) и дополнен: `ports`, `mportHopInt`, `up`/`down`; основной порт,
+  который уже входит в диапазон `mport`, не дублируется.
+- Форматы других клиентов сверены с документацией: HApp и Incy принимают
+  multi-port в адресе, Incy — ещё `mport`, `mportHopInt`, `pinSHA256`,
+  `up`/`down`; ссылки с одним портом в адресе и `mport` делают панели для
+  v2rayN. Для Shadowrocket первоисточника не нашлось — отмечено в
+  архитектуре, UI P1-14 даст обе формы ссылки.
+- Клиент HyRoute: `ParseURI`, `Profile.URI`, `ParsePorts`,
+  `ServerString`, `ValidPin` — обёртки над `hy2uri`. Тесты клиента не
+  менялись и проходят. Изменение поведения, разрешённое задачей:
+  `ports` и `mportHopInt` из ссылки теперь применяются (раньше —
+  «ignored parameter»); скорость из ссылки клиент по-прежнему не
+  применяет (включила бы Brutal) и предупреждает, как раньше. GUIDE и
+  release notes 1.3.0 дополнены.
+- Тесты: round-trip обеих форм (IPv6, IPv4-mapped, userpass со
+  спецсимволами, obfs salamander/gecko, pin, ECH, имя с эмодзи), точный
+  вид официальной ссылки, compat-ссылка, ссылки в форматах HApp, Incy,
+  v2rayN, Xray, ошибки, предупреждения, `ValidPin`, fuzz (разбор →
+  запись → разбор сохраняет auth, host, obfs, pin, имя; 45 с без
+  находок).

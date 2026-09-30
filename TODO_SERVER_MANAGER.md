@@ -169,8 +169,8 @@
 **Done:** round-trip тесты (включая unknown fields и конфиги из `reference/server-snapshot/`, если он есть); тесты валидации.
 
 ### P1-09 Общая модель Hysteria URI
-- [ ] Вынести typed model + parser/serializer `hysteria2://` в общий пакет. **Разрешено** перевести на него существующий клиент HyRoute, если все старые тесты проходят.
-- [ ] Поддержка obfs/Salamander, SNI, insecure, pinSHA256, port hopping (multi-port), параметров, совместимых с HApp/Incy/Shadowrocket.
+- [x] Вынести typed model + parser/serializer `hysteria2://` в общий пакет. **Разрешено** перевести на него существующий клиент HyRoute, если все старые тесты проходят.
+- [x] Поддержка obfs/Salamander, SNI, insecure, pinSHA256, port hopping (multi-port), параметров, совместимых с HApp/Incy/Shadowrocket.
 
 **Done:** round-trip тесты; тесты на URI с obfs, pinSHA256 и multi-port в форматах, которые принимают HApp/Incy/Shadowrocket; все существующие тесты клиента проходят.
 

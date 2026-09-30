@@ -17,7 +17,7 @@ Scheme, Port Hopping, Traffic Stats API, ACL) и исходниками
 
 | Что | Где | Как используется в Server Manager |
 |---|---|---|
-| Модель клиентского профиля, парсер и сериализатор `hysteria2://` | `internal/hysteria` (`Profile`, `ParseURI`, `URI`) | P1-09 выносит модель ссылки в общий пакет `internal/hy2uri`; клиент переходит на него без изменения поведения |
+| Модель клиентского профиля, парсер и сериализатор `hysteria2://` | `internal/hysteria` (`Profile`, `ParseURI`, `URI`) | P1-09 вынес модель ссылки в общий пакет `internal/hy2uri`; клиент перешёл на него, все его тесты прежние (добавилось чтение `ports` и `mportHopInt`) |
 | Генерация клиентского YAML | `internal/hysteria/config.go` (`BuildConfig`) | Server Manager строит клиентский конфиг своей typed-моделью (P1-08): клиентский `BuildConfig` добавляет `socks5`-режим HyRoute и не годится для выдачи пользователю |
 | Серверы, подписки, группы, правила клиента | `internal/app`, `internal/rules`, `internal/groups` | Не используются: это модель клиента. Связь с клиентом — только через ссылку `hysteria2://` («Добавить в HyRoute», P1-14) |
 | Проверка SHA-256 скачанных бинарников | `internal/runtimefiles`, `build/deps.json` | Тот же принцип для релей-загрузки: `hashes.txt` релиза Hysteria + SHA-256 файла |
@@ -34,7 +34,8 @@ Scheme, Port Hopping, Traffic Stats API, ACL) и исходниками
 и не импортируют пакеты клиента, кроме общих `internal/hy2uri` и
 `internal/hyconfig`. Клиент не импортирует ничего из `internal/srvmgr`.
 Поведение Windows-клиента не меняется (единственное исключение —
-переход на общий пакет ссылок в P1-09 с сохранением всех тестов).
+переход на общий пакет ссылок в P1-09 с сохранением всех тестов: клиент
+теперь понимает ещё `ports` и `mportHopInt`).
 
 ## Обязательное поведение
 
@@ -267,12 +268,25 @@ queued → connecting → preflight → downloading → installing → configuri
 
 ## Ссылки для клиента
 
-`internal/hy2uri` (P1-09): `hysteria2://auth@host:ports/?obfs=…&obfs-password=…&sni=…&insecure=1&pinSHA256=…#name`.
-Multi-port (`443,20000-50000`) — в части порта. Самоподписанный
-сертификат: `insecure=1` + `pinSHA256` (Hysteria проверяет pin после
-пропуска цепочки; клиенты без поддержки pin подключатся без проверки —
-предупреждение в UI). Параметры сверх официальной схемы (bandwidth,
-режимы клиента) в ссылку не пишутся — так требует документация URI Scheme.
+`internal/hy2uri` (P1-09): модель `Link`, разбор и два вида записи.
+
+- `String()` — официальная схема URI Scheme:
+  `hysteria2://auth@host:443,20000-50000/?obfs=…&obfs-password=…&sni=…&insecure=1&pinSHA256=…#name`.
+  Multi-port — в части порта; так ссылки принимают Hysteria, HApp и Incy
+  (по их документации). Параметры сверх официальной схемы (скорость,
+  интервал hopping) в неё не пишутся.
+- `Compat()` — для импортёров, которые разбирают адрес URL-библиотекой
+  (v2rayN и клиенты на System.Uri): в адресе первый порт, весь список — в
+  `mport`, интервал — `mportHopInt` в секундах (его читает Incy). Для
+  одного порта совпадает с `String()`. Shadowrocket по первоисточникам
+  проверить не удалось — UI P1-14 предлагает обе ссылки.
+- `Parse` принимает обе формы и варианты панелей и клиентов: `hy2://`,
+  `mport`/`ports`, `mportHopInt`, `up`/`down`, `allowInsecure`, `peer`,
+  `pcs`, `fm` (Xray finalmask), `obfs-password` без `obfs`; догадки и
+  лишние параметры — в предупреждениях.
+- Самоподписанный сертификат: `insecure=1` + `pinSHA256` (Hysteria
+  проверяет pin после пропуска цепочки; клиенты без поддержки pin
+  подключатся без проверки — предупреждение в UI).
 
 ## Развёртывание (P1-10)
 
