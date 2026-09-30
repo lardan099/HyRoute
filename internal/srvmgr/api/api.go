@@ -17,6 +17,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
+	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
@@ -29,6 +30,9 @@ type Deps struct {
 	Connect *connect.Connector
 	Jobs    *jobs.Engine
 	Deploy  *deploy.Submitter
+	// Keys open config revisions (the passwords journals are redacted
+	// with).
+	Keys    *secrets.Keyring
 	Log     *slog.Logger
 	Version string
 	// TrustProxy: believe X-Forwarded-For/-Proto from a reverse proxy on
@@ -76,6 +80,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/servers/{id}/config", s.authed(anyRole, s.currentConfig))
 	mux.HandleFunc("GET /api/v1/servers/{id}/status", s.authed(anyRole, s.serviceStatus))
 	mux.HandleFunc("POST /api/v1/servers/{id}/service/{action}", s.authed(anyRole, s.serviceAction))
+	mux.HandleFunc("GET /api/v1/servers/{id}/journal", s.authed(anyRole, s.journal))
 	mux.HandleFunc("GET /api/v1/jobs", s.authed(anyRole, s.listJobs))
 	mux.HandleFunc("GET /api/v1/jobs/{id}", s.authed(anyRole, s.getJob))
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs", s.authed(anyRole, s.jobLogs))

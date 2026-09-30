@@ -253,3 +253,26 @@ func TestConfigSecrets(t *testing.T) {
 		t.Fatal("userpass passwords missed")
 	}
 }
+
+func TestMakeEntry(t *testing.T) {
+	r := redact.New()
+	r.Add("fake-auth-secret-1234")
+	at := time.Unix(1_790_000_000, 0).UTC()
+	cases := []struct {
+		in    remote.JournalEntry
+		level string
+		msg   string
+	}{
+		{remote.JournalEntry{Time: at, Priority: 6, Message: "2026-09-21T10:13:20Z\tINFO\tserver up and running\t{\"listen\": \":443\"}"}, "info", `server up and running  {"listen": ":443"}`},
+		{remote.JournalEntry{Priority: 6, Message: "2026-09-21T10:13:20Z\tWARN\tclient auth failed\t{\"auth\": \"fake-auth-secret-1234\"}"}, "warn", `client auth failed  {"auth": "[REDACTED]"}`},
+		{remote.JournalEntry{Priority: 6, Message: "2026-09-21T10:13:20Z\tFATAL\tfailed to load server config\t{\"error\": \"password fake-auth-secret-1234 too short\"}"}, "error", `failed to load server config  {"error": "password [REDACTED] too short"}`},
+		{remote.JournalEntry{Priority: 3, Message: "Main process exited, code=exited, status=1/FAILURE"}, "error", "Main process exited, code=exited, status=1/FAILURE"},
+		{remote.JournalEntry{Priority: 6, Message: "link hysteria2://fake-auth-secret-1234@192.0.2.1:443/"}, "info", "link hysteria2://[REDACTED]"},
+	}
+	for _, c := range cases {
+		e := MakeEntry(c.in, r)
+		if e.Level != c.level || e.Message != c.msg || !e.Time.Equal(c.in.Time) {
+			t.Errorf("%q: %+v", c.in.Message, e)
+		}
+	}
+}

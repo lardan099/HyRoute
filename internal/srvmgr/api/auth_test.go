@@ -59,7 +59,7 @@ func newEnv(t *testing.T) *testEnv {
 	e.jobs.Register(service.Kind(service.Deps{Store: db, Keys: keys}))
 	e.keys = keys
 	e.h = New(Deps{Store: db, Auth: e.auth, Servers: e.servers, Connect: e.connect, Jobs: e.jobs,
-		Deploy: &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}})
+		Deploy: &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}, Keys: keys})
 	return e
 }
 

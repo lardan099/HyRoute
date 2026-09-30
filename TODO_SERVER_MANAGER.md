@@ -228,7 +228,7 @@
 - [x] Статус (только чтение): состояние и подсостояние службы, uptime, PID, перезапуски, память процесса, автозапуск, версия, порты Hysteria; система: uptime, load, память, диск. `GET /servers/{id}/status`. Действия start/stop/restart — задание `service` (не пересекается с deploy/import), с проверкой результата; `POST /servers/{id}/service/{action}`.
 
 #### P1-12b Журнал Hysteria
-- [ ] Typed operation хвоста journald с follow, SSE `GET /servers/{id}/journal`; редакция шаблонами и паролями из текущего конфига сервера; тест, что секреты редактируются.
+- [x] Typed operation хвоста journald с follow, SSE `GET /servers/{id}/journal`; редакция шаблонами и паролями из текущего конфига сервера; тест, что секреты редактируются.
 
 #### P1-12c Страница сервера и страница «Журнал»
 - [ ] Страница сервера: статус, действия с подтверждением для stop/restart, живой журнал. Страница Logs: controller (буфер записей), задания, journal Hysteria; фильтры сервер, уровень, текст.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,6 +30,10 @@ func statusExec(ctx context.Context, line string, in io.Reader, out, errw io.Wri
 		fmt.Fprint(out, "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vda1 20000000 5000000 15360000 25% /\n")
 	case strings.HasSuffix(cmd, "hysteria version"):
 		fmt.Fprintln(out, "Version:\tv2.12.3")
+	case strings.HasPrefix(cmd, "journalctl -u hysteria-server.service"):
+		fmt.Fprintln(out, `{"__REALTIME_TIMESTAMP":"1790000000000000","PRIORITY":"6","MESSAGE":"2026-09-21T10:13:20Z\tINFO\tserver up and running\t{\"listen\": \":443\"}"}`)
+		fmt.Fprintln(out, `{"__REALTIME_TIMESTAMP":"1790000001000000","PRIORITY":"6","MESSAGE":"2026-09-21T10:13:21Z\tWARN\tclient rejected\t{\"got\": \"fake-journal-auth-pass\"}"}`)
+		fmt.Fprintln(out, `{"__REALTIME_TIMESTAMP":"1790000002000000","PRIORITY":"6","MESSAGE":"obfs fake-journal-obfs-pass and hysteria2://anything@192.0.2.9:443"}`)
 	case cmd == "ss -Hlntup":
 		fmt.Fprintln(out, `udp UNCONN 0 0 *:443 *:* users:(("hysteria",pid=4242,fd=7))`)
 	default:
@@ -80,4 +85,59 @@ func TestServiceAPI(t *testing.T) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 	code(t, owner.do("POST", "/api/v1/servers/"+id+"/service/stop", nil, nil), http.StatusConflict, "server_busy")
+}
+
+func TestJournalAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	srv := sshtest.Start(t, "root", fakeSSHPass)
+	srv.SetExec(statusExec)
+	rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": "S", "host": srv.Host, "sshPort": srv.Port, "authType": "password", "password": fakeSSHPass}, nil)
+	var created serverJSON
+	json.Unmarshal(rec.Body.Bytes(), &created)
+	id := strconv.FormatInt(created.ID, 10)
+	e.db.SetInstallation(ctx, model.Installation{ServerID: created.ID, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", User: "hysteria", Managed: true, At: time.Now()})
+	cfg := []byte("auth:\n  type: password\n  password: fake-journal-auth-pass\nobfs:\n  type: salamander\n  salamander:\n    password: fake-journal-obfs-pass\n")
+	c := model.ServerConfig{ServerID: created.ID, SHA256: "x", Source: model.ConfigImport, At: time.Now()}
+	e.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return e.keys.Seal(cfg, model.ConfigContext(created.ID, rev)) })
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/check", nil, nil)
+	fp := decodeError(t, rec).Data.(map[string]any)["fingerprint"].(string)
+	owner.do("POST", "/api/v1/servers/"+id+"/host-key", map[string]any{"fingerprint": fp}, nil)
+
+	rec = owner.do("GET", "/api/v1/servers/"+id+"/journal?lines=50", nil, nil)
+	var es []service.Entry
+	json.Unmarshal(rec.Body.Bytes(), &es)
+	body := rec.Body.String()
+	if rec.Code != 200 || len(es) != 3 || es[1].Level != "warn" || es[0].Message != `server up and running  {"listen": ":443"}` {
+		t.Fatalf("%d %s", rec.Code, body)
+	}
+	for _, secret := range []string{"fake-journal-auth-pass", "fake-journal-obfs-pass", "anything@"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("%s in the journal: %s", secret, body)
+		}
+	}
+
+	// Live: the test server prints the records and exits, so the stream
+	// ends with "end".
+	srvHTTP := httptest.NewServer(e.h)
+	defer srvHTTP.Close()
+	req, _ := http.NewRequest("GET", srvHTTP.URL+"/api/v1/servers/"+id+"/journal?follow=1", nil)
+	req.AddCookie(owner.cookie)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	stream := string(b)
+	if resp.Header.Get("Content-Type") != "text/event-stream" || strings.Count(stream, "event: entry") != 3 || !strings.Contains(stream, "event: end") {
+		t.Fatalf("%s", stream)
+	}
+	if strings.Contains(stream, "fake-journal-auth-pass") || strings.Contains(stream, "fake-journal-obfs-pass") {
+		t.Fatalf("secret in the stream: %s", stream)
+	}
+	if !strings.Contains(strings.Join(srv.Lines(), "\n"), "-o json --output-fields=MESSAGE,PRIORITY -f") {
+		t.Fatalf("%q", srv.Lines())
+	}
 }

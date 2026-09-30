@@ -126,6 +126,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			Connect:    conn,
 			Jobs:       engine,
 			Deploy:     &deploy.Submitter{Store: db, Keys: keys, Jobs: engine},
+			Keys:       keys,
 			Log:        log,
 			Version:    version,
 			TrustProxy: cfg.TrustProxy,

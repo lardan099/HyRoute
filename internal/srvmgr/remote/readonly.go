@@ -66,7 +66,7 @@ var readFlags = map[string][]string{
 	"sha256sum":  {"--"},
 	"ss":         {"-Hlntup"},
 	"ps":         {"-o", "-p"},
-	"journalctl": {"-u", "-n", "--no-pager", "-o"},
+	"journalctl": {"-u", "-n", "--no-pager", "-o", "-f", journalFields},
 	"getent":     {},
 }
 
