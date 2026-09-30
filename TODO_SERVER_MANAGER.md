@@ -137,13 +137,22 @@
 **Done:** тесты с in-process SSH-сервером: первый connect требует подтверждения, смена host key блокирует подключение, неверные credentials дают понятную ошибку.
 
 ### P1-06 Job engine
-- [ ] Jobs и steps в БД, state machine: `queued → connecting → preflight → downloading → installing → configuring → firewall → starting → verifying → completed | failed | rolling_back`.
-- [ ] Idempotent steps, retry с безопасного шага.
-- [ ] Recovery после рестарта controller: незавершённые jobs переходят в состояние, которое проверяет фактическое состояние сервера, а не слепо продолжает.
-- [ ] Лог шагов (через redaction), live-стрим через SSE.
-- [ ] Страница Deployments: список jobs, детальный вид с текущим шагом и live-логом, retry.
+Разбита на две подзадачи.
+
+#### P1-06a Движок и хранение
+- [x] Jobs и steps в БД, state machine: `queued → connecting → preflight → downloading → installing → configuring → firewall → starting → verifying → completed | failed | rolling_back`.
+- [x] Idempotent steps, retry с безопасного шага.
+- [x] Recovery после рестарта controller: незавершённые jobs переходят в состояние, которое проверяет фактическое состояние сервера, а не слепо продолжает.
+- [x] Лог шагов через redaction.
 
 **Done:** тесты: успешный job, падение на шаге, retry, recovery после «убитого» процесса (симуляция), секреты не попадают в лог job.
+
+#### P1-06b Живой журнал, API и страница Deployments
+- [ ] Live-стрим журнала через SSE.
+- [ ] API: список jobs, детали с шагами, retry.
+- [ ] Страница Deployments: список jobs, детальный вид с текущим шагом и live-логом, retry.
+
+**Done:** из UI видно задания, их шаги и живой журнал; retry работает; тест SSE-потока.
 
 ### P1-07 Preflight
 - [ ] Job preflight: ОС/дистрибутив, архитектура, systemd, ресурсы (CPU/RAM/disk), firewall (ufw/firewalld/nftables/iptables), DNS, занятость нужных портов, доступ к источникам загрузки (GitHub), наличие уже установленной Hysteria.

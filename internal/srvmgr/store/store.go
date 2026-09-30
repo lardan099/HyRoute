@@ -27,6 +27,7 @@ type Store interface {
 	Audit
 	Servers
 	HostKeys
+	Jobs
 	Close() error
 }
 
@@ -97,4 +98,29 @@ type HostKeys interface {
 	// SetHostKey trusts k, replacing any key trusted before.
 	SetHostKey(ctx context.Context, k model.HostKey) error
 	DeleteHostKey(ctx context.Context, serverID int64) error
+}
+
+// Jobs stores jobs, their steps and logs.
+type Jobs interface {
+	// CreateJob inserts j (setting j.ID) with its steps and the sealed
+	// secret seal returns (seal may be nil). A server has at most one
+	// unfinished job: ErrConflict otherwise.
+	CreateJob(ctx context.Context, j *model.Job, steps []model.JobStep, seal func(jobID int64) ([]byte, error)) error
+	JobByID(ctx context.Context, id int64) (model.Job, error)
+	JobSecret(ctx context.Context, id int64) ([]byte, error)
+	ListJobs(ctx context.Context, f model.JobFilter) ([]model.Job, error)
+	// UnfinishedJobs are all jobs that are not completed or failed.
+	UnfinishedJobs(ctx context.Context) ([]model.Job, error)
+	// ClaimJob leases a queued job for owner; false if someone else did.
+	ClaimJob(ctx context.Context, id int64, owner string, until time.Time) (bool, error)
+	// ExtendLease moves the lease of a job owner still holds.
+	ExtendLease(ctx context.Context, id int64, owner string, until time.Time) error
+	// UpdateJob writes state, step, data, attempt, errors, times and lease.
+	UpdateJob(ctx context.Context, j model.Job) error
+	JobSteps(ctx context.Context, jobID int64) ([]model.JobStep, error)
+	UpdateJobStep(ctx context.Context, s model.JobStep) error
+	// AppendJobLog sets l.Seq to the next number of the job.
+	AppendJobLog(ctx context.Context, l *model.JobLog) error
+	// JobLogs returns lines with Seq > after, oldest first.
+	JobLogs(ctx context.Context, jobID, after int64, limit int) ([]model.JobLog, error)
 }
