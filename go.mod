@@ -7,12 +7,15 @@ toolchain go1.27.1
 require (
 	fyne.io/systray v1.12.2
 	github.com/go-ole/go-ole v1.3.0
+	github.com/pkg/sftp v1.13.11
 	github.com/tailscale/wf v0.0.0-20240214030419-6fbb0a674ee6
 	github.com/wailsapp/wails/v2 v2.12.0
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.59.0
 	golang.org/x/sys v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
+	modernc.org/sqlite v1.60.1
+	rsc.io/qr v0.2.0
 )
 
 require (
@@ -35,7 +38,6 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pkg/sftp v1.13.11 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/samber/lo v1.49.1 // indirect
@@ -49,7 +51,6 @@ require (
 	modernc.org/libc v1.77.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
-	modernc.org/sqlite v1.60.1 // indirect
 )
 
 replace github.com/tailscale/wf => ./third_party/wf

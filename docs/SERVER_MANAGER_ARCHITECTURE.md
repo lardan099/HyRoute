@@ -372,7 +372,7 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | GET | `/api/v1/servers/{id}/config/edit` | любая | конфиг для редактора: секреты `[REDACTED]`, основные поля |
 | POST | `/api/v1/servers/{id}/config/render` | operator+ | кандидат из текста и полей: проверка, diff, меняющиеся секреты (ничего не сохраняет) |
 | POST | `/api/v1/servers/{id}/config/apply` | operator+ | задание `apply` с откатом |
-| GET | `/api/v1/servers/{id}/client` | любая | ссылка/QR/конфиг без секретов; `?reveal=1` — operator+, пишется в audit log |
+| GET | `/api/v1/servers/{id}/client` | любая | сводка для клиентов без секретов; `?reveal=1[&user=]` — operator+: ссылки (официальная и совместимая), `config.yaml`, QR; пишется в audit log |
 | GET | `/api/v1/jobs`, `/api/v1/jobs/{id}` | любая | список (`?server=`, `?before=`), детали с шагами |
 | GET | `/api/v1/jobs/{id}/logs` | любая | строки журнала после `?after=` |
 | GET | `/api/v1/jobs/{id}/events` (SSE) | любая | сохранённый журнал после `Last-Event-ID`, затем события `log`/`step`/`job` до конца задания, `end` |

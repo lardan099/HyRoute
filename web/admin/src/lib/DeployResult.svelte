@@ -4,6 +4,7 @@
   import { onMount } from 'svelte';
   import { api, type ServerConfig } from '../api';
   import { t } from '../i18n';
+  import { go } from '../router.svelte';
 
   let { serverId, jobId }: { serverId: number; jobId: number } = $props();
 
@@ -38,7 +39,7 @@
       <dt>{t('deploy.revision')}</dt>
       <dd>{cfg.revision}</dd>
     </dl>
-    <p class="small muted">{t('deploy.resultHint')}</p>
+    <p class="small muted">{t('deploy.resultHint')} <button class="link small" onclick={() => go('servers', serverId)}>{t('deploy.clientLink')}</button></p>
   </section>
 {/if}
 

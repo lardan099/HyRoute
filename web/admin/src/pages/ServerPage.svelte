@@ -11,6 +11,7 @@
   import DeployDialog from '../lib/DeployDialog.svelte';
   import JournalView from '../lib/JournalView.svelte';
   import ConfigEditor from '../lib/ConfigEditor.svelte';
+  import ClientCard from '../lib/ClientCard.svelte';
 
   let { id }: { id: number } = $props();
 
@@ -226,6 +227,8 @@
       </section>
     </div>
   </div>
+
+  {#key config?.revision}<ClientCard serverId={id} serverName={server.name} />{/key}
 
   {#if status || statusError?.code !== 'no_installation'}
     {#key id}<JournalView serverId={id} />{/key}

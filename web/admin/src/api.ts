@@ -388,6 +388,28 @@ export interface ConfigInput {
   fields?: ConfigFields;
 }
 
+export interface ClientSummary {
+  name: string;
+  host: string;
+  ports: string;
+  sni?: string;
+  insecure: boolean;
+  pinSHA256?: string;
+  obfs?: string;
+  auth: string;
+  users?: string[];
+  warnings: string[];
+}
+
+export interface ClientProfile extends ClientSummary {
+  user?: string;
+  uri: string;
+  compat: string;
+  config: string;
+  qr: string[];
+  qrCompat: string[];
+}
+
 export const journalURL = (serverId: number, lines = 200) => `/api/v1/servers/${serverId}/journal?follow=1&lines=${lines}`;
 
 export const jobEventsURL = (id: number) => `/api/v1/jobs/${id}/events`;
@@ -446,6 +468,9 @@ export const api = {
   configEdit: (serverId: number) => request<ConfigView>('GET', `/servers/${serverId}/config/edit`),
   renderConfig: (serverId: number, input: ConfigInput) => request<ConfigCheck>('POST', `/servers/${serverId}/config/render`, input),
   applyConfig: (serverId: number, input: ConfigInput) => request<Job>('POST', `/servers/${serverId}/config/apply`, input),
+  clientSummary: (serverId: number) => request<ClientSummary>('GET', `/servers/${serverId}/client`),
+  clientProfile: (serverId: number, user = '') =>
+    request<ClientProfile>('GET', `/servers/${serverId}/client?reveal=1` + (user ? '&user=' + encodeURIComponent(user) : '')),
   serverConfig: (serverId: number) => request<ServerConfig>('GET', `/servers/${serverId}/config`),
   startPreflight: (serverId: number, udpPort = 443) => request<Job>('POST', `/servers/${serverId}/preflight`, { udpPort }),
 };
