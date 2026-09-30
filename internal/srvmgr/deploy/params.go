@@ -1,0 +1,364 @@
+// Package deploy installs Hysteria on a server as a job: download and
+// verify the binary, system user, TLS, config, systemd unit, firewall,
+// start and verify, with rollback, and without touching anything that is
+// already as it should be.
+package deploy
+
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"math/big"
+	"net/netip"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/lardan099/hyroute/internal/hy2uri"
+	"github.com/lardan099/hyroute/internal/hyconfig"
+	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
+	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/preflight"
+)
+
+// Where HyRoute installs Hysteria: the places of the official installer.
+const (
+	BinaryPath = preflight.StdBinary
+	ConfigPath = preflight.StdConfig
+	Unit       = preflight.StdUnit
+	UnitPath   = "/etc/systemd/system/" + preflight.StdUnit
+	ConfigDir  = "/etc/hysteria"
+	CertPath   = ConfigDir + "/server.crt"
+	KeyPath    = ConfigDir + "/server.key"
+	User       = "hysteria"
+	Home       = "/var/lib/hysteria"
+	// Backup is the suffix of the previous file kept while a deploy runs.
+	Backup = ".hyroute-prev"
+)
+
+// TLS modes.
+const (
+	TLSSelfSigned = "self-signed"
+	TLSACME       = "acme"
+)
+
+// Download sources.
+const (
+	SourceAuto   = "auto"
+	SourceDirect = "direct"
+	SourceRelay  = "relay"
+)
+
+// Params are the choices of a deploy (no secrets).
+type Params struct {
+	Version string `json:"version,omitempty"` // "" = hyrelease.DefaultVersion
+	Port    int    `json:"port,omitempty"`    // UDP port, default 443
+	// HopPorts is a port-hopping range ("20000-50000"): the server listens
+	// on the lowest port and redirects the others to it.
+	HopPorts string `json:"hopPorts,omitempty"`
+	TLS      string `json:"tls"`              // self-signed, acme
+	Domain   string `json:"domain,omitempty"` // acme
+	Email    string `json:"email,omitempty"`  // acme, optional
+	// Challenge is the ACME challenge: http (TCP 80, default) or tls (TCP
+	// 443).
+	Challenge string `json:"challenge,omitempty"`
+	// SNI is the name in the self-signed certificate and in client links;
+	// empty: the masquerade site's name, else none.
+	SNI  string `json:"sni,omitempty"`
+	Obfs bool   `json:"obfs,omitempty"` // Salamander
+	// Masquerade is the site shown to HTTP/3 visitors (reverse proxy);
+	// empty: "404 Not Found".
+	Masquerade string `json:"masquerade,omitempty"`
+	Source     string `json:"source,omitempty"` // auto (default), direct, relay
+	// KeepFirewall: do not open ports in ufw or firewalld.
+	KeepFirewall bool `json:"keepFirewall,omitempty"`
+	// Replace an installation HyRoute did not make (its files are kept
+	// with the .hyroute-prev suffix).
+	Replace bool `json:"replace,omitempty"`
+}
+
+var (
+	domainRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
+	emailRe  = regexp.MustCompile(`^[^@\s]{1,64}@[a-z0-9.-]{1,253}$`)
+)
+
+// Normalize fills the defaults and checks the params.
+func (p *Params) Normalize() error {
+	if p.Version == "" {
+		p.Version = hyrelease.DefaultVersion
+	}
+	if err := hyrelease.CheckVersion(p.Version); err != nil {
+		return err
+	}
+	if p.Port == 0 {
+		p.Port = 443
+	}
+	if p.Port < 1 || p.Port > 65535 {
+		return fmt.Errorf("неверный порт %d", p.Port)
+	}
+	if _, err := hyconfig.ParseListen(p.Listen()); err != nil {
+		return fmt.Errorf("порты: %w", err)
+	}
+	if _, err := hy2uri.ParsePorts(p.Ports()); err != nil {
+		return fmt.Errorf("порты: %w", err)
+	}
+	p.Domain = strings.ToLower(strings.TrimSpace(p.Domain))
+	p.SNI = strings.ToLower(strings.TrimSpace(p.SNI))
+	switch p.TLS {
+	case TLSSelfSigned:
+		if p.SNI != "" && !domainRe.MatchString(p.SNI) {
+			return fmt.Errorf("неверное имя для сертификата %q", p.SNI)
+		}
+	case TLSACME:
+		if !domainRe.MatchString(p.Domain) {
+			return errors.New("для сертификата Let's Encrypt нужен домен, который указывает на сервер")
+		}
+		if p.Email != "" && !emailRe.MatchString(p.Email) {
+			return fmt.Errorf("неверный email %q", p.Email)
+		}
+		if p.Challenge == "" {
+			p.Challenge = "http"
+		}
+		if p.Challenge != "http" && p.Challenge != "tls" {
+			return fmt.Errorf("неизвестная проверка ACME %q", p.Challenge)
+		}
+	default:
+		return fmt.Errorf("неизвестный режим TLS %q", p.TLS)
+	}
+	if p.Masquerade != "" {
+		u, err := url.Parse(p.Masquerade)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+			return errors.New("сайт-маскировка: нужен адрес https://")
+		}
+	}
+	if p.Source == "" {
+		p.Source = SourceAuto
+	}
+	switch p.Source {
+	case SourceAuto, SourceDirect, SourceRelay:
+	default:
+		return fmt.Errorf("неизвестный источник загрузки %q", p.Source)
+	}
+	return nil
+}
+
+// Listen is the listen address for the config.
+func (p *Params) Listen() string {
+	if p.HopPorts == "" {
+		return fmt.Sprintf(":%d", p.Port)
+	}
+	return fmt.Sprintf(":%d,%s", p.Port, p.HopPorts)
+}
+
+// Ports is what clients connect to.
+func (p *Params) Ports() string { return strings.TrimPrefix(p.Listen(), ":") }
+
+// CertName is the name in the self-signed certificate ("" when none).
+func (p *Params) CertName() string {
+	if p.SNI != "" {
+		return p.SNI
+	}
+	if u, err := url.Parse(p.Masquerade); err == nil && p.Masquerade != "" {
+		return strings.ToLower(u.Hostname())
+	}
+	return ""
+}
+
+// TCPPorts are the TCP ports the deploy needs free (ACME challenges).
+func (p *Params) TCPPorts() []int {
+	if p.TLS != TLSACME {
+		return nil
+	}
+	if p.Challenge == "tls" {
+		return []int{443}
+	}
+	return []int{80}
+}
+
+// Secret names in the job's sealed secrets.
+const (
+	SecretAuth = "auth"
+	SecretObfs = "obfs"
+	SecretCert = "cert" // self-signed certificate (PEM; not secret, kept with the key)
+	SecretKey  = "key"  // its private key (PEM)
+)
+
+// NewSecrets makes the passwords and, for a self-signed certificate, the
+// certificate for a deploy. host is the server's address (put in the
+// certificate too). Passwords of an existing HyRoute installation are
+// passed in reuse so client links stay valid.
+func NewSecrets(p Params, host string, reuse map[string]string) (map[string]string, error) {
+	s := map[string]string{}
+	var err error
+	if s[SecretAuth] = reuse[SecretAuth]; s[SecretAuth] == "" {
+		if s[SecretAuth], err = password(); err != nil {
+			return nil, err
+		}
+	}
+	if p.Obfs {
+		if s[SecretObfs] = reuse[SecretObfs]; s[SecretObfs] == "" {
+			if s[SecretObfs], err = password(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if p.TLS == TLSSelfSigned {
+		cert, key, err := SelfSigned(p.CertName(), host, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		s[SecretCert], s[SecretKey] = string(cert), string(key)
+	}
+	return s, nil
+}
+
+// password is 24 random bytes, URL-safe base64 (32 characters): safe in
+// YAML, URIs and QR codes.
+func password() (string, error) {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// SelfSigned makes an ECDSA P-256 certificate valid for 10 years for name
+// (may be empty) and host (a domain or an IP).
+func SelfSigned(name, host string, now time.Time) (certPEM, keyPEM []byte, err error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
+	if err != nil {
+		return nil, nil, err
+	}
+	cn := name
+	if cn == "" {
+		cn = host
+	}
+	tpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: cn},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.AddDate(10, 0, 0),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	for _, n := range []string{name, host} {
+		if n == "" {
+			continue
+		}
+		if ip, err := netip.ParseAddr(n); err == nil {
+			tpl.IPAddresses = append(tpl.IPAddresses, ip.AsSlice())
+		} else if !containsFold(tpl.DNSNames, n) {
+			tpl.DNSNames = append(tpl.DNSNames, n)
+		}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	kb, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb}), nil
+}
+
+func containsFold(list []string, s string) bool {
+	for _, v := range list {
+		if strings.EqualFold(v, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// Pin is the pinSHA256 of a PEM certificate: SHA-256 of its DER, hex.
+func Pin(certPEM []byte) (string, error) {
+	b, _ := pem.Decode(certPEM)
+	if b == nil || b.Type != "CERTIFICATE" {
+		return "", errors.New("не сертификат PEM")
+	}
+	if _, err := x509.ParseCertificate(b.Bytes); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b.Bytes)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// BuildConfig is the server config for params and secrets.
+func BuildConfig(p Params, s map[string]string) (*hyconfig.Server, error) {
+	c := &hyconfig.Server{
+		Listen: p.Listen(),
+		Auth:   hyconfig.Auth{Type: "password", Password: s[SecretAuth]},
+	}
+	switch p.TLS {
+	case TLSSelfSigned:
+		// Clients may connect by IP without SNI: do not require the
+		// certificate name.
+		c.TLS = &hyconfig.TLS{Cert: CertPath, Key: KeyPath, SNIGuard: "disable"}
+	case TLSACME:
+		c.ACME = &hyconfig.ACME{Domains: []string{p.Domain}, Email: p.Email, Type: p.Challenge}
+	}
+	if p.Obfs {
+		c.Obfs = hyconfig.Obfs{Type: "salamander", Salamander: hyconfig.Salamander{Password: s[SecretObfs]}}
+	}
+	if p.Masquerade != "" {
+		c.Masquerade = hyconfig.Masquerade{Type: "proxy", Proxy: hyconfig.MasqueradeProxy{URL: p.Masquerade, RewriteHost: true}}
+	}
+	for _, pr := range c.Validate() {
+		if !pr.Warning {
+			return nil, fmt.Errorf("%s: %s", pr.Field, pr.Message)
+		}
+	}
+	return c, nil
+}
+
+// Meta is the non-secret summary of a deployed config.
+func Meta(p Params, pin string) model.ConfigMeta {
+	m := model.ConfigMeta{Version: p.Version, Listen: p.Listen(), Ports: p.Ports(), TLS: p.TLS, PinSHA256: pin, Auth: "password"}
+	switch p.TLS {
+	case TLSSelfSigned:
+		m.SNI = p.CertName()
+	case TLSACME:
+		m.SNI = p.Domain
+	}
+	if p.Obfs {
+		m.Obfs = "salamander"
+	}
+	return m
+}
+
+// UnitText is the systemd unit: the official installer's, plus a restart
+// when Hysteria exits with an error.
+const UnitText = `[Unit]
+Description=Hysteria Server Service (config.yaml)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=` + BinaryPath + ` server --config ` + ConfigPath + `
+WorkingDirectory=~
+User=` + User + `
+Group=` + User + `
+Environment=HYSTERIA_LOG_LEVEL=info
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+`

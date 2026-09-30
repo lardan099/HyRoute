@@ -1,0 +1,558 @@
+package deploy
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/lardan099/hyroute/internal/hyconfig"
+	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
+	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
+	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/redact"
+	"github.com/lardan099/hyroute/internal/srvmgr/remote"
+	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
+	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
+)
+
+// testVersion is not pinned: its hashes come from the fake release.
+const testVersion = "v2.99.0"
+
+var fakeBinary = []byte("#!fake hysteria " + testVersion)
+
+type harness struct {
+	t      *testing.T
+	db     *sqlite.DB
+	keys   *secrets.Keyring
+	eng    *jobs.Engine
+	sim    *sim
+	server int64
+	rel    *httptest.Server
+	res    *hyrelease.Resolver
+	stop   context.CancelFunc
+	done   chan struct{}
+}
+
+type conn struct{ s *sim }
+
+func (c conn) Connect(context.Context, int64) (remote.Executor, error) { return c.s, nil }
+
+func sum(b []byte) string {
+	s := sha256.Sum256(b)
+	return hex.EncodeToString(s[:])
+}
+
+func newHarness(t *testing.T, s *sim) *harness {
+	t.Helper()
+	ctx := context.Background()
+	db, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	keys, _ := secrets.NewKeyring(map[uint32][]byte{1: bytes.Repeat([]byte{7}, 32)})
+	srv := model.Server{Name: "test", Host: "192.0.2.10", SSHPort: 22, SSHUser: "root", AuthType: model.AuthPassword, Role: model.RoleStandalone, State: model.StateNew}
+	if err := db.CreateServer(ctx, &srv, nil); err != nil {
+		t.Fatal(err)
+	}
+	h := &harness{t: t, db: db, keys: keys, sim: s, server: srv.ID}
+	body := fakeBinary
+	h.rel = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/hashes.txt"):
+			w.Write([]byte(sum(fakeBinary) + "  build/hysteria-linux-amd64\n"))
+		case strings.HasSuffix(r.URL.Path, "/hysteria-linux-amd64"):
+			w.Write(body)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(h.rel.Close)
+	res := &hyrelease.Resolver{Base: h.rel.URL, HTTP: h.rel.Client()}
+	s.downloads[res.URL(testVersion, "hysteria-linux-amd64")] = fakeBinary
+	h.res = res
+	h.startEngine()
+	t.Cleanup(h.kill)
+	return h
+}
+
+// startEngine starts a controller process on the harness's database.
+func (h *harness) startEngine() {
+	h.eng = jobs.New(h.db, h.keys, redact.New(), conn{h.sim}, nil)
+	h.eng.Poll = 10 * time.Millisecond
+	h.eng.Register(Kind(Deps{Store: h.db, Keys: h.keys, Resolver: h.res, VerifyTimeout: 200 * time.Millisecond, Poll: 10 * time.Millisecond}))
+	ctx, cancel := context.WithCancel(context.Background())
+	h.stop, h.done = cancel, make(chan struct{})
+	go func() { h.eng.Run(ctx); close(h.done) }()
+}
+
+// kill stops the controller process wherever it is.
+func (h *harness) kill() {
+	if h.stop != nil {
+		h.stop()
+		<-h.done
+		h.stop = nil
+	}
+}
+
+func params() Params {
+	return Params{Version: testVersion, TLS: TLSSelfSigned, Masquerade: "https://www.example.com"}
+}
+
+func (h *harness) deploy(p Params, sec map[string]string) model.Job {
+	h.t.Helper()
+	if sec == nil {
+		var err error
+		if sec, err = NewSecrets(p, "192.0.2.10", nil); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+	j, err := h.eng.Submit(context.Background(), JobKind, h.server, p, sec, 0)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return h.wait(j.ID)
+}
+
+func (h *harness) wait(id int64) model.Job {
+	h.t.Helper()
+	j := model.Job{ID: id}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		j, _ = h.db.JobByID(context.Background(), j.ID)
+		if j.State.Terminal() {
+			time.Sleep(20 * time.Millisecond) // the Finished hook
+			return j
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	h.t.Fatalf("job %d stuck in %s", j.ID, j.State)
+	return j
+}
+
+func (h *harness) steps(id int64) map[string]model.StepState {
+	rows, _ := h.db.JobSteps(context.Background(), id)
+	out := map[string]model.StepState{}
+	for _, r := range rows {
+		out[r.Name] = r.State
+	}
+	return out
+}
+
+func (h *harness) log(id int64) string {
+	ls, _ := h.db.JobLogs(context.Background(), id, 0, 0)
+	var b strings.Builder
+	for _, l := range ls {
+		b.WriteString(l.Message + "\n")
+	}
+	return b.String()
+}
+
+func (h *harness) state() model.ServerState {
+	s, _ := h.db.ServerByID(context.Background(), h.server)
+	return s.State
+}
+
+func (h *harness) revisions() []model.ServerConfig {
+	cs, _ := h.db.ListConfigs(context.Background(), h.server)
+	return cs
+}
+
+func TestFreshDeploy(t *testing.T) {
+	s := newSim()
+	s.ufw = true
+	h := newHarness(t, s)
+	p := params()
+	p.Obfs = true
+	p.HopPorts = "20000-50000"
+	sec, _ := NewSecrets(p, "192.0.2.10", nil)
+	j := h.deploy(p, sec)
+	if j.State != model.JobCompleted {
+		t.Fatalf("%s: %s %s\n%s", j.State, j.ErrorMessage, j.ErrorDetails, h.log(j.ID))
+	}
+	// Binary, user, TLS, config and unit in the places of the official
+	// installer.
+	if b, _ := s.file(BinaryPath); !bytes.Equal(b, fakeBinary) {
+		t.Fatalf("binary %q", b)
+	}
+	cfgYAML, _ := s.file(ConfigPath)
+	c, err := hyconfig.ParseServer(cfgYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Listen != ":443,20000-50000" || c.Auth.Password != sec[SecretAuth] || c.Obfs.Salamander.Password != sec[SecretObfs] || c.TLS.Cert != CertPath || c.Masquerade.Proxy.URL != "https://www.example.com" {
+		t.Fatalf("config %+v", c)
+	}
+	if u, _ := s.file(UnitPath); string(u) != UnitText || !s.enabled || s.state != "active" || !s.users[User] {
+		t.Fatalf("unit/state: enabled=%v state=%s user=%v", s.enabled, s.state, s.users[User])
+	}
+	// Secret files are not world-readable.
+	for _, w := range []string{ConfigPath + " 0640 root:hysteria", KeyPath + " 0640 root:hysteria", CertPath + " 0644 root:root", UnitPath + " 0644 root:root"} {
+		if !slices.Contains(s.writes, w) {
+			t.Errorf("no write %q in %q", w, s.writes)
+		}
+	}
+	if !s.ran("ufw allow 443/udp") || !s.ran("ufw allow 20000:50000/udp") {
+		t.Errorf("firewall: %q", s.cmds)
+	}
+	// Downloaded by the server itself and checked; the temp dir is gone.
+	if !s.ran("curl -fsSL") || !s.ran("sha256sum -- /tmp/hyroute.abcdefghij/hysteria") || s.dirs["/tmp/hyroute.abcdefghij"] {
+		t.Errorf("download: %q", s.cmds)
+	}
+	// The controller keeps the revision (sealed) and what clients need.
+	revs := h.revisions()
+	if len(revs) != 1 || revs[0].Revision != 1 || revs[0].SHA256 != sum(cfgYAML) || revs[0].Source != model.ConfigDeploy {
+		t.Fatalf("revisions %+v", revs)
+	}
+	pin, _ := Pin([]byte(sec[SecretCert]))
+	want := model.ConfigMeta{Version: testVersion, Listen: ":443,20000-50000", Ports: "443,20000-50000", TLS: TLSSelfSigned, PinSHA256: pin, SNI: "www.example.com", Obfs: "salamander", Auth: "password"}
+	if revs[0].Meta != want {
+		t.Fatalf("meta %+v", revs[0].Meta)
+	}
+	open, err := h.keys.Open(revs[0].Sealed, model.ConfigContext(h.server, 1))
+	if err != nil || !bytes.Equal(open, cfgYAML) || bytes.Contains(revs[0].Sealed, []byte(sec[SecretAuth])) {
+		t.Fatal("revision not sealed")
+	}
+	if h.state() != model.StateHealthy {
+		t.Fatalf("server state %s", h.state())
+	}
+	// No password in the job log or data.
+	jj, _ := h.db.JobByID(context.Background(), j.ID)
+	for _, secret := range []string{sec[SecretAuth], sec[SecretObfs], sec[SecretKey]} {
+		if strings.Contains(h.log(j.ID), secret) || strings.Contains(dataJSON(jj.Data), secret) {
+			t.Fatal("secret leaked into the job")
+		}
+	}
+}
+
+func dataJSON(m map[string]string) string {
+	var b strings.Builder
+	for k, v := range m {
+		b.WriteString(k + "=" + v + "\n")
+	}
+	return b.String()
+}
+
+func TestInstallFails(t *testing.T) {
+	s := newSim()
+	s.failOn["install -m 0755"] = true
+	h := newHarness(t, s)
+	j := h.deploy(params(), nil)
+	if j.State != model.JobFailed || j.CurrentStep != "binary" || !strings.Contains(j.ErrorMessage, "установить Hysteria") {
+		t.Fatalf("%s at %s: %s", j.State, j.CurrentStep, j.ErrorMessage)
+	}
+	// Nothing was installed or started, the temp dir is gone.
+	for _, p := range []string{BinaryPath, ConfigPath, UnitPath, CertPath} {
+		if _, found := s.file(p); found {
+			t.Errorf("%s exists", p)
+		}
+	}
+	if s.ran("systemctl restart") || s.dirs["/tmp/hyroute.abcdefghij"] {
+		t.Fatalf("%q", s.cmds)
+	}
+	if h.state() != model.StateNew || len(h.revisions()) != 0 {
+		t.Fatalf("state %s, revisions %d", h.state(), len(h.revisions()))
+	}
+}
+
+func TestChecksumMismatch(t *testing.T) {
+	s := newSim()
+	h := newHarness(t, s)
+	for u := range s.downloads {
+		s.downloads[u] = []byte("tampered")
+	}
+	j := h.deploy(params(), nil)
+	if j.State != model.JobFailed || !strings.Contains(j.ErrorMessage, "не совпадает с хешем") {
+		t.Fatalf("%s: %s", j.State, j.ErrorMessage)
+	}
+	if _, found := s.file(BinaryPath); found {
+		t.Fatal("tampered binary installed")
+	}
+}
+
+func TestStartFailsRollsBackFreshInstall(t *testing.T) {
+	s := newSim()
+	s.badConfig = func([]byte) bool { return true }
+	h := newHarness(t, s)
+	j := h.deploy(params(), nil)
+	if j.State != model.JobFailed || j.CurrentStep != "verify" {
+		t.Fatalf("%s at %s: %s", j.State, j.CurrentStep, j.ErrorMessage)
+	}
+	st := h.steps(j.ID)
+	for _, n := range []string{"binary", "tls", "config", "unit", "start"} {
+		if st[n] != model.StepRolledBack {
+			t.Errorf("%s: %s", n, st[n])
+		}
+	}
+	// Back to a machine without Hysteria (the user stays, harmless).
+	for _, p := range []string{BinaryPath, ConfigPath, UnitPath, CertPath, KeyPath} {
+		if _, found := s.file(p); found {
+			t.Errorf("%s left behind", p)
+		}
+	}
+	if s.state == "active" || s.enabled {
+		t.Fatalf("service %s enabled=%v", s.state, s.enabled)
+	}
+	// The service's own words are in the log for the admin.
+	if !strings.Contains(h.log(j.ID), "simulated crash") || !strings.Contains(h.log(j.ID), "Откат") {
+		t.Fatal(h.log(j.ID))
+	}
+	if h.state() != model.StateNeedsAttention || len(h.revisions()) != 0 {
+		t.Fatalf("state %s", h.state())
+	}
+}
+
+func TestFailedUpgradeRestoresPrevious(t *testing.T) {
+	s := newSim()
+	h := newHarness(t, s)
+	p := params()
+	sec, _ := NewSecrets(p, "192.0.2.10", nil)
+	if j := h.deploy(p, sec); j.State != model.JobCompleted {
+		t.Fatalf("first: %s %s", j.ErrorMessage, h.log(j.ID))
+	}
+	old, _ := s.file(ConfigPath)
+	oldCert, _ := s.file(CertPath)
+
+	// The new config (with obfs) kills the service.
+	s.badConfig = func(cfg []byte) bool { return bytes.Contains(cfg, []byte("salamander")) }
+	p2 := p
+	p2.Obfs = true
+	sec2, _ := NewSecrets(p2, "192.0.2.10", map[string]string{SecretAuth: sec[SecretAuth]})
+	j := h.deploy(p2, sec2)
+	if j.State != model.JobFailed {
+		t.Fatalf("%s", j.State)
+	}
+	now, _ := s.file(ConfigPath)
+	cert, _ := s.file(CertPath)
+	if !bytes.Equal(now, old) || !bytes.Equal(cert, oldCert) {
+		t.Fatal("previous config not restored")
+	}
+	// The previous version runs again with its config.
+	if s.state != "active" || !bytes.Equal(s.running, old) {
+		t.Fatalf("service %s", s.state)
+	}
+	if !strings.Contains(h.log(j.ID), "Прежняя версия Hysteria запущена снова") {
+		t.Fatal(h.log(j.ID))
+	}
+	if len(h.revisions()) != 1 {
+		t.Fatalf("revisions %d", len(h.revisions()))
+	}
+}
+
+func TestRedeployChangesNothing(t *testing.T) {
+	s := newSim()
+	s.ufw = true
+	h := newHarness(t, s)
+	p := params()
+	sec, _ := NewSecrets(p, "192.0.2.10", nil)
+	if j := h.deploy(p, sec); j.State != model.JobCompleted {
+		t.Fatal(j.ErrorMessage)
+	}
+	before := s.fileList()
+	cfg, _ := s.file(ConfigPath)
+	s.reset()
+
+	// A second deploy with the same choices and passwords (a new
+	// certificate is generated, but the one in place is kept).
+	sec2, _ := NewSecrets(p, "192.0.2.10", map[string]string{SecretAuth: sec[SecretAuth]})
+	j := h.deploy(p, sec2)
+	if j.State != model.JobCompleted {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
+	}
+	if len(s.writes) != 0 {
+		t.Fatalf("wrote %q", s.writes)
+	}
+	for _, c := range []string{"systemctl restart", "systemctl stop", "install -m", "mv ", "useradd", "curl -fsSL"} {
+		if s.ran(c) {
+			t.Errorf("ran %q", c)
+		}
+	}
+	if now, _ := s.file(ConfigPath); !bytes.Equal(now, cfg) || !slices.Equal(s.fileList(), before) || s.state != "active" {
+		t.Fatal("server changed")
+	}
+	st := h.steps(j.ID)
+	for _, n := range []string{"binary", "user", "tls", "config", "unit", "start", "commit"} {
+		if st[n] != model.StepSkipped {
+			t.Errorf("%s: %s", n, st[n])
+		}
+	}
+	if len(h.revisions()) != 1 || h.state() != model.StateHealthy {
+		t.Fatalf("revisions %d state %s", len(h.revisions()), h.state())
+	}
+}
+
+func TestRelayDownload(t *testing.T) {
+	s := newSim()
+	s.github = false // the server cannot reach GitHub
+	h := newHarness(t, s)
+	j := h.deploy(params(), nil)
+	if j.State != model.JobCompleted {
+		t.Fatalf("%s: %s %s\n%s", j.State, j.ErrorMessage, j.ErrorDetails, h.log(j.ID))
+	}
+	if !slices.Contains(s.writes, "/tmp/hyroute.abcdefghij/hysteria 0600 root:root") || s.ran("curl -fsSL") {
+		t.Fatalf("writes %q", s.writes)
+	}
+	if b, _ := s.file(BinaryPath); !bytes.Equal(b, fakeBinary) {
+		t.Fatal("binary")
+	}
+	if !strings.Contains(h.log(j.ID), "через controller") {
+		t.Fatal(h.log(j.ID))
+	}
+}
+
+func TestForeignInstallation(t *testing.T) {
+	s := newSim()
+	foreign := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-foreign-password\n")
+	s.files[BinaryPath] = []byte("someone else's hysteria")
+	s.files[ConfigPath] = foreign
+	h := newHarness(t, s)
+	j := h.deploy(params(), nil)
+	if j.State != model.JobFailed || j.CurrentStep != "preflight" || !strings.Contains(j.ErrorMessage, "Импортируйте") {
+		t.Fatalf("%s at %s: %s", j.State, j.CurrentStep, j.ErrorMessage)
+	}
+	if len(s.writes) != 0 || h.state() != model.StateNew {
+		t.Fatalf("writes %q", s.writes)
+	}
+	// With replace the old files are kept aside.
+	p := params()
+	p.Replace = true
+	if j := h.deploy(p, nil); j.State != model.JobCompleted {
+		t.Fatalf("%s\n%s", j.ErrorMessage, h.log(j.ID))
+	}
+	if b, _ := s.file(ConfigPath + Backup); !bytes.Equal(b, foreign) {
+		t.Fatal("foreign config not kept")
+	}
+	if b, _ := s.file(BinaryPath + Backup); string(b) != "someone else's hysteria" {
+		t.Fatal("foreign binary not kept")
+	}
+}
+
+func TestParams(t *testing.T) {
+	good := []Params{
+		{TLS: TLSSelfSigned},
+		{TLS: TLSSelfSigned, Port: 8443, HopPorts: "20000-50000", SNI: "www.example.com", Obfs: true},
+		{TLS: TLSACME, Domain: "VPN.Example.com", Email: "admin@example.com", Challenge: "tls"},
+	}
+	for i := range good {
+		if err := good[i].Normalize(); err != nil {
+			t.Errorf("%+v: %v", good[i], err)
+		}
+	}
+	if p := good[2]; p.Domain != "vpn.example.com" || p.TCPPorts()[0] != 443 {
+		t.Errorf("%+v", p)
+	}
+	if p := good[0]; p.Version != hyrelease.DefaultVersion || p.Port != 443 || p.Source != SourceAuto || p.Listen() != ":443" {
+		t.Errorf("defaults %+v", p)
+	}
+	for _, p := range []Params{
+		{},
+		{TLS: "none"},
+		{TLS: TLSSelfSigned, Port: 70000},
+		{TLS: TLSSelfSigned, HopPorts: "50000-20000"},
+		{TLS: TLSSelfSigned, HopPorts: "a-b"},
+		{TLS: TLSSelfSigned, SNI: "not a name"},
+		{TLS: TLSACME},
+		{TLS: TLSACME, Domain: "192.0.2.10"},
+		{TLS: TLSACME, Domain: "vpn.example.com", Challenge: "dns"},
+		{TLS: TLSSelfSigned, Masquerade: "http://www.example.com"},
+		{TLS: TLSSelfSigned, Masquerade: "https://user:pass@www.example.com"},
+		{TLS: TLSSelfSigned, Version: "latest"},
+		{TLS: TLSSelfSigned, Source: "ftp"},
+	} {
+		if err := p.Normalize(); err == nil {
+			t.Errorf("%+v accepted", p)
+		}
+	}
+}
+
+func TestSelfSigned(t *testing.T) {
+	cert, key, err := SelfSigned("www.example.com", "192.0.2.10", time.Now())
+	if err != nil || !bytes.Contains(key, []byte("PRIVATE KEY")) {
+		t.Fatal(err)
+	}
+	pin, err := Pin(cert)
+	if err != nil || len(pin) != 64 {
+		t.Fatalf("%q %v", pin, err)
+	}
+	if _, err := Pin(key); err == nil {
+		t.Fatal("key taken for a certificate")
+	}
+	// A config built from these parses and validates.
+	p := params()
+	p.Normalize()
+	sec, _ := NewSecrets(p, "192.0.2.10", nil)
+	c, err := BuildConfig(p, sec)
+	if err != nil || hyconfig.HasErrors(c.Validate()) {
+		t.Fatal(err)
+	}
+	if len(sec[SecretAuth]) != 32 || strings.ContainsAny(sec[SecretAuth], "+/=:@") {
+		t.Fatalf("password %q", sec[SecretAuth])
+	}
+}
+
+// The controller dies right after restarting the service; the next
+// process checks the server and finishes the deploy.
+func TestControllerRestartMidDeploy(t *testing.T) {
+	s := newSim()
+	h := newHarness(t, s)
+	killed := make(chan struct{})
+	var once sync.Once
+	s.before = func(line string) {
+		if strings.HasPrefix(line, "systemctl restart") {
+			once.Do(func() { go func() { h.kill(); close(killed) }() })
+		}
+	}
+	p := params()
+	sec, _ := NewSecrets(p, "192.0.2.10", nil)
+	j, err := h.eng.Submit(context.Background(), JobKind, h.server, p, sec, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-killed
+	if cur, _ := h.db.JobByID(context.Background(), j.ID); cur.State.Terminal() {
+		t.Fatalf("job already %s", cur.State)
+	}
+	s.before = nil
+	h.startEngine()
+	j = h.wait(j.ID)
+	if j.State != model.JobCompleted {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
+	}
+	if !strings.Contains(h.log(j.ID), "перезапущен") || len(h.revisions()) != 1 || s.state != "active" || h.state() != model.StateHealthy {
+		t.Fatalf("revisions %d, service %s, server %s\n%s", len(h.revisions()), s.state, h.state(), h.log(j.ID))
+	}
+}
+
+// ACME: the certificate comes from Let's Encrypt at start; a failed
+// start must not delete certificate files the deploy never wrote.
+func TestACMERollbackKeepsForeignCert(t *testing.T) {
+	s := newSim()
+	s.files[CertPath] = []byte("someone's certificate")
+	s.badConfig = func([]byte) bool { return true }
+	h := newHarness(t, s)
+	p := Params{Version: testVersion, TLS: TLSACME, Domain: "vpn.example.com"}
+	j := h.deploy(p, nil)
+	if j.State != model.JobFailed {
+		t.Fatal(j.State)
+	}
+	if b, found := s.file(CertPath); !found || string(b) != "someone's certificate" {
+		t.Fatal("foreign certificate removed")
+	}
+	cfg := string(h.sim.files[ConfigPath])
+	if cfg != "" {
+		t.Fatalf("config left: %s", cfg)
+	}
+	// ACME needs TCP 80 free: preflight asked for it.
+	if !s.ran("ss -Hlntup") {
+		t.Fatal("ports not checked")
+	}
+}

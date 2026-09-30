@@ -393,3 +393,41 @@ func TestOneJobPerServerAndEvents(t *testing.T) {
 		t.Fatalf("new job after the first finished: %v", err)
 	}
 }
+
+func TestFinishedHook(t *testing.T) {
+	var mu sync.Mutex
+	var ended []model.JobState
+	ok := simpleKind("ok", Step{Name: "a", Phase: model.JobInstalling, Run: func(_ context.Context, env *Env) error { env.Set("x", "1"); return nil }})
+	bad := simpleKind("bad", Step{Name: "a", Phase: model.JobInstalling, Run: func(context.Context, *Env) error { return errors.New("boom") }})
+	for _, k := range []*Kind{ok, bad} {
+		k.Finished = func(_ context.Context, env *Env, j model.Job) {
+			mu.Lock()
+			defer mu.Unlock()
+			if j.Kind == "ok" && env.Get("x") != "1" {
+				t.Error("hook does not see the job data")
+			}
+			ended = append(ended, j.State)
+		}
+	}
+	h := newHarness(t, nil, ok, bad)
+	h.start()
+	j1, _ := h.eng.Submit(context.Background(), "ok", 0, nil, nil, 0)
+	h.wait(j1.ID, model.JobCompleted)
+	j2, _ := h.eng.Submit(context.Background(), "bad", 0, nil, nil, 0)
+	h.wait(j2.ID, model.JobFailed)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(ended)
+		mu.Unlock()
+		if n == 2 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ended) != 2 || ended[0] != model.JobCompleted || ended[1] != model.JobFailed {
+		t.Fatalf("hook saw %v", ended)
+	}
+}

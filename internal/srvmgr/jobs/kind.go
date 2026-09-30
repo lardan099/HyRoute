@@ -52,6 +52,9 @@ type Kind struct {
 	// Recover inspects the server after a restart interrupted the job.
 	// Nil: interrupted jobs fail with an explanation.
 	Recover func(ctx context.Context, env *Env) (Resolution, error)
+	// Finished runs once the job has completed or failed (not when the
+	// controller stops in the middle), e.g. to record the server's state.
+	Finished func(ctx context.Context, env *Env, j model.Job)
 }
 
 // StepError is a step failure with a message for people.
@@ -69,15 +72,20 @@ func (e *StepError) Error() string {
 
 func (e *StepError) Unwrap() error { return e.Err }
 
+// ErrNothingToUndo is returned by an Undo that found nothing of its step
+// to revert: the rollback goes on without a log line for it.
+var ErrNothingToUndo = errors.New("nothing to undo")
+
 // Fail is a StepError: message is shown in the UI, err is the technical
 // cause (redacted before it is stored).
 func Fail(message string, err error) error { return &StepError{Message: message, Err: err} }
 
 // Env is what a step sees of its job.
 type Env struct {
-	JobID    int64
-	ServerID int64
-	Params   json.RawMessage
+	JobID     int64
+	ServerID  int64
+	CreatedBy int64 // user who started the job (0: the system)
+	Params    json.RawMessage
 
 	eng     *Engine
 	step    string

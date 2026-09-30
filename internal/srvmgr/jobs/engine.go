@@ -202,7 +202,7 @@ func (e *Engine) prepare(ctx context.Context, id int64) (model.Job, *Kind, []Ste
 			return j, k, nil, nil, nil, fmt.Errorf("step %d is %q stored, %q in this controller", i, rows[i].Name, steps[i].Name)
 		}
 	}
-	env := &Env{JobID: j.ID, ServerID: j.ServerID, Params: j.Params, eng: e, data: map[string]string{}}
+	env := &Env{JobID: j.ID, ServerID: j.ServerID, CreatedBy: j.CreatedBy, Params: j.Params, eng: e, data: map[string]string{}}
 	for k, v := range j.Data {
 		env.data[k] = v
 	}
@@ -276,6 +276,16 @@ func (e *Engine) fail(ctx context.Context, j *model.Job, env *Env, err error) {
 	}
 	e.log(j.ID, "error", j.CurrentStep, line)
 	e.save(ctx, j, env)
+	e.finished(ctx, j, env)
+}
+
+// finished runs the kind's Finished hook for a job that just ended.
+func (e *Engine) finished(ctx context.Context, j *model.Job, env *Env) {
+	k := e.kinds[j.Kind]
+	if k == nil || k.Finished == nil || env == nil {
+		return
+	}
+	k.Finished(context.WithoutCancel(ctx), env, *j)
 }
 
 func (e *Engine) runJob(ctx context.Context, id int64) {
@@ -337,6 +347,7 @@ func (e *Engine) runJob(ctx context.Context, id int64) {
 	j.State, j.CurrentStep, j.FinishedAt, j.LeaseOwner, j.LeaseUntil = model.JobCompleted, "", e.Now(), "", time.Time{}
 	e.log(j.ID, "info", "", "Задание выполнено.")
 	e.save(ctx, &j, env)
+	e.finished(ctx, &j, env)
 }
 
 // stepFailed records the failure of step i, rolls back the steps done in
@@ -359,7 +370,11 @@ func (e *Engine) stepFailed(ctx context.Context, j *model.Job, env *Env, steps [
 		e.log(j.ID, "warn", steps[i].Name, "Откат изменений этого задания.")
 		for _, k := range undo {
 			env.step = steps[k].Name
-			if uerr := steps[k].Undo(context.WithoutCancel(ctx), env); uerr != nil {
+			uerr := steps[k].Undo(context.WithoutCancel(ctx), env)
+			if errors.Is(uerr, ErrNothingToUndo) {
+				continue
+			}
+			if uerr != nil {
 				e.log(j.ID, "error", steps[k].Name, "Откат не удался: "+uerr.Error())
 				continue
 			}
@@ -484,6 +499,7 @@ func (e *Engine) recoverJob(ctx context.Context, id int64) {
 		j.State, j.CurrentStep, j.FinishedAt, j.LeaseOwner, j.LeaseUntil = model.JobCompleted, "", e.Now(), "", time.Time{}
 		e.log(j.ID, "info", "", "Проверка показала, что результат задания уже на сервере. Задание выполнено.")
 		e.save(ctx, &j, env)
+		e.finished(ctx, &j, env)
 	case res == ResolveRetry:
 		e.requeue(ctx, &j, env, steps, rows, "Проверка после перезапуска: задание продолжится.")
 	}

@@ -28,6 +28,7 @@ type Store interface {
 	Servers
 	HostKeys
 	Jobs
+	Configs
 	Close() error
 }
 
@@ -123,4 +124,14 @@ type Jobs interface {
 	AppendJobLog(ctx context.Context, l *model.JobLog) error
 	// JobLogs returns lines with Seq > after, oldest first.
 	JobLogs(ctx context.Context, jobID, after int64, limit int) ([]model.JobLog, error)
+}
+
+// Configs stores the Hysteria config revisions of servers.
+type Configs interface {
+	// AddConfig stores c as the server's next revision (c.Revision is
+	// set); seal seals the YAML for that revision.
+	AddConfig(ctx context.Context, c *model.ServerConfig, seal func(revision int) ([]byte, error)) error
+	// CurrentConfig is the newest revision (ErrNotFound: none).
+	CurrentConfig(ctx context.Context, serverID int64) (model.ServerConfig, error)
+	ListConfigs(ctx context.Context, serverID int64) ([]model.ServerConfig, error)
 }
