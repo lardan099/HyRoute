@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/api"
+	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/config"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
@@ -95,6 +96,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	engine.Register(deploy.Kind(deploy.Deps{Store: db, Keys: keys, Resolver: &hyrelease.Resolver{}}))
 	engine.Register(importer.Kind(importer.Deps{Store: db, Keys: keys}))
 	engine.Register(service.Kind(service.Deps{Store: db, Keys: keys}))
+	applier := apply.New(apply.Deps{Store: db, Keys: keys, Jobs: engine})
+	engine.Register(applier.Kind())
 	jobsCtx, stopJobs := context.WithCancel(context.WithoutCancel(ctx))
 	jobsDone := make(chan struct{})
 	go func() {
@@ -128,6 +131,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			Connect:    conn,
 			Jobs:       engine,
 			Deploy:     &deploy.Submitter{Store: db, Keys: keys, Jobs: engine},
+			Apply:      applier,
 			Keys:       keys,
 			Logs:       logs,
 			Log:        log,

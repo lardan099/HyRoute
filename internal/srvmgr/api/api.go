@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
@@ -31,6 +32,7 @@ type Deps struct {
 	Connect *connect.Connector
 	Jobs    *jobs.Engine
 	Deploy  *deploy.Submitter
+	Apply   *apply.Applier
 	// Keys open config revisions (the passwords journals are redacted
 	// with).
 	Keys *secrets.Keyring
@@ -83,6 +85,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/servers/{id}/config", s.authed(anyRole, s.currentConfig))
 	mux.HandleFunc("GET /api/v1/servers/{id}/config/edit", s.authed(anyRole, s.editConfig))
 	mux.HandleFunc("POST /api/v1/servers/{id}/config/render", s.authed(anyRole, s.renderConfig))
+	mux.HandleFunc("POST /api/v1/servers/{id}/config/apply", s.authed(anyRole, s.applyConfig))
 	mux.HandleFunc("GET /api/v1/servers/{id}/status", s.authed(anyRole, s.serviceStatus))
 	mux.HandleFunc("POST /api/v1/servers/{id}/service/{action}", s.authed(anyRole, s.serviceAction))
 	mux.HandleFunc("GET /api/v1/servers/{id}/journal", s.authed(anyRole, s.journal))

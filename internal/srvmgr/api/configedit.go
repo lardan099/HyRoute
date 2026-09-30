@@ -70,3 +70,27 @@ func (s *server) renderConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, ch)
 }
+
+// applyConfig queues the apply job for the editor's candidate.
+func (s *server) applyConfig(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, errNotFound)
+		return
+	}
+	var in renderInput
+	if err := readJSON(r, &in); err != nil {
+		writeError(w, err)
+		return
+	}
+	if _, err := s.installed(r, id); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	j, err := s.Apply.Submit(r.Context(), id, in.Revision, in.YAML, in.Fields, principal(r).User.ID)
+	if err != nil {
+		s.fail(w, r, jobError(configError(err)))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, toJobJSON(j))
+}

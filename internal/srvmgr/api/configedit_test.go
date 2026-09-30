@@ -52,3 +52,35 @@ func TestConfigEditAPI(t *testing.T) {
 	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/render", map[string]any{"revision": 1, "yaml": "listen: ["}, nil), http.StatusBadRequest, "invalid")
 	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/render", map[string]any{"revision": 7, "yaml": v.YAML}, nil), http.StatusConflict, "config_changed")
 }
+
+func TestConfigApplyAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": "S", "host": "s.example.com", "authType": "password", "password": fakeSSHPass}, nil)
+	var srv serverJSON
+	json.Unmarshal(rec.Body.Bytes(), &srv)
+	id := strconv.FormatInt(srv.ID, 10)
+	cfg := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-apply-api-pass\n")
+	c := model.ServerConfig{ServerID: srv.ID, SHA256: "x", Source: model.ConfigImport, At: time.Now()}
+	e.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return e.keys.Seal(cfg, model.ConfigContext(srv.ID, rev)) })
+	rec = owner.do("GET", "/api/v1/servers/"+id+"/config/edit", nil, nil)
+	var v apply.View
+	json.Unmarshal(rec.Body.Bytes(), &v)
+	good := map[string]any{"revision": 1, "yaml": strings.Replace(v.YAML, ":443", ":8443", 1)}
+
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/apply", good, nil), http.StatusConflict, "no_installation")
+	e.db.SetInstallation(ctx, model.Installation{ServerID: srv.ID, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", At: time.Now()})
+	e.db.SetHostKey(ctx, model.HostKey{ServerID: srv.ID, Type: "ssh-ed25519", Key: []byte("fake"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()})
+
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/config/apply", map[string]any{"revision": 1, "yaml": strings.Replace(v.YAML, ":443", ":99999", 1)}, nil)
+	code(t, rec, http.StatusBadRequest, "invalid")
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/apply", map[string]any{"revision": 1, "yaml": v.YAML}, nil), http.StatusBadRequest, "invalid")
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/config/apply", good, nil)
+	var j jobJSON
+	json.Unmarshal(rec.Body.Bytes(), &j)
+	if rec.Code != http.StatusAccepted || j.Kind != "apply" || strings.Contains(rec.Body.String(), "fake-apply-api-pass") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/apply", good, nil), http.StatusConflict, "server_busy")
+}

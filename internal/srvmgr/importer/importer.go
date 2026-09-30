@@ -131,10 +131,7 @@ func Discover(ctx context.Context, ex remote.Executor, sudo bool, now time.Time)
 	}
 	f.Unknown = hyconfig.UnknownFields(c)
 
-	f.Meta = model.ConfigMeta{Version: f.Version, Listen: c.Listen, Auth: strings.ToLower(c.Auth.Type), Obfs: strings.ToLower(c.Obfs.Type)}
-	if l, err := hyconfig.ParseListen(c.Listen); err == nil {
-		f.Meta.Ports = l.Ports
-	}
+	f.Meta = baseMeta(c, f.Version)
 	if err := f.inspectTLS(ctx, ex, c, sudo, now); err != nil {
 		return f, nil, err
 	}
@@ -144,6 +141,23 @@ func Discover(ctx context.Context, ex remote.Executor, sudo bool, now time.Time)
 	f.inspectService(u)
 	f.inspectConfig(c)
 	return f, raw, nil
+}
+
+func baseMeta(c *hyconfig.Server, version string) model.ConfigMeta {
+	m := model.ConfigMeta{Version: version, Listen: c.Listen, Auth: strings.ToLower(c.Auth.Type), Obfs: strings.ToLower(c.Obfs.Type)}
+	if l, err := hyconfig.ParseListen(c.Listen); err == nil {
+		m.Ports = l.Ports
+	}
+	return m
+}
+
+// ConfigMeta is the summary of a config as the import makes it; the
+// certificate is read from the server for its pin. ex should be
+// read-only.
+func ConfigMeta(ctx context.Context, ex remote.Executor, c *hyconfig.Server, version string, sudo bool, now time.Time) (model.ConfigMeta, error) {
+	f := Found{Meta: baseMeta(c, version)}
+	err := f.inspectTLS(ctx, ex, c, sudo, now)
+	return f.Meta, err
 }
 
 // findUnit picks the Hysteria service: the standard one, others named

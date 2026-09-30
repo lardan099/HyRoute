@@ -155,6 +155,7 @@ export const ru = {
   'kind.deploy': 'Развёртывание',
   'kind.import': 'Импорт',
   'kind.service': 'Управление службой',
+  'kind.apply': 'Применение конфига',
 
   'jstate.queued': 'В очереди',
   'jstate.connecting': 'Подключение',
@@ -195,6 +196,9 @@ export const ru = {
   'step.stop': 'Остановка',
   'step.restart': 'Перезапуск',
   'step.check': 'Проверка состояния',
+  'step.validate': 'Проверка конфига',
+  'step.backup': 'Копия прежнего конфига',
+  'step.install': 'Установка конфига',
 
   'import.button': 'Импортировать',
   'import.fromDeploy': 'Импортировать сервер',

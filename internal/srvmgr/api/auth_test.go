@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
@@ -36,6 +37,7 @@ type testEnv struct {
 	connect *connect.Connector
 	jobs    *jobs.Engine
 	keys    *secrets.Keyring
+	apply   *apply.Applier
 	clock   time.Time
 }
 
@@ -57,9 +59,11 @@ func newEnv(t *testing.T) *testEnv {
 	e.jobs.Register(deploy.Kind(deploy.Deps{Store: db, Keys: keys, Resolver: &hyrelease.Resolver{}}))
 	e.jobs.Register(importer.Kind(importer.Deps{Store: db, Keys: keys}))
 	e.jobs.Register(service.Kind(service.Deps{Store: db, Keys: keys}))
+	e.apply = apply.New(apply.Deps{Store: db, Keys: keys, Jobs: e.jobs})
+	e.jobs.Register(e.apply.Kind())
 	e.keys = keys
 	e.h = New(Deps{Store: db, Auth: e.auth, Servers: e.servers, Connect: e.connect, Jobs: e.jobs,
-		Deploy: &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}, Keys: keys})
+		Deploy: &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}, Apply: e.apply, Keys: keys})
 	return e
 }
 
