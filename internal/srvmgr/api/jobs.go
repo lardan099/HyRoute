@@ -220,17 +220,23 @@ func (s *server) jobEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	last := after
-	for {
-		ls, err := s.Store.JobLogs(r.Context(), id, last, 1000)
-		if err != nil || len(ls) == 0 {
-			break
-		}
-		for _, l := range ls {
-			if send("log", l.Seq, toLogJSON(l)) != nil {
-				return
+	// replay sends the stored lines after last.
+	replay := func() bool {
+		for {
+			ls, err := s.Store.JobLogs(r.Context(), id, last, 1000)
+			if err != nil || len(ls) == 0 {
+				return true
 			}
-			last = l.Seq
+			for _, l := range ls {
+				if send("log", l.Seq, toLogJSON(l)) != nil {
+					return false
+				}
+				last = l.Seq
+			}
 		}
+	}
+	if !replay() {
+		return
 	}
 	if send("job", 0, toJobJSON(j)) != nil {
 		return
@@ -249,6 +255,11 @@ func (s *server) jobEvents(w http.ResponseWriter, r *http.Request) {
 		j = cur
 	}
 	if j.State.Terminal() {
+		// Lines written while the replay ran are stored: send them before
+		// the end.
+		if !replay() {
+			return
+		}
 		send("job", 0, toJobJSON(j))
 		send("end", 0, struct{}{})
 		return
@@ -283,6 +294,10 @@ func (s *server) jobEvents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			case "job":
+				// A line the subscription missed (a full buffer) is stored.
+				if ev.Job.State.Terminal() && !replay() {
+					return
+				}
 				if send("job", 0, toJobJSON(*ev.Job)) != nil {
 					return
 				}

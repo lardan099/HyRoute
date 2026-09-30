@@ -140,7 +140,9 @@ func (v *vps) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 	return remote.Result{ExitCode: 127, Stderr: []byte("vps: unknown command " + line)}, nil
 }
 
-func (v *vps) Stream(context.Context, remote.Cmd, func(string)) error { return errors.New("no streams") }
+func (v *vps) Stream(context.Context, remote.Cmd, func(string)) error {
+	return errors.New("no streams")
+}
 
 func (v *vps) ReadFile(_ context.Context, p string, _ bool) ([]byte, error) {
 	v.mu.Lock()
