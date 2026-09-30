@@ -35,10 +35,11 @@ var (
 	errBadJSON      = &Error{Status: http.StatusBadRequest, Code: "bad_request", Message: "Некорректный запрос."}
 )
 
-// authError maps errors of the auth service to API errors.
-func authError(err error) error {
+// mapError maps service errors (auth, field validation, not found) to API
+// errors; anything else stays an internal error.
+func mapError(err error) error {
 	var rl *auth.RateLimitedError
-	var inv *auth.InvalidError
+	var inv *model.FieldError
 	switch {
 	case errors.As(err, &rl):
 		secs := int(rl.Wait.Round(time.Second) / time.Second)
@@ -197,7 +198,7 @@ func (s *server) authed(need access, h http.HandlerFunc) http.HandlerFunc {
 			if errors.Is(err, auth.ErrUnauthenticated) {
 				s.clearSessionCookie(w, r)
 			}
-			s.fail(w, r, authError(err))
+			s.fail(w, r, mapError(err))
 			return
 		}
 		if mutating(r.Method) {
@@ -254,7 +255,7 @@ func (s *server) postSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	is, err := s.Auth.Setup(r.Context(), req.Token, req.Username, req.Password, s.meta(r))
 	if err != nil {
-		s.fail(w, r, authError(err))
+		s.fail(w, r, mapError(err))
 		return
 	}
 	if s.OnSetupDone != nil {
@@ -276,7 +277,7 @@ func (s *server) postSession(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &rl) {
 			w.Header().Set("Retry-After", strconv.Itoa(max(int(rl.Wait/time.Second), 1)))
 		}
-		s.fail(w, r, authError(err))
+		s.fail(w, r, mapError(err))
 		return
 	}
 	s.setSessionCookie(w, r, is.Token, s.Auth.MaxAge)
@@ -290,7 +291,7 @@ func (s *server) getSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	if err := s.Auth.Logout(r.Context(), principal(r)); err != nil {
-		s.fail(w, r, authError(err))
+		s.fail(w, r, mapError(err))
 		return
 	}
 	s.clearSessionCookie(w, r)
@@ -312,7 +313,7 @@ func (s *server) listSessions(w http.ResponseWriter, r *http.Request) {
 	p := principal(r)
 	ss, err := s.Auth.Sessions(r.Context(), p, r.URL.Query().Get("all") == "1")
 	if err != nil {
-		s.fail(w, r, authError(err))
+		s.fail(w, r, mapError(err))
 		return
 	}
 	out := make([]sessionInfoJSON, 0, len(ss))
@@ -329,7 +330,7 @@ func (s *server) revokeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Auth.RevokeSession(r.Context(), principal(r), id); err != nil {
-		s.fail(w, r, authError(err))
+		s.fail(w, r, mapError(err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -359,7 +360,7 @@ func (s *server) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := s.Auth.CreateUser(r.Context(), principal(r), req.Username, req.Password, req.Role)
 	if err != nil {
-		s.fail(w, r, authError(err))
+		s.fail(w, r, mapError(err))
 		return
 	}
 	writeJSON(w, http.StatusCreated, toUserJSON(u))

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
+	"github.com/lardan099/hyroute/internal/srvmgr/servers"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
 
@@ -21,6 +22,7 @@ import (
 type Deps struct {
 	Store   store.Store
 	Auth    *auth.Service
+	Servers *servers.Service
 	Log     *slog.Logger
 	Version string
 	// TrustProxy: believe X-Forwarded-For/-Proto from a reverse proxy on
@@ -55,6 +57,11 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.authed(ownSession, s.revokeSession))
 	mux.HandleFunc("GET /api/v1/users", s.authed(anyRole, s.listUsers))
 	mux.HandleFunc("POST /api/v1/users", s.authed(manageUsers, s.createUser))
+	mux.HandleFunc("GET /api/v1/servers", s.authed(anyRole, s.listServers))
+	mux.HandleFunc("POST /api/v1/servers", s.authed(anyRole, s.createServer))
+	mux.HandleFunc("GET /api/v1/servers/{id}", s.authed(anyRole, s.getServer))
+	mux.HandleFunc("PATCH /api/v1/servers/{id}", s.authed(anyRole, s.updateServer))
+	mux.HandleFunc("DELETE /api/v1/servers/{id}", s.authed(anyRole, s.deleteServer))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { writeError(w, errNotFound) })
 	if d.UI != nil {
 		mux.Handle("/", uiHandler(d.UI))

@@ -23,6 +23,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/config"
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
+	"github.com/lardan099/hyroute/internal/srvmgr/servers"
 	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
 	admin "github.com/lardan099/hyroute/web/admin"
 )
@@ -90,6 +91,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		Handler: api.New(api.Deps{
 			Store:      db,
 			Auth:       authSvc,
+			Servers:    servers.New(db, keys),
 			Log:        log,
 			Version:    version,
 			TrustProxy: cfg.TrustProxy,

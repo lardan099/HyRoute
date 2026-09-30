@@ -89,6 +89,47 @@ export interface SessionInfo {
   userAgent: string;
 }
 
+export type AuthType = 'password' | 'key';
+export type ServerRole = 'standalone' | 'entry' | 'relay' | 'exit';
+export type ServerState = 'new' | 'deploying' | 'healthy' | 'degraded' | 'offline' | 'needs_attention';
+
+export interface Server {
+  id: number;
+  name: string;
+  tags: string[];
+  country: string;
+  location: string;
+  host: string;
+  sshPort: number;
+  sshUser: string;
+  authType: AuthType;
+  role: ServerRole;
+  notes: string;
+  state: ServerState;
+  createdAt: string;
+  updatedAt: string;
+  hasPassword: boolean;
+  hasKey: boolean;
+  hasKeyPassphrase: boolean;
+}
+
+// ServerInput: credentials left undefined keep the stored ones on update.
+export interface ServerInput {
+  name: string;
+  tags: string[];
+  country: string;
+  location: string;
+  host: string;
+  sshPort: number;
+  sshUser: string;
+  authType: AuthType;
+  role: ServerRole;
+  notes: string;
+  password?: string;
+  key?: string;
+  keyPassphrase?: string;
+}
+
 export const api = {
   health: () => request<Health>('GET', '/health'),
   setupNeeded: () => request<{ needed: boolean }>('GET', '/setup'),
@@ -100,4 +141,9 @@ export const api = {
   revokeSession: (id: number) => request<void>('DELETE', `/sessions/${id}`),
   users: () => request<User[]>('GET', '/users'),
   createUser: (username: string, password: string, role: Role) => request<User>('POST', '/users', { username, password, role }),
+  servers: () => request<Server[]>('GET', '/servers'),
+  server: (id: number) => request<Server>('GET', `/servers/${id}`),
+  createServer: (s: ServerInput) => request<Server>('POST', '/servers', s),
+  updateServer: (id: number, s: ServerInput) => request<Server>('PATCH', `/servers/${id}`, s),
+  deleteServer: (id: number) => request<void>('DELETE', `/servers/${id}`),
 };

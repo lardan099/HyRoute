@@ -63,3 +63,9 @@ type AuditEntry struct {
 	Target  string
 	Details string
 }
+
+// FieldError: an input field does not pass validation. Msg is for people
+// (Russian, shown next to the field as is).
+type FieldError struct{ Field, Msg string }
+
+func (e *FieldError) Error() string { return e.Field + ": " + e.Msg }

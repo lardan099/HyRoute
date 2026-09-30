@@ -13,17 +13,20 @@ import (
 
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
+	"github.com/lardan099/hyroute/internal/srvmgr/servers"
 	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
 )
 
 const pass = "correct horse battery"
 
 type testEnv struct {
-	t     *testing.T
-	h     http.Handler
-	db    *sqlite.DB
-	auth  *auth.Service
-	clock time.Time
+	t       *testing.T
+	h       http.Handler
+	db      *sqlite.DB
+	auth    *auth.Service
+	servers *servers.Service
+	clock   time.Time
 }
 
 func newEnv(t *testing.T) *testEnv {
@@ -32,7 +35,12 @@ func newEnv(t *testing.T) *testEnv {
 	e.auth = auth.New(db)
 	e.auth.Params = auth.Params{Memory: 64, Time: 1, Threads: 1, KeyLen: 32, SaltLen: 16}
 	e.auth.Now = func() time.Time { return e.clock }
-	e.h = New(Deps{Store: db, Auth: e.auth})
+	keys, err := secrets.NewKeyring(map[uint32][]byte{1: bytes.Repeat([]byte{9}, 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.servers = servers.New(db, keys)
+	e.h = New(Deps{Store: db, Auth: e.auth, Servers: e.servers})
 	return e
 }
 
@@ -279,7 +287,7 @@ func TestReadOnlyCannotWrite(t *testing.T) {
 
 func TestSecureCookieBehindProxy(t *testing.T) {
 	e := newEnv(t)
-	e.h = New(Deps{Store: e.db, Auth: e.auth, TrustProxy: true})
+	e.h = New(Deps{Store: e.db, Auth: e.auth, Servers: e.servers, TrustProxy: true})
 	c := e.setupOwner()
 	if c.cookie.Secure {
 		t.Fatal("plain HTTP without a proxy header got a Secure cookie")

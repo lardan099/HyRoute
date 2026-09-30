@@ -39,11 +39,6 @@ func (e *RateLimitedError) Error() string {
 	return fmt.Sprintf("too many failed attempts, retry in %s", e.Wait.Round(time.Second))
 }
 
-// InvalidError: the input does not pass validation; Msg is for people.
-type InvalidError struct{ Field, Msg string }
-
-func (e *InvalidError) Error() string { return e.Field + ": " + e.Msg }
-
 // Store is what the service needs from storage.
 type Store interface {
 	store.Users
@@ -165,10 +160,10 @@ const (
 
 func validateCredentials(username, password string) error {
 	if !usernameRe.MatchString(username) {
-		return &InvalidError{"username", "Имя пользователя: от 1 до 64 символов, латинские буквы, цифры, точка, дефис и подчёркивание."}
+		return &model.FieldError{Field: "username", Msg: "Имя пользователя: от 1 до 64 символов, латинские буквы, цифры, точка, дефис и подчёркивание."}
 	}
 	if n := utf8.RuneCountInString(password); n < MinPasswordLen || len(password) > MaxPasswordLen {
-		return &InvalidError{"password", fmt.Sprintf("Пароль: не короче %d символов.", MinPasswordLen)}
+		return &model.FieldError{Field: "password", Msg: fmt.Sprintf("Пароль: не короче %d символов.", MinPasswordLen)}
 	}
 	return nil
 }
@@ -374,7 +369,7 @@ func (s *Service) CreateUser(ctx context.Context, p Principal, username, passwor
 		return model.User{}, ErrForbidden
 	}
 	if !role.Valid() || role == model.RoleOwner {
-		return model.User{}, &InvalidError{"role", "Роль: admin, operator или readonly."}
+		return model.User{}, &model.FieldError{Field: "role", Msg: "Роль: admin, operator или readonly."}
 	}
 	if err := validateCredentials(username, password); err != nil {
 		return model.User{}, err
@@ -387,7 +382,7 @@ func (s *Service) CreateUser(ctx context.Context, p Principal, username, passwor
 	u := model.User{Username: username, PasswordHash: hash, Role: role, CreatedAt: now, UpdatedAt: now}
 	if err := s.Store.CreateUser(ctx, &u); err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			return model.User{}, &InvalidError{"username", "Пользователь с таким именем уже есть."}
+			return model.User{}, &model.FieldError{Field: "username", Msg: "Пользователь с таким именем уже есть."}
 		}
 		return model.User{}, err
 	}

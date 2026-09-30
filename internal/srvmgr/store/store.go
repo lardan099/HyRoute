@@ -25,6 +25,7 @@ type Store interface {
 	Users
 	Sessions
 	Audit
+	Servers
 	Close() error
 }
 
@@ -66,4 +67,25 @@ type Audit interface {
 	AddAudit(ctx context.Context, e model.AuditEntry) error
 	// ListAudit returns the newest entries first.
 	ListAudit(ctx context.Context, limit int) ([]model.AuditEntry, error)
+}
+
+// SealFunc seals the credentials of a server once its ID is known; it runs
+// inside the transaction that creates or updates the server.
+type SealFunc func(serverID int64) ([]model.Credential, error)
+
+// Servers stores the server inventory. Names are unique case-insensitively.
+type Servers interface {
+	// CreateServer inserts s (setting s.ID) and the credentials seal
+	// returns, atomically; ErrConflict if the name is taken.
+	CreateServer(ctx context.Context, s *model.Server, seal SealFunc) error
+	// UpdateServer replaces the fields of s, stores the credentials seal
+	// returns (seal may be nil) and deletes the kinds in drop, atomically.
+	UpdateServer(ctx context.Context, s *model.Server, seal SealFunc, drop []model.CredKind) error
+	// SetServerState changes only the state.
+	SetServerState(ctx context.Context, id int64, state model.ServerState, at time.Time) error
+	DeleteServer(ctx context.Context, id int64) error
+	ServerByID(ctx context.Context, id int64) (model.Server, error)
+	ListServers(ctx context.Context) ([]model.Server, error)
+	// ServerCredentials returns the sealed credentials of a server.
+	ServerCredentials(ctx context.Context, id int64) ([]model.Credential, error)
 }

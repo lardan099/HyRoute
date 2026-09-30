@@ -122,9 +122,9 @@
 **Done:** тесты: шифрование round-trip, неверный ключ даёт ошибку, redaction всех перечисленных типов (включая секреты внутри YAML и URI).
 
 ### P1-04 Инвентарь серверов
-- [ ] Entity Server: name, tags, country/location label, host, SSH port/user, auth type, role, заметки, состояние.
-- [ ] CRUD API, credentials хранятся только зашифрованными и никогда не возвращаются в API.
-- [ ] Страница Servers: список, добавление, редактирование, удаление с подтверждением.
+- [x] Entity Server: name, tags, country/location label, host, SSH port/user, auth type, role, заметки, состояние.
+- [x] CRUD API, credentials хранятся только зашифрованными и никогда не возвращаются в API.
+- [x] Страница Servers: список, добавление, редактирование, удаление с подтверждением.
 
 **Done:** из UI можно добавить/изменить/удалить сервер; в БД нет открытых секретов (тест).
 

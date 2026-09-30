@@ -1,16 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, ApiError, type Health } from '../api';
-  import { t } from '../i18n';
+  import { api, asApiError, type ApiError, type Health, type Server } from '../api';
+  import { t, type Key } from '../i18n';
+  import { go } from '../router.svelte';
+  import { flag, stateTone } from '../lib/format';
 
   let health = $state<Health | null>(null);
   let error = $state<ApiError | null>(null);
+  let servers = $state<Server[] | null>(null);
 
   onMount(async () => {
     try {
-      health = await api.health();
+      [health, servers] = await Promise.all([api.health(), api.servers()]);
     } catch (e) {
-      error = e instanceof ApiError ? e : new ApiError(0, 'unknown', t('error.unknown'), String(e));
+      error = asApiError(e);
     }
   });
 </script>
@@ -40,7 +43,20 @@
   </section>
   <section class="card">
     <h2>{t('overview.servers')}</h2>
-    <p class="muted">{t('overview.serversEmpty')}</p>
+    {#if servers && servers.length === 0}
+      <p class="muted">{t('overview.serversEmpty')}</p>
+    {:else if servers}
+      <ul>
+        {#each servers as s (s.id)}
+          <li>
+            <span class="dot {stateTone(s.state)}"></span>
+            <span class="grow ellipsis">{flag(s.country)} {s.name}</span>
+            <span class="muted small">{t(`state.${s.state}` as Key)}</span>
+          </li>
+        {/each}
+      </ul>
+      <button class="link small" onclick={() => go('servers')}>{t('overview.serversCount', { n: servers.length })}</button>
+    {/if}
   </section>
 </div>
 
@@ -50,4 +66,6 @@
   dt { color: var(--muted); }
   dd { margin: 0; display: flex; align-items: center; gap: 8px; }
   p { margin: 0; }
+  ul { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  li { display: flex; align-items: center; gap: 10px; min-width: 0; }
 </style>

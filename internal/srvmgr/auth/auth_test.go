@@ -122,7 +122,7 @@ func TestFirstRunSetup(t *testing.T) {
 	if _, err := s.Setup(ctx, "wrong", "owner", goodPass, meta("10.0.0.1")); !errors.Is(err, ErrBadSetupToken) {
 		t.Fatalf("wrong token: %v", err)
 	}
-	var inv *InvalidError
+	var inv *model.FieldError
 	if _, err := s.Setup(ctx, tok, "owner", "short", meta("10.0.0.1")); !errors.As(err, &inv) || inv.Field != "password" {
 		t.Fatalf("short password: %v", err)
 	}
