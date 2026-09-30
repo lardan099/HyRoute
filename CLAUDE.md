@@ -23,12 +23,14 @@ docs/GUIDE.md. The users speak Russian: answer in Russian, UI text is Russian.
 
 ## Checks before a push
 
-- `gofmt -l cmd internal build tools frontend/*.go` prints nothing
-  (third_party/ is not ours).
+- `gofmt -l cmd internal build tools frontend/*.go web/admin/*.go` prints
+  nothing (third_party/ is not ours).
 - `go vet ./...` and `GOOS=windows go vet ./...`
 - `go test ./...`; `go test -race` for the packages you touched.
 - UI changes: `cd frontend && npx svelte-check --threshold warning && npx vite build`.
   frontend/dist is committed: commit the rebuilt dist with the change.
+  The server manager admin (web/admin) is checked and built the same way;
+  web/admin/dist is committed too.
 - Docs: user-visible changes go into docs/GUIDE.md and the next
   docs/release-notes/vX.Y.Z.txt.
 

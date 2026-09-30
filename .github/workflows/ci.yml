@@ -57,3 +57,13 @@ jobs:
         run: |
           git status --porcelain frontend/dist
           test -z "$(git status --porcelain frontend/dist)" || { echo "::error::frontend/dist is stale: run npm run build in frontend and commit it"; exit 1; }
+      - name: Server manager admin type check and build
+        working-directory: web/admin
+        run: |
+          npm ci
+          npx svelte-check --threshold warning
+          npm run build
+      - name: web/admin/dist matches the sources
+        run: |
+          git status --porcelain web/admin/dist
+          test -z "$(git status --porcelain web/admin/dist)" || { echo "::error::web/admin/dist is stale: run npm run build in web/admin and commit it"; exit 1; }

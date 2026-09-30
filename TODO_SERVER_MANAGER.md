@@ -99,10 +99,10 @@
 **Done:** документ создан и покрывает все пункты выше; в нём есть раздел «Обязательное поведение» с чек-листом и привязкой к задачам.
 
 ### P1-01 Каркас controller
-- [ ] `cmd/hyroute-server` с конфигурацией (флаги + env), graceful shutdown.
-- [ ] SQLite, система миграций, repository interfaces (бизнес-логика не знает про SQL).
-- [ ] HTTP-роутер `/api/v1`, endpoint `/api/v1/health`, структурированные ошибки (human-readable message + technical details).
-- [ ] Каркас `web/admin` на Svelte 5 со встраиванием через `go:embed`, навигация: Overview, Servers, Cascades, Rules, Presets, Deployments, Logs, Settings (пока пустые страницы, где не реализовано).
+- [x] `cmd/hyroute-server` с конфигурацией (флаги + env), graceful shutdown.
+- [x] SQLite, система миграций, repository interfaces (бизнес-логика не знает про SQL).
+- [x] HTTP-роутер `/api/v1`, endpoint `/api/v1/health`, структурированные ошибки (human-readable message + technical details).
+- [x] Каркас `web/admin` на Svelte 5 со встраиванием через `go:embed`, навигация: Overview, Servers, Cascades, Rules, Presets, Deployments, Logs, Settings (пока пустые страницы, где не реализовано).
 
 **Done:** `hyroute-server` запускается, отдаёт UI и `/api/v1/health`; миграции применяются на чистой БД; тесты на миграции.
 
