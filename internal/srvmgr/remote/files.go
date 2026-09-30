@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -164,4 +165,40 @@ func MakeDir(ctx context.Context, ex Executor, path string, mode fs.FileMode, ow
 	}
 	_, err := run(ctx, ex, "install", Cmd{Args: []string{"install", "-d", "-m", fmt.Sprintf("%04o", mode.Perm()), "-o", owner, "-g", group, "--", path}, Sudo: sudo})
 	return err
+}
+
+// FileInfo is what stat tells about a file.
+type FileInfo struct {
+	Mode  fs.FileMode // permission bits
+	Owner string
+	Group string
+	Size  int64
+}
+
+// Stat describes a file (symlinks followed); ok is false when it does not
+// exist.
+func Stat(ctx context.Context, ex Executor, path string, sudo bool) (fi FileInfo, ok bool, err error) {
+	if err := CheckPath(path); err != nil {
+		return fi, false, err
+	}
+	res, err := ex.Run(ctx, Cmd{Args: []string{"stat", "-L", "-c", "%a %U %G %s", "--", path}, Sudo: sudo})
+	if err != nil {
+		return fi, false, err
+	}
+	if !res.OK() {
+		if strings.Contains(string(res.Stderr), "No such file") {
+			return fi, false, nil
+		}
+		return fi, false, &ExitError{Op: "stat", Code: res.ExitCode, Stderr: strings.TrimSpace(string(res.Stderr))}
+	}
+	f := strings.Fields(string(res.Stdout))
+	if len(f) != 4 {
+		return fi, false, fmt.Errorf("stat: unexpected output %q", res.Stdout)
+	}
+	mode, err1 := strconv.ParseUint(f[0], 8, 32)
+	size, err2 := strconv.ParseInt(f[3], 10, 64)
+	if err1 != nil || err2 != nil {
+		return fi, false, fmt.Errorf("stat: unexpected output %q", res.Stdout)
+	}
+	return FileInfo{Mode: fs.FileMode(mode) & fs.ModePerm, Owner: f[1], Group: f[2], Size: size}, true, nil
 }

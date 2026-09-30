@@ -120,7 +120,7 @@ env), `setup-token` на время первого запуска.
 | `servers` | id, name, tags (json), location, host, ssh_port, ssh_user, auth_type (password/key), role (standalone/entry/relay/exit), notes, state, created_at, updated_at | state: new, deploying, healthy, degraded, offline, needs_attention |
 | `server_credentials` | server_id, kind (ssh_password/ssh_key/ssh_key_passphrase), secret (envelope) | никогда не возвращаются в API |
 | `host_keys` | server_id, key_type, key (raw), fingerprint_sha256, trusted_at, trusted_by | TOFU; смена ключа — только явный re-trust |
-| `installations` | server_id, binary_path, config_path, unit_name, service_user, hysteria_version, managed (bool), imported_at | managed = установлено нами; imported — чужая установка |
+| `installations` | server_id, binary_path, config_path, unit, service_user, version, managed (bool), updated_at | managed = установлено HyRoute (deploy); импорт записывает найденную установку с managed = 0 |
 | `config_revisions` | id, server_id, seq, yaml (envelope), sha256, source (deploy/import/edit/rollback), status (candidate/applied/failed/rolled_back), created_by, created_at, applied_at | YAML содержит пароли → хранится зашифрованным |
 | `client_profiles` | server_id, uri (envelope), name, created_at | ссылки выдаются по явному действию |
 | `jobs` | id, kind, server_id, state, current_step, params (json без секретов), secret_params (envelope), attempt, error_message, error_details, created_by, created_at, started_at, finished_at, lease_owner, lease_until | |

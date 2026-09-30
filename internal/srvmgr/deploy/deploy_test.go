@@ -618,3 +618,63 @@ func TestSubmitterKeepsPasswords(t *testing.T) {
 		t.Fatalf("revisions (newest first): %d", len(revs))
 	}
 }
+
+func TestInstallationRecorded(t *testing.T) {
+	s := newSim()
+	h := newHarness(t, s)
+	if j := h.deploy(params(), nil); j.State != model.JobCompleted {
+		t.Fatalf("%s: %s", j.State, j.ErrorMessage)
+	}
+	in, err := h.db.Installation(context.Background(), h.server)
+	if err != nil || !in.Managed || in.Unit != Unit || in.Config != ConfigPath || in.Binary != BinaryPath || in.User != User || in.Version != testVersion {
+		t.Fatalf("%+v %v", in, err)
+	}
+}
+
+func TestDeployOverImport(t *testing.T) {
+	ctx := context.Background()
+	imported := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-imported-password\n")
+
+	// Imported elsewhere: deploy would install a second Hysteria.
+	s := newSim()
+	h := newHarness(t, s)
+	h.db.SetInstallation(ctx, model.Installation{ServerID: h.server, Binary: "/opt/hy/hysteria", Config: "/opt/hy/server.yaml", Unit: "hy2.service", At: time.Now()})
+	p := params()
+	p.Replace = true
+	if j := h.deploy(p, nil); j.State != model.JobFailed || !strings.Contains(j.ErrorMessage, "hy2.service") || len(s.writes) != 0 {
+		t.Fatalf("%s: %s (writes %q)", j.State, j.ErrorMessage, s.writes)
+	}
+
+	// Imported in the standard places: its own message; replace works and
+	// the installation becomes HyRoute's.
+	s = newSim()
+	s.files[BinaryPath] = []byte("imported hysteria")
+	s.files[ConfigPath] = imported
+	s.files[UnitPath] = []byte("[Service]\n")
+	s.unitLoaded = "[Service]\n"
+	h = newHarness(t, s)
+	h.db.SetInstallation(ctx, model.Installation{ServerID: h.server, Binary: BinaryPath, Config: ConfigPath, Unit: Unit, At: time.Now()})
+	h.db.AddConfig(ctx, &model.ServerConfig{ServerID: h.server, SHA256: sum(imported), Source: model.ConfigImport, At: time.Now()}, func(rev int) ([]byte, error) {
+		return h.keys.Seal(imported, model.ConfigContext(h.server, rev))
+	})
+	j := h.deploy(params(), nil)
+	if j.State != model.JobFailed || !strings.Contains(j.ErrorMessage, "импортирована") || len(s.writes) != 0 {
+		t.Fatalf("%s: %s", j.State, j.ErrorMessage)
+	}
+	sub := &Submitter{Store: h.db, Keys: h.keys, Jobs: h.eng}
+	j, err := sub.Submit(ctx, h.server, p, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j = h.wait(j.ID); j.State != model.JobCompleted {
+		t.Fatalf("replace: %s %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
+	}
+	b, _ := s.file(ConfigPath)
+	c, _ := hyconfig.ParseServer(b)
+	if c.Auth.Password != "fake-imported-password" {
+		t.Fatal("the imported password did not carry over: client links would break")
+	}
+	if in, _ := h.db.Installation(ctx, h.server); !in.Managed {
+		t.Fatal("installation not HyRoute's after replace")
+	}
+}

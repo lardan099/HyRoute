@@ -29,6 +29,7 @@ const JobKind = "deploy"
 // Store is what the deploy keeps in the controller's database.
 type Store interface {
 	store.Configs
+	store.Installations
 	ServerByID(ctx context.Context, id int64) (model.Server, error)
 	SetServerState(ctx context.Context, id int64, state model.ServerState, at time.Time) error
 }
@@ -194,7 +195,21 @@ func (x *deployer) preflight(ctx context.Context, env *jobs.Env, p Params) error
 
 	// Whose installation is it? Once this job has started changing the
 	// server, a retry must not take its own files for someone else's.
-	if env.Get("claimed") == "1" || !r.Hysteria.Installed {
+	if env.Get("claimed") == "1" {
+		return nil
+	}
+	imported := false
+	if in, err := x.Store.Installation(ctx, env.ServerID); err == nil && !in.Managed {
+		// An imported installation elsewhere would keep running next to
+		// ours.
+		if in.Unit != Unit || in.Config != ConfigPath {
+			return jobs.Fail(fmt.Sprintf("Импортированная Hysteria работает как служба %s с конфигом %s. Развёртывание ставит Hysteria в стандартные места и такую установку не заменяет: остановите и отключите её вручную или управляйте ею как есть.", in.Unit, in.Config), nil)
+		}
+		imported = true
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	if !r.Hysteria.Installed {
 		env.Set("claimed", "1")
 		return nil
 	}
@@ -207,6 +222,8 @@ func (x *deployer) preflight(ctx context.Context, env *jobs.Env, p Params) error
 		env.Logf("Hysteria на сервере установлена HyRoute: повторное развёртывание изменит только то, что отличается.")
 	case p.Replace:
 		env.Warnf("Hysteria на сервере установлена не HyRoute; её файлы будут заменены, прежние сохранятся с суффиксом %s.", Backup)
+	case imported:
+		return jobs.Fail("Hysteria на этом сервере импортирована, и HyRoute управляет ею как есть. Чтобы поставить вместо неё свою, разверните с заменой: прежние файлы сохранятся.", nil)
 	default:
 		return jobs.Fail("На сервере уже есть Hysteria, установленная не HyRoute. Импортируйте сервер, чтобы управлять ею как есть, или разверните с заменой.", nil)
 	}
@@ -217,6 +234,13 @@ func (x *deployer) preflight(ctx context.Context, env *jobs.Env, p Params) error
 // managed: the config on the server is the one the controller installed
 // last (or the one this job installs).
 func (x *deployer) managed(ctx context.Context, env *jobs.Env, ex remote.Executor, p Params) (bool, error) {
+	// An imported installation is not ours even though its config is in
+	// the controller.
+	if in, err := x.Store.Installation(ctx, env.ServerID); err == nil && !in.Managed {
+		return false, nil
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return false, err
+	}
 	sum, err := remote.FileSHA256(ctx, ex, ConfigPath, sudo(env))
 	if err != nil || sum == "" {
 		return false, err
@@ -725,8 +749,21 @@ func (x *deployer) commitDone(ctx context.Context, env *jobs.Env, p Params) (boo
 	cur, err := x.Store.CurrentConfig(ctx, env.ServerID)
 	if errors.Is(err, store.ErrNotFound) {
 		return false, nil
+	} else if err != nil {
+		return false, err
 	}
-	return err == nil && cur.SHA256 == sha(want) && cur.Meta == meta, err
+	in, err := x.Store.Installation(ctx, env.ServerID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return cur.SHA256 == sha(want) && cur.Meta == meta && in == x.installation(env, p, in.At), nil
+}
+
+// installation is what a deploy puts on the server.
+func (x *deployer) installation(env *jobs.Env, p Params, at time.Time) model.Installation {
+	return model.Installation{ServerID: env.ServerID, Binary: BinaryPath, Config: ConfigPath, Unit: Unit, User: User, Version: p.Version, Managed: true, At: at}
 }
 
 func (x *deployer) commit(ctx context.Context, env *jobs.Env, p Params) error {
@@ -734,15 +771,24 @@ func (x *deployer) commit(ctx context.Context, env *jobs.Env, p Params) error {
 	if err != nil {
 		return err
 	}
-	c := model.ServerConfig{ServerID: env.ServerID, SHA256: sha(want), Meta: meta, Source: model.ConfigDeploy, JobID: env.JobID, By: env.CreatedBy, At: x.Now()}
-	err = x.Store.AddConfig(ctx, &c, func(rev int) ([]byte, error) {
-		return x.Keys.Seal(want, model.ConfigContext(env.ServerID, rev))
-	})
-	if err != nil {
+	now := x.Now()
+	cur, err := x.Store.CurrentConfig(ctx, env.ServerID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
-	env.Logf("Конфиг сохранён в controller как ревизия %d.", c.Revision)
-	return nil
+	if err == nil && cur.SHA256 == sha(want) && cur.Meta == meta {
+		env.Logf("Конфиг совпадает с ревизией %d в controller.", cur.Revision)
+	} else {
+		c := model.ServerConfig{ServerID: env.ServerID, SHA256: sha(want), Meta: meta, Source: model.ConfigDeploy, JobID: env.JobID, By: env.CreatedBy, At: now}
+		err = x.Store.AddConfig(ctx, &c, func(rev int) ([]byte, error) {
+			return x.Keys.Seal(want, model.ConfigContext(env.ServerID, rev))
+		})
+		if err != nil {
+			return err
+		}
+		env.Logf("Конфиг сохранён в controller как ревизия %d.", c.Revision)
+	}
+	return x.Store.SetInstallation(ctx, x.installation(env, p, now))
 }
 
 func (x *deployer) finished(ctx context.Context, env *jobs.Env, j model.Job) {

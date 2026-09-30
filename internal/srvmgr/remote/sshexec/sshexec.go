@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path"
@@ -358,6 +359,9 @@ func (c *Client) ReadFile(ctx context.Context, p string, sudo bool) ([]byte, err
 			return nil, err
 		}
 		if !res.OK() {
+			if strings.Contains(string(res.Stderr), "No such file") {
+				return nil, fmt.Errorf("%s: %w", p, fs.ErrNotExist) // as SFTP says it
+			}
 			return nil, &remote.ExitError{Op: "read " + p, Code: res.ExitCode, Stderr: strings.TrimSpace(string(res.Stderr))}
 		}
 		return res.Stdout, nil

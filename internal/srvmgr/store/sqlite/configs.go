@@ -68,3 +68,21 @@ func (d *DB) ListConfigs(ctx context.Context, serverID int64) ([]model.ServerCon
 	}
 	return out, rows.Err()
 }
+
+func (d *DB) SetInstallation(ctx context.Context, in model.Installation) error {
+	_, err := d.db.ExecContext(ctx, `INSERT INTO installations (server_id, binary_path, config_path, unit, service_user, version, managed, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (server_id) DO UPDATE SET binary_path = excluded.binary_path, config_path = excluded.config_path, unit = excluded.unit,
+			service_user = excluded.service_user, version = excluded.version, managed = excluded.managed, updated_at = excluded.updated_at`,
+		in.ServerID, in.Binary, in.Config, in.Unit, in.User, in.Version, in.Managed, unixTime(in.At))
+	return err
+}
+
+func (d *DB) Installation(ctx context.Context, serverID int64) (model.Installation, error) {
+	var in model.Installation
+	var at int64
+	err := d.db.QueryRowContext(ctx, `SELECT server_id, binary_path, config_path, unit, service_user, version, managed, updated_at FROM installations WHERE server_id = ?`, serverID).
+		Scan(&in.ServerID, &in.Binary, &in.Config, &in.Unit, &in.User, &in.Version, &in.Managed, &at)
+	in.At = fromUnix(at)
+	return in, notFound(err)
+}

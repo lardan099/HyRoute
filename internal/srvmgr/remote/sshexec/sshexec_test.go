@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -114,8 +115,10 @@ func TestFiles(t *testing.T) {
 			t.Fatalf("read (sudo %v): %d bytes, %v", sudo, len(b), err)
 		}
 	}
-	if _, err := c.ReadFile(ctx, filepath.Join(dir, "missing"), true); err == nil {
-		t.Fatal("missing file read")
+	for _, sudo := range []bool{false, true} {
+		if _, err := c.ReadFile(ctx, filepath.Join(dir, "missing"), sudo); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("missing file (sudo %v): %v", sudo, err)
+		}
 	}
 	if err := c.WriteFile(ctx, "relative/path", data, remote.FileSpec{Mode: 0o600}); err == nil {
 		t.Fatal("relative path accepted")

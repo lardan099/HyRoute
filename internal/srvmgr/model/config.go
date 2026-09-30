@@ -45,3 +45,17 @@ type ServerConfig struct {
 func ConfigContext(serverID int64, revision int) string {
 	return "server/" + strconv.FormatInt(serverID, 10) + "/config/" + strconv.Itoa(revision)
 }
+
+// Installation is where Hysteria is on a server.
+type Installation struct {
+	ServerID int64
+	Binary   string // /usr/local/bin/hysteria
+	Config   string // /etc/hysteria/config.yaml
+	Unit     string // hysteria-server.service
+	User     string // the service's user ("" = root)
+	Version  string
+	// Managed: HyRoute installed it (deploy); an imported installation is
+	// left as it is until the admin replaces it.
+	Managed bool
+	At      time.Time
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -54,13 +55,16 @@ func ReadOSRelease(ctx context.Context, ex Executor) (OSRelease, error) {
 
 var commandNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._+-]{0,63}$`)
 
+// hasCommandScript looks a program up on the PATH; the name comes as $1.
+const hasCommandScript = `command -v "$1" >/dev/null 2>&1`
+
 // HasCommand reports whether a program is on the PATH (the name is passed
 // as a positional parameter, never spliced into the script).
 func HasCommand(ctx context.Context, ex Executor, name string) (bool, error) {
 	if !commandNameRe.MatchString(name) {
 		return false, errors.New("bad command name")
 	}
-	res, err := ex.Run(ctx, Cmd{Args: []string{"sh", "-c", `command -v "$1" >/dev/null 2>&1`, "sh", name}})
+	res, err := ex.Run(ctx, Cmd{Args: []string{"sh", "-c", hasCommandScript, "sh", name}})
 	if err != nil {
 		return false, err
 	}
@@ -186,9 +190,10 @@ type Listener struct {
 	Addr    string // local address without port ("*", "0.0.0.0", "[::]")
 	Port    int
 	Process string // program name when known
+	PID     int    // its process ID when known
 }
 
-var ssProcRe = regexp.MustCompile(`users:\(\("([^"]+)"`)
+var ssProcRe = regexp.MustCompile(`users:\(\("([^"]+)"(?:,pid=(\d+))?`)
 
 // Listeners lists listening TCP and UDP sockets (ss -Hlntup), as root so
 // the owning programs are known.
@@ -215,6 +220,7 @@ func Listeners(ctx context.Context, ex Executor, sudo bool) ([]Listener, error) 
 		l := Listener{Proto: f[0], Addr: local[:i], Port: port}
 		if m := ssProcRe.FindStringSubmatch(line); m != nil {
 			l.Process = m[1]
+			l.PID, _ = strconv.Atoi(m[2])
 		}
 		ls = append(ls, l)
 	}
@@ -304,6 +310,11 @@ type SystemdUnit struct {
 	FragmentPath string
 	ExecStart    string // raw ExecStart property
 	User         string
+	Group        string
+	// WorkingDirectory as in the unit ("~" is the user's home).
+	WorkingDirectory string
+	UnitFileState    string // enabled, disabled, static…
+	Restart          string // no, on-failure, always…
 }
 
 // Exists reports whether systemd has the unit.
@@ -324,7 +335,7 @@ func Unit(ctx context.Context, ex Executor, name string) (SystemdUnit, error) {
 	if err := CheckUnitName(name); err != nil {
 		return SystemdUnit{}, err
 	}
-	out, err := run(ctx, ex, "systemctl show", Cmd{Args: []string{"systemctl", "show", "--no-pager", "-p", "LoadState,ActiveState,FragmentPath,ExecStart,User", "--", name}})
+	out, err := run(ctx, ex, "systemctl show", Cmd{Args: []string{"systemctl", "show", "--no-pager", "-p", "LoadState,ActiveState,FragmentPath,ExecStart,User,Group,WorkingDirectory,UnitFileState,Restart", "--", name}})
 	if err != nil {
 		return SystemdUnit{}, err
 	}
@@ -342,6 +353,14 @@ func Unit(ctx context.Context, ex Executor, name string) (SystemdUnit, error) {
 			u.ExecStart = v
 		case "User":
 			u.User = v
+		case "Group":
+			u.Group = v
+		case "WorkingDirectory":
+			u.WorkingDirectory = v
+		case "UnitFileState":
+			u.UnitFileState = v
+		case "Restart":
+			u.Restart = v
 		}
 	}
 	return u, nil
@@ -367,4 +386,52 @@ func HysteriaVersion(ctx context.Context, ex Executor, path string) (string, err
 		}
 	}
 	return "", nil
+}
+
+var unitPatternRe = regexp.MustCompile(`^[A-Za-z0-9@._-]{1,100}\*?$`)
+
+// ServiceUnits are the names of service units matching a pattern
+// ("hysteria*"): loaded ones, template instances included, and installed
+// unit files. Templates themselves ("name@.service") are left out.
+func ServiceUnits(ctx context.Context, ex Executor, pattern string) ([]string, error) {
+	if !unitPatternRe.MatchString(pattern) {
+		return nil, errors.New("bad unit pattern")
+	}
+	var names []string
+	for _, verb := range []string{"list-units", "list-unit-files"} {
+		args := []string{"systemctl", verb, "--no-pager", "--no-legend", "--plain", "--type=service"}
+		if verb == "list-units" {
+			args = append(args, "--all")
+		}
+		out, err := run(ctx, ex, "systemctl "+verb, Cmd{Args: append(args, "--", pattern)})
+		if err != nil {
+			return nil, err
+		}
+		for _, line := range strings.Split(out, "\n") {
+			f := strings.Fields(line)
+			if len(f) == 0 || !strings.HasSuffix(f[0], ".service") || strings.HasSuffix(f[0], "@.service") || slices.Contains(names, f[0]) {
+				continue
+			}
+			if CheckUnitName(f[0]) == nil {
+				names = append(names, f[0])
+			}
+		}
+	}
+	return names, nil
+}
+
+// UnitOfPID is the systemd unit a process belongs to ("" when none).
+func UnitOfPID(ctx context.Context, ex Executor, pid int) (string, error) {
+	if pid < 1 {
+		return "", errors.New("bad pid")
+	}
+	res, err := ex.Run(ctx, Cmd{Args: []string{"ps", "-o", "unit=", "-p", strconv.Itoa(pid)}})
+	if err != nil || !res.OK() {
+		return "", err
+	}
+	u := strings.TrimSpace(string(res.Stdout))
+	if CheckUnitName(u) != nil {
+		return "", nil
+	}
+	return u, nil
 }

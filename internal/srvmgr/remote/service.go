@@ -155,3 +155,20 @@ func FirewalldAllow(ctx context.Context, ex Executor, p PortSpec, sudo bool) err
 	_, err := run(ctx, ex, "firewall-cmd", Cmd{Args: []string{"firewall-cmd", arg}, Sudo: sudo})
 	return err
 }
+
+// UserHome is a user's home directory from the passwd database ("" when
+// there is no such user).
+func UserHome(ctx context.Context, ex Executor, name string) (string, error) {
+	if !nameRe.MatchString(name) {
+		return "", errors.New("bad user name")
+	}
+	res, err := ex.Run(ctx, Cmd{Args: []string{"getent", "passwd", name}})
+	if err != nil || !res.OK() {
+		return "", err
+	}
+	f := strings.Split(strings.TrimSpace(string(res.Stdout)), ":")
+	if len(f) < 7 || CheckPath(f[5]) != nil {
+		return "", nil
+	}
+	return f[5], nil
+}

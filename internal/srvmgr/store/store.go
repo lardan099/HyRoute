@@ -29,6 +29,7 @@ type Store interface {
 	HostKeys
 	Jobs
 	Configs
+	Installations
 	Close() error
 }
 
@@ -134,4 +135,12 @@ type Configs interface {
 	// CurrentConfig is the newest revision (ErrNotFound: none).
 	CurrentConfig(ctx context.Context, serverID int64) (model.ServerConfig, error)
 	ListConfigs(ctx context.Context, serverID int64) ([]model.ServerConfig, error)
+}
+
+// Installations stores where Hysteria is on each server.
+type Installations interface {
+	// SetInstallation records in, replacing what was recorded before.
+	SetInstallation(ctx context.Context, in model.Installation) error
+	// Installation is the recorded one (ErrNotFound: none).
+	Installation(ctx context.Context, serverID int64) (model.Installation, error)
 }
