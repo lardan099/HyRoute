@@ -58,6 +58,8 @@ func mapError(err error) error {
 		return &Error{Status: http.StatusForbidden, Code: "bad_setup_token", Message: "Неверный код первого запуска. Он лежит в файле setup-token в каталоге данных hyroute-server."}
 	case errors.Is(err, store.ErrNotFound):
 		return errNotFound
+	case errors.Is(err, store.ErrBusy):
+		return &Error{Status: http.StatusConflict, Code: "server_busy", Message: "На сервере выполняется задание: пока оно не закончится, сервер нельзя удалить, а его адрес, пользователя и данные для входа — изменить (откату задания нужно подключение)."}
 	}
 	return remoteError(err)
 }

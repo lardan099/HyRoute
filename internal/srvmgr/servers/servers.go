@@ -316,13 +316,6 @@ func (s *Service) Update(ctx context.Context, actor, id int64, in Input) (Info, 
 		}
 		return Info{}, err
 	}
-	// Another address is another machine: its host key must be confirmed
-	// again rather than compared with the old one.
-	if cur.Host != srv.Host || cur.SSHPort != srv.SSHPort {
-		if err := s.Store.DeleteHostKey(ctx, id); err != nil {
-			return Info{}, err
-		}
-	}
 	s.audit(ctx, actor, "server_updated", srv)
 	return s.Get(ctx, id)
 }

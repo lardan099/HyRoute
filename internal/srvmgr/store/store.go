@@ -16,6 +16,8 @@ var (
 	ErrNotFound = errors.New("not found")
 	// ErrConflict: a unique key or a state precondition does not hold.
 	ErrConflict = errors.New("conflict")
+	// ErrBusy: the server has an unfinished job.
+	ErrBusy = errors.New("server has an unfinished job")
 )
 
 // Store is the whole persistent state of the controller.
@@ -84,9 +86,15 @@ type Servers interface {
 	CreateServer(ctx context.Context, s *model.Server, seal SealFunc) error
 	// UpdateServer replaces the fields of s, stores the credentials seal
 	// returns (seal may be nil) and deletes the kinds in drop, atomically.
+	// A change of how the controller reaches the server (host, SSH port,
+	// user, auth type or new credentials) fails with ErrBusy while the
+	// server has an unfinished job; a new host or port forgets the trusted
+	// host key.
 	UpdateServer(ctx context.Context, s *model.Server, seal SealFunc, drop []model.CredKind) error
 	// SetServerState changes only the state.
 	SetServerState(ctx context.Context, id int64, state model.ServerState, at time.Time) error
+	// DeleteServer fails with ErrBusy while the server has an unfinished
+	// job: its rollback needs the credentials and the host key.
 	DeleteServer(ctx context.Context, id int64) error
 	ServerByID(ctx context.Context, id int64) (model.Server, error)
 	ListServers(ctx context.Context) ([]model.Server, error)

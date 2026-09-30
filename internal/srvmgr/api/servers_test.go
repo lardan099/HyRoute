@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
@@ -71,4 +72,47 @@ func TestServersReadOnly(t *testing.T) {
 	code(t, ro.do("POST", "/api/v1/servers", map[string]any{"name": "B", "host": "b.example.com", "authType": "password", "password": fakeSSHPass}, nil), http.StatusForbidden, "forbidden")
 	code(t, ro.do("DELETE", "/api/v1/servers/1", nil, nil), http.StatusForbidden, "forbidden")
 	code(t, e.client().do("GET", "/api/v1/servers", nil, nil), http.StatusUnauthorized, "unauthorized")
+}
+
+// A server with an unfinished job keeps its connection: the job and its
+// rollback need the credentials and the host key.
+func TestServerBusyWithJob(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": "B", "host": "b.example.com", "authType": "password", "password": fakeSSHPass}, nil)
+	var srv serverJSON
+	json.Unmarshal(rec.Body.Bytes(), &srv)
+	id := strconv.FormatInt(srv.ID, 10)
+	e.db.SetHostKey(ctx, model.HostKey{ServerID: srv.ID, Type: "ssh-ed25519", Key: []byte("fake"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()})
+	j := model.Job{Kind: "deploy", ServerID: srv.ID, State: model.JobInstalling, CreatedAt: time.Now()}
+	if err := e.db.CreateJob(ctx, &j, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	code(t, owner.do("DELETE", "/api/v1/servers/"+id, nil, nil), http.StatusConflict, "server_busy")
+	code(t, owner.do("PATCH", "/api/v1/servers/"+id, map[string]any{"name": "B", "host": "c.example.com", "authType": "password"}, nil), http.StatusConflict, "server_busy")
+	code(t, owner.do("PATCH", "/api/v1/servers/"+id, map[string]any{"name": "B", "host": "b.example.com", "authType": "password", "password": "fake-new-pass"}, nil), http.StatusConflict, "server_busy")
+	// The name and notes are not the connection.
+	if rec := owner.do("PATCH", "/api/v1/servers/"+id, map[string]any{"name": "B2", "host": "b.example.com", "authType": "password", "notes": "n"}, nil); rec.Code != 200 {
+		t.Fatalf("rename: %d %s", rec.Code, rec.Body)
+	}
+	if hk, err := e.db.HostKey(ctx, srv.ID); err != nil || hk.Fingerprint != "SHA256:fake" {
+		t.Fatal("host key lost")
+	}
+	if c, _ := e.servers.Credentials(ctx, srv.ID); c.Password != fakeSSHPass {
+		t.Fatal("password changed")
+	}
+
+	j.State, j.FinishedAt = model.JobFailed, time.Now()
+	e.db.UpdateJob(ctx, j)
+	if rec := owner.do("PATCH", "/api/v1/servers/"+id, map[string]any{"name": "B2", "host": "c.example.com", "authType": "password"}, nil); rec.Code != 200 {
+		t.Fatalf("after the job: %d %s", rec.Code, rec.Body)
+	}
+	if _, err := e.db.HostKey(ctx, srv.ID); err == nil {
+		t.Fatal("host key of the old address kept")
+	}
+	if rec := owner.do("DELETE", "/api/v1/servers/"+id, nil, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d", rec.Code)
+	}
 }

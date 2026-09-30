@@ -74,8 +74,38 @@ func (d *DB) CreateServer(ctx context.Context, s *model.Server, seal store.SealF
 	})
 }
 
+// busy fails with ErrBusy when the server has an unfinished job.
+func busy(ctx context.Context, t *sql.Tx, id int64) error {
+	var n int
+	if err := t.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE server_id = ? AND `+unfinished, id).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return store.ErrBusy
+	}
+	return nil
+}
+
 func (d *DB) UpdateServer(ctx context.Context, s *model.Server, seal store.SealFunc, drop []model.CredKind) error {
 	return d.tx(ctx, func(t *sql.Tx) error {
+		var host, user, authType string
+		var port int
+		err := t.QueryRowContext(ctx, `SELECT host, ssh_port, ssh_user, auth_type FROM servers WHERE id = ?`, s.ID).Scan(&host, &port, &user, &authType)
+		if err != nil {
+			return notFound(err)
+		}
+		var creds []model.Credential
+		if seal != nil {
+			if creds, err = seal(s.ID); err != nil {
+				return err
+			}
+		}
+		moved := host != s.Host || port != s.SSHPort
+		if moved || user != s.SSHUser || authType != string(s.AuthType) || len(creds) > 0 {
+			if err := busy(ctx, t, s.ID); err != nil {
+				return err
+			}
+		}
 		res, err := t.ExecContext(ctx, `UPDATE servers SET name = ?, tags = ?, country = ?, location = ?, host = ?, ssh_port = ?, ssh_user = ?, auth_type = ?, role = ?, notes = ?, state = ?, updated_at = ? WHERE id = ?`,
 			s.Name, tagsJSON(s.Tags), s.Country, s.Location, s.Host, s.SSHPort, s.SSHUser, string(s.AuthType), string(s.Role), s.Notes, string(s.State), unixTime(s.UpdatedAt), s.ID)
 		if err != nil {
@@ -89,7 +119,14 @@ func (d *DB) UpdateServer(ctx context.Context, s *model.Server, seal store.SealF
 				return err
 			}
 		}
-		return putCredentials(ctx, t, s.ID, seal, s.UpdatedAt)
+		// Another address is another machine: its host key must be
+		// confirmed again rather than compared with the old one.
+		if moved {
+			if _, err := t.ExecContext(ctx, `DELETE FROM host_keys WHERE server_id = ?`, s.ID); err != nil {
+				return err
+			}
+		}
+		return putCredentials(ctx, t, s.ID, func(int64) ([]model.Credential, error) { return creds, nil }, s.UpdatedAt)
 	})
 }
 
@@ -105,14 +142,19 @@ func (d *DB) SetServerState(ctx context.Context, id int64, state model.ServerSta
 }
 
 func (d *DB) DeleteServer(ctx context.Context, id int64) error {
-	res, err := d.db.ExecContext(ctx, `DELETE FROM servers WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return store.ErrNotFound
-	}
-	return nil
+	return d.tx(ctx, func(t *sql.Tx) error {
+		if err := busy(ctx, t, id); err != nil {
+			return err
+		}
+		res, err := t.ExecContext(ctx, `DELETE FROM servers WHERE id = ?`, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
 }
 
 func (d *DB) ServerByID(ctx context.Context, id int64) (model.Server, error) {
