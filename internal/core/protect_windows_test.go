@@ -94,3 +94,32 @@ func TestProtectDirCreates(t *testing.T) {
 		t.Fatal("a file accepted as a folder")
 	}
 }
+
+// A folder that is not the administrators' is renamed out of the way,
+// link or not, and the error names who owns it and what to do.
+func TestMoveAsideAndOwnerError(t *testing.T) {
+	root := t.TempDir()
+	d := filepath.Join(root, "HyRoute")
+	if err := os.MkdirAll(filepath.Join(d, "runtime"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	to, err := moveAside(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(to, d+".untrusted-") {
+		t.Fatalf("moved to %s", to)
+	}
+	if _, err := os.Stat(filepath.Join(to, "runtime")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(d); !os.IsNotExist(err) {
+		t.Fatalf("%s still there: %v", d, err)
+	}
+	msg := (&OwnerError{Path: d, Owner: `PC\Admin`}).Error()
+	for _, want := range []string{d, `PC\Admin`, "rmdir /s /q", `%APPDATA%\HyRoute`} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("%q not in %q", want, msg)
+		}
+	}
+}
