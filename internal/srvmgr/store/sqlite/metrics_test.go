@@ -85,3 +85,22 @@ func TestSwapServerState(t *testing.T) {
 		t.Fatalf("state %s", s.State)
 	}
 }
+
+func TestLatestMetrics(t *testing.T) {
+	d, _ := openTemp(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	var ids []int64
+	for _, n := range []string{"a", "b"} {
+		s := model.Server{Name: n, Host: n + ".example.com", SSHPort: 22, SSHUser: "root", AuthType: model.AuthPassword, Role: model.RoleStandalone, State: model.StateHealthy}
+		d.CreateServer(ctx, &s, nil)
+		ids = append(ids, s.ID)
+	}
+	d.AddMetric(ctx, model.Metric{ServerID: ids[0], At: now.Add(-2 * time.Minute), Load1: 1})
+	d.AddMetric(ctx, model.Metric{ServerID: ids[0], At: now.Add(-time.Minute), Load1: 2})
+	d.AddMetric(ctx, model.Metric{ServerID: ids[1], At: now.Add(-time.Hour), Load1: 3}) // stale
+	got, err := d.LatestMetrics(ctx, now.Add(-10*time.Minute))
+	if err != nil || len(got) != 1 || got[0].ServerID != ids[0] || got[0].Load1 != 2 {
+		t.Fatalf("%+v %v", got, err)
+	}
+}

@@ -1,14 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, asApiError, type ApiError, type Health, type Job, type Server, type ServerState } from '../api';
+  import { api, asApiError, type ApiError, type Health, type Job, type LatestMetric, type Server, type ServerState } from '../api';
   import { t, tOr, type Key } from '../i18n';
   import { go } from '../router.svelte';
-  import { flag, jobTone, stateTone, when } from '../lib/format';
+  import { flag, jobTone, pct, stateTone, when } from '../lib/format';
 
   let health = $state<Health | null>(null);
   let error = $state<ApiError | null>(null);
   let servers = $state<Server[] | null>(null);
   let jobs = $state<Job[] | null>(null);
+  let metrics = $state<Record<number, LatestMetric>>({});
 
   const order: ServerState[] = ['healthy', 'needs_attention', 'degraded', 'offline', 'deploying', 'new'];
   let counts = $derived(order.map((s) => ({ state: s, n: servers?.filter((x) => x.state === s).length ?? 0 })).filter((c) => c.n > 0));
@@ -23,6 +24,9 @@
     } catch (e) {
       error = asApiError(e);
     }
+    try {
+      metrics = Object.fromEntries((await api.latestMetrics()).map((m) => [m.serverId, m]));
+    } catch {} // the summary is optional
   });
 </script>
 
@@ -51,7 +55,13 @@
         {#each sorted.slice(0, 10) as s (s.id)}
           <li>
             <span class="dot {stateTone(s.state)}"></span>
-            <button class="link grow ellipsis name" onclick={() => go('servers', s.id)}>{flag(s.country)} {s.name}</button>
+            <div class="grow col">
+              <button class="link ellipsis name" onclick={() => go('servers', s.id)}>{flag(s.country)} {s.name}</button>
+              {#if metrics[s.id]}
+                {@const m = metrics[s.id]}
+                <span class="faint small nums">{t('mon.summary', { cpu: m.cpu != null ? pct(m.cpu) : '—', mem: pct(m.memTotal ? (100 * m.memUsed) / m.memTotal : 0) })}</span>
+              {/if}
+            </div>
             <span class="muted small">{t(`state.${s.state}` as Key)}</span>
           </li>
         {/each}
@@ -111,4 +121,5 @@
   li.job .dot { margin-top: 6px; }
   .col { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
   .name:hover { color: var(--accent); }
+  .nums { font-variant-numeric: tabular-nums; white-space: nowrap; }
 </style>

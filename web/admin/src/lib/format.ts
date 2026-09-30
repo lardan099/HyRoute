@@ -68,3 +68,25 @@ export function uptime(sec: number): string {
 export function clock(s: string): string {
   return new Date(s).toLocaleTimeString('ru-RU');
 }
+
+// pct is a percentage without needless decimals.
+export function pct(v: number): string {
+  return `${v < 10 && v > 0 ? v.toFixed(1) : Math.round(v)}%`;
+}
+
+// mib is a size given in MiB, in MiB or GiB.
+export function mib(v: number): string {
+  if (v >= 1024) return `${(v / 1024).toFixed(v >= 10240 ? 0 : 1)} ГБ`;
+  return `${Math.round(v)} МБ`;
+}
+
+// bits is a rate given in bits per second.
+export function bits(v: number): string {
+  const units = ['бит/с', 'Кбит/с', 'Мбит/с', 'Гбит/с'];
+  let i = 0;
+  while (v >= 1000 && i < units.length - 1) {
+    v /= 1000;
+    i++;
+  }
+  return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}

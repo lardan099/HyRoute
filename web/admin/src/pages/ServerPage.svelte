@@ -13,6 +13,7 @@
   import ConfigEditor from '../lib/ConfigEditor.svelte';
   import ClientCard from '../lib/ClientCard.svelte';
   import ConfigHistory from '../lib/ConfigHistory.svelte';
+  import MetricsCard from '../lib/MetricsCard.svelte';
 
   let { id }: { id: number } = $props();
 
@@ -240,6 +241,8 @@
       </section>
     </div>
   </div>
+
+  {#key id}<MetricsCard serverId={id} />{/key}
 
   {#key config?.revision}<ClientCard serverId={id} serverName={server.name} />{/key}
 

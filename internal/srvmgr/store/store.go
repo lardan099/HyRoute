@@ -180,4 +180,7 @@ type Metrics interface {
 	// period into a point of model.MetricStep, then drops samples older
 	// than keepSamples and averages older than keepAverages.
 	CompactMetrics(ctx context.Context, now time.Time, keepSamples, keepAverages time.Duration) error
+	// LatestMetrics is the newest sample of each server taken at or after
+	// since.
+	LatestMetrics(ctx context.Context, since time.Time) ([]model.Metric, error)
 }

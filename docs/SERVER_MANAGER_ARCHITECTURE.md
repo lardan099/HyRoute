@@ -439,6 +439,13 @@ Healthy/Degraded → Offline, если SSH недоступен (`UnreachableErr
 Offline → Healthy, когда замер снова удался. Состояния заданий
 (Deploying, Needs attention) он не трогает.
 
+UI: карточка «Нагрузка сервера» — пять небольших графиков (свой SVG, без
+библиотек): процессор, память (ось до установленной), сеть (приём и
+отдача в бит/с, два ряда с легендой), load, диск; перекрестье с
+подсказкой по мыши и стрелкам, разрыв линии на пропусках, табличный вид.
+Цвета рядов — токены `--viz-1`/`--viz-2` в каждой теме, проверены
+валидатором палитры (различимость при дальтонизме, контраст с фоном).
+
 ## Topology
 
 План (Phase 3): `chains` и `chain_hops` — цепочка из N узлов с ролями
@@ -476,6 +483,8 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | GET | `/api/v1/servers/{id}/config/edit` | operator+ | конфиг для редактора: секреты `[REDACTED]` (под секретными ключами, за alias, пароли в URL, шаблоны redactor, комментарии), основные поля |
 | POST | `/api/v1/servers/{id}/config/render` | operator+ | кандидат из текста и полей: проверка, diff, меняющиеся секреты (ничего не сохраняет) |
 | POST | `/api/v1/servers/{id}/config/apply` | operator+ | задание `apply` с откатом |
+| GET | `/api/v1/servers/{id}/metrics?period=` | любая роль | ряд метрик: 1h/6h/24h/48h — замеры, 7d/30d — средние по 15 мин |
+| GET | `/api/v1/metrics/latest` | любая роль | последний замер каждого сервера за 5 минут (Overview) |
 | GET | `/api/v1/servers/{id}/config/revisions` | любая роль | история ревизий без текста конфига |
 | GET | `/api/v1/servers/{id}/config/revisions/{rev}` | operator+ | конфиг ревизии, секреты замаскированы |
 | GET | `/api/v1/servers/{id}/config/compare?from=&to=` | operator+ | diff двух ревизий без секретов, изменённые секреты — путями |

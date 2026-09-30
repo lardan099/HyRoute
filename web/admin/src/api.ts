@@ -356,6 +356,33 @@ export type ServiceAction = 'start' | 'stop' | 'restart';
 // the current value.
 export const HIDDEN = '[REDACTED]';
 
+// MetricPoint is one monitoring point: MiB, percent, bytes per second.
+export interface MetricPoint {
+  t: string;
+  cpu: number | null;
+  memUsed: number;
+  memTotal: number;
+  diskUsed: number;
+  diskTotal: number;
+  load1: number;
+  rx: number | null;
+  tx: number | null;
+}
+
+export type MetricPeriod = '1h' | '6h' | '24h' | '48h' | '7d' | '30d';
+
+export interface MetricSeries {
+  period: MetricPeriod;
+  step: number; // 0: samples; else seconds per average
+  from: string;
+  to: string;
+  points: MetricPoint[];
+}
+
+export interface LatestMetric extends MetricPoint {
+  serverId: number;
+}
+
 // ConfigFields are the main settings of a server config.
 export interface ConfigFields {
   listen: string;
@@ -495,6 +522,8 @@ export const api = {
   configEdit: (serverId: number) => request<ConfigView>('GET', `/servers/${serverId}/config/edit`),
   renderConfig: (serverId: number, input: ConfigInput) => request<ConfigCheck>('POST', `/servers/${serverId}/config/render`, input),
   applyConfig: (serverId: number, input: ConfigInput) => request<Job>('POST', `/servers/${serverId}/config/apply`, input),
+  serverMetrics: (serverId: number, period: MetricPeriod) => request<MetricSeries>('GET', `/servers/${serverId}/metrics?period=${period}`),
+  latestMetrics: () => request<LatestMetric[]>('GET', '/metrics/latest'),
   configRevisions: (serverId: number) => request<ConfigRevision[]>('GET', `/servers/${serverId}/config/revisions`),
   configRevision: (serverId: number, rev: number) => request<ConfigView>('GET', `/servers/${serverId}/config/revisions/${rev}`),
   compareConfigs: (serverId: number, from: number, to: number) =>

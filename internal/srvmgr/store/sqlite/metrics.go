@@ -30,25 +30,41 @@ func (d *DB) AddMetric(ctx context.Context, m model.Metric) error {
 	return err
 }
 
-func (d *DB) Metrics(ctx context.Context, serverID int64, step int, from, to time.Time) ([]model.Metric, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT at, cpu, mem_used, mem_total, disk_used, disk_total, load1, rx, tx FROM metrics
-		WHERE server_id = ? AND step = ? AND at >= ? AND at < ? ORDER BY at`, serverID, step, from.Unix(), to.Unix())
-	if err != nil {
-		return nil, err
-	}
+const metricCols = `server_id, step, at, cpu, mem_used, mem_total, disk_used, disk_total, load1, rx, tx`
+
+func scanMetrics(rows *sql.Rows) ([]model.Metric, error) {
 	defer rows.Close()
 	out := []model.Metric{}
 	for rows.Next() {
-		m := model.Metric{ServerID: serverID, Step: step}
+		var m model.Metric
 		var at int64
 		var cpu, rx, tx sql.NullFloat64
-		if err := rows.Scan(&at, &cpu, &m.MemUsedMiB, &m.MemTotalMiB, &m.DiskUsedMiB, &m.DiskTotalMiB, &m.Load1, &rx, &tx); err != nil {
+		if err := rows.Scan(&m.ServerID, &m.Step, &at, &cpu, &m.MemUsedMiB, &m.MemTotalMiB, &m.DiskUsedMiB, &m.DiskTotalMiB, &m.Load1, &rx, &tx); err != nil {
 			return nil, err
 		}
 		m.At, m.CPU, m.RxBps, m.TxBps = time.Unix(at, 0).UTC(), floatPtr(cpu), floatPtr(rx), floatPtr(tx)
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+func (d *DB) Metrics(ctx context.Context, serverID int64, step int, from, to time.Time) ([]model.Metric, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT `+metricCols+` FROM metrics
+		WHERE server_id = ? AND step = ? AND at >= ? AND at < ? ORDER BY at`, serverID, step, from.Unix(), to.Unix())
+	if err != nil {
+		return nil, err
+	}
+	return scanMetrics(rows)
+}
+
+func (d *DB) LatestMetrics(ctx context.Context, since time.Time) ([]model.Metric, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT `+metricCols+` FROM metrics m
+		WHERE step = 0 AND at >= ? AND at = (SELECT MAX(at) FROM metrics WHERE server_id = m.server_id AND step = 0)
+		ORDER BY server_id`, since.Unix())
+	if err != nil {
+		return nil, err
+	}
+	return scanMetrics(rows)
 }
 
 func (d *DB) CompactMetrics(ctx context.Context, now time.Time, keepSamples, keepAverages time.Duration) error {

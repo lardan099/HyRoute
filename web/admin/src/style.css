@@ -27,6 +27,11 @@
   --accent: #2f6fed;
   --accent-2: #2f6fed;
   --accent-text: #ffffff;
+  /* Chart series, fixed order (validated for colour-blind separation on
+     each theme's surface): 1 blue, 2 orange. */
+  --viz-1: #2a78d6;
+  --viz-2: #eb6834;
+  --viz-grid: #eceef2;
   color-scheme: light;
 }
 
@@ -50,6 +55,9 @@
     --ok-bg: #18311f;
     --shadow: none;
     --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.55);
+    --viz-1: #3987e5;
+    --viz-2: #d95926;
+    --viz-grid: #262a33;
     color-scheme: dark;
   }
 }
@@ -72,6 +80,9 @@
   --ok-bg: #18311f;
   --shadow: none;
   --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.55);
+  --viz-1: #3987e5;
+  --viz-2: #d95926;
+  --viz-grid: #262a33;
   color-scheme: dark;
 }
 
@@ -93,6 +104,9 @@
   --ok-bg: #0f2e27;
   --shadow: none;
   --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.6);
+  --viz-1: #3987e5;
+  --viz-2: #d95926;
+  --viz-grid: #1a2440;
   color-scheme: dark;
 }
 
