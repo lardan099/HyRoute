@@ -418,7 +418,7 @@ func TestForeignInstallation(t *testing.T) {
 	s.files[ConfigPath] = foreign
 	h := newHarness(t, s)
 	j := h.deploy(params(), nil)
-	if j.State != model.JobFailed || j.CurrentStep != "preflight" || !strings.Contains(j.ErrorMessage, "Импортируйте") {
+	if j.State != model.JobFailed || j.CurrentStep != "preflight" || !strings.Contains(j.ErrorMessage, "Импортируйте") || j.Data["foreign"] != "1" {
 		t.Fatalf("%s at %s: %s", j.State, j.CurrentStep, j.ErrorMessage)
 	}
 	if len(s.writes) != 0 || h.state() != model.StateNew {

@@ -7,6 +7,8 @@
   import { duration, jobTone, stepTone, when } from './format';
   import PreflightReport from './PreflightReport.svelte';
   import DeployResult from './DeployResult.svelte';
+  import ImportReport from './ImportReport.svelte';
+  import { go } from '../router.svelte';
 
   let { id, servers }: { id: number; servers: Record<number, Server> } = $props();
 
@@ -85,6 +87,17 @@
     return () => source?.close();
   });
 
+  // A deploy that found someone else's Hysteria offers the import.
+  async function startImport() {
+    if (!job) return;
+    try {
+      const j = await api.startImport(job.serverId);
+      go('deployments', j.id);
+    } catch (e) {
+      error = asApiError(e);
+    }
+  }
+
   async function retry() {
     retrying = true;
     try {
@@ -105,6 +118,7 @@
   <div class="row head">
     <h1 class="grow">{kindName(job.kind)} #{job.id}</h1>
     {#if job.state === 'failed' && canWrite(session.user)}
+      {#if job.kind === 'deploy' && job.data.foreign === '1'}<button onclick={startImport}>{t('import.fromDeploy')}</button>{/if}
       <button class="primary" disabled={retrying} onclick={retry}>{t('jobs.retry')}</button>
     {/if}
   </div>
@@ -127,8 +141,9 @@
   {#if job.kind === 'deploy' && job.state === 'completed'}
     <DeployResult serverId={job.serverId} jobId={job.id} />
   {/if}
+  {#if job.kind === 'import' && report}<ImportReport {report} />{/if}
   <!-- A deploy shows its preflight report only when the server was not ready. -->
-  {#if report && (job.kind !== 'deploy' || (job.state === 'failed' && report.blocked))}<PreflightReport {report} />{/if}
+  {#if report && (job.kind === 'preflight' || (job.kind === 'deploy' && job.state === 'failed' && report.blocked))}<PreflightReport {report} />{/if}
 
   <div class="cols">
     <section class="card steps">

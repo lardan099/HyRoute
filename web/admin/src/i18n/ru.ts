@@ -146,7 +146,7 @@ export const ru = {
 
   'kind.preflight': 'Проверка сервера',
 
-  'preflight.button': 'Проверить',
+  'preflight.button': 'Проверить готовность',
   'preflight.title': 'Готовность к развёртыванию',
   'preflight.ready': 'Можно развёртывать',
   'preflight.blocked': 'Есть препятствия',
@@ -189,6 +189,29 @@ export const ru = {
   'step.start': 'Запуск',
   'step.verify': 'Проверка работы',
   'step.commit': 'Сохранение в controller',
+  'step.discover': 'Поиск Hysteria и чтение конфига',
+  'step.save': 'Сохранение в controller',
+
+  'import.button': 'Импортировать',
+  'import.fromDeploy': 'Импортировать сервер',
+  'import.continue': 'Далее: импортировать',
+  'import.title': 'Найдена Hysteria',
+  'import.ok': 'Всё в порядке',
+  'import.attention': 'Требует внимания',
+  'import.service': 'Служба',
+  'import.running': 'работает',
+  'import.stopped': 'не работает',
+  'import.autostart': 'в автозапуске',
+  'import.noAutostart': 'без автозапуска',
+  'import.binary': 'Программа',
+  'import.config': 'Конфиг',
+  'import.user': 'Пользователь службы',
+  'import.auth': 'Проверка клиентов',
+  'import.noFindings': 'Замечаний нет.',
+  'import.readOnly': 'Импорт только читает сервер: ни файлы, ни службы не изменены. Конфиг сохранён в controller в зашифрованном виде.',
+  'import.tlsFile': 'Сертификат из файла',
+
+  'servers.more': 'Ещё',
 
   'deploy.button': 'Развернуть',
   'deploy.title': 'Развернуть Hysteria 2 на «{name}»',

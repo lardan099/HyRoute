@@ -46,7 +46,7 @@ func Kind(d Deps) *jobs.Kind {
 		Steps: func(json.RawMessage) ([]jobs.Step, error) {
 			return []jobs.Step{
 				{Name: "connect", Phase: model.JobConnecting, Safe: true, Run: x.connect},
-				{Name: "inspect", Phase: model.JobPreflight, Safe: true, Run: x.inspect},
+				{Name: "discover", Phase: model.JobPreflight, Safe: true, Run: x.inspect},
 				{Name: "save", Phase: model.JobVerifying, Safe: true, Done: x.saved, Run: x.save},
 			}, nil
 		},

@@ -74,3 +74,23 @@ func TestDeployAPI(t *testing.T) {
 		t.Fatalf("read-only config: %d", rec.Code)
 	}
 }
+
+func TestImportAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": "Old", "host": "old.example.com", "authType": "password", "password": fakeSSHPass}, nil)
+	var srv serverJSON
+	json.Unmarshal(rec.Body.Bytes(), &srv)
+	id := strconv.FormatInt(srv.ID, 10)
+
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/import", nil, nil), http.StatusConflict, "host_key_required")
+	code(t, owner.do("POST", "/api/v1/servers/999/import", nil, nil), http.StatusNotFound, "not_found")
+	e.db.SetHostKey(context.Background(), model.HostKey{ServerID: srv.ID, Type: "ssh-ed25519", Key: []byte("fake"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()})
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/import", nil, nil)
+	var j jobJSON
+	json.Unmarshal(rec.Body.Bytes(), &j)
+	if rec.Code != http.StatusAccepted || j.Kind != "import" || j.ServerID != srv.ID {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/import", nil, nil), http.StatusConflict, "server_busy")
+}

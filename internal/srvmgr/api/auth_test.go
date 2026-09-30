@@ -15,6 +15,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
 	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
+	"github.com/lardan099/hyroute/internal/srvmgr/importer"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
@@ -53,6 +54,7 @@ func newEnv(t *testing.T) *testEnv {
 	e.jobs = jobs.New(db, keys, redact.New(), e.connect, nil)
 	e.jobs.Poll = 20 * time.Millisecond
 	e.jobs.Register(deploy.Kind(deploy.Deps{Store: db, Keys: keys, Resolver: &hyrelease.Resolver{}}))
+	e.jobs.Register(importer.Kind(importer.Deps{Store: db, Keys: keys}))
 	e.keys = keys
 	e.h = New(Deps{Store: db, Auth: e.auth, Servers: e.servers, Connect: e.connect, Jobs: e.jobs,
 		Deploy: &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}})

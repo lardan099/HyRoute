@@ -257,6 +257,29 @@ export interface ServerConfig {
   };
 }
 
+export interface ImportFinding {
+  id: string;
+  level: 'warn' | 'info';
+  title: string;
+  details?: string;
+}
+
+// ImportReport is what an import found on a server (no secrets).
+export interface ImportReport {
+  unit: string;
+  unitPath: string;
+  binary: string;
+  version: string;
+  config: string;
+  user: string;
+  active: boolean;
+  enabled: boolean;
+  others?: string[];
+  meta: ServerConfig['meta'];
+  unknown?: string[];
+  findings: ImportFinding[];
+}
+
 export const jobEventsURL = (id: number) => `/api/v1/jobs/${id}/events`;
 
 // ServerInput: credentials left undefined keep the stored ones on update.
@@ -298,6 +321,7 @@ export const api = {
   job: (id: number) => request<JobDetail>('GET', `/jobs/${id}`),
   retryJob: (id: number) => request<Job>('POST', `/jobs/${id}/retry`),
   startDeploy: (serverId: number, p: DeployParams) => request<Job>('POST', `/servers/${serverId}/deploy`, p),
+  startImport: (serverId: number) => request<Job>('POST', `/servers/${serverId}/import`),
   serverConfig: (serverId: number) => request<ServerConfig>('GET', `/servers/${serverId}/config`),
   startPreflight: (serverId: number, udpPort = 443) => request<Job>('POST', `/servers/${serverId}/preflight`, { udpPort }),
 };

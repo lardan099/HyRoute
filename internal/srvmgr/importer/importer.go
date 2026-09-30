@@ -387,6 +387,9 @@ const minPassword = 12
 
 func (f *Found) inspectConfig(c *hyconfig.Server) {
 	for _, p := range c.Validate() {
+		if p.Warning && slices.Contains(f.Unknown, p.Field) {
+			continue // the unknown fields get one finding below
+		}
 		l, title := Warn, "Конфиг не пройдёт проверку Hysteria"
 		if p.Warning {
 			l, title = Info, "Замечание к конфигу"

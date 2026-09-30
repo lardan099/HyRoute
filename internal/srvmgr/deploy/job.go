@@ -225,6 +225,7 @@ func (x *deployer) preflight(ctx context.Context, env *jobs.Env, p Params) error
 	case imported:
 		return jobs.Fail("Hysteria на этом сервере импортирована, и HyRoute управляет ею как есть. Чтобы поставить вместо неё свою, разверните с заменой: прежние файлы сохранятся.", nil)
 	default:
+		env.Set("foreign", "1") // the UI offers the import
 		return jobs.Fail("На сервере уже есть Hysteria, установленная не HyRoute. Импортируйте сервер, чтобы управлять ею как есть, или разверните с заменой.", nil)
 	}
 	env.Set("claimed", "1")

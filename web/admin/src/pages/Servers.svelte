@@ -7,6 +7,7 @@
   import ServerDialog from '../lib/ServerDialog.svelte';
   import CheckDialog from '../lib/CheckDialog.svelte';
   import DeployDialog from '../lib/DeployDialog.svelte';
+  import Menu from '../lib/Menu.svelte';
   import { flag, stateTone } from '../lib/format';
   import { go } from '../router.svelte';
 
@@ -15,8 +16,8 @@
   let editing = $state<Server | null | undefined>(undefined); // undefined: closed, null: new
   let deleting = $state<Server | null>(null);
   let checking = $state<Server | null>(null);
-  // checkThenDeploy: the check dialog is the first step of a deploy.
-  let checkThenDeploy = $state(false);
+  // then: the check dialog is the first step of a deploy or an import.
+  let then = $state<'deploy' | 'import' | null>(null);
   let deploying = $state<Server | null>(null);
   let deleteError = $state<ApiError | null>(null);
   let writable = $derived(canWrite(session.user));
@@ -47,7 +48,27 @@
       deploying = s;
     } else {
       checking = s;
-      checkThenDeploy = true;
+      then = 'deploy';
+    }
+  }
+
+  // importServer starts the import (it only reads the server); a server
+  // whose SSH key is not confirmed yet is checked first.
+  function importServer(s: Server) {
+    if (s.hostKey) {
+      startImport(s.id);
+    } else {
+      checking = s;
+      then = 'import';
+    }
+  }
+
+  async function startImport(id: number) {
+    try {
+      const j = await api.startImport(id);
+      go('deployments', j.id);
+    } catch (e) {
+      error = asApiError(e);
     }
   }
 
@@ -107,10 +128,13 @@
             <td class="act">
               {#if writable}<div class="acts">
                 <button class="ghost" onclick={() => deploy(s)}>{t('deploy.button')}</button>
-                <button class="ghost" onclick={() => ((checking = s), (checkThenDeploy = false))}>{t('check.button')}</button>
-                <button class="ghost" onclick={() => preflight(s)}>{t('preflight.button')}</button>
-                <button class="ghost" onclick={() => (editing = s)}>{t('common.edit')}</button>
-                <button class="ghost danger" onclick={() => ((deleting = s), (deleteError = null))}>{t('common.delete')}</button>
+                <button class="ghost" onclick={() => importServer(s)}>{t('import.button')}</button>
+                <Menu label={t('servers.more')}>
+                  <button onclick={() => ((checking = s), (then = null))}>{t('check.button')}</button>
+                  <button onclick={() => preflight(s)}>{t('preflight.button')}</button>
+                  <button onclick={() => (editing = s)}>{t('common.edit')}</button>
+                  <button class="danger" onclick={() => ((deleting = s), (deleteError = null))}>{t('common.delete')}</button>
+                </Menu>
               </div>{/if}
             </td>
           </tr>
@@ -137,13 +161,15 @@
     server={checking}
     onclose={() => (checking = null)}
     onchanged={load}
-    oncontinue={checkThenDeploy
+    oncontinue={then
       ? () => {
-          deploying = checking;
+          const s = checking;
           checking = null;
+          if (s && then === 'deploy') deploying = s;
+          else if (s) startImport(s.id);
         }
       : undefined}
-    continueLabel={t('deploy.continue')}
+    continueLabel={then === 'import' ? t('import.continue') : t('deploy.continue')}
   />
 {/if}
 
@@ -165,7 +191,7 @@
 <style>
   .head { margin-bottom: 16px; }
   .empty p { margin: 0; color: var(--muted); }
-  .table { padding: 6px 8px; overflow-x: auto; }
+  .table { padding: 6px 8px; }
   th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12.5px; padding: 8px; }
   td { padding: 10px 8px; border-top: 1px solid var(--border); vertical-align: middle; }
   .name { font-weight: 600; }

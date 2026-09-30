@@ -6,9 +6,12 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
+	"github.com/lardan099/hyroute/internal/srvmgr/importer"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
+
+var errHostKeyRequired = &Error{Status: http.StatusConflict, Code: "host_key_required", Message: "Сначала проверьте подключение к серверу и подтвердите его ключ SSH."}
 
 func (s *server) startDeploy(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
@@ -28,7 +31,7 @@ func (s *server) startDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	// The job would fail at connect: say what to do now.
 	if in.HostKey == nil {
-		writeError(w, &Error{Status: http.StatusConflict, Code: "host_key_required", Message: "Сначала проверьте подключение к серверу и подтвердите его ключ SSH."})
+		writeError(w, errHostKeyRequired)
 		return
 	}
 	j, err := s.Deploy.Submit(r.Context(), id, p, principal(r).User.ID)
@@ -69,4 +72,27 @@ func (s *server) currentConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, configJSON{Revision: c.Revision, SHA256: c.SHA256, Meta: c.Meta, Source: c.Source, JobID: c.JobID, CreatedAt: c.At})
+}
+
+func (s *server) startImport(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, errNotFound)
+		return
+	}
+	in, err := s.Servers.Get(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	if in.HostKey == nil {
+		writeError(w, errHostKeyRequired)
+		return
+	}
+	j, err := s.Jobs.Submit(r.Context(), importer.JobKind, id, struct{}{}, nil, principal(r).User.ID)
+	if err != nil {
+		s.fail(w, r, jobError(err))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, toJobJSON(j))
 }
