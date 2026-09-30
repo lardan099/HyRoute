@@ -33,6 +33,7 @@ func TestReadOnly(t *testing.T) {
 		{"/usr/local/bin/hysteria", "version"},
 		{"sh", "-c", `command -v "$1" >/dev/null 2>&1`, "sh", "curl"},
 		{"getent", "passwd", "hysteria"},
+		{"df", "-Pk", "/"}, {"nproc"},
 	}
 	for _, a := range allowed {
 		if _, err := ex.Run(ctx, remote.Cmd{Args: a, Sudo: true}); err != nil {
@@ -116,5 +117,27 @@ func TestServiceUnitsAndUnitOfPID(t *testing.T) {
 	}
 	if u, err := remote.UnitOfPID(ctx, ex, 7); err != nil || u != "" {
 		t.Fatalf("no unit: %q %v", u, err)
+	}
+}
+
+func TestUnitStatusAndSystem(t *testing.T) {
+	ctx := context.Background()
+	ex := fake.New()
+	ex.On("systemctl", "show").Reply("LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=4242\nNRestarts=2\nMemoryCurrent=25165824\nActiveEnterTimestampMonotonic=1500000000\nUnitFileState=enabled\n", 0)
+	u, err := remote.Unit(ctx, ex, "hysteria-server.service")
+	if err != nil || u.SubState != "running" || u.MainPID != 4242 || u.NRestarts != 2 || u.MemoryCurrent != 24<<20 || u.ActiveEnter != 1_500_000_000 {
+		t.Fatalf("%+v %v", u, err)
+	}
+	ex.On("systemctl", "show").Reply("LoadState=loaded\nActiveState=inactive\nMainPID=0\nMemoryCurrent=[not set]\nActiveEnterTimestampMonotonic=0\n", 0)
+	if u, _ := remote.Unit(ctx, ex, "hysteria-server.service"); u.MemoryCurrent != 0 || u.MainPID != 0 {
+		t.Fatalf("%+v", u)
+	}
+	ex.SetFile("/proc/uptime", []byte("3600.52 7000.10\n"))
+	ex.SetFile("/proc/loadavg", []byte("0.15 0.10 0.05 1/123 4567\n"))
+	if up, err := remote.Uptime(ctx, ex); err != nil || up != 3600.52 {
+		t.Fatalf("%v %v", up, err)
+	}
+	if l, err := remote.LoadAverage(ctx, ex); err != nil || l != [3]float64{0.15, 0.10, 0.05} {
+		t.Fatalf("%v %v", l, err)
 	}
 }

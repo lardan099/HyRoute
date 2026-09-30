@@ -30,6 +30,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
+	"github.com/lardan099/hyroute/internal/srvmgr/service"
 	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
 	admin "github.com/lardan099/hyroute/web/admin"
 )
@@ -91,6 +92,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	engine.Register(preflight.Kind())
 	engine.Register(deploy.Kind(deploy.Deps{Store: db, Keys: keys, Resolver: &hyrelease.Resolver{}}))
 	engine.Register(importer.Kind(importer.Deps{Store: db, Keys: keys}))
+	engine.Register(service.Kind(service.Deps{Store: db, Keys: keys}))
 	jobsCtx, stopJobs := context.WithCancel(context.WithoutCancel(ctx))
 	jobsDone := make(chan struct{})
 	go func() {

@@ -74,6 +74,8 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/servers/{id}/deploy", s.authed(anyRole, s.startDeploy))
 	mux.HandleFunc("POST /api/v1/servers/{id}/import", s.authed(anyRole, s.startImport))
 	mux.HandleFunc("GET /api/v1/servers/{id}/config", s.authed(anyRole, s.currentConfig))
+	mux.HandleFunc("GET /api/v1/servers/{id}/status", s.authed(anyRole, s.serviceStatus))
+	mux.HandleFunc("POST /api/v1/servers/{id}/service/{action}", s.authed(anyRole, s.serviceAction))
 	mux.HandleFunc("GET /api/v1/jobs", s.authed(anyRole, s.listJobs))
 	mux.HandleFunc("GET /api/v1/jobs/{id}", s.authed(anyRole, s.getJob))
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs", s.authed(anyRole, s.jobLogs))

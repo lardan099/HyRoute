@@ -315,6 +315,14 @@ type SystemdUnit struct {
 	WorkingDirectory string
 	UnitFileState    string // enabled, disabled, static…
 	Restart          string // no, on-failure, always…
+	SubState         string // running, dead, auto-restart…
+	MainPID          int
+	NRestarts        int
+	// MemoryCurrent in bytes (0: not accounted).
+	MemoryCurrent int64
+	// ActiveEnter is when the unit last became active, in microseconds
+	// since boot (0: never).
+	ActiveEnter int64
 }
 
 // Exists reports whether systemd has the unit.
@@ -335,7 +343,7 @@ func Unit(ctx context.Context, ex Executor, name string) (SystemdUnit, error) {
 	if err := CheckUnitName(name); err != nil {
 		return SystemdUnit{}, err
 	}
-	out, err := run(ctx, ex, "systemctl show", Cmd{Args: []string{"systemctl", "show", "--no-pager", "-p", "LoadState,ActiveState,FragmentPath,ExecStart,User,Group,WorkingDirectory,UnitFileState,Restart", "--", name}})
+	out, err := run(ctx, ex, "systemctl show", Cmd{Args: []string{"systemctl", "show", "--no-pager", "-p", "LoadState,ActiveState,SubState,FragmentPath,ExecStart,User,Group,WorkingDirectory,UnitFileState,Restart,MainPID,NRestarts,MemoryCurrent,ActiveEnterTimestampMonotonic", "--", name}})
 	if err != nil {
 		return SystemdUnit{}, err
 	}
@@ -361,6 +369,16 @@ func Unit(ctx context.Context, ex Executor, name string) (SystemdUnit, error) {
 			u.UnitFileState = v
 		case "Restart":
 			u.Restart = v
+		case "SubState":
+			u.SubState = v
+		case "MainPID":
+			u.MainPID, _ = strconv.Atoi(v)
+		case "NRestarts":
+			u.NRestarts, _ = strconv.Atoi(v)
+		case "MemoryCurrent":
+			u.MemoryCurrent, _ = strconv.ParseInt(v, 10, 64) // "[not set]" stays 0
+		case "ActiveEnterTimestampMonotonic":
+			u.ActiveEnter, _ = strconv.ParseInt(v, 10, 64)
 		}
 	}
 	return u, nil
@@ -434,4 +452,36 @@ func UnitOfPID(ctx context.Context, ex Executor, pid int) (string, error) {
 		return "", nil
 	}
 	return u, nil
+}
+
+// Uptime is how long the machine has been up, in seconds (/proc/uptime).
+func Uptime(ctx context.Context, ex Executor) (float64, error) {
+	b, err := ex.ReadFile(ctx, "/proc/uptime", false)
+	if err != nil {
+		return 0, err
+	}
+	f := strings.Fields(string(b))
+	if len(f) == 0 {
+		return 0, errors.New("/proc/uptime: empty")
+	}
+	return strconv.ParseFloat(f[0], 64)
+}
+
+// LoadAverage is the 1, 5 and 15 minute load (/proc/loadavg).
+func LoadAverage(ctx context.Context, ex Executor) ([3]float64, error) {
+	var l [3]float64
+	b, err := ex.ReadFile(ctx, "/proc/loadavg", false)
+	if err != nil {
+		return l, err
+	}
+	f := strings.Fields(string(b))
+	if len(f) < 3 {
+		return l, errors.New("/proc/loadavg: short")
+	}
+	for i := range l {
+		if l[i], err = strconv.ParseFloat(f[i], 64); err != nil {
+			return l, err
+		}
+	}
+	return l, nil
 }

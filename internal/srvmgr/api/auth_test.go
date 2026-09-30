@@ -21,6 +21,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
+	"github.com/lardan099/hyroute/internal/srvmgr/service"
 	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
 )
 
@@ -55,6 +56,7 @@ func newEnv(t *testing.T) *testEnv {
 	e.jobs.Poll = 20 * time.Millisecond
 	e.jobs.Register(deploy.Kind(deploy.Deps{Store: db, Keys: keys, Resolver: &hyrelease.Resolver{}}))
 	e.jobs.Register(importer.Kind(importer.Deps{Store: db, Keys: keys}))
+	e.jobs.Register(service.Kind(service.Deps{Store: db, Keys: keys}))
 	e.keys = keys
 	e.h = New(Deps{Store: db, Auth: e.auth, Servers: e.servers, Connect: e.connect, Jobs: e.jobs,
 		Deploy: &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}})

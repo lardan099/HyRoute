@@ -59,6 +59,7 @@ var readFlags = map[string][]string{
 	"hostname":   {},
 	"uname":      {"-sr", "-m"},
 	"nproc":      {},
+	"df":         {"-Pk"},
 	"test":       {"-e", "-f", "-d", "-x"},
 	"stat":       {"-L", "-c", "--"},
 	"cat":        {"--"},

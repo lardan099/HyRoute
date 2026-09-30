@@ -508,9 +508,15 @@ func TestControllerRestartMidDeploy(t *testing.T) {
 	h := newHarness(t, s)
 	killed := make(chan struct{})
 	var once sync.Once
+	stop, done := h.stop, h.done
 	s.before = func(line string) {
 		if strings.HasPrefix(line, "systemctl restart") {
-			once.Do(func() { go func() { h.kill(); close(killed) }() })
+			// The controller dies while the restart runs: its context is
+			// gone before the job can go further.
+			once.Do(func() {
+				stop()
+				go func() { <-done; close(killed) }()
+			})
 		}
 	}
 	p := params()
@@ -520,6 +526,7 @@ func TestControllerRestartMidDeploy(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-killed
+	h.stop = nil
 	if cur, _ := h.db.JobByID(context.Background(), j.ID); cur.State.Terminal() {
 		t.Fatalf("job already %s", cur.State)
 	}

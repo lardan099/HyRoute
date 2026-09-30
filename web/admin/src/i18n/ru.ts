@@ -154,6 +154,7 @@ export const ru = {
   'preflight.disk': 'свободно {n} МБ',
   'kind.deploy': 'Развёртывание',
   'kind.import': 'Импорт',
+  'kind.service': 'Управление службой',
 
   'jstate.queued': 'В очереди',
   'jstate.connecting': 'Подключение',
@@ -191,6 +192,9 @@ export const ru = {
   'step.commit': 'Сохранение в controller',
   'step.discover': 'Поиск Hysteria и чтение конфига',
   'step.save': 'Сохранение в controller',
+  'step.stop': 'Остановка',
+  'step.restart': 'Перезапуск',
+  'step.check': 'Проверка состояния',
 
   'import.button': 'Импортировать',
   'import.fromDeploy': 'Импортировать сервер',
