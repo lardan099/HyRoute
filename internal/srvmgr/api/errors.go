@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+
+	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 )
 
 // Error is the structured error every API failure returns: Code for
@@ -48,12 +50,16 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 // writeError answers with err as a structured error; anything that is not
 // an *Error becomes a generic internal error (its text stays in the log).
+// Details are technical text (remote output, library errors): they pass
+// through redaction.
 func writeError(w http.ResponseWriter, err error) {
 	var e *Error
 	if !errors.As(err, &e) {
 		e = errInternal
 	}
-	writeJSON(w, e.Status, struct {
+	out := *e
+	out.Details = redact.String(out.Details)
+	writeJSON(w, out.Status, struct {
 		Error *Error `json:"error"`
-	}{e})
+	}{&out})
 }

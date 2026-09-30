@@ -54,7 +54,7 @@ func authError(err error) error {
 	case errors.Is(err, auth.ErrSetupDone):
 		return &Error{Status: http.StatusConflict, Code: "setup_done", Message: "Администратор уже создан. Войдите под своим именем."}
 	case errors.Is(err, auth.ErrBadSetupToken):
-		return &Error{Status: http.StatusForbidden, Code: "bad_setup_token", Message: "Неверный код первого запуска. Он напечатан в журнале hyroute-server и лежит в файле setup-token в каталоге данных."}
+		return &Error{Status: http.StatusForbidden, Code: "bad_setup_token", Message: "Неверный код первого запуска. Он лежит в файле setup-token в каталоге данных hyroute-server."}
 	case errors.Is(err, store.ErrNotFound):
 		return errNotFound
 	}
@@ -197,7 +197,7 @@ func (s *server) authed(need access, h http.HandlerFunc) http.HandlerFunc {
 			if errors.Is(err, auth.ErrUnauthenticated) {
 				s.clearSessionCookie(w, r)
 			}
-			writeError(w, authError(err))
+			s.fail(w, r, authError(err))
 			return
 		}
 		if mutating(r.Method) {
@@ -238,7 +238,7 @@ type sessionJSON struct {
 func (s *server) getSetup(w http.ResponseWriter, r *http.Request) {
 	need, err := s.Auth.SetupNeeded(r.Context())
 	if err != nil {
-		writeError(w, err)
+		s.fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"needed": need})
@@ -249,12 +249,12 @@ func (s *server) postSetup(w http.ResponseWriter, r *http.Request) {
 		Token, Username, Password string
 	}
 	if err := readJSON(r, &req); err != nil {
-		writeError(w, err)
+		s.fail(w, r, err)
 		return
 	}
 	is, err := s.Auth.Setup(r.Context(), req.Token, req.Username, req.Password, s.meta(r))
 	if err != nil {
-		writeError(w, authError(err))
+		s.fail(w, r, authError(err))
 		return
 	}
 	if s.OnSetupDone != nil {
@@ -267,7 +267,7 @@ func (s *server) postSetup(w http.ResponseWriter, r *http.Request) {
 func (s *server) postSession(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Username, Password string }
 	if err := readJSON(r, &req); err != nil {
-		writeError(w, err)
+		s.fail(w, r, err)
 		return
 	}
 	is, err := s.Auth.Login(r.Context(), req.Username, req.Password, s.meta(r))
@@ -276,7 +276,7 @@ func (s *server) postSession(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &rl) {
 			w.Header().Set("Retry-After", strconv.Itoa(max(int(rl.Wait/time.Second), 1)))
 		}
-		writeError(w, authError(err))
+		s.fail(w, r, authError(err))
 		return
 	}
 	s.setSessionCookie(w, r, is.Token, s.Auth.MaxAge)
@@ -290,7 +290,7 @@ func (s *server) getSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	if err := s.Auth.Logout(r.Context(), principal(r)); err != nil {
-		writeError(w, authError(err))
+		s.fail(w, r, authError(err))
 		return
 	}
 	s.clearSessionCookie(w, r)
@@ -312,7 +312,7 @@ func (s *server) listSessions(w http.ResponseWriter, r *http.Request) {
 	p := principal(r)
 	ss, err := s.Auth.Sessions(r.Context(), p, r.URL.Query().Get("all") == "1")
 	if err != nil {
-		writeError(w, authError(err))
+		s.fail(w, r, authError(err))
 		return
 	}
 	out := make([]sessionInfoJSON, 0, len(ss))
@@ -329,7 +329,7 @@ func (s *server) revokeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Auth.RevokeSession(r.Context(), principal(r), id); err != nil {
-		writeError(w, authError(err))
+		s.fail(w, r, authError(err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -338,7 +338,7 @@ func (s *server) revokeSession(w http.ResponseWriter, r *http.Request) {
 func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 	us, err := s.Auth.Users(r.Context())
 	if err != nil {
-		writeError(w, err)
+		s.fail(w, r, err)
 		return
 	}
 	out := make([]userJSON, 0, len(us))
@@ -354,12 +354,12 @@ func (s *server) createUser(w http.ResponseWriter, r *http.Request) {
 		Role               model.Role
 	}
 	if err := readJSON(r, &req); err != nil {
-		writeError(w, err)
+		s.fail(w, r, err)
 		return
 	}
 	u, err := s.Auth.CreateUser(r.Context(), principal(r), req.Username, req.Password, req.Role)
 	if err != nil {
-		writeError(w, authError(err))
+		s.fail(w, r, authError(err))
 		return
 	}
 	writeJSON(w, http.StatusCreated, toUserJSON(u))

@@ -84,6 +84,13 @@ func TestRunServesHealthAndUI(t *testing.T) {
 		t.Fatal("setup token file left after setup")
 	}
 
+	// A master key file was created next to the database, owner-only.
+	if runtime.GOOS != "windows" {
+		if st, err := os.Stat(filepath.Join(dir, "master.key")); err != nil || st.Mode().Perm() != 0o600 {
+			t.Fatalf("master key file: %v %v", st, err)
+		}
+	}
+
 	cancel()
 	select {
 	case err := <-done:

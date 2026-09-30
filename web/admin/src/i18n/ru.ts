@@ -32,7 +32,7 @@ export const ru = {
   'soon.settings': 'Пользователи, сессии, ключ шифрования и параметры controller.',
 
   'auth.setupTitle': 'Первый запуск',
-  'auth.setupHint': 'Создайте владельца. Код первого запуска напечатан в журнале hyroute-server и лежит в файле setup-token в каталоге данных.',
+  'auth.setupHint': 'Создайте владельца. Код первого запуска лежит в файле setup-token в каталоге данных hyroute-server (путь к файлу — в журнале при запуске).',
   'auth.setupToken': 'Код первого запуска',
   'auth.loginTitle': 'Вход',
   'auth.username': 'Имя пользователя',

@@ -62,6 +62,16 @@ func New(d Deps) http.Handler {
 	return s.recoverPanics(s.logRequests(securityHeaders(limitBody(mux))))
 }
 
+// fail answers with err; an error that is not an *Error is logged here
+// (the client only sees a generic internal error).
+func (s *server) fail(w http.ResponseWriter, r *http.Request, err error) {
+	var e *Error
+	if !errors.As(err, &e) {
+		s.Log.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+	}
+	writeError(w, err)
+}
+
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	v, err := s.Store.SchemaVersion(r.Context())
 	if err != nil {

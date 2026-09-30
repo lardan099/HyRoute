@@ -116,8 +116,8 @@
 **Done:** тесты: first-run нельзя повторить, неверный пароль, rate limit, истёкшая/отозванная сессия, CSRF, Read-only получает 403 на изменение.
 
 ### P1-03 Секреты и redaction
-- [ ] Пакет secrets: envelope encryption, загрузка master key, ротация версии ключа в модели.
-- [ ] Пакет redaction: пароли, auth, obfs password, API secret, private key, SSH password/key, Telegram token, полные `hysteria2://` / `hy2://` ссылки. Применяется к логам controller, логам jobs и ответам API.
+- [x] Пакет secrets: envelope encryption, загрузка master key, ротация версии ключа в модели.
+- [x] Пакет redaction: пароли, auth, obfs password, API secret, private key, SSH password/key, Telegram token, полные `hysteria2://` / `hy2://` ссылки. Применяется к логам controller, логам jobs и ответам API.
 
 **Done:** тесты: шифрование round-trip, неверный ключ даёт ошибку, redaction всех перечисленных типов (включая секреты внутри YAML и URI).
 

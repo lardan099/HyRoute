@@ -21,6 +21,8 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/api"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/config"
+	"github.com/lardan099/hyroute/internal/srvmgr/redact"
+	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
 	admin "github.com/lardan099/hyroute/web/admin"
 )
@@ -47,9 +49,22 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	if err != nil {
 		return err
 	}
-	log := newLogger(stderr, cfg.LogLevel)
+	red := redact.New()
+	log := newLogger(stderr, cfg.LogLevel, red)
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return fmt.Errorf("data directory: %w", err)
+	}
+	keys, src, err := secrets.Load(getenv, cfg.MasterKeyFile)
+	if err != nil {
+		return fmt.Errorf("master key: %w", err)
+	}
+	switch src {
+	case secrets.Created:
+		log.Warn("created a new master key: back it up, stored credentials cannot be decrypted without it", "file", cfg.MasterKeyFile)
+	case secrets.FromEnv:
+		log.Info("master key from the environment", "version", keys.Current())
+	default:
+		log.Info("master key from file", "file", cfg.MasterKeyFile, "version", keys.Current())
 	}
 	db, err := sqlite.Open(ctx, cfg.DBPath())
 	if err != nil {
@@ -111,10 +126,10 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	return nil
 }
 
-// prepareSetup issues the one-time setup token while there are no users:
-// it goes to the log and to a 0600 file, so only someone with access to
-// the machine can create the first owner. A leftover file is removed once
-// setup is done.
+// prepareSetup issues the one-time setup token while there are no users.
+// It goes to a 0600 file (the log names the file, not the token), so only
+// someone with access to the machine can create the first owner. A
+// leftover file is removed once setup is done.
 func prepareSetup(ctx context.Context, a *auth.Service, tokenFile string, log *slog.Logger) error {
 	tok, err := a.PrepareSetup(ctx)
 	if err != nil {
@@ -136,7 +151,7 @@ func prepareSetup(ctx context.Context, a *auth.Service, tokenFile string, log *s
 	if err != nil {
 		return fmt.Errorf("setup token file: %w", err)
 	}
-	log.Warn("no administrator yet: open the admin and create one with this setup token", "setup_token", tok, "file", tokenFile)
+	log.Warn("no administrator yet: open the admin and create the owner with the setup token from this file", "file", tokenFile)
 	return nil
 }
 
@@ -156,8 +171,9 @@ func cleanupSessions(ctx context.Context, a *auth.Service, log *slog.Logger) {
 	}
 }
 
-func newLogger(w io.Writer, level string) *slog.Logger {
+// newLogger writes text logs to w; every line passes through red.
+func newLogger(w io.Writer, level string, red *redact.Redactor) *slog.Logger {
 	var l slog.Level
 	l.UnmarshalText([]byte(level))
-	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: l}))
+	return slog.New(red.Handler(slog.NewTextHandler(w, &slog.HandlerOptions{Level: l})))
 }

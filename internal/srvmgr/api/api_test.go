@@ -143,6 +143,14 @@ func TestSecurityHeaders(t *testing.T) {
 	}
 }
 
+func TestErrorDetailsRedacted(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeError(rec, Errorf(http.StatusBadGateway, "ssh", "Сервер недоступен.", errors.New("dial: password=fake-secret-value hysteria2://fake@h:1")))
+	if strings.Contains(rec.Body.String(), "fake-secret-value") || strings.Contains(rec.Body.String(), "fake@h") {
+		t.Fatalf("secret in API error: %s", rec.Body)
+	}
+}
+
 func TestPanicBecomesInternalError(t *testing.T) {
 	s := &server{Deps: Deps{Log: slog.New(slog.DiscardHandler)}}
 	h := s.recoverPanics(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
