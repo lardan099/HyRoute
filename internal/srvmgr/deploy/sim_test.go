@@ -36,6 +36,8 @@ type sim struct {
 	badConfig func(cfg []byte) bool
 	// before sees every command before it runs (outside the lock).
 	before func(line string)
+	// written sees every written path after the write (outside the lock).
+	written func(path string)
 
 	cmds   []string
 	writes []string
@@ -279,6 +281,12 @@ func (s *sim) WriteFile(ctx context.Context, path string, data []byte, f remote.
 	defer s.mu.Unlock()
 	s.writes = append(s.writes, fmt.Sprintf("%s %04o %s:%s", path, f.Mode.Perm(), or(f.Owner, "root"), or(f.Group, "root")))
 	s.files[path] = append([]byte(nil), data...)
+	hook := s.written
+	s.mu.Unlock()
+	if hook != nil {
+		hook(path)
+	}
+	s.mu.Lock()
 	return nil
 }
 

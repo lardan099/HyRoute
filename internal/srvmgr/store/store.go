@@ -117,8 +117,11 @@ type Jobs interface {
 	ClaimJob(ctx context.Context, id int64, owner string, until time.Time) (bool, error)
 	// ExtendLease moves the lease of a job owner still holds.
 	ExtendLease(ctx context.Context, id int64, owner string, until time.Time) error
-	// UpdateJob writes state, step, data, attempt, errors, times and lease.
+	// UpdateJob writes state, step, attempt, errors, times and lease (not
+	// the data: SetJobData).
 	UpdateJob(ctx context.Context, j model.Job) error
+	// SetJobData replaces the data of a job.
+	SetJobData(ctx context.Context, id int64, data map[string]string) error
 	JobSteps(ctx context.Context, jobID int64) ([]model.JobStep, error)
 	UpdateJobStep(ctx context.Context, s model.JobStep) error
 	// AppendJobLog sets l.Seq to the next number of the job.

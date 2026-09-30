@@ -541,6 +541,56 @@ func TestControllerRestartMidDeploy(t *testing.T) {
 	}
 }
 
+// The controller dies right after the new config is written, inside the
+// step: what the step recorded for the rollback must survive, so the
+// failed start after the restart brings the previous config back instead
+// of deleting the file.
+func TestRestartMidStepKeepsRollbackRecord(t *testing.T) {
+	s := newSim()
+	h := newHarness(t, s)
+	p := params()
+	sec, _ := NewSecrets(p, "192.0.2.10", nil)
+	if j := h.deploy(p, sec); j.State != model.JobCompleted {
+		t.Fatalf("first: %s %s", j.ErrorMessage, h.log(j.ID))
+	}
+	old, _ := s.file(ConfigPath)
+
+	s.badConfig = func(cfg []byte) bool { return bytes.Contains(cfg, []byte("salamander")) }
+	killed := make(chan struct{})
+	var once sync.Once
+	stop, done := h.stop, h.done
+	s.written = func(path string) {
+		if path == ConfigPath {
+			once.Do(func() {
+				stop()
+				go func() { <-done; close(killed) }()
+			})
+		}
+	}
+	p2 := p
+	p2.Obfs = true
+	sec2, _ := NewSecrets(p2, "192.0.2.10", map[string]string{SecretAuth: sec[SecretAuth]})
+	j, err := h.eng.Submit(context.Background(), JobKind, h.server, p2, sec2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-killed
+	h.stop = nil
+	s.written = nil
+	h.startEngine()
+	j = h.wait(j.ID)
+	if j.State != model.JobFailed {
+		t.Fatalf("%s\n%s", j.State, h.log(j.ID))
+	}
+	now, found := s.file(ConfigPath)
+	if !found || !bytes.Equal(now, old) {
+		t.Fatalf("previous config not restored (found %v)\n%s", found, h.log(j.ID))
+	}
+	if s.state != "active" || !bytes.Equal(s.running, old) {
+		t.Fatalf("service %s", s.state)
+	}
+}
+
 // ACME: the certificate comes from Let's Encrypt at start; a failed
 // start must not delete certificate files the deploy never wrote.
 func TestACMERollbackKeepsForeignCert(t *testing.T) {

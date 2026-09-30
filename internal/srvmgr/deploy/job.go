@@ -356,41 +356,73 @@ func (x *deployer) binary(ctx context.Context, env *jobs.Env, p Params) error {
 	if err := remote.InstallFile(ctx, ex, tmp, BinaryPath, 0o755, "root", "root", su); err != nil {
 		return jobs.Fail("Не удалось установить Hysteria.", err)
 	}
-	env.Set("changed", "1")
 	env.Logf("Установлено: %s.", BinaryPath)
 	return nil
 }
 
-// backup keeps the current file at path as path.hyroute-prev (flag
-// records whether there was one).
+// backup records the state of the file at path (its SHA-256 or
+// remote.Absent) under flag, then keeps a copy as path.hyroute-prev. The
+// record reaches the database before the copy and before the caller
+// changes path, so the rollback of an interrupted job knows what was
+// there. It also marks the job as changing the server.
+//
+// A step run again (after a restart or a retry) keeps the first record:
+// the file may be this job's already, and its copy is the original.
 func (x *deployer) backup(ctx context.Context, env *jobs.Env, ex remote.Executor, path, flag string) error {
-	ok, err := remote.PathExists(ctx, ex, path, sudo(env))
+	state, err := remote.FileState(ctx, ex, path, sudo(env))
 	if err != nil {
 		return err
 	}
-	env.Set(flag, "")
-	if !ok {
+	if prev := env.Get(flag); prev != "" && prev != "1" {
+		if prev != state {
+			return env.Set("changed", "1") // changed by this job already
+		}
+	} else if err := env.Set(flag, state); err != nil {
+		return err
+	}
+	if err := env.Set("changed", "1"); err != nil {
+		return err
+	}
+	if state == remote.Absent {
 		return nil
 	}
 	if err := remote.CopyFile(ctx, ex, path, path+Backup, sudo(env)); err != nil {
 		return jobs.Fail("Не удалось сохранить копию "+path+".", err)
 	}
-	env.Set(flag, "1")
 	return nil
 }
 
 // restoreFile undoes a replaced file: the backup goes back, or the new
-// file goes away when there was none.
+// file goes away when there was none. A file whose state was never
+// recorded was not touched by this job and stays as it is.
 func (x *deployer) restoreFile(path, flag string) func(context.Context, *jobs.Env) error {
 	return func(ctx context.Context, env *jobs.Env) error {
+		state := env.Get(flag)
+		switch state {
+		case "":
+			return jobs.ErrNothingToUndo
+		case "1":
+			// Recorded by an older controller: a backup was made.
+			state = ""
+		}
 		ex, err := exec(ctx, env)
 		if err != nil {
 			return err
 		}
-		if env.Get(flag) == "1" {
+		if state == "" {
+			if ok, err := remote.PathExists(ctx, ex, path+Backup, sudo(env)); err != nil || !ok {
+				return err
+			}
 			return remote.Rename(ctx, ex, path+Backup, path, sudo(env))
 		}
-		return remote.RemoveFile(ctx, ex, path, sudo(env))
+		changed, err := remote.RestoreFile(ctx, ex, path, path+Backup, state, sudo(env))
+		if errors.Is(err, remote.ErrBackupMismatch) {
+			return fmt.Errorf("%w: %s оставлен как есть, проверьте его вручную", err, path)
+		}
+		if err == nil && !changed {
+			return jobs.ErrNothingToUndo
+		}
+		return err
 	}
 }
 
@@ -455,7 +487,6 @@ func (x *deployer) tls(ctx context.Context, env *jobs.Env, p Params) error {
 	if err := remote.MakeDir(ctx, ex, ConfigDir, 0o755, "root", "root", su); err != nil {
 		return jobs.Fail("Не удалось создать "+ConfigDir+".", err)
 	}
-	env.Set("tlsWritten", "")
 	if p.TLS == TLSACME {
 		env.Logf("Сертификат для %s выпустит Let's Encrypt при запуске Hysteria.", p.Domain)
 		return nil
@@ -471,6 +502,9 @@ func (x *deployer) tls(ctx context.Context, env *jobs.Env, p Params) error {
 	if err := x.backup(ctx, env, ex, KeyPath, "keyBackup"); err != nil {
 		return err
 	}
+	if err := env.Set("tlsWritten", "1"); err != nil {
+		return err
+	}
 	if err := ex.WriteFile(ctx, CertPath, []byte(cert), remote.FileSpec{Mode: 0o644, Sudo: su}); err != nil {
 		return jobs.Fail("Не удалось записать сертификат.", err)
 	}
@@ -478,8 +512,6 @@ func (x *deployer) tls(ctx context.Context, env *jobs.Env, p Params) error {
 		return jobs.Fail("Не удалось записать ключ сертификата.", err)
 	}
 	env.Set("pin", pin)
-	env.Set("changed", "1")
-	env.Set("tlsWritten", "1")
 	env.Logf("Самоподписанный сертификат установлен; клиенты проверяют его по pinSHA256 %s.", pin)
 	return nil
 }
@@ -488,10 +520,17 @@ func (x *deployer) undoTLS(ctx context.Context, env *jobs.Env) error {
 	if env.Get("tlsWritten") != "1" {
 		return jobs.ErrNothingToUndo // ACME: nothing was written
 	}
-	if err := x.restoreFile(CertPath, "certBackup")(ctx, env); err != nil {
-		return err
+	cerr := x.restoreFile(CertPath, "certBackup")(ctx, env)
+	kerr := x.restoreFile(KeyPath, "keyBackup")(ctx, env)
+	for _, err := range []error{cerr, kerr} {
+		if err != nil && !errors.Is(err, jobs.ErrNothingToUndo) {
+			return err
+		}
 	}
-	return x.restoreFile(KeyPath, "keyBackup")(ctx, env)
+	if cerr != nil && kerr != nil {
+		return jobs.ErrNothingToUndo
+	}
+	return nil
 }
 
 // configYAML is the config this job installs and its meta.
@@ -542,7 +581,6 @@ func (x *deployer) config(ctx context.Context, env *jobs.Env, p Params) error {
 	if err := ex.WriteFile(ctx, ConfigPath, want, remote.FileSpec{Mode: 0o640, Group: User, Sudo: sudo(env)}); err != nil {
 		return jobs.Fail("Не удалось записать конфиг.", err)
 	}
-	env.Set("changed", "1")
 	env.Logf("Конфиг записан: %s (listen %s).", ConfigPath, p.Listen())
 	return nil
 }
@@ -583,7 +621,6 @@ func (x *deployer) unit(ctx context.Context, env *jobs.Env) error {
 	if err := remote.Systemctl(ctx, ex, remote.ServiceEnable, Unit, su); err != nil {
 		return jobs.Fail("Не удалось включить автозапуск службы.", err)
 	}
-	env.Set("changed", "1")
 	env.Logf("Служба %s установлена и включена в автозапуск.", Unit)
 	return nil
 }
@@ -593,11 +630,14 @@ func (x *deployer) undoUnit(ctx context.Context, env *jobs.Env) error {
 	if err != nil {
 		return err
 	}
-	if env.Get("unitBackup") != "1" {
+	if env.Get("unitBackup") == "" {
+		return jobs.ErrNothingToUndo
+	}
+	if env.Get("unitBackup") == remote.Absent {
 		// A fresh install: nothing to start at boot.
 		remote.Systemctl(ctx, ex, remote.ServiceDisable, Unit, sudo(env))
 	}
-	if err := x.restoreFile(UnitPath, "unitBackup")(ctx, env); err != nil {
+	if err := x.restoreFile(UnitPath, "unitBackup")(ctx, env); err != nil && !errors.Is(err, jobs.ErrNothingToUndo) {
 		return err
 	}
 	return remote.DaemonReload(ctx, ex, sudo(env))
@@ -669,6 +709,9 @@ func (x *deployer) start(ctx context.Context, env *jobs.Env) error {
 	if err != nil {
 		return err
 	}
+	if err := env.Set("started", "1"); err != nil {
+		return err
+	}
 	if err := remote.Systemctl(ctx, ex, remote.ServiceRestart, Unit, sudo(env)); err != nil {
 		x.journal(ctx, env, ex)
 		return jobs.Fail("Служба Hysteria не запустилась.", err)
@@ -678,6 +721,9 @@ func (x *deployer) start(ctx context.Context, env *jobs.Env) error {
 }
 
 func (x *deployer) undoStart(ctx context.Context, env *jobs.Env) error {
+	if env.Get("started") != "1" {
+		return jobs.ErrNothingToUndo // the running service was left alone
+	}
 	ex, err := exec(ctx, env)
 	if err != nil {
 		return err
@@ -798,7 +844,7 @@ func (x *deployer) finished(ctx context.Context, env *jobs.Env, j model.Job) {
 		// Something on the server changed and was rolled back (or could
 		// not be): look at it.
 		state = model.StateNeedsAttention
-		if env.Get("changed") != "1" {
+		if env.Get("changed") != "1" || env.Rollback() == jobs.RollbackNothing {
 			state = model.ServerState(env.Get("prevState"))
 			if state == "" {
 				return

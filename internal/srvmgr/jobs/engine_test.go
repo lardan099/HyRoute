@@ -224,7 +224,9 @@ func TestRollbackOnStartFailure(t *testing.T) {
 	}
 	k := simpleKind("demo",
 		Step{Name: "install", Phase: model.JobInstalling, Run: func(context.Context, *Env) error { return nil }, Undo: undo("install")},
-		Step{Name: "configure", Phase: model.JobConfiguring, Done: func(context.Context, *Env) (bool, error) { return true, nil }, Run: func(context.Context, *Env) error { return nil }, Undo: undo("configure")},
+		// Skipped: its Undo is asked and finds no record of its own.
+		Step{Name: "configure", Phase: model.JobConfiguring, Done: func(context.Context, *Env) (bool, error) { return true, nil }, Run: func(context.Context, *Env) error { return nil },
+			Undo: func(ctx context.Context, env *Env) error { undo("configure")(ctx, env); return ErrNothingToUndo }},
 		Step{Name: "start", Phase: model.JobStarting, Run: func(context.Context, *Env) error {
 			return Fail("Сервис не запустился.", errors.New("exit 1"))
 		}},
@@ -234,11 +236,10 @@ func TestRollbackOnStartFailure(t *testing.T) {
 	j, _ := h.eng.Submit(context.Background(), "demo", 0, nil, nil, 0)
 	j = h.wait(j.ID, model.JobFailed)
 	got := h.steps(j.ID)
-	// The skipped step was already in place: it is not ours to undo.
 	if got[0] != model.StepRolledBack || got[1] != model.StepSkipped || got[2] != model.StepFailed {
 		t.Fatalf("steps %v", got)
 	}
-	if len(undone) != 1 || undone[0] != "install" {
+	if len(undone) != 2 || undone[0] != "configure" || undone[1] != "install" {
 		t.Fatalf("undone %v", undone)
 	}
 	if !strings.Contains(h.logText(j.ID), "Откат") {
@@ -429,5 +430,78 @@ func TestFinishedHook(t *testing.T) {
 	defer mu.Unlock()
 	if len(ended) != 2 || ended[0] != model.JobCompleted || ended[1] != model.JobFailed {
 		t.Fatalf("hook saw %v", ended)
+	}
+}
+
+// What a step records reaches the database before the step goes on: a
+// process that dies in the middle of the step leaves it for the next one,
+// whose rollback sees it.
+func TestSetSurvivesKilledProcess(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	var seen atomic.Value
+	mk := func(block bool) *Kind {
+		return &Kind{
+			Name: "demo",
+			Steps: func(json.RawMessage) ([]Step, error) {
+				return []Step{
+					{Name: "install", Phase: model.JobInstalling, Safe: true,
+						Run: func(ctx context.Context, env *Env) error {
+							if block {
+								if err := env.Set("backup", "sha-of-the-old-file"); err != nil {
+									return err
+								}
+								entered <- struct{}{}
+								<-ctx.Done() // the process dies after the change
+								return ctx.Err()
+							}
+							return nil
+						},
+						Undo: func(ctx context.Context, env *Env) error { seen.Store(env.Get("backup")); return nil }},
+					{Name: "verify", Phase: model.JobVerifying, Run: func(context.Context, *Env) error {
+						return Fail("Не работает.", nil)
+					}},
+				}, nil
+			},
+			Recover: func(context.Context, *Env) (Resolution, error) { return ResolveRetry, nil },
+		}
+	}
+	h1 := newHarness(t, nil, mk(true))
+	h1.start()
+	j, _ := h1.eng.Submit(context.Background(), "demo", 0, nil, nil, 0)
+	<-entered
+	h1.kill()
+	if cur, _ := h1.db.JobByID(context.Background(), j.ID); cur.Data["backup"] != "sha-of-the-old-file" {
+		t.Fatalf("data after the kill: %v", cur.Data)
+	}
+	h2 := newHarness(t, h1.db, mk(false))
+	h2.start()
+	h2.wait(j.ID, model.JobFailed)
+	if seen.Load() != "sha-of-the-old-file" {
+		t.Fatalf("undo saw %v", seen.Load())
+	}
+}
+
+// secretFails is a store whose job secrets cannot be read.
+type secretFails struct{ *sqlite.DB }
+
+func (secretFails) JobSecret(context.Context, int64) ([]byte, error) {
+	return nil, errors.New("disk I/O error")
+}
+
+// A job whose secrets cannot be read fails instead of running without
+// them.
+func TestUnreadableSecretFailsJob(t *testing.T) {
+	var ran atomic.Bool
+	k := simpleKind("demo", Step{Name: "install", Phase: model.JobInstalling, Run: func(context.Context, *Env) error { ran.Store(true); return nil }})
+	h := newHarness(t, nil, k)
+	j, err := h.eng.Submit(context.Background(), "demo", 0, nil, map[string]string{"password": "fake-secret"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.eng.Store = secretFails{h.db}
+	h.start()
+	j = h.wait(j.ID, model.JobFailed)
+	if ran.Load() || !strings.Contains(j.ErrorDetails, "disk I/O error") {
+		t.Fatalf("ran %v: %s", ran.Load(), j.ErrorDetails)
 	}
 }

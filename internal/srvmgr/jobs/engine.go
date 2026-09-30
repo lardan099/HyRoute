@@ -206,7 +206,11 @@ func (e *Engine) prepare(ctx context.Context, id int64) (model.Job, *Kind, []Ste
 	for k, v := range j.Data {
 		env.data[k] = v
 	}
-	if sealed, err := e.Store.JobSecret(ctx, id); err == nil && len(sealed) > 0 {
+	sealed, err := e.Store.JobSecret(ctx, id)
+	if err != nil {
+		return j, k, nil, nil, nil, fmt.Errorf("job secrets: %w", err)
+	}
+	if len(sealed) > 0 {
 		b, err := e.Keys.Open(sealed, secretContext(id))
 		if err != nil {
 			return j, k, nil, nil, nil, fmt.Errorf("job secrets: %w", err)
@@ -232,16 +236,10 @@ func resumeIndex(rows []model.JobStep) int {
 }
 
 func (e *Engine) save(ctx context.Context, j *model.Job, env *Env) {
+	// The data is in the database already (Env.Set); the copy is for the
+	// subscribers.
 	if env != nil {
-		env.mu.Lock()
-		if env.dirty {
-			j.Data = map[string]string{}
-			for k, v := range env.data {
-				j.Data[k] = v
-			}
-			env.dirty = false
-		}
-		env.mu.Unlock()
+		j.Data = env.snapshot()
 	}
 	// The write outlives a cancelled run: the state must reach the disk.
 	if err := e.Store.UpdateJob(context.WithoutCancel(ctx), *j); err != nil {
@@ -327,6 +325,10 @@ func (e *Engine) runJob(ctx context.Context, id int64) {
 		if !skipped {
 			err = st.Run(ctx, env)
 		}
+		if serr := env.takeSetErr(); serr != nil && err == nil {
+			// What the step changed may not be recorded for the rollback.
+			err = Fail("Не удалось сохранить состояние задания в базе controller.", serr)
+		}
 		if ctx.Err() != nil {
 			// The controller is stopping: the job stays as it is and is
 			// recovered on the next start.
@@ -358,12 +360,22 @@ func (e *Engine) stepFailed(ctx context.Context, j *model.Job, env *Env, steps [
 	rows[i] = row
 	e.saveStep(ctx, row)
 
+	// The failed step itself may have changed part of what it does (a
+	// certificate written, its key not): its Undo goes first. Undo acts on
+	// what a step recorded (Env.Set) before changing anything, so it is
+	// safe for a step that changed nothing.
 	var undo []int
+	if steps[i].Undo != nil {
+		undo = append(undo, i)
+	}
+	// Skipped steps too: after a restart a step finds its own effect in
+	// place and is skipped, yet its record is there to undo.
 	for k := i - 1; k >= 0; k-- {
-		if rows[k].State == model.StepDone && steps[k].Undo != nil {
+		if (rows[k].State == model.StepDone || rows[k].State == model.StepSkipped) && steps[k].Undo != nil {
 			undo = append(undo, k)
 		}
 	}
+	result := RollbackNothing
 	if len(undo) > 0 {
 		j.State = model.JobRollingBack
 		e.save(ctx, j, env)
@@ -376,13 +388,22 @@ func (e *Engine) stepFailed(ctx context.Context, j *model.Job, env *Env, steps [
 			}
 			if uerr != nil {
 				e.log(j.ID, "error", steps[k].Name, "Откат не удался: "+uerr.Error())
+				result = RollbackFailed
 				continue
 			}
-			rows[k].State = model.StepRolledBack
-			e.saveStep(ctx, rows[k])
+			if result == RollbackNothing {
+				result = RollbackClean
+			}
+			if k != i {
+				rows[k].State = model.StepRolledBack
+				e.saveStep(ctx, rows[k])
+			}
 			e.log(j.ID, "info", steps[k].Name, "Откачено.")
 		}
 	}
+	env.mu.Lock()
+	env.rollback = result
+	env.mu.Unlock()
 	e.fail(ctx, j, env, err)
 }
 

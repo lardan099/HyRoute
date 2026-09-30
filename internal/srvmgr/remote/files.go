@@ -63,6 +63,56 @@ func FileSHA256(ctx context.Context, ex Executor, path string, sudo bool) (strin
 	return sum, nil
 }
 
+// Absent is the FileState of a missing file.
+const Absent = "absent"
+
+// ErrBackupMismatch: the backup of a file is not the file it was made
+// from; RestoreFile left everything as it is.
+var ErrBackupMismatch = errors.New("the backup does not match the recorded file")
+
+// FileState is the SHA-256 of the file at path, or Absent. A job records
+// it before changing the file, so a rollback knows what to go back to.
+func FileState(ctx context.Context, ex Executor, path string, sudo bool) (string, error) {
+	sum, err := FileSHA256(ctx, ex, path, sudo)
+	if err != nil {
+		return "", err
+	}
+	if sum == "" {
+		return Absent, nil
+	}
+	return sum, nil
+}
+
+// RestoreFile brings path back to state (its FileState before the change)
+// from backup, the copy made then. Nothing happens when path is in that
+// state already; a state of Absent removes path. When backup is not the
+// recorded file (the copy never finished, or it is from another run) it
+// fails with ErrBackupMismatch and changes nothing. It reports whether it
+// changed path.
+func RestoreFile(ctx context.Context, ex Executor, path, backup, state string, sudo bool) (bool, error) {
+	if state == "" {
+		return false, errors.New("no recorded state")
+	}
+	cur, err := FileState(ctx, ex, path, sudo)
+	if err != nil {
+		return false, err
+	}
+	if cur == state {
+		return false, nil
+	}
+	if state == Absent {
+		return true, RemoveFile(ctx, ex, path, sudo)
+	}
+	b, err := FileState(ctx, ex, backup, sudo)
+	if err != nil {
+		return false, err
+	}
+	if b != state {
+		return false, fmt.Errorf("%s: %w", path, ErrBackupMismatch)
+	}
+	return true, Rename(ctx, ex, backup, path, sudo)
+}
+
 // Download fetches an https URL to dest with curl, or wget when there is
 // no curl.
 func Download(ctx context.Context, ex Executor, url, dest string, sudo bool) error {

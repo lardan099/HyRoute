@@ -298,6 +298,8 @@ func (x *applier) installed(ctx context.Context, env *jobs.Env, p Params) (bool,
 	return sum == p.SHA256, err
 }
 
+// backup records the state of the config (its SHA-256) before anything
+// changes it, then keeps a copy; a run again keeps the first record.
 func (x *applier) backup(ctx context.Context, env *jobs.Env) error {
 	in, err := x.installation(ctx, env)
 	if err != nil {
@@ -305,6 +307,16 @@ func (x *applier) backup(ctx context.Context, env *jobs.Env) error {
 	}
 	ex, err := exec(ctx, env)
 	if err != nil {
+		return err
+	}
+	state, err := remote.FileState(ctx, ex, in.Config, sudo(env))
+	if err != nil {
+		return err
+	}
+	if prev := env.Get("configState"); prev != "" && prev != state {
+		return nil // the config is this job's already; the copy is the original
+	}
+	if err := env.Set("configState", state); err != nil {
 		return err
 	}
 	if err := remote.CopyFile(ctx, ex, in.Config, in.Config+Backup, sudo(env)); err != nil {
@@ -338,16 +350,19 @@ func (x *applier) install(ctx context.Context, env *jobs.Env, p Params) error {
 	if ok {
 		spec.Mode, spec.Owner, spec.Group = fi.Mode, fi.Owner, fi.Group
 	}
+	if err := env.Set("changed", "1"); err != nil {
+		return err
+	}
 	if err := ex.WriteFile(ctx, in.Config, b, spec); err != nil {
 		return jobs.Fail("Не удалось записать конфиг.", err)
 	}
-	env.Set("changed", "1")
 	env.Logf("Новый конфиг записан: %s.", in.Config)
 	return nil
 }
 
 func (x *applier) undoInstall(ctx context.Context, env *jobs.Env) error {
-	if env.Get("backup") != "1" {
+	state := env.Get("configState")
+	if state == "" && env.Get("backup") != "1" {
 		return jobs.ErrNothingToUndo
 	}
 	in, err := x.installation(ctx, env)
@@ -358,10 +373,24 @@ func (x *applier) undoInstall(ctx context.Context, env *jobs.Env) error {
 	if err != nil {
 		return err
 	}
-	if err := remote.Rename(ctx, ex, in.Config+Backup, in.Config, sudo(env)); err != nil {
+	if state == "" {
+		// Recorded by an older controller: the copy is the original.
+		if err := remote.Rename(ctx, ex, in.Config+Backup, in.Config, sudo(env)); err != nil {
+			return err
+		}
+		env.Set("backup", "")
+		return nil
+	}
+	changed, err := remote.RestoreFile(ctx, ex, in.Config, in.Config+Backup, state, sudo(env))
+	if errors.Is(err, remote.ErrBackupMismatch) {
+		return fmt.Errorf("%w: %s оставлен как есть, проверьте его вручную", err, in.Config)
+	}
+	if err != nil {
 		return err
 	}
-	env.Set("backup", "")
+	if !changed {
+		return jobs.ErrNothingToUndo
+	}
 	return nil
 }
 
@@ -491,7 +520,7 @@ func (x *applier) finished(ctx context.Context, env *jobs.Env, j model.Job) {
 	state := model.StateHealthy
 	if j.State == model.JobFailed {
 		switch {
-		case env.Get("changed") == "1" && env.Get("restored") != "1":
+		case env.Get("changed") == "1" && env.Rollback() != jobs.RollbackNothing && (env.Get("restored") != "1" || env.Rollback() == jobs.RollbackFailed):
 			state = model.StateNeedsAttention // the rollback did not finish
 		case env.Get("prevState") != "":
 			state = model.ServerState(env.Get("prevState"))

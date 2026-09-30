@@ -155,8 +155,19 @@ func (d *DB) ExtendLease(ctx context.Context, id int64, owner string, until time
 }
 
 func (d *DB) UpdateJob(ctx context.Context, j model.Job) error {
-	res, err := d.db.ExecContext(ctx, `UPDATE jobs SET state = ?, current_step = ?, data = ?, attempt = ?, error_message = ?, error_details = ?, started_at = ?, finished_at = ?, lease_owner = ?, lease_until = ? WHERE id = ?`,
-		string(j.State), j.CurrentStep, dataJSON(j.Data), j.Attempt, j.ErrorMessage, j.ErrorDetails, unixTime(j.StartedAt), unixTime(j.FinishedAt), j.LeaseOwner, unixTime(j.LeaseUntil), j.ID)
+	res, err := d.db.ExecContext(ctx, `UPDATE jobs SET state = ?, current_step = ?, attempt = ?, error_message = ?, error_details = ?, started_at = ?, finished_at = ?, lease_owner = ?, lease_until = ? WHERE id = ?`,
+		string(j.State), j.CurrentStep, j.Attempt, j.ErrorMessage, j.ErrorDetails, unixTime(j.StartedAt), unixTime(j.FinishedAt), j.LeaseOwner, unixTime(j.LeaseUntil), j.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (d *DB) SetJobData(ctx context.Context, id int64, data map[string]string) error {
+	res, err := d.db.ExecContext(ctx, `UPDATE jobs SET data = ? WHERE id = ?`, dataJSON(data), id)
 	if err != nil {
 		return err
 	}

@@ -27,7 +27,10 @@ type Step struct {
 	// is then skipped. Nil: always run.
 	Done func(ctx context.Context, env *Env) (bool, error)
 	Run  func(ctx context.Context, env *Env) error
-	// Undo reverts the step when a later step fails. Nil: nothing to undo.
+	// Undo reverts the step when it or a later step fails, also when the
+	// step was skipped (Done) or failed halfway: it acts only on what the
+	// step recorded with Env.Set before changing anything, and returns
+	// ErrNothingToUndo when there is no record. Nil: nothing to undo.
 	Undo func(ctx context.Context, env *Env) error
 }
 
@@ -87,13 +90,36 @@ type Env struct {
 	CreatedBy int64 // user who started the job (0: the system)
 	Params    json.RawMessage
 
-	eng     *Engine
-	step    string
-	mu      sync.Mutex
-	data    map[string]string
-	secrets map[string]string
-	exec    remote.Executor
-	dirty   bool
+	eng      *Engine
+	step     string
+	mu       sync.Mutex
+	data     map[string]string
+	secrets  map[string]string
+	exec     remote.Executor
+	setErr   error
+	rollback Rollback
+}
+
+// Rollback is how the rollback of a failed job went.
+type Rollback int
+
+const (
+	// RollbackNotRun: no step failed in this process (the job completed,
+	// or failed in its recovery check).
+	RollbackNotRun Rollback = iota
+	// RollbackNothing: every Undo found nothing of its step to revert.
+	RollbackNothing
+	// RollbackClean: changes were reverted, every Undo succeeded.
+	RollbackClean
+	// RollbackFailed: an Undo failed.
+	RollbackFailed
+)
+
+// Rollback reports how the rollback went (Finished uses it).
+func (e *Env) Rollback() Rollback {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.rollback
 }
 
 // DecodeParams decodes the job's params into v.
@@ -106,16 +132,58 @@ func (e *Env) Get(k string) string {
 	return e.data[k]
 }
 
-// Set stores a value for later steps; it survives a restart. Never store
-// secrets here.
-func (e *Env) Set(k, v string) {
+// Set stores a value for later steps and the rollback. It is written to
+// the database before Set returns, so a step records what it is about to
+// change before changing it: a controller that dies in the middle leaves
+// the record for the recovery. Never store secrets here. An error also
+// fails the step once it returns.
+func (e *Env) Set(k, v string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.data == nil {
 		e.data = map[string]string{}
 	}
+	old, had := e.data[k]
+	if had && old == v {
+		return nil
+	}
 	e.data[k] = v
-	e.dirty = true
+	if e.eng == nil {
+		return nil
+	}
+	if err := e.eng.Store.SetJobData(context.Background(), e.JobID, e.data); err != nil {
+		if had {
+			e.data[k] = old
+		} else {
+			delete(e.data, k)
+		}
+		err = fmt.Errorf("save job data %q: %w", k, err)
+		if e.setErr == nil {
+			e.setErr = err
+		}
+		return err
+	}
+	return nil
+}
+
+// takeSetErr returns and clears the first failed Set.
+func (e *Env) takeSetErr() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	err := e.setErr
+	e.setErr = nil
+	return err
+}
+
+// snapshot is a copy of the data.
+func (e *Env) snapshot() map[string]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	m := make(map[string]string, len(e.data))
+	for k, v := range e.data {
+		m[k] = v
+	}
+	return m
 }
 
 // Secret returns a secret parameter of the job.
