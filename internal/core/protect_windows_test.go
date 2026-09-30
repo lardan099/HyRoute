@@ -94,3 +94,45 @@ func TestProtectDirCreates(t *testing.T) {
 		t.Fatal("a file accepted as a folder")
 	}
 }
+
+// A folder HyRoute did not make is renamed out of the way, contents and
+// all, without walking into it.
+func TestMoveAside(t *testing.T) {
+	d := filepath.Join(t.TempDir(), "HyRoute")
+	if err := os.MkdirAll(filepath.Join(d, "runtime"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	to, err := moveAside(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(to, d+".untrusted-") {
+		t.Fatalf("moved to %s", to)
+	}
+	if _, err := os.Stat(filepath.Join(to, "runtime")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(d); !os.IsNotExist(err) {
+		t.Fatalf("%s still there: %v", d, err)
+	}
+}
+
+// mkdir tells a folder it made from one that was there.
+func TestMkdirReportsCreated(t *testing.T) {
+	sd, err := windows.SecurityDescriptorFromString("D:(A;OICI;FA;;;WD)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := filepath.Join(t.TempDir(), "x")
+	if created, err := mkdir(d, sd); err != nil || !created {
+		t.Fatalf("first: %v %v", created, err)
+	}
+	if created, err := mkdir(d, sd); err != nil || created {
+		t.Fatalf("second: %v %v", created, err)
+	}
+	f := filepath.Join(t.TempDir(), "file")
+	os.WriteFile(f, nil, 0o644)
+	if _, err := mkdir(f, sd); err == nil {
+		t.Fatal("a file taken for a folder")
+	}
+}
