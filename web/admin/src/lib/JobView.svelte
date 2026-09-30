@@ -7,6 +7,7 @@
   import { duration, jobTone, stepTone, when } from './format';
   import PreflightReport from './PreflightReport.svelte';
   import DeployResult from './DeployResult.svelte';
+  import DeployDialog from './DeployDialog.svelte';
   import ImportReport from './ImportReport.svelte';
   import { go } from '../router.svelte';
 
@@ -88,6 +89,12 @@
   });
 
   // A deploy that found someone else's Hysteria offers the import.
+  let deploying = $state(false);
+  // A preflight that found the server ready leads straight to the deploy.
+  let canDeploy = $derived(
+    !!job && job.kind === 'preflight' && job.state === 'completed' && !!report && !report.blocked && !report.hysteria?.installed && !!servers[job.serverId] && canWrite(session.user),
+  );
+
   async function startImport() {
     if (!job) return;
     try {
@@ -117,6 +124,10 @@
 {#if job}
   <div class="row head">
     <h1 class="grow">{kindName(job.kind)} #{job.id}</h1>
+    {#if canDeploy}<button class="primary" onclick={() => (deploying = true)}>{t('deploy.button')}</button>{/if}
+    {#if job.kind === 'preflight' && job.state === 'completed' && report?.hysteria?.installed && canWrite(session.user)}
+      <button class="primary" onclick={startImport}>{t('import.button')}</button>
+    {/if}
     {#if job.state === 'failed' && canWrite(session.user)}
       {#if job.kind === 'deploy' && job.data.foreign === '1'}<button onclick={startImport}>{t('import.fromDeploy')}</button>{/if}
       <button class="primary" disabled={retrying} onclick={retry}>{t('jobs.retry')}</button>
@@ -170,6 +181,10 @@
       </div>
     </section>
   </div>
+{/if}
+
+{#if deploying && job && servers[job.serverId]}
+  <DeployDialog server={servers[job.serverId]} onclose={() => (deploying = false)} onstarted={(j) => go('deployments', j.id)} />
 {/if}
 
 <style>
