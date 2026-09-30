@@ -470,7 +470,7 @@ export const api = {
   applyConfig: (serverId: number, input: ConfigInput) => request<Job>('POST', `/servers/${serverId}/config/apply`, input),
   clientSummary: (serverId: number) => request<ClientSummary>('GET', `/servers/${serverId}/client`),
   clientProfile: (serverId: number, user = '') =>
-    request<ClientProfile>('GET', `/servers/${serverId}/client?reveal=1` + (user ? '&user=' + encodeURIComponent(user) : '')),
+    request<ClientProfile>('POST', `/servers/${serverId}/client/reveal`, { user }),
   serverConfig: (serverId: number) => request<ServerConfig>('GET', `/servers/${serverId}/config`),
   startPreflight: (serverId: number, udpPort = 443) => request<Job>('POST', `/servers/${serverId}/preflight`, { udpPort }),
 };

@@ -33,7 +33,15 @@ func TestClientProfileAPI(t *testing.T) {
 	if rec.Code != 200 || strings.Contains(rec.Body.String(), "fake-client-api") || !strings.Contains(rec.Body.String(), `"ports":"443,20000-50000"`) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
-	rec = owner.do("GET", "/api/v1/servers/"+id+"/client?reveal=1", nil, nil)
+	// The old GET form reveals nothing.
+	if rec := owner.do("GET", "/api/v1/servers/"+id+"/client?reveal=1", nil, nil); strings.Contains(rec.Body.String(), "fake-client-api") {
+		t.Fatalf("GET revealed: %s", rec.Body)
+	}
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/client/reveal", map[string]any{}, map[string]string{"X-CSRF-Token": "forged"}), http.StatusForbidden, "csrf")
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/client/reveal", map[string]any{}, nil)
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("Cache-Control %q", cc)
+	}
 	var pr profile.Profile
 	json.Unmarshal(rec.Body.Bytes(), &pr)
 	if rec.Code != 200 {
@@ -56,5 +64,5 @@ func TestClientProfileAPI(t *testing.T) {
 	if rec := ro.do("GET", "/api/v1/servers/"+id+"/client", nil, nil); rec.Code != 200 {
 		t.Fatalf("read-only summary: %d", rec.Code)
 	}
-	code(t, ro.do("GET", "/api/v1/servers/"+id+"/client?reveal=1", nil, nil), http.StatusForbidden, "forbidden")
+	code(t, ro.do("POST", "/api/v1/servers/"+id+"/client/reveal", map[string]any{}, nil), http.StatusForbidden, "forbidden")
 }

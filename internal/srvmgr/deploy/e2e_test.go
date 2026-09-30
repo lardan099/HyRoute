@@ -166,7 +166,7 @@ func TestQuickDeployToClientLink(t *testing.T) {
 	var summary map[string]any
 	b.do("GET", "/servers/"+id+"/client", nil, &summary)
 	var prof struct{ URI, Compat string }
-	b.do("GET", "/servers/"+id+"/client?reveal=1", nil, &prof)
+	b.do("POST", "/servers/"+id+"/client/reveal", map[string]string{}, &prof)
 
 	cfg, _ := vps.FileContent(deploy.ConfigPath)
 	c, err := hyconfig.ParseServer(cfg)
