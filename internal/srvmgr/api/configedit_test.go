@@ -94,3 +94,75 @@ func TestConfigApplyAPI(t *testing.T) {
 	}
 	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/apply", good, nil), http.StatusConflict, "server_busy")
 }
+
+func TestConfigHistoryAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": "S", "host": "s.example.com", "authType": "password", "password": fakeSSHPass}, nil)
+	var srv serverJSON
+	json.Unmarshal(rec.Body.Bytes(), &srv)
+	id := strconv.FormatInt(srv.ID, 10)
+	for i, cfg := range []string{
+		"listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-history-pass-1\n",
+		"listen: :8443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-history-pass-2\n",
+	} {
+		c := model.ServerConfig{ServerID: srv.ID, SHA256: "x" + strconv.Itoa(i), Source: model.ConfigEdit, By: ownerID(t, e), At: time.Now()}
+		e.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return e.keys.Seal([]byte(cfg), model.ConfigContext(srv.ID, rev)) })
+	}
+
+	rec = owner.do("GET", "/api/v1/servers/"+id+"/config/revisions", nil, nil)
+	var revs []revisionJSON
+	json.Unmarshal(rec.Body.Bytes(), &revs)
+	if rec.Code != 200 || len(revs) != 2 || revs[0].Revision != 2 || !revs[0].Current || revs[1].Current || revs[0].By != "owner" || strings.Contains(rec.Body.String(), "fake-history") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	rec = owner.do("GET", "/api/v1/servers/"+id+"/config/revisions/1", nil, nil)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "listen: :443") || strings.Contains(rec.Body.String(), "fake-history") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	code(t, owner.do("GET", "/api/v1/servers/"+id+"/config/revisions/5", nil, nil), http.StatusNotFound, "no_revision")
+	rec = owner.do("GET", "/api/v1/servers/"+id+"/config/compare?from=1&to=2", nil, nil)
+	var cmp apply.Comparison
+	json.Unmarshal(rec.Body.Bytes(), &cmp)
+	if rec.Code != 200 || !apply.Changed(cmp.Diff) || len(cmp.Secrets) != 1 || strings.Contains(rec.Body.String(), "fake-history") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	code(t, owner.do("GET", "/api/v1/servers/"+id+"/config/compare?from=1", nil, nil), http.StatusBadRequest, "bad_request")
+
+	// Rolling back needs the installation; a stale base is refused.
+	back := map[string]any{"base": 2, "revision": 1}
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/rollback", back, nil), http.StatusConflict, "no_installation")
+	e.db.SetInstallation(ctx, model.Installation{ServerID: srv.ID, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", At: time.Now()})
+	e.db.SetHostKey(ctx, model.HostKey{ServerID: srv.ID, Type: "ssh-ed25519", Key: []byte("fake"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()})
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/rollback", map[string]any{"base": 1, "revision": 1}, nil), http.StatusConflict, "config_changed")
+
+	// Read-only: the history list, nothing else.
+	var u model.User
+	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
+	e.db.CreateUser(ctx, &u)
+	ro := e.login("viewer")
+	if rec := ro.do("GET", "/api/v1/servers/"+id+"/config/revisions", nil, nil); rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	code(t, ro.do("GET", "/api/v1/servers/"+id+"/config/revisions/1", nil, nil), http.StatusForbidden, "forbidden")
+	code(t, ro.do("GET", "/api/v1/servers/"+id+"/config/compare?from=1&to=2", nil, nil), http.StatusForbidden, "forbidden")
+	code(t, ro.do("POST", "/api/v1/servers/"+id+"/config/rollback", back, nil), http.StatusForbidden, "forbidden")
+
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/config/rollback", back, nil)
+	var j jobJSON
+	json.Unmarshal(rec.Body.Bytes(), &j)
+	if rec.Code != http.StatusAccepted || j.Kind != "apply" || strings.Contains(rec.Body.String(), "fake-history") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+func ownerID(t *testing.T, e *testEnv) int64 {
+	t.Helper()
+	u, err := e.db.UserByName(context.Background(), "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.ID
+}

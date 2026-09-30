@@ -12,6 +12,8 @@ const (
 	ConfigDeploy ConfigSource = "deploy"
 	ConfigImport ConfigSource = "import"
 	ConfigEdit   ConfigSource = "edit"
+	// ConfigRollback: an earlier revision installed again (FromRevision).
+	ConfigRollback ConfigSource = "rollback"
 )
 
 // ConfigMeta is the non-secret summary of a config revision: what the UI
@@ -36,9 +38,11 @@ type ServerConfig struct {
 	SHA256   string // of the YAML as installed
 	Meta     ConfigMeta
 	Source   ConfigSource
-	JobID    int64
-	By       int64
-	At       time.Time
+	// FromRevision is the revision a rollback brought back (0 otherwise).
+	FromRevision int
+	JobID        int64
+	By           int64
+	At           time.Time
 }
 
 // ConfigContext is the additional data a config revision is sealed with.

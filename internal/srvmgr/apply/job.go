@@ -40,6 +40,8 @@ type Params struct {
 	BaseSHA256 string `json:"baseSha256"`
 	// SHA256 is of the candidate.
 	SHA256 string `json:"sha256"`
+	// From is the revision a rollback installs again (0: an edit).
+	From int `json:"from,omitempty"`
 }
 
 // Store is what applying keeps in the controller's database.
@@ -650,6 +652,9 @@ func (x *applier) commit(ctx context.Context, env *jobs.Env, p Params) error {
 		}
 	}
 	rev := model.ServerConfig{ServerID: env.ServerID, SHA256: p.SHA256, Meta: meta, Source: model.ConfigEdit, JobID: env.JobID, By: env.CreatedBy, At: x.Now()}
+	if p.From != 0 {
+		rev.Source, rev.FromRevision = model.ConfigRollback, p.From
+	}
 	err = x.Store.AddConfig(ctx, &rev, func(r int) ([]byte, error) {
 		return x.Keys.Seal(b, model.ConfigContext(env.ServerID, r))
 	})
@@ -659,7 +664,11 @@ func (x *applier) commit(ctx context.Context, env *jobs.Env, p Params) error {
 	if err := remote.RemoveFile(ctx, ex, in.Config+Backup, sudo(env)); err != nil {
 		env.Warnf("Копия прежнего конфига %s%s осталась на сервере.", in.Config, Backup)
 	}
-	env.Logf("Конфиг сохранён в controller как ревизия %d.", rev.Revision)
+	if p.From != 0 {
+		env.Logf("Возвращена версия %d; в controller она сохранена как ревизия %d.", p.From, rev.Revision)
+	} else {
+		env.Logf("Конфиг сохранён в controller как ревизия %d.", rev.Revision)
+	}
 	return nil
 }
 

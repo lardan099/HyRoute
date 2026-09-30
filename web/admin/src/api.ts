@@ -237,24 +237,51 @@ export interface DeployParams {
   replace?: boolean;
 }
 
+export type ConfigSource = 'deploy' | 'import' | 'edit' | 'rollback';
+
 // ServerConfig is the current config revision of a server: its summary,
 // never the config itself.
 export interface ServerConfig {
   revision: number;
   sha256: string;
-  source: 'deploy' | 'import' | 'edit';
+  source: ConfigSource;
+  fromRevision?: number;
   jobId: number;
   createdAt: string;
-  meta: {
-    version?: string;
-    listen?: string;
-    ports?: string;
-    tls?: string;
-    pinSHA256?: string;
-    sni?: string;
-    obfs?: string;
-    auth?: string;
-  };
+  meta: ConfigMeta;
+}
+
+// ConfigRevision is a revision in the config history (no config text).
+export interface ConfigRevision {
+  revision: number;
+  source: ConfigSource;
+  fromRevision?: number;
+  meta: ConfigMeta;
+  jobId?: number;
+  by?: string;
+  createdAt: string;
+  current: boolean;
+}
+
+// ConfigComparison is what changes from one revision to another, secrets
+// only as paths.
+export interface ConfigComparison {
+  from: number;
+  to: number;
+  diff: DiffLine[];
+  secrets: string[];
+}
+
+// ConfigMeta is the non-secret summary of a revision.
+export interface ConfigMeta {
+  version?: string;
+  listen?: string;
+  ports?: string;
+  tls?: string;
+  pinSHA256?: string;
+  sni?: string;
+  obfs?: string;
+  auth?: string;
 }
 
 export interface ImportFinding {
@@ -468,6 +495,12 @@ export const api = {
   configEdit: (serverId: number) => request<ConfigView>('GET', `/servers/${serverId}/config/edit`),
   renderConfig: (serverId: number, input: ConfigInput) => request<ConfigCheck>('POST', `/servers/${serverId}/config/render`, input),
   applyConfig: (serverId: number, input: ConfigInput) => request<Job>('POST', `/servers/${serverId}/config/apply`, input),
+  configRevisions: (serverId: number) => request<ConfigRevision[]>('GET', `/servers/${serverId}/config/revisions`),
+  configRevision: (serverId: number, rev: number) => request<ConfigView>('GET', `/servers/${serverId}/config/revisions/${rev}`),
+  compareConfigs: (serverId: number, from: number, to: number) =>
+    request<ConfigComparison>('GET', `/servers/${serverId}/config/compare?from=${from}&to=${to}`),
+  rollbackConfig: (serverId: number, base: number, revision: number) =>
+    request<Job>('POST', `/servers/${serverId}/config/rollback`, { base, revision }),
   clientSummary: (serverId: number) => request<ClientSummary>('GET', `/servers/${serverId}/client`),
   clientProfile: (serverId: number, user = '') =>
     request<ClientProfile>('POST', `/servers/${serverId}/client/reveal`, { user }),

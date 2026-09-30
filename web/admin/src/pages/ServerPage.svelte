@@ -12,6 +12,7 @@
   import JournalView from '../lib/JournalView.svelte';
   import ConfigEditor from '../lib/ConfigEditor.svelte';
   import ClientCard from '../lib/ClientCard.svelte';
+  import ConfigHistory from '../lib/ConfigHistory.svelte';
 
   let { id }: { id: number } = $props();
 
@@ -24,6 +25,7 @@
   let confirming = $state<ServiceAction | null>(null);
   let deploying = $state(false);
   let editing = $state(false);
+  let history = $state(false);
   let action = $state<{ name: ServiceAction; job: Job; done: boolean; ok: boolean } | null>(null);
   let writable = $derived(canWrite(session.user));
   let poll: ReturnType<typeof setTimeout> | undefined;
@@ -99,7 +101,15 @@
     }
   }
 
-  const sourceName = { deploy: 'srv.sourceDeploy', import: 'srv.sourceImport', edit: 'srv.sourceEdit' } as const;
+  const sourceName = { deploy: 'srv.sourceDeploy', import: 'srv.sourceImport', edit: 'srv.sourceEdit', rollback: 'srv.sourceRollback' } as const;
+
+  // After the history or the editor: the summary may have changed.
+  async function closePanel() {
+    editing = history = false;
+    try {
+      config = await api.serverConfig(id);
+    } catch {}
+  }
 </script>
 
 <button class="link back" onclick={() => go('servers')}>← {t('servers.back')}</button>
@@ -136,7 +146,9 @@
   {/if}
 
   {#if editing}
-    <ConfigEditor {server} onclose={() => (editing = false)} />
+    <ConfigEditor {server} onclose={closePanel} />
+  {:else if history}
+    <ConfigHistory {server} {writable} onclose={closePanel} />
   {:else}
   <div class="grid">
     <section class="card">
@@ -204,6 +216,7 @@
       <section class="card">
         <div class="row">
           <h2 class="grow">{t('srv.config')}</h2>
+          {#if config}<button class="ghost" onclick={() => (history = true)}>{t('hist.open')}</button>{/if}
           {#if config && writable}<button class="ghost" onclick={() => (editing = true)}>{t('cfg.edit')}</button>{/if}
         </div>
         {#if config}
@@ -219,7 +232,7 @@
             <dt>{t('deploy.obfs')}</dt>
             <dd>{config.meta.obfs || t('deploy.none')}</dd>
             <dt>{t('deploy.revision')}</dt>
-            <dd>{config.revision} · {t(sourceName[config.source])}</dd>
+            <dd>{config.revision} · {t(sourceName[config.source], { n: config.fromRevision ?? 0 })}</dd>
           </dl>
         {:else}
           <p class="muted small">{t('srv.noConfig')}</p>

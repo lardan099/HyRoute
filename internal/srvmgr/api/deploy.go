@@ -45,12 +45,14 @@ func (s *server) startDeploy(w http.ResponseWriter, r *http.Request) {
 // configJSON is a config revision without the config: what the UI shows
 // and what client links need besides the passwords.
 type configJSON struct {
-	Revision  int                `json:"revision"`
-	SHA256    string             `json:"sha256"`
-	Meta      model.ConfigMeta   `json:"meta"`
-	Source    model.ConfigSource `json:"source"`
-	JobID     int64              `json:"jobId"`
-	CreatedAt time.Time          `json:"createdAt"`
+	Revision int                `json:"revision"`
+	SHA256   string             `json:"sha256"`
+	Meta     model.ConfigMeta   `json:"meta"`
+	Source   model.ConfigSource `json:"source"`
+	// FromRevision is the revision a rollback brought back.
+	FromRevision int       `json:"fromRevision,omitempty"`
+	JobID        int64     `json:"jobId"`
+	CreatedAt    time.Time `json:"createdAt"`
 }
 
 func (s *server) currentConfig(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +73,7 @@ func (s *server) currentConfig(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, configJSON{Revision: c.Revision, SHA256: c.SHA256, Meta: c.Meta, Source: c.Source, JobID: c.JobID, CreatedAt: c.At})
+	writeJSON(w, http.StatusOK, configJSON{Revision: c.Revision, SHA256: c.SHA256, Meta: c.Meta, Source: c.Source, FromRevision: c.FromRevision, JobID: c.JobID, CreatedAt: c.At})
 }
 
 func (s *server) startImport(w http.ResponseWriter, r *http.Request) {

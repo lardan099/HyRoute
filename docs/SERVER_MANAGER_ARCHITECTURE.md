@@ -398,7 +398,17 @@ Deploy не считает такую установку своей: без за
 (порты, которых не было в прежнем конфиге, открываются в ufw/firewalld;
 откат их закрывает) → restart → служба active и UDP-порт слушает
 hysteria → ревизия `edit` → cleanup (закрыть правила HyRoute для
-ушедших портов). Ошибка после
+ушедших портов).
+
+История (P2-01): ревизии не меняются и не удаляются. Возврат к ревизии N
+— то же задание `apply` с конфигом ревизии N как кандидатом (`Params.From
+= N`): базой должна оставаться текущая ревизия, кандидат проходит
+`Validate`, а результат сохраняется как новая ревизия с источником
+`rollback` и `from_revision = N` (миграция 0009 пересобирает таблицу:
+SQLite не меняет CHECK). Неудачный возврат откатывается как любое
+применение, ревизия не добавляется. Текст ревизий и diff открыты только
+ролям с правом записи, как и редактор: маскирование не знает секретов под
+неизвестными ключами. Ошибка после
 записи → прежний файл → restart → отчёт с журналом (редакция паролями
 обоих конфигов). Регулярная сверка desired/actual (reconciliation) —
 Phase 4.
@@ -440,6 +450,10 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | GET | `/api/v1/servers/{id}/config/edit` | operator+ | конфиг для редактора: секреты `[REDACTED]` (под секретными ключами, за alias, пароли в URL, шаблоны redactor, комментарии), основные поля |
 | POST | `/api/v1/servers/{id}/config/render` | operator+ | кандидат из текста и полей: проверка, diff, меняющиеся секреты (ничего не сохраняет) |
 | POST | `/api/v1/servers/{id}/config/apply` | operator+ | задание `apply` с откатом |
+| GET | `/api/v1/servers/{id}/config/revisions` | любая роль | история ревизий без текста конфига |
+| GET | `/api/v1/servers/{id}/config/revisions/{rev}` | operator+ | конфиг ревизии, секреты замаскированы |
+| GET | `/api/v1/servers/{id}/config/compare?from=&to=` | operator+ | diff двух ревизий без секретов, изменённые секреты — путями |
+| POST | `/api/v1/servers/{id}/config/rollback` | operator+ | `{base, revision}`: задание `apply` с конфигом ревизии |
 | GET | `/api/v1/servers/{id}/client` | любая | сводка для клиентов без секретов |
 | POST | `/api/v1/servers/{id}/client/reveal` | operator+ | `{user}` → ссылки (официальная и совместимая), `config.yaml`, QR; CSRF, `no-store`, пишется в audit log |
 | GET | `/api/v1/jobs`, `/api/v1/jobs/{id}` | любая | список (`?server=`, `?before=`), детали с шагами |

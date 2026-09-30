@@ -147,6 +147,9 @@ type Configs interface {
 	AddConfig(ctx context.Context, c *model.ServerConfig, seal func(revision int) ([]byte, error)) error
 	// CurrentConfig is the newest revision (ErrNotFound: none).
 	CurrentConfig(ctx context.Context, serverID int64) (model.ServerConfig, error)
+	// ConfigRevision is one revision (ErrNotFound: none).
+	ConfigRevision(ctx context.Context, serverID int64, revision int) (model.ServerConfig, error)
+	// ListConfigs is the server's revisions, newest first.
 	ListConfigs(ctx context.Context, serverID int64) ([]model.ServerConfig, error)
 }
 

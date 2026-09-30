@@ -9,17 +9,17 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
 
-const configCols = `id, server_id, revision, config, sha256, meta, source, job_id, created_by, created_at`
+const configCols = `id, server_id, revision, config, sha256, meta, source, from_revision, job_id, created_by, created_at`
 
 func scanConfig(r rowScanner) (model.ServerConfig, error) {
 	var c model.ServerConfig
 	var meta, source string
-	var job, by sql.NullInt64
+	var from, job, by sql.NullInt64
 	var at int64
-	if err := r.Scan(&c.ID, &c.ServerID, &c.Revision, &c.Sealed, &c.SHA256, &meta, &source, &job, &by, &at); err != nil {
+	if err := r.Scan(&c.ID, &c.ServerID, &c.Revision, &c.Sealed, &c.SHA256, &meta, &source, &from, &job, &by, &at); err != nil {
 		return c, err
 	}
-	c.Source, c.JobID, c.By, c.At = model.ConfigSource(source), job.Int64, by.Int64, fromUnix(at)
+	c.Source, c.FromRevision, c.JobID, c.By, c.At = model.ConfigSource(source), int(from.Int64), job.Int64, by.Int64, fromUnix(at)
 	return c, json.Unmarshal([]byte(meta), &c.Meta)
 }
 
@@ -37,8 +37,8 @@ func (d *DB) AddConfig(ctx context.Context, c *model.ServerConfig, seal func(int
 		if err != nil {
 			return err
 		}
-		res, err := t.ExecContext(ctx, `INSERT INTO server_configs (server_id, revision, config, sha256, meta, source, job_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			c.ServerID, rev, sealed, c.SHA256, string(meta), string(c.Source), nullID(c.JobID), nullID(c.By), unixTime(c.At))
+		res, err := t.ExecContext(ctx, `INSERT INTO server_configs (server_id, revision, config, sha256, meta, source, from_revision, job_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			c.ServerID, rev, sealed, c.SHA256, string(meta), string(c.Source), nullID(int64(c.FromRevision)), nullID(c.JobID), nullID(c.By), unixTime(c.At))
 		if err != nil {
 			return err
 		}
@@ -50,6 +50,11 @@ func (d *DB) AddConfig(ctx context.Context, c *model.ServerConfig, seal func(int
 
 func (d *DB) CurrentConfig(ctx context.Context, serverID int64) (model.ServerConfig, error) {
 	c, err := scanConfig(d.db.QueryRowContext(ctx, `SELECT `+configCols+` FROM server_configs WHERE server_id = ? ORDER BY revision DESC LIMIT 1`, serverID))
+	return c, notFound(err)
+}
+
+func (d *DB) ConfigRevision(ctx context.Context, serverID int64, revision int) (model.ServerConfig, error) {
+	c, err := scanConfig(d.db.QueryRowContext(ctx, `SELECT `+configCols+` FROM server_configs WHERE server_id = ? AND revision = ?`, serverID, revision))
 	return c, notFound(err)
 }
 
