@@ -258,10 +258,10 @@
 **Done:** сгенерированный URI парсится клиентом HyRoute (тест через общий пакет из P1-09).
 
 ### P1-15 Завершение Phase 1
-- [ ] Минимальная страница Overview: список серверов со статусами Healthy / Degraded / Offline / Deploying / Needs attention, последние jobs.
-- [ ] Документация пользователя: установка controller, первый запуск, доступ через SSH-туннель/reverse proxy, резервное копирование master key.
-- [ ] Обновить ARCHITECTURE по фактической реализации.
-- [ ] Прогнать полный набор проверок, обновить PROGRESS итогом фазы.
+- [x] Минимальная страница Overview: список серверов со статусами Healthy / Degraded / Offline / Deploying / Needs attention, последние jobs.
+- [x] Документация пользователя: установка controller, первый запуск, доступ через SSH-туннель/reverse proxy, резервное копирование master key.
+- [x] Обновить ARCHITECTURE по фактической реализации.
+- [x] Прогнать полный набор проверок, обновить PROGRESS итогом фазы.
 
 **Done:** чистый VPS (или fake) → Quick Deploy → работающий сервер в Servers → URI для HyRoute, без ручного SSH.
 

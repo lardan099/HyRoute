@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"path"
 	"slices"
 	"strconv"
@@ -427,6 +428,34 @@ func (f *Found) inspectConfig(c *hyconfig.Server) {
 		if n := len(c.Obfs.Salamander.Password); n > 0 && n < minPassword {
 			f.add("weak-obfs", Warn, "Короткий пароль обфускации", fmt.Sprintf("%d символов; нужно не меньше %d.", n, minPassword))
 		}
+	}
+	if ts := c.TrafficStats; ts.Listen != "" {
+		host, _, err := net.SplitHostPort(ts.Listen)
+		ip := net.ParseIP(host)
+		if err != nil || host == "" || ip == nil || !ip.IsLoopback() {
+			f.add("stats-exposed", Warn, "API статистики трафика слушает не только localhost", "trafficStats.listen: "+ts.Listen+". Через него видно клиентов и можно их отключать; оставьте 127.0.0.1.")
+		}
+		if ts.Secret == "" {
+			f.add("stats-no-secret", Warn, "API статистики трафика без секрета", "Любой, кто достучится до "+ts.Listen+", увидит клиентов и сможет их отключить.")
+		}
+	}
+	var insecure []string
+	if c.Auth.HTTP.Insecure {
+		insecure = append(insecure, "auth.http")
+	}
+	for _, o := range c.Outbounds {
+		if o.HTTP.Insecure {
+			insecure = append(insecure, "outbounds["+o.Name+"].http")
+		}
+	}
+	if c.Resolver.TLS.Insecure {
+		insecure = append(insecure, "resolver.tls")
+	}
+	if c.Resolver.HTTPS.Insecure {
+		insecure = append(insecure, "resolver.https")
+	}
+	if len(insecure) > 0 {
+		f.add("insecure", Warn, "Проверка сертификата выключена (insecure)", strings.Join(insecure, ", ")+": соединение можно перехватить.")
 	}
 	if c.Masquerade.Type == "" && f.Meta.Obfs == "" {
 		f.add("no-masquerade", Info, "Нет сайта-маскировки", "Кто откроет сервер по HTTP/3, увидит «404 Not Found».")

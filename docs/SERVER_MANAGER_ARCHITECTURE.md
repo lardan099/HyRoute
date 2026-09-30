@@ -3,8 +3,9 @@
 Server Manager (`hyroute-server`) — controller, который разворачивает,
 импортирует и обслуживает серверы Hysteria 2 по SSH и выдаёт ссылки для
 клиента HyRoute. Работает на Linux VPS (основной сценарий), собирается и
-на Windows. Этот документ описывает целевое устройство Phase 1 и решения,
-которые не должны помешать Phase 2–4. План задач — `TODO_SERVER_MANAGER.md`.
+на Windows. Этот документ описывает устройство Phase 1 в том виде, как
+она сделана, и решения, которые не должны помешать Phase 2–4. План задач —
+`TODO_SERVER_MANAGER.md`, инструкция для пользователя — `SERVER_MANAGER.md`.
 
 Сверено с документацией Hysteria 2 (hysteria.network: Installation,
 Server Installation Script, Full Server Config, Full Client Config, URI
@@ -27,8 +28,9 @@ Scheme, Port Hopping, Traffic Stats API, ACL) и исходниками
 | YAML | `gopkg.in/yaml.v3` уже в зависимостях | Typed-модель конфига поверх `yaml.Node` (сохранение неизвестных полей) |
 | SSH | `golang.org/x/crypto` уже в зависимостях (пакет `ssh`) | `RemoteExecutor`; SFTP — `github.com/pkg/sftp` (новая зависимость) |
 
-Новые зависимости: `modernc.org/sqlite` (SQLite без CGO) и
-`github.com/pkg/sftp`. Обе собираются на Linux и Windows.
+Новые зависимости: `modernc.org/sqlite` (SQLite без CGO),
+`github.com/pkg/sftp` и `rsc.io/qr` (QR-коды ссылок, P1-14). Все
+собираются на Linux и Windows.
 
 Правило разделения: пакеты Server Manager лежат в `internal/srvmgr/...`
 и не импортируют пакеты клиента, кроме общих `internal/hy2uri` и
@@ -45,7 +47,7 @@ Scheme, Port Hopping, Traffic Stats API, ACL) и исходниками
 | # | Поведение | Задача | Как |
 |---|---|---|---|
 | 1 | Развёртывание одного сервера | P1-10 | Job Quick Deploy: preflight → бинарник → unit → TLS → конфиг → firewall → запуск → проверка |
-| 2 | Каскад Entry → Exit | модель — P1-00/P1-04 (роль сервера, topology), работа — Phase 3 | Topology из N узлов; в Phase 1 цепочка из одного узла |
+| 2 | Каскад Entry → Exit | роль сервера — P1-04, работа — Phase 3 | Topology из N узлов — Phase 3; в Phase 1 у сервера только роль |
 | 3 | Импорт уже настроенного сервера без изменений | P1-11 | Только читающие операции; результат — typed-модель и предупреждения |
 | 4 | Развёртывание по SSH/SFTP | P1-05, P1-10 | `RemoteExecutor` на `x/crypto/ssh` + SFTP, TOFU host key |
 | 5 | Генерация серверного и клиентского конфига | P1-08, P1-10, P1-14 | Typed-модель `internal/hyconfig`, сериализация через `yaml.v3` |
@@ -56,7 +58,7 @@ Scheme, Port Hopping, Traffic Stats API, ACL) и исходниками
 | 10 | ACL routing | P1-08 (модель `acl`, `outbounds`), P1-13 (raw-редактор), Phase 3 (редактор правил) | `acl.inline` — список строк правил Hysteria |
 | 11 | Генерация `hysteria2://` | P1-09, P1-14 | `internal/hy2uri` |
 | 12 | Параметры для HApp/Incy/Shadowrocket | P1-09 | Только параметры официальной схемы (`obfs`, `obfs-password`, `sni`, `insecure`, `pinSHA256`), `hysteria2://`, multi-port в хосте, имя во фрагменте |
-| 13 | Релей-загрузка, если у сервера нет доступа к GitHub | P1-10 (через controller), Phase 3 (через другой узел) | Интерфейс `download.Source` |
+| 13 | Релей-загрузка, если у сервера нет доступа к GitHub | P1-10 (через controller), Phase 3 (через другой узел) | Интерфейс `hyrelease.Source` |
 | 14 | Управление правилами | P1-13 (raw), Phase 3 (структурный редактор, «Проверить правило») | Через typed-модель, не regex |
 
 ## Снимок сервера
@@ -82,22 +84,28 @@ internal/srvmgr/
   secrets                     master key, envelope encryption (AES-256-GCM)
   redact                      вычистка секретов из строк, YAML, ссылок
   auth                        пользователи, argon2id, сессии, CSRF, rate limit, роли
-  remote                      интерфейс Executor, typed operations, ошибки
-  remote/sshexec              реализация на x/crypto/ssh + pkg/sftp, TOFU host key
-  remote/fake                 fake executor для тестов (скриптуемые ответы, журнал вызовов)
-  jobs                        job engine: state machine, steps, retry, recovery, журнал, SSE-брокер
-  preflight                   проверки сервера перед развёртыванием
-  download                    источники бинарника Hysteria: direct, relay через controller
-  deploy                      Quick Deploy (шаги job)
-  importer                    импорт установленного сервера (только чтение)
-  service                     статус, start/stop/restart, journal
-  apply                       безопасное применение конфига с откатом
-  topology                    цепочки узлов (N-hop-ready), в Phase 1 — один узел
+  logbuf                      буфер последних записей журнала controller (страница «Журнал»)
+  servers                     инвентарь серверов, учётные данные SSH (шифруются)
+  connect                     подключение по SSH к серверу из инвентаря, TOFU, проверка
+  remote                      интерфейс Executor, typed operations, ReadOnly, ошибки
+  remote/sshexec              реализация на x/crypto/ssh + pkg/sftp
+  remote/fake, remote/sshtest fake executor и in-process SSH-сервер для тестов
+  jobs                        job engine: шаги, Done/Run/Undo, откат, recovery, журнал, SSE
+  preflight                   проверки сервера перед развёртыванием (задание preflight)
+  hyrelease                   релизы Hysteria: ассет, SHA-256, источники direct и relay
+  deploy                      Quick Deploy (задание deploy) и запуск с секретами
+  importer                    импорт установленного сервера (задание import, только чтение)
+  service                     статус, start/stop/restart (задание service), journal
+  apply                       редактор конфига: маскирование, поля, diff; задание apply
+  profile                     ссылки, клиентский конфиг и QR для клиентов
   api                         HTTP /api/v1: handlers, middleware, ошибки
 ```
 
+Цепочки узлов (`topology`) появятся в Phase 3; в Phase 1 у сервера есть
+только поле роли.
+
 Зависимости направлены сверху вниз: `api` → сервисы (`deploy`, `importer`,
-`service`, `apply`, `auth`, `preflight`) → `jobs`, `remote`, `hyconfig`,
+`service`, `apply`, `profile`, `auth`, `preflight`) → `jobs`, `remote`, `hyconfig`,
 `secrets`, `redact` → `store` (интерфейсы) → `model`. `store/sqlite`
 подключается только в `cmd/hyroute-server` и тестах. Бизнес-логика не
 знает про HTTP и SQL; `api` не содержит логики, кроме разбора запроса и
@@ -121,13 +129,14 @@ env), `setup-token` на время первого запуска.
 | `server_credentials` | server_id, kind (ssh_password/ssh_key/ssh_key_passphrase), secret (envelope) | никогда не возвращаются в API |
 | `host_keys` | server_id, key_type, key (raw), fingerprint_sha256, trusted_at, trusted_by | TOFU; смена ключа — только явный re-trust |
 | `installations` | server_id, binary_path, config_path, unit, service_user, version, managed (bool), updated_at | managed = установлено HyRoute (deploy); импорт записывает найденную установку с managed = 0 |
-| `config_revisions` | id, server_id, seq, yaml (envelope), sha256, source (deploy/import/edit/rollback), status (candidate/applied/failed/rolled_back), created_by, created_at, applied_at | YAML содержит пароли → хранится зашифрованным |
-| `client_profiles` | server_id, uri (envelope), name, created_at | ссылки выдаются по явному действию |
+| `server_configs` | id, server_id, revision, config (envelope, контекст `server/<id>/config/<rev>`), sha256, meta (json: версия, listen, порты, TLS, pin, SNI, obfs, auth), source (deploy/import/edit), job_id, created_by, created_at | ревизия появляется только после успешного применения; YAML с паролями — зашифрован |
 | `jobs` | id, kind, server_id, state, current_step, params (json без секретов), secret_params (envelope), attempt, error_message, error_details, created_by, created_at, started_at, finished_at, lease_owner, lease_until | |
 | `job_steps` | job_id, idx, name, state, attempt, started_at, finished_at, error | |
 | `job_logs` | job_id, seq, ts, level, step, message | message уже прошёл redaction |
-| `chains`, `chain_hops` | id, name; chain_id, position, server_id, role | topology, N узлов; в Phase 1 создаётся цепочка из одного узла |
-| `audit_log` | id, ts, user_id, action, target, details | кто что сделал (логин, развёртывание, re-trust, показ секретов) |
+| `audit_log` | id, ts, user_id, action, target, details | кто что сделал (вход, выход, пользователи, подтверждение ключа, показ ссылок) |
+
+Ссылки для клиентов не хранятся: они собираются из текущей ревизии по
+запросу (`profile`). Таблицы топологии (`chains`, `chain_hops`) — Phase 3.
 
 Секреты — только в колонках-envelope (`secrets.Sealed`, BLOB). Тест
 P1-04 сканирует файл БД на открытые значения тестовых секретов.
@@ -182,12 +191,20 @@ P1-04 сканирует файл БД на открытые значения т
   shell) с опциональным sudo, чтение файла, атомарная запись файла
   (временный файл + `rename`, владелец и права), stat, потоковый вывод.
   Он внутренний: API и UI до него не доходят.
-- Над ним — **typed operations** (`remote.OSRelease`, `remote.Arch`,
-  `remote.UnitStatus(unit)`, `remote.JournalTail(unit, n)`,
-  `remote.ListeningPorts()`, `remote.InstallFile(...)`, …). Каждый
+- Над ним — **typed operations**: `RunProbe`, `ReadOSRelease`, `Memory`,
+  `DiskFree`, `Uptime`, `LoadAverage`, `Listeners`, `ReadFirewall`,
+  `Unit`, `ServiceUnits`, `UnitOfPID`, `ActiveState`, `Systemctl`,
+  `DaemonReload`, `JournalTail`, `JournalEntries`, `JournalFollow`,
+  `HysteriaVersion`, `Stat`, `FileSHA256`, `Download`, `InstallFile`,
+  `CopyFile`, `Rename`, `RemoveFile`, `MakeDir`, `TempDir`,
+  `CreateSystemUser`, `UserHome`, `UFWAllow`, `FirewalldAllow`. Каждый
   аргумент проверяется (имя unit — `^[a-zA-Z0-9@._-]+\.service$`, путь —
   абсолютный, без `..`), argv экранируется для shell на стороне SSH
   (`remote.Quote`). Произвольную команду из API выполнить нельзя.
+- `remote.ReadOnly(ex)` — исполнитель для работы, которая не должна
+  ничего менять (импорт, статус, журнал, сводка конфига после apply):
+  запись файлов отклоняется, команды — только читающие typed-операции с
+  их читающими флагами.
 - Привилегии: пользователь SSH — root или пользователь с `sudo -n`
   (NOPASSWD). Sudo с паролем в Phase 1 не поддерживается (preflight
   сообщает об этом понятной ошибкой).
@@ -219,15 +236,19 @@ queued → connecting → preflight → downloading → installing → configuri
 ```
 
 - Job — упорядоченный список шагов. Каждый шаг идемпотентен: сначала
-  проверяет, сделано ли уже (`Check`), затем делает (`Run`). Шаг
+  проверяет фактическое состояние (`Done`), затем делает (`Run`); `Undo`
+  откатывает сделанное. При ошибке шага сделанные шаги откатываются в
+  обратном порядке (`ErrNothingToUndo` — откатывать нечего). Шаг
   объявляет, безопасно ли повторять с него; retry начинается с первого
   незавершённого шага или с ближайшего безопасного шага перед ним.
+  Хук `Finished` выставляет состояние сервера.
 - Выполнение: пул воркеров, аренда job (`lease_owner`, `lease_until`),
   один активный job на сервер.
 - **Recovery.** При старте controller все job в незавершённых состояниях
-  переходят в `recovering`: шаг проверки фактического состояния сервера
-  (что установлено, какой конфиг, активен ли сервис) определяет, завершён
-  ли job фактически, нужен ли откат или retry. Слепого продолжения нет.
+  переходят в `recovering`, и вид задания решает (`Recover`): deploy,
+  import и apply продолжают с ближайшего безопасного шага (каждый шаг
+  сначала сверяет сервер), service помечается ошибкой — недоделанный
+  start/stop/restart сам не повторяется. Слепого продолжения нет.
 - Журнал шагов пишется через `redact` в `job_logs`; live-поток — SSE
   (`GET /api/v1/jobs/{id}/events`): сначала сохранённые строки, затем новые.
 
@@ -261,9 +282,9 @@ queued → connecting → preflight → downloading → installing → configuri
   текст, ошибка или предупреждение): обязательные поля по выбранному типу,
   взаимоисключающие (`tls` и `acme`, `acl.file` и `acl.inline`,
   `hopInterval` и `min/maxHopInterval`), формат портов и диапазонов,
-  длительности и их допустимые границы, скорости, пароли obfs и auth. Проверка
-  самой Hysteria (`hysteria server --config … --check`, если версия её
-  умеет; иначе — запуск с таймаутом) — в P1-13.
+  длительности и их допустимые границы, скорости, пароли obfs и auth.
+  Команды «проверить конфиг без запуска» у Hysteria v2 нет: проверкой
+  служит перезапуск с откатом (P1-13).
 - Никаких regex-замен в YAML.
 
 ## Ссылки для клиента
@@ -297,11 +318,12 @@ queued → connecting → preflight → downloading → installing → configuri
   импорт, и официальный скрипт.
 - Бинарник: `hysteria-linux-<arch>` из релиза GitHub выбранной версии,
   SHA-256 сверяется с `hashes.txt` того же релиза. Источник
-  (`download.Source`): **direct** — сервер скачивает сам, controller
+  (`hyrelease.Source`): **direct** — сервер скачивает сам, controller
   сверяет хеш на сервере; **relay** — controller скачивает и сверяет
   сам, заливает по SFTP. Phase 3 добавит источник «через другой узел».
-- TLS: самоподписанный сертификат генерирует controller (ключ уходит на
-  сервер по SFTP, 0600, владелец `hysteria`) — клиенту выдаётся pin; или
+- TLS: самоподписанный сертификат (ECDSA P-256, 10 лет) генерирует
+  controller; ключ и конфиг на сервере — 0640 root:hysteria (служба
+  читает, остальные нет), клиенту выдаётся pin; или
   ACME (`acme.domains`, тип http/tls) — нужен домен и открытый TCP 80/443.
 - Port hopping: встроенный диапазон Hysteria на Linux (`listen:
   :20000-50000`) — сервер сам ставит перенаправление через nftables или
@@ -310,36 +332,54 @@ queued → connecting → preflight → downloading → installing → configuri
 - Firewall: если активен ufw или firewalld — открыть нужные UDP-порты (и
   TCP для ACME) их средствами и запомнить, что открыто. Голые
   nftables/iptables с политикой ACCEPT — ничего не трогать; с политикой
-  DROP — предупреждение в preflight и правило только по явному согласию
-  (ручные persistent-правила iptables не пишутся).
+  DROP — только предупреждение: порты открывает администратор
+  (persistent-правила iptables HyRoute не пишет).
 - Повторный развёртывание: каждый шаг сверяет фактическое состояние;
   одинаковый конфиг и версия → ничего не меняется и сервис не
   перезапускается.
 
 ## Импорт (P1-11)
 
-Только читающие операции (fake executor в тесте запрещает запись):
-найти unit `hysteria-server*.service` и его `ExecStart`, путь конфига,
-бинарник и версию (`hysteria version`), прочитать конфиг, разобрать в
-typed-модель. Предупреждения «Needs attention»: неизвестные поля,
-нестандартные пути, сервис от root, конфиг читается всеми, `insecure`-
-настройки outbounds, Traffic Stats API без secret или на внешнем адресе,
-пароль auth слабый, masquerade отсутствует, версия старше поддерживаемой.
+Все команды — через `remote.ReadOnly`. Служба ищется среди стандартной
+`hysteria-server.service`, `hysteria*` (в том числе экземпляров шаблона) и
+служб процессов `hysteria*` на слушающих портах (`ps -o unit=`); из
+нескольких берётся работающая. Из `ExecStart` — программа и `-c/--config`
+(относительный путь — от WorkingDirectory; без флага — места, где
+Hysteria ищет `config.yaml`). Версия — `hysteria version` (только у
+программы с именем `hysteria*`). Конфиг разбирается typed-моделью,
+сертификат читается (ключ — никогда): у самоподписанного — pin, у
+выданного CA — срок. Находки (warn — «Требует внимания», info — к
+сведению): конфиг читается или пишется всеми, служба от root, не
+работает или не в автозапуске, нет Restart, ошибки валидации, неизвестные
+поля, короткие пароли auth и obfs, сертификат нет / истёк / истекает,
+Traffic Stats API не на localhost или без секрета, `insecure` в
+auth.http, outbounds и resolver, нестандартные пути, другие службы
+Hysteria, старая версия, userpass и внешняя проверка паролей, нет
+маскировки. Сохранение: ревизия `import` (конфиг читается повторно и
+должен совпасть по SHA-256) и запись `installations` с managed = 0.
+Deploy не считает такую установку своей: без замены — отказ, в
+нестандартных местах — не заменяет вовсе.
 
 ## Применение конфига (P1-13)
 
-read current → backup (ревизия) → candidate → validate (модель + сама
-Hysteria) → diff → атомарная установка → restart → health check → commit
-ревизии. Ошибка после установки → rollback (прежний файл) → restart →
-отчёт. Desired state — последняя применённая ревизия; actual state —
-SHA-256 файла на сервере и статус сервиса; расхождение (правка вручную) —
-«Needs attention». Регулярная reconciliation — Phase 4.
+Редактор получает конфиг с `[REDACTED]` вместо секретов (на уровне
+`yaml.Node`: порядок и комментарии остаются); кандидат получает текущие
+секреты обратно по пути поля (элементы списков — по `name`), новые
+секреты остаются видимыми. Основные поля ⇄ typed-модель. Проверка: разбор,
+`Validate`, diff с текущей ревизией без секретов, список меняющихся
+секретов. Задание `apply`: файл на сервере должен совпадать с базовой
+ревизией (правка вручную — отказ с предложением импорта) → копия
+`.hyroute-prev` → атомарная запись с правами прежнего файла → restart →
+служба active и UDP-порт слушает hysteria → ревизия `edit`. Ошибка после
+записи → прежний файл → restart → отчёт с журналом (редакция паролями
+обоих конфигов). Регулярная сверка desired/actual (reconciliation) —
+Phase 4.
 
 ## Topology
 
-`chains` и `chain_hops`: цепочка из N узлов с ролями entry/relay/exit.
-Phase 1 создаёт цепочку из одного узла (standalone) и хранит роль
-сервера. Каскад Entry → Exit (Phase 3): на entry работает сервер
+План (Phase 3): `chains` и `chain_hops` — цепочка из N узлов с ролями
+entry/relay/exit. В Phase 1 у сервера есть только поле роли. Каскад
+Entry → Exit (Phase 3): на entry работает сервер
 Hysteria и клиент Hysteria до exit (outbound `socks5` на локальный
 клиент), промежуточные credentials генерируются. Модель не ограничивает
 число узлов, поэтому N-hop (Phase 4) не требует миграции схемы.
@@ -391,15 +431,15 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | Persistent iptables руками | Port hopping встроенный в Hysteria (снимается вместе с сервисом); firewall — через ufw/firewalld, если они активны |
 | Бинарник без проверки | SHA-256 из `hashes.txt` релиза; relay-загрузка проверяется на controller |
 | Сервис от root, ключи читаемы всеми | Пользователь `hysteria`, capabilities вместо root, ключ и конфиг 0600/0640 |
-| Traffic Stats API наружу без секрета | Phase 2: только `127.0.0.1`, секрет всегда; импорт предупреждает о чужой такой настройке |
+| Traffic Stats API наружу без секрета | Импорт предупреждает (не localhost, нет секрета); настройка из панели — Phase 2: только `127.0.0.1`, секрет всегда |
 | Потеря контроля после сбоя | Jobs с recovery через проверку фактического состояния; откат конфига |
 | Кража БД | Без master key секреты в БД бесполезны; master key хранится отдельно (env или файл 0600) |
 
 ## Решения и допущения
 
-- Целевая версия Hysteria — v2.12.3 (последняя на момент написания);
-  список поддерживаемых версий и минимальная — в `deploy`, обновляется
-  вместе с документацией.
+- Версия Hysteria по умолчанию — v2.12.3 (`hyrelease.DefaultVersion`, её
+  хеши встроены); другую версию можно указать при развёртывании, её хеши
+  берутся из `hashes.txt` релиза.
 - Встроенный диапазон портов в `listen` работает только на Linux —
   развёртывание поддерживает только Linux-серверы с systemd.
 - Поддерживаемые ОС сервера в Phase 1: Debian 11+, Ubuntu 22.04+ (как

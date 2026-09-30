@@ -239,6 +239,14 @@ obfs:
   type: salamander
   salamander:
     password: fake-obfs-password-long
+trafficStats:
+  listen: :9999
+outbounds:
+  - name: corp
+    type: http
+    http:
+      url: https://proxy.example.com:8443
+      insecure: true
 futureOption: 1
 `))
 	m.modes["/opt/hy/server.yaml"] = "666 root root"
@@ -258,7 +266,8 @@ futureOption: 1
 	if !slices.Equal(f.Unknown, []string{"futureOption"}) {
 		t.Fatalf("unknown %q", f.Unknown)
 	}
-	has(t, f, "warn:config-writable", "warn:root", "warn:not-enabled", "info:paths", "info:others", "info:unknown", "warn:weak-auth", "info:config")
+	has(t, f, "warn:config-writable", "warn:root", "warn:not-enabled", "info:paths", "info:others", "info:unknown", "warn:weak-auth", "info:config",
+		"warn:stats-exposed", "warn:stats-no-secret", "warn:insecure")
 	// Self-signed certificates are checked by pin: their date is not the
 	// clients' concern; no masquerade is expected with obfs.
 	hasNot(t, f, "warn:cert-expiring", "warn:cert-expired", "info:no-restart", "info:version", "warn:inactive", "info:no-masquerade", "warn:weak-obfs")
