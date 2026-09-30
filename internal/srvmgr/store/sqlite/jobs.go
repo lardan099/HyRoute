@@ -229,3 +229,47 @@ func (d *DB) JobLogs(ctx context.Context, jobID, after int64, limit int) ([]mode
 	}
 	return ls, rows.Err()
 }
+
+func (d *DB) SearchJobLogs(ctx context.Context, f model.JobLogFilter) ([]model.JobLogHit, error) {
+	if f.Limit <= 0 || f.Limit > 2000 {
+		f.Limit = 500
+	}
+	q := `SELECT l.job_id, l.seq, l.ts, l.level, l.step, l.message, j.server_id, j.kind FROM job_logs l JOIN jobs j ON j.id = l.job_id WHERE 1 = 1`
+	var args []any
+	if f.ServerID != 0 {
+		q += ` AND j.server_id = ?`
+		args = append(args, f.ServerID)
+	}
+	switch f.Level {
+	case "warn":
+		q += ` AND l.level IN ('warn', 'error')`
+	case "error":
+		q += ` AND l.level = 'error'`
+	}
+	if f.Text != "" {
+		// LIKE is case-insensitive for ASCII only; Russian text is matched
+		// as written.
+		q += ` AND l.message LIKE ? ESCAPE '\'`
+		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(f.Text)
+		args = append(args, "%"+esc+"%")
+	}
+	q += ` ORDER BY l.ts DESC, l.job_id DESC, l.seq DESC LIMIT ?`
+	args = append(args, f.Limit)
+	rows, err := d.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.JobLogHit
+	for rows.Next() {
+		var h model.JobLogHit
+		var ts int64
+		var server sql.NullInt64
+		if err := rows.Scan(&h.JobID, &h.Seq, &ts, &h.Level, &h.Step, &h.Message, &server, &h.Kind); err != nil {
+			return nil, err
+		}
+		h.Time, h.ServerID = time.UnixMilli(ts), server.Int64
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}

@@ -54,3 +54,49 @@ func TestConfigsAndInstallations(t *testing.T) {
 		t.Fatalf("installation outlived its server: %v", err)
 	}
 }
+
+func TestSearchJobLogs(t *testing.T) {
+	ctx := context.Background()
+	d, _ := openTemp(t)
+	var ids []int64
+	for _, name := range []string{"a", "b"} {
+		srv := model.Server{Name: name, Host: "192.0.2.1", SSHPort: 22, SSHUser: "root", AuthType: model.AuthPassword, Role: model.RoleStandalone, State: model.StateNew}
+		if err := d.CreateServer(ctx, &srv, nil); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, srv.ID)
+	}
+	base := time.Unix(1_700_000_000, 0)
+	for i, sid := range ids {
+		j := model.Job{Kind: []string{"deploy", "import"}[i], ServerID: sid, State: model.JobCompleted, Params: []byte("{}"), CreatedAt: base}
+		if err := d.CreateJob(ctx, &j, []model.JobStep{{Idx: 0, Name: "connect"}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		for k, l := range []struct{ level, msg string }{{"info", "Подключено"}, {"warn", "Конфиг 100% читают все"}, {"error", "Служба упала"}} {
+			if err := d.AppendJobLog(ctx, &model.JobLog{JobID: j.ID, Time: base.Add(time.Duration(i*10+k) * time.Second), Level: l.level, Step: "connect", Message: l.msg}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	all, err := d.SearchJobLogs(ctx, model.JobLogFilter{})
+	if err != nil || len(all) != 6 || all[0].Message != "Служба упала" || all[0].ServerID != ids[1] || all[0].Kind != "import" {
+		t.Fatalf("%+v %v", all, err)
+	}
+	for _, c := range []struct {
+		f    model.JobLogFilter
+		want int
+	}{
+		{model.JobLogFilter{ServerID: ids[0]}, 3},
+		{model.JobLogFilter{Level: "warn"}, 4},
+		{model.JobLogFilter{Level: "error", ServerID: ids[0]}, 1},
+		{model.JobLogFilter{Text: "100%"}, 2},
+		{model.JobLogFilter{Text: "%"}, 2},
+		{model.JobLogFilter{Text: "_"}, 0},
+		{model.JobLogFilter{Limit: 2}, 2},
+	} {
+		got, err := d.SearchJobLogs(ctx, c.f)
+		if err != nil || len(got) != c.want {
+			t.Errorf("%+v: %d %v", c.f, len(got), err)
+		}
+	}
+}

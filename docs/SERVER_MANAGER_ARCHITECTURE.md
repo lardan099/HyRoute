@@ -367,14 +367,14 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | POST | `/api/v1/servers/{id}/import` | operator+ | job импорта |
 | GET | `/api/v1/servers/{id}/status` | любая | статус сервиса |
 | POST | `/api/v1/servers/{id}/service/{start,stop,restart}` | operator+ | с подтверждением в UI |
-| GET | `/api/v1/servers/{id}/journal` (SSE) | любая | журнал Hysteria через redaction |
+| GET | `/api/v1/servers/{id}/journal` | любая | журнал Hysteria через redaction (шаблоны + пароли текущего конфига): JSON последних записей или SSE с `?follow=1` |
 | GET/POST | `/api/v1/servers/{id}/config` | читать: любая; применить: operator+ | сводка текущей ревизии (версия, порты, TLS, pin, obfs; без конфига и паролей); редактор, diff, apply — P1-13 |
 | GET | `/api/v1/servers/{id}/client` | любая | ссылка/QR/конфиг без секретов; `?reveal=1` — operator+, пишется в audit log |
 | GET | `/api/v1/jobs`, `/api/v1/jobs/{id}` | любая | список (`?server=`, `?before=`), детали с шагами |
 | GET | `/api/v1/jobs/{id}/logs` | любая | строки журнала после `?after=` |
 | GET | `/api/v1/jobs/{id}/events` (SSE) | любая | сохранённый журнал после `Last-Event-ID`, затем события `log`/`step`/`job` до конца задания, `end` |
 | POST | `/api/v1/jobs/{id}/retry` | operator+ | повтор с безопасного шага |
-| GET | `/api/v1/logs` | любая | журнал controller и jobs с фильтрами |
+| GET | `/api/v1/logs` | любая | `source=controller` (буфер последних записей процесса) или `jobs` (журналы заданий), фильтры `server`, `level`, `q`; всё уже отредактировано |
 
 ## Модель угроз
 

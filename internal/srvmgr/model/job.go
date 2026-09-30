@@ -97,3 +97,18 @@ type JobFilter struct {
 	Limit    int
 	BeforeID int64 // 0: newest
 }
+
+// JobLogFilter selects job log lines across jobs.
+type JobLogFilter struct {
+	ServerID int64  // 0: all servers
+	Level    string // this level and above (info < warn < error); "": all
+	Text     string // case-insensitive substring of the message
+	Limit    int
+}
+
+// JobLogHit is a job log line with its job's server and kind.
+type JobLogHit struct {
+	JobLog
+	ServerID int64
+	Kind     string
+}

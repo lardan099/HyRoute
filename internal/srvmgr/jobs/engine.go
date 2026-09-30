@@ -305,7 +305,7 @@ func (e *Engine) runJob(ctx context.Context, id int64) {
 	if j.StartedAt.IsZero() {
 		j.StartedAt = e.Now()
 	}
-	e.log(j.ID, "info", "", fmt.Sprintf("Задание %s запущено (попытка %d).", j.Kind, j.Attempt))
+	e.log(j.ID, "info", "", fmt.Sprintf("Задание запущено (попытка %d).", j.Attempt))
 	for i := resumeIndex(rows); i < len(steps); i++ {
 		st, row := steps[i], rows[i]
 		j.State, j.CurrentStep = st.Phase, st.Name

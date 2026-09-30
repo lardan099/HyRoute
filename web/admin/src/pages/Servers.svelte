@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { untrack } from 'svelte';
   import { api, asApiError, type ApiError, type Server } from '../api';
   import { t, type Key } from '../i18n';
   import { canWrite, session } from '../session.svelte';
@@ -8,8 +8,9 @@
   import CheckDialog from '../lib/CheckDialog.svelte';
   import DeployDialog from '../lib/DeployDialog.svelte';
   import Menu from '../lib/Menu.svelte';
+  import ServerPage from './ServerPage.svelte';
   import { flag, stateTone } from '../lib/format';
-  import { go } from '../router.svelte';
+  import { go, route } from '../router.svelte';
 
   let list = $state<Server[] | null>(null);
   let error = $state<ApiError | null>(null);
@@ -30,7 +31,10 @@
       error = asApiError(e);
     }
   }
-  onMount(load);
+  // The list loads when it is shown (also on the way back from a server).
+  $effect(() => {
+    if (route.id === null) untrack(load);
+  });
 
   async function preflight(s: Server) {
     try {
@@ -84,6 +88,9 @@
   }
 </script>
 
+{#if route.id}
+  {#key route.id}<ServerPage id={route.id} />{/key}
+{:else}
 <div class="row head">
   <h1 class="grow">{t('nav.servers')}</h1>
   {#if writable}<button class="primary" onclick={() => (editing = null)}>{t('servers.add')}</button>{/if}
@@ -111,7 +118,7 @@
         {#each list as s (s.id)}
           <tr>
             <td>
-              <div class="name">{flag(s.country)} {s.name}</div>
+              <a class="name" href="/servers/{s.id}" onclick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return; e.preventDefault(); go('servers', s.id); }}>{flag(s.country)} {s.name}</a>
               {#if s.location || s.tags.length}
                 <div class="sub small muted">
                   {s.location}
@@ -188,13 +195,16 @@
   </Dialog>
 {/if}
 
+{/if}
+
 <style>
   .head { margin-bottom: 16px; }
   .empty p { margin: 0; color: var(--muted); }
   .table { padding: 6px 8px; }
   th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12.5px; padding: 8px; }
   td { padding: 10px 8px; border-top: 1px solid var(--border); vertical-align: middle; }
-  .name { font-weight: 600; }
+  .name { font-weight: 600; color: inherit; text-decoration: none; display: block; }
+  .name:hover { color: var(--accent); }
   .sub { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 2px; }
   .state { white-space: nowrap; }
   .acts { display: flex; justify-content: flex-end; gap: 2px; }

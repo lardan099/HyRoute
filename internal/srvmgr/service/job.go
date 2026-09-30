@@ -25,7 +25,7 @@ type Params struct {
 
 // Deps are the service job's collaborators.
 type Deps struct {
-	Store Store
+	Store JobStore
 	Keys  *secrets.Keyring
 	// Wait bounds how long the service may take to reach the wanted state.
 	Wait time.Duration
@@ -66,8 +66,29 @@ func Kind(d Deps) *jobs.Kind {
 		},
 		// A half-done start, stop or restart is not repeated on its own
 		// after a controller restart: the admin looks and decides.
-		Recover: func(context.Context, *jobs.Env) (jobs.Resolution, error) { return jobs.ResolveFailed, nil },
+		Recover:  func(context.Context, *jobs.Env) (jobs.Resolution, error) { return jobs.ResolveFailed, nil },
+		Finished: x.finished,
 	}
+}
+
+// JobStore is Store plus the server state the job sets.
+type JobStore interface {
+	Store
+	SetServerState(ctx context.Context, id int64, state model.ServerState, at time.Time) error
+}
+
+// finished: a running service makes the server healthy; one that is
+// stopped (on purpose or not) needs attention.
+func (x *control) finished(ctx context.Context, env *jobs.Env, j model.Job) {
+	var p Params
+	if json.Unmarshal(j.Params, &p) != nil {
+		return
+	}
+	state := model.StateNeedsAttention
+	if j.State == model.JobCompleted && p.Action != remote.ServiceStop {
+		state = model.StateHealthy
+	}
+	x.Store.SetServerState(ctx, env.ServerID, state, time.Now())
 }
 
 func sudo(env *jobs.Env) bool { return env.Get("root") != "true" }

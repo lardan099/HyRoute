@@ -280,6 +280,53 @@ export interface ImportReport {
   findings: ImportFinding[];
 }
 
+export interface ServiceStatus {
+  unit: string;
+  state: string;
+  subState: string;
+  active: boolean;
+  enabled: boolean;
+  pid?: number;
+  restarts: number;
+  uptimeSec: number;
+  memoryMiB: number;
+  version: string;
+  ports: number[];
+  system: {
+    uptimeSec: number;
+    load: [number, number, number];
+    cpus: number;
+    memTotalMiB: number;
+    memAvailMiB: number;
+    diskFreeMiB: number;
+    checkedAt: string;
+  };
+}
+
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+// JournalEntry is a record of the Hysteria journal, redacted.
+export interface JournalEntry {
+  time: string;
+  level: LogLevel;
+  message: string;
+}
+
+export interface LogEntry {
+  time: string;
+  level: LogLevel;
+  message: string;
+  attrs?: string;
+  serverId?: number;
+  jobId?: number;
+  kind?: string;
+  step?: string;
+}
+
+export type ServiceAction = 'start' | 'stop' | 'restart';
+
+export const journalURL = (serverId: number, lines = 200) => `/api/v1/servers/${serverId}/journal?follow=1&lines=${lines}`;
+
 export const jobEventsURL = (id: number) => `/api/v1/jobs/${id}/events`;
 
 // ServerInput: credentials left undefined keep the stored ones on update.
@@ -322,6 +369,17 @@ export const api = {
   retryJob: (id: number) => request<Job>('POST', `/jobs/${id}/retry`),
   startDeploy: (serverId: number, p: DeployParams) => request<Job>('POST', `/servers/${serverId}/deploy`, p),
   startImport: (serverId: number) => request<Job>('POST', `/servers/${serverId}/import`),
+  serviceStatus: (serverId: number) => request<ServiceStatus>('GET', `/servers/${serverId}/status`),
+  serviceAction: (serverId: number, action: ServiceAction) => request<Job>('POST', `/servers/${serverId}/service/${action}`),
+  journal: (serverId: number, lines = 500) => request<JournalEntry[]>('GET', `/servers/${serverId}/journal?lines=${lines}`),
+  logs: (p: { source: 'controller' | 'jobs'; server?: number; level?: string; q?: string; limit?: number }) => {
+    const q = new URLSearchParams({ source: p.source });
+    if (p.server) q.set('server', String(p.server));
+    if (p.level) q.set('level', p.level);
+    if (p.q) q.set('q', p.q);
+    if (p.limit) q.set('limit', String(p.limit));
+    return request<LogEntry[]>('GET', '/logs?' + q.toString());
+  },
   serverConfig: (serverId: number) => request<ServerConfig>('GET', `/servers/${serverId}/config`),
   startPreflight: (serverId: number, udpPort = 443) => request<Job>('POST', `/servers/${serverId}/preflight`, { udpPort }),
 };

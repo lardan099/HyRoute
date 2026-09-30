@@ -203,10 +203,17 @@ func TestServiceJob(t *testing.T) {
 		t.Fatalf("no installation: %s %s", j.State, j.ErrorMessage)
 	}
 	h.install()
-	for _, a := range []remote.ServiceAction{remote.ServiceRestart, remote.ServiceStop, remote.ServiceStart} {
-		j, log := h.run(a)
+	for _, c := range []struct {
+		a     remote.ServiceAction
+		state model.ServerState
+	}{{remote.ServiceRestart, model.StateHealthy}, {remote.ServiceStop, model.StateNeedsAttention}, {remote.ServiceStart, model.StateHealthy}} {
+		j, log := h.run(c.a)
 		if j.State != model.JobCompleted {
-			t.Fatalf("%s: %s %s\n%s", a, j.State, j.ErrorMessage, log)
+			t.Fatalf("%s: %s %s\n%s", c.a, j.State, j.ErrorMessage, log)
+		}
+		time.Sleep(30 * time.Millisecond) // the Finished hook
+		if srv, _ := h.db.ServerByID(context.Background(), h.server); srv.State != c.state {
+			t.Fatalf("%s: server %s", c.a, srv.State)
 		}
 	}
 	if !strings.Contains(strings.Join(s.Commands(), "\n"), "systemctl restart -- hysteria-server.service") {

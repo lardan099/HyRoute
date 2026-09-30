@@ -17,6 +17,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
+	"github.com/lardan099/hyroute/internal/srvmgr/logbuf"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
@@ -32,7 +33,9 @@ type Deps struct {
 	Deploy  *deploy.Submitter
 	// Keys open config revisions (the passwords journals are redacted
 	// with).
-	Keys    *secrets.Keyring
+	Keys *secrets.Keyring
+	// Logs are the controller\'s latest log records (the Logs page).
+	Logs    *logbuf.Buffer
 	Log     *slog.Logger
 	Version string
 	// TrustProxy: believe X-Forwarded-For/-Proto from a reverse proxy on
@@ -86,6 +89,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs", s.authed(anyRole, s.jobLogs))
 	mux.HandleFunc("GET /api/v1/jobs/{id}/events", s.authed(anyRole, s.jobEvents))
 	mux.HandleFunc("POST /api/v1/jobs/{id}/retry", s.authed(anyRole, s.retryJob))
+	mux.HandleFunc("GET /api/v1/logs", s.authed(anyRole, s.logs))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { writeError(w, errNotFound) })
 	if d.UI != nil {
 		mux.Handle("/", uiHandler(d.UI))

@@ -125,6 +125,8 @@ type Jobs interface {
 	AppendJobLog(ctx context.Context, l *model.JobLog) error
 	// JobLogs returns lines with Seq > after, oldest first.
 	JobLogs(ctx context.Context, jobID, after int64, limit int) ([]model.JobLog, error)
+	// SearchJobLogs returns matching lines of all jobs, newest first.
+	SearchJobLogs(ctx context.Context, f model.JobLogFilter) ([]model.JobLogHit, error)
 }
 
 // Configs stores the Hysteria config revisions of servers.

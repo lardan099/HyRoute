@@ -53,3 +53,18 @@ export function duration(from: string | null, to: string | null): string {
   const s = Math.max(0, Math.round(ms / 1000));
   return s < 60 ? `${s} с` : `${Math.floor(s / 60)} мин ${s % 60} с`;
 }
+
+// uptime in seconds as "3 д 4 ч", "5 ч 12 мин", "7 мин".
+export function uptime(sec: number): string {
+  if (!sec || sec < 0) return '—';
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (d > 0) return `${d} д ${h} ч`;
+  if (h > 0) return `${h} ч ${m} мин`;
+  return `${Math.max(m, 1)} мин`;
+}
+
+export function clock(s: string): string {
+  return new Date(s).toLocaleTimeString('ru-RU');
+}

@@ -26,6 +26,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
 	"github.com/lardan099/hyroute/internal/srvmgr/importer"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
+	"github.com/lardan099/hyroute/internal/srvmgr/logbuf"
 	"github.com/lardan099/hyroute/internal/srvmgr/preflight"
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
@@ -58,7 +59,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		return err
 	}
 	red := redact.New()
-	log := newLogger(stderr, cfg.LogLevel, red)
+	logs := logbuf.New(2000, slog.LevelInfo)
+	log := newLogger(stderr, cfg.LogLevel, red, logs)
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return fmt.Errorf("data directory: %w", err)
 	}
@@ -127,6 +129,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			Jobs:       engine,
 			Deploy:     &deploy.Submitter{Store: db, Keys: keys, Jobs: engine},
 			Keys:       keys,
+			Logs:       logs,
 			Log:        log,
 			Version:    version,
 			TrustProxy: cfg.TrustProxy,
@@ -209,9 +212,10 @@ func cleanupSessions(ctx context.Context, a *auth.Service, log *slog.Logger) {
 	}
 }
 
-// newLogger writes text logs to w; every line passes through red.
-func newLogger(w io.Writer, level string, red *redact.Redactor) *slog.Logger {
+// newLogger writes text logs to w and keeps the latest in buf for the
+// Logs page; every record passes through red first.
+func newLogger(w io.Writer, level string, red *redact.Redactor, buf *logbuf.Buffer) *slog.Logger {
 	var l slog.Level
 	l.UnmarshalText([]byte(level))
-	return slog.New(red.Handler(slog.NewTextHandler(w, &slog.HandlerOptions{Level: l})))
+	return slog.New(red.Handler(slog.NewMultiHandler(slog.NewTextHandler(w, &slog.HandlerOptions{Level: l}), buf.Handler())))
 }
