@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/hyconfig"
+	"github.com/lardan099/hyroute/internal/srvmgr/firewall"
 	"github.com/lardan099/hyroute/internal/srvmgr/importer"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
@@ -126,11 +128,13 @@ func (a *Applier) Kind() *jobs.Kind {
 					Done: func(ctx context.Context, env *jobs.Env) (bool, error) { return x.installed(ctx, env, p) },
 					Run:  func(ctx context.Context, env *jobs.Env) error { return x.install(ctx, env, p) },
 					Undo: x.undoInstall},
+				{Name: "firewall", Phase: model.JobFirewall, Safe: true, Run: x.firewall, Undo: x.undoFirewall},
 				{Name: "restart", Phase: model.JobStarting, Safe: true, Run: x.restart},
 				{Name: "verify", Phase: model.JobVerifying, Safe: true, Run: x.verify},
 				{Name: "commit", Phase: model.JobVerifying, Safe: true,
 					Done: func(ctx context.Context, env *jobs.Env) (bool, error) { return x.committed(ctx, env, p) },
 					Run:  func(ctx context.Context, env *jobs.Env) error { return x.commit(ctx, env, p) }},
+				{Name: "cleanup", Phase: model.JobVerifying, Safe: true, Run: x.cleanup},
 			}, nil
 		},
 		// Every step looks at the server first: after a restart the job
@@ -394,6 +398,142 @@ func (x *applier) undoInstall(ctx context.Context, env *jobs.Env) error {
 	return nil
 }
 
+// current is the config the controller has for the server (nil: none).
+func (x *applier) current(ctx context.Context, env *jobs.Env) (*hyconfig.Server, error) {
+	cur, err := x.Store.CurrentConfig(ctx, env.ServerID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	b, err := x.Keys.Open(cur.Sealed, model.ConfigContext(env.ServerID, cur.Revision))
+	if err != nil {
+		return nil, err
+	}
+	c, err := hyconfig.ParseServer(b)
+	if err != nil {
+		return nil, nil
+	}
+	return c, nil
+}
+
+// firewall opens the ports the new config adds before the restart (in
+// ufw or firewalld; the rollback closes them again). Ports the current
+// config already uses are left as they are, and other firewalls are left
+// to the admin, with a warning.
+func (x *applier) firewall(ctx context.Context, env *jobs.Env) error {
+	_, c, err := candidate(env)
+	if err != nil {
+		return err
+	}
+	want, err := firewall.Ports(c)
+	if err != nil {
+		return jobs.Fail("Не удалось разобрать порты нового конфига.", err)
+	}
+	in, err := x.installation(ctx, env)
+	if err != nil {
+		return err
+	}
+	old, err := x.current(ctx, env)
+	if err != nil {
+		return err
+	}
+	var had []remote.PortSpec
+	if old != nil {
+		had, _ = firewall.Ports(old)
+	}
+	var added []remote.PortSpec
+	for _, p := range want {
+		if !slices.Contains(had, p) {
+			added = append(added, p)
+		}
+	}
+	if in.Firewall.Keep {
+		if len(added) > 0 {
+			env.Warnf("Брандмауэр не трогаем (так выбрано при развёртывании): откройте %s сами, если нужно.", firewall.List(added))
+		}
+		return nil
+	}
+	if len(added) == 0 {
+		return nil
+	}
+	ex, err := exec(ctx, env)
+	if err != nil {
+		return err
+	}
+	fw, err := remote.ReadFirewall(ctx, ex, sudo(env))
+	if err != nil {
+		return jobs.Fail("Не удалось проверить брандмауэр сервера.", err)
+	}
+	if err := env.Set("firewall", fw.Tool); err != nil {
+		return err
+	}
+	switch {
+	case firewall.Managed(fw.Tool):
+		return firewall.Open(ctx, env, ex, fw.Tool, added, sudo(env))
+	case fw.DropPolicy:
+		env.Warnf("Входящие соединения закрыты политикой %s. HyRoute не меняет такие правила сам: откройте %s вручную.", fw.Tool, firewall.List(added))
+	}
+	return nil
+}
+
+func (x *applier) undoFirewall(ctx context.Context, env *jobs.Env) error {
+	ex, err := exec(ctx, env)
+	if err != nil {
+		return err
+	}
+	return firewall.Undo(ctx, env, ex, sudo(env))
+}
+
+// cleanup closes the rules HyRoute opened for ports the new config no
+// longer uses. It runs after the commit and never fails the job.
+func (x *applier) cleanup(ctx context.Context, env *jobs.Env) error {
+	err := x.cleanupFirewall(ctx, env)
+	if ctx.Err() != nil {
+		return ctx.Err() // the controller is stopping: the step runs again
+	}
+	if err != nil {
+		env.Warnf("Старые правила брандмауэра не проверены: %v.", err)
+	}
+	return nil
+}
+
+func (x *applier) cleanupFirewall(ctx context.Context, env *jobs.Env) error {
+	_, c, err := candidate(env)
+	if err != nil {
+		return err
+	}
+	want, err := firewall.Ports(c)
+	if err != nil {
+		return err
+	}
+	in, err := x.Store.Installation(ctx, env.ServerID)
+	if err != nil {
+		return err
+	}
+	if in.Firewall.Keep || !firewall.Managed(in.Firewall.Tool) {
+		return nil
+	}
+	ex, err := env.Exec(ctx)
+	if err != nil {
+		return err
+	}
+	tool := env.Get("firewall")
+	if tool == "" {
+		// The ports only went away: the firewall step did not look.
+		f, err := remote.ReadFirewall(ctx, ex, sudo(env))
+		if err != nil {
+			return err
+		}
+		tool = f.Tool
+	}
+	fw := firewall.Cleanup(ctx, env, ex, in.Firewall, tool, want, sudo(env))
+	if fw == in.Firewall {
+		return nil
+	}
+	return x.Store.SetFirewall(ctx, env.ServerID, fw)
+}
+
 func (x *applier) restart(ctx context.Context, env *jobs.Env) error {
 	in, err := x.installation(ctx, env)
 	if err != nil {
@@ -501,6 +641,13 @@ func (x *applier) commit(ctx context.Context, env *jobs.Env, p Params) error {
 	meta, err := importer.ConfigMeta(ctx, remote.ReadOnly(ex), c, in.Version, sudo(env), x.Now())
 	if err != nil {
 		return err
+	}
+	// The rules the job opened are HyRoute's from now on (recorded before
+	// the revision: a resumed job skips the commit once it is there).
+	if fw := firewall.Record(env, in.Firewall); fw != in.Firewall {
+		if err := x.Store.SetFirewall(ctx, env.ServerID, fw); err != nil {
+			return err
+		}
 	}
 	rev := model.ServerConfig{ServerID: env.ServerID, SHA256: p.SHA256, Meta: meta, Source: model.ConfigEdit, JobID: env.JobID, By: env.CreatedBy, At: x.Now()}
 	err = x.Store.AddConfig(ctx, &rev, func(r int) ([]byte, error) {

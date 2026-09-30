@@ -26,6 +26,7 @@ type sim struct {
 	downloads map[string][]byte // URL → body for curl on the server
 	github    bool
 	ufw       bool
+	ufwRules  map[string]bool // "443/udp", "20000:50000/udp"
 
 	unitLoaded string // unit text after the last daemon-reload
 	enabled    bool
@@ -52,6 +53,7 @@ func newSim() *sim {
 		dirs:      map[string]bool{"/etc": true, "/tmp": true, "/usr/local/bin": true, "/etc/systemd/system": true},
 		users:     map[string]bool{"root": true},
 		downloads: map[string][]byte{},
+		ufwRules:  map[string]bool{},
 		github:    true,
 		state:     "inactive",
 		failOn:    map[string]bool{},
@@ -154,13 +156,33 @@ func (s *sim) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 		s.files[dest] = b
 		return ok(""), nil
 	case "ufw":
-		if a[1] == "status" {
+		switch {
+		case a[1] == "status":
 			return ok("Status: active\n"), nil
+		case line == "ufw show added":
+			out := "Added user rules (see 'ufw status' for running firewall):\n"
+			for _, r := range sortedKeys(s.ufwRules) {
+				out += "ufw allow " + r + "\n"
+			}
+			return ok(out), nil
+		case a[1] == "allow":
+			if s.ufwRules[last] {
+				return ok("Skipping adding existing rule\n"), nil
+			}
+			s.ufwRules[last] = true
+			return ok("Rule added\n"), nil
+		case strings.HasPrefix(line, "ufw --force delete allow "):
+			delete(s.ufwRules, last)
+			return ok("Rule deleted\n"), nil
 		}
-		return ok("Rule added\n"), nil
 	case "ss":
 		if s.state == "active" {
-			return ok("udp UNCONN 0 0 *:443 *:* users:((\"hysteria\",pid=4242,fd=7))\n"), nil
+			port := 443
+			if c, err := hyconfig.ParseServer(s.running); err == nil {
+				l, _ := hyconfig.ParseListen(c.Listen)
+				port = l.First
+			}
+			return ok(fmt.Sprintf("udp UNCONN 0 0 *:%d *:* users:((\"hysteria\",pid=4242,fd=7))\n", port)), nil
 		}
 		return ok(""), nil
 	case "systemctl":
@@ -309,6 +331,22 @@ func (s *sim) ran(prefix string) bool {
 		}
 	}
 	return false
+}
+
+func sortedKeys(m map[string]bool) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// rules are the ufw rules.
+func (s *sim) rules() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return sortedKeys(s.ufwRules)
 }
 
 func (s *sim) fileList() []string {

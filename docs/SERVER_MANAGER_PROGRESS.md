@@ -913,3 +913,32 @@ P1-09 (общий пакет ссылок).
   `Pragma: no-cache`, запись в журнал аудита. GET с `?reveal=1` больше
   ничего не раскрывает.
 - Тест: подделанный CSRF → 403, заголовок `no-store`, read-only → 403.
+
+### P1-16e Брандмауэр с откатом
+
+- Подтверждено: deploy открывал порты в ufw/firewalld, но не запоминал
+  это; откат их не закрывал, а смена порта оставляла старый открытым.
+  Apply брандмауэр не трогал вовсе.
+- Новый пакет `firewall` (над `jobs` и `remote`): порты конфига (UDP
+  `listen`, TCP проверки ACME), `Open`/`Undo`/`Record`/`Cleanup`. В
+  `remote` — `PortAllowed` (`ufw show added`,
+  `firewall-cmd --permanent --query-port`), `OpenPort`, `ClosePort`
+  (`ufw --force delete allow`, `--remove-port`), `ParsePortSpec`.
+  Считается только точное правило: порт внутри чужого диапазона — не
+  «уже открыт».
+- Порт пишется в данные задания до `ufw allow`; `Undo` шага firewall
+  закрывает только такие. Миграция 0008: `firewall_tool`,
+  `firewall_ports`, `firewall_keep` в `installations`
+  (`SetInstallation` их не трогает, пишет `SetFirewall`, так что импорт
+  запись не стирает). Commit записывает прежние правила HyRoute плюс
+  открытые заданием; новый последний шаг `cleanup` закрывает записанные
+  правила для портов, которых больше нет, и никогда не валит задание.
+- Apply: шаг firewall перед restart открывает только порты, которых не
+  было в прежнем конфиге (правка, скажем, masquerade ничего в брандмауэре
+  не меняет); при nftables/iptables с drop — предупреждение. «Не трогать
+  брандмауэр» из deploy соблюдается.
+- Тесты: `TestFirewallRollbackKeepsExistingRules`,
+  `TestFirewallPortChange`, `TestRestartMidFirewallClosesOpenedPort`
+  (controller падает сразу после `ufw allow`, откат после рестарта
+  закрывает порт), `TestApplyFirewall`, `remote` и `firewall` —
+  разбор `ufw show added`, ответов firewalld, портов ACME.

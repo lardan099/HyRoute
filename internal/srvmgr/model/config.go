@@ -58,4 +58,15 @@ type Installation struct {
 	// left as it is until the admin replaces it.
 	Managed bool
 	At      time.Time
+	// Firewall is kept by SetFirewall; SetInstallation leaves it alone.
+	Firewall Firewall
+}
+
+// Firewall is what HyRoute opened in a server's firewall: the rules it
+// may close again. Rules that were there before are never recorded.
+type Firewall struct {
+	Tool  string // ufw, firewalld ("" = nothing recorded)
+	Ports string // PortSpec strings, sorted, comma-separated: "443/udp,20000-50000/udp"
+	// Keep: the admin chose at deploy to leave the firewall alone.
+	Keep bool
 }

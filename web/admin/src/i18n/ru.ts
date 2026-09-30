@@ -197,6 +197,7 @@ export const ru = {
   'step.validate': 'Проверка конфига',
   'step.backup': 'Копия прежнего конфига',
   'step.install': 'Установка конфига',
+  'step.cleanup': 'Закрытие старых портов',
 
   'import.button': 'Импортировать',
   'import.fromDeploy': 'Импортировать сервер',

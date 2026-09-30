@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
 
 const configCols = `id, server_id, revision, config, sha256, meta, source, job_id, created_by, created_at`
@@ -81,8 +82,24 @@ func (d *DB) SetInstallation(ctx context.Context, in model.Installation) error {
 func (d *DB) Installation(ctx context.Context, serverID int64) (model.Installation, error) {
 	var in model.Installation
 	var at int64
-	err := d.db.QueryRowContext(ctx, `SELECT server_id, binary_path, config_path, unit, service_user, version, managed, updated_at FROM installations WHERE server_id = ?`, serverID).
-		Scan(&in.ServerID, &in.Binary, &in.Config, &in.Unit, &in.User, &in.Version, &in.Managed, &at)
+	err := d.db.QueryRowContext(ctx, `SELECT server_id, binary_path, config_path, unit, service_user, version, managed, updated_at,
+		firewall_tool, firewall_ports, firewall_keep FROM installations WHERE server_id = ?`, serverID).
+		Scan(&in.ServerID, &in.Binary, &in.Config, &in.Unit, &in.User, &in.Version, &in.Managed, &at,
+			&in.Firewall.Tool, &in.Firewall.Ports, &in.Firewall.Keep)
 	in.At = fromUnix(at)
 	return in, notFound(err)
+}
+
+func (d *DB) SetFirewall(ctx context.Context, serverID int64, fw model.Firewall) error {
+	res, err := d.db.ExecContext(ctx, `UPDATE installations SET firewall_tool = ?, firewall_ports = ?, firewall_keep = ? WHERE server_id = ?`,
+		fw.Tool, fw.Ports, fw.Keep, serverID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
 }

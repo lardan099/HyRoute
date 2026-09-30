@@ -156,4 +156,7 @@ type Installations interface {
 	SetInstallation(ctx context.Context, in model.Installation) error
 	// Installation is the recorded one (ErrNotFound: none).
 	Installation(ctx context.Context, serverID int64) (model.Installation, error)
+	// SetFirewall records the firewall rules HyRoute opened on the server
+	// (ErrNotFound: no installation).
+	SetFirewall(ctx context.Context, serverID int64, fw model.Firewall) error
 }

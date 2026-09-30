@@ -14,6 +14,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/hy2uri"
 	"github.com/lardan099/hyroute/internal/hyconfig"
+	"github.com/lardan099/hyroute/internal/srvmgr/firewall"
 	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
@@ -106,12 +107,13 @@ func (x *deployer) steps(p Params) []jobs.Step {
 			Run:  func(ctx context.Context, env *jobs.Env) error { return x.config(ctx, env, p) },
 			Undo: x.restoreFile(ConfigPath, "configBackup")},
 		{Name: "unit", Phase: model.JobConfiguring, Safe: true, Done: x.unitDone, Run: x.unit, Undo: x.undoUnit},
-		{Name: "firewall", Phase: model.JobFirewall, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.firewall(ctx, env, p) }},
+		{Name: "firewall", Phase: model.JobFirewall, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.firewall(ctx, env, p) }, Undo: x.undoFirewall},
 		{Name: "start", Phase: model.JobStarting, Safe: true, Done: x.startDone, Run: x.start, Undo: x.undoStart},
 		{Name: "verify", Phase: model.JobVerifying, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.verify(ctx, env, p) }},
 		{Name: "commit", Phase: model.JobVerifying, Safe: true,
 			Done: func(ctx context.Context, env *jobs.Env) (bool, error) { return x.commitDone(ctx, env, p) },
 			Run:  func(ctx context.Context, env *jobs.Env) error { return x.commit(ctx, env, p) }},
+		{Name: "cleanup", Phase: model.JobVerifying, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.cleanup(ctx, env, p) }},
 	}
 }
 
@@ -643,8 +645,8 @@ func (x *deployer) undoUnit(ctx context.Context, env *jobs.Env) error {
 	return remote.DaemonReload(ctx, ex, sudo(env))
 }
 
-func (x *deployer) firewall(ctx context.Context, env *jobs.Env, p Params) error {
-	tool := env.Get("firewall")
+// ports are what clients and the ACME challenge need reachable.
+func ports(p Params) []remote.PortSpec {
 	var specs []remote.PortSpec
 	rs, _ := hy2uri.ParsePorts(p.Ports())
 	for _, r := range rs {
@@ -653,39 +655,79 @@ func (x *deployer) firewall(ctx context.Context, env *jobs.Env, p Params) error 
 	for _, tp := range p.TCPPorts() {
 		specs = append(specs, remote.PortSpec{From: tp, To: tp, Proto: "tcp"})
 	}
-	var names []string
-	for _, s := range specs {
-		names = append(names, s.String())
-	}
-	list := strings.Join(names, ", ")
+	return specs
+}
+
+// firewall opens the ports before the service starts; the rules it adds
+// are recorded in the job first, and the rollback closes them.
+func (x *deployer) firewall(ctx context.Context, env *jobs.Env, p Params) error {
+	tool := env.Get("firewall")
+	specs := ports(p)
+	list := firewall.List(specs)
 	if p.KeepFirewall {
 		env.Logf("Брандмауэр не трогаем (так выбрано). Нужные порты: %s.", list)
 		return nil
 	}
-	ex, err := exec(ctx, env)
-	if err != nil {
-		return err
-	}
-	switch tool {
-	case "ufw", "firewalld":
-		for _, s := range specs {
-			if tool == "ufw" {
-				err = remote.UFWAllow(ctx, ex, s, sudo(env))
-			} else {
-				err = remote.FirewalldAllow(ctx, ex, s, sudo(env))
-			}
-			if err != nil {
-				return jobs.Fail("Не удалось открыть порт "+s.String()+" в "+tool+".", err)
-			}
+	switch {
+	case firewall.Managed(tool):
+		ex, err := exec(ctx, env)
+		if err != nil {
+			return err
 		}
-		env.Set("opened", tool+": "+list)
-		env.Logf("Открыто в %s: %s.", tool, list)
-	case "nftables", "iptables":
+		return firewall.Open(ctx, env, ex, tool, specs, sudo(env))
+	case tool == "nftables" || tool == "iptables":
 		env.Warnf("Входящие соединения закрыты политикой %s. HyRoute не меняет такие правила сам: откройте %s вручную.", tool, list)
 	default:
 		env.Logf("Брандмауэр не ограничивает входящие соединения; порты: %s.", list)
 	}
 	return nil
+}
+
+func (x *deployer) undoFirewall(ctx context.Context, env *jobs.Env) error {
+	ex, err := exec(ctx, env)
+	if err != nil {
+		return err
+	}
+	return firewall.Undo(ctx, env, ex, sudo(env))
+}
+
+// fwRecord is what the controller records about the firewall after this
+// deploy.
+func fwRecord(env *jobs.Env, p Params, prev model.Firewall) model.Firewall {
+	fw := firewall.Record(env, prev)
+	fw.Keep = p.KeepFirewall
+	return fw
+}
+
+// cleanup closes the rules HyRoute opened for ports the new config no
+// longer uses. It runs after the commit and never fails the job: the
+// deploy is done by then, and a rollback would undo it.
+func (x *deployer) cleanup(ctx context.Context, env *jobs.Env, p Params) error {
+	if err := x.cleanupFirewall(ctx, env, ports(p)); ctx.Err() != nil {
+		return ctx.Err() // the controller is stopping: the step runs again
+	} else if err != nil {
+		env.Warnf("Старые правила брандмауэра не проверены: %v.", err)
+	}
+	return nil
+}
+
+func (x *deployer) cleanupFirewall(ctx context.Context, env *jobs.Env, want []remote.PortSpec) error {
+	in, err := x.Store.Installation(ctx, env.ServerID)
+	if err != nil {
+		return err
+	}
+	if in.Firewall.Keep || !firewall.Managed(in.Firewall.Tool) {
+		return nil
+	}
+	ex, err := env.Exec(ctx)
+	if err != nil {
+		return err
+	}
+	fw := firewall.Cleanup(ctx, env, ex, in.Firewall, env.Get("firewall"), want, sudo(env))
+	if fw == in.Firewall {
+		return nil
+	}
+	return x.Store.SetFirewall(ctx, env.ServerID, fw)
 }
 
 func (x *deployer) startDone(ctx context.Context, env *jobs.Env) (bool, error) {
@@ -805,7 +847,9 @@ func (x *deployer) commitDone(ctx context.Context, env *jobs.Env, p Params) (boo
 	} else if err != nil {
 		return false, err
 	}
-	return cur.SHA256 == sha(want) && cur.Meta == meta && in == x.installation(env, p, in.At), nil
+	fw := in.Firewall
+	in.Firewall = model.Firewall{}
+	return cur.SHA256 == sha(want) && cur.Meta == meta && in == x.installation(env, p, in.At) && fw == fwRecord(env, p, fw), nil
 }
 
 // installation is what a deploy puts on the server.
@@ -835,7 +879,14 @@ func (x *deployer) commit(ctx context.Context, env *jobs.Env, p Params) error {
 		}
 		env.Logf("Конфиг сохранён в controller как ревизия %d.", c.Revision)
 	}
-	return x.Store.SetInstallation(ctx, x.installation(env, p, now))
+	prev, err := x.Store.Installation(ctx, env.ServerID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	if err := x.Store.SetInstallation(ctx, x.installation(env, p, now)); err != nil {
+		return err
+	}
+	return x.Store.SetFirewall(ctx, env.ServerID, fwRecord(env, p, prev.Firewall))
 }
 
 func (x *deployer) finished(ctx context.Context, env *jobs.Env, j model.Job) {

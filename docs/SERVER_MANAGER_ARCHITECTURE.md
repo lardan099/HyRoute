@@ -97,6 +97,7 @@ internal/srvmgr/
   importer                    импорт установленного сервера (задание import, только чтение)
   service                     статус, start/stop/restart (задание service), journal
   apply                       редактор конфига: маскирование, поля, diff; задание apply
+  firewall                    порты конфига, открытие/закрытие в ufw/firewalld и учёт правил HyRoute
   profile                     ссылки, клиентский конфиг и QR для клиентов
   api                         HTTP /api/v1: handlers, middleware, ошибки
 ```
@@ -105,7 +106,7 @@ internal/srvmgr/
 только поле роли.
 
 Зависимости направлены сверху вниз: `api` → сервисы (`deploy`, `importer`,
-`service`, `apply`, `profile`, `auth`, `preflight`) → `jobs`, `remote`, `hyconfig`,
+`service`, `apply`, `profile`, `auth`, `preflight`) → `firewall` → `jobs`, `remote`, `hyconfig`,
 `secrets`, `redact` → `store` (интерфейсы) → `model`. `store/sqlite`
 подключается только в `cmd/hyroute-server` и тестах. Бизнес-логика не
 знает про HTTP и SQL; `api` не содержит логики, кроме разбора запроса и
@@ -197,7 +198,8 @@ P1-04 сканирует файл БД на открытые значения т
   `DaemonReload`, `JournalTail`, `JournalEntries`, `JournalFollow`,
   `HysteriaVersion`, `Stat`, `FileSHA256`, `Download`, `InstallFile`,
   `CopyFile`, `Rename`, `RemoveFile`, `MakeDir`, `TempDir`,
-  `CreateSystemUser`, `UserHome`, `UFWAllow`, `FirewalldAllow`. Каждый
+  `CreateSystemUser`, `UserHome`, `UFWAllow`, `FirewalldAllow`,
+  `PortAllowed`, `OpenPort`, `ClosePort`. Каждый
   аргумент проверяется (имя unit — `^[a-zA-Z0-9@._-]+\.service$`, путь —
   абсолютный, без `..`), argv экранируется для shell на стороне SSH
   (`remote.Quote`). Произвольную команду из API выполнить нельзя.
@@ -339,7 +341,16 @@ queued → connecting → preflight → downloading → installing → configuri
   iptables для IPv4 и IPv6 и снимает его при остановке. Controller только
   открывает диапазон в firewall, если firewall активен.
 - Firewall: если активен ufw или firewalld — открыть нужные UDP-порты (и
-  TCP для ACME) их средствами и запомнить, что открыто. Голые
+  TCP для ACME) их средствами. Открывается только то, чего нет: порт
+  сначала записывается в данные задания (`fwAdded`), потом добавляется
+  правило, и `Undo` шага закрывает ровно эти правила (правила, которые
+  были до задания, не трогаются). После успешной проверки commit
+  записывает в `installations` (`firewall_tool`, `firewall_ports`)
+  прежние правила HyRoute плюс открытые заданием, и последний шаг
+  `cleanup` закрывает записанные правила HyRoute для портов, которых в
+  новом конфиге нет. `cleanup` не валит задание: незакрытое правило
+  остаётся в записи с предупреждением. «Брандмауэр не трогать» при
+  развёртывании запоминается (`firewall_keep`) и соблюдается apply. Голые
   nftables/iptables с политикой ACCEPT — ничего не трогать; с политикой
   DROP — только предупреждение: порты открывает администратор
   (persistent-правила iptables HyRoute не пишет).
@@ -378,8 +389,11 @@ Deploy не считает такую установку своей: без за
 `Validate`, diff с текущей ревизией без секретов, список меняющихся
 секретов. Задание `apply`: файл на сервере должен совпадать с базовой
 ревизией (правка вручную — отказ с предложением импорта) → копия
-`.hyroute-prev` → атомарная запись с правами прежнего файла → restart →
-служба active и UDP-порт слушает hysteria → ревизия `edit`. Ошибка после
+`.hyroute-prev` → атомарная запись с правами прежнего файла → firewall
+(порты, которых не было в прежнем конфиге, открываются в ufw/firewalld;
+откат их закрывает) → restart → служба active и UDP-порт слушает
+hysteria → ревизия `edit` → cleanup (закрыть правила HyRoute для
+ушедших портов). Ошибка после
 записи → прежний файл → restart → отчёт с журналом (редакция паролями
 обоих конфигов). Регулярная сверка desired/actual (reconciliation) —
 Phase 4.

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -50,6 +51,7 @@ type vps struct {
 	port   int
 	cmds   []string
 	writes []remote.FileSpec
+	ufw    map[string]bool // ufw rules ("8443/udp"); nil: no ufw
 }
 
 func newVPS() *vps {
@@ -134,10 +136,41 @@ func (v *vps) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 			return res(fmt.Sprintf("udp UNCONN 0 0 *:%d *:* users:((\"hysteria\",pid=4242,fd=7))\n", v.port)), nil
 		}
 		return res(""), nil
+	case a[0] == "sh" && last == "ufw" && v.ufw != nil:
+		return res(""), nil
+	case line == "ufw status" && v.ufw != nil:
+		return res("Status: active\n"), nil
+	case line == "ufw show added" && v.ufw != nil:
+		out := "Added user rules (see 'ufw status' for running firewall):\n"
+		for _, r := range v.rulesLocked() {
+			out += "ufw allow " + r + "\n"
+		}
+		return res(out), nil
+	case len(a) == 3 && a[0] == "ufw" && a[1] == "allow" && v.ufw != nil:
+		v.ufw[last] = true
+		return res("Rule added\n"), nil
+	case strings.HasPrefix(line, "ufw --force delete allow ") && v.ufw != nil:
+		delete(v.ufw, last)
+		return res("Rule deleted\n"), nil
 	case a[0] == "journalctl":
 		return res("FATAL failed to load config: unknown field crash (auth fake-apply-auth-pass)\n"), nil
 	}
 	return remote.Result{ExitCode: 127, Stderr: []byte("vps: unknown command " + line)}, nil
+}
+
+func (v *vps) rulesLocked() []string {
+	var out []string
+	for r := range v.ufw {
+		out = append(out, r)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func (v *vps) rules() []string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.rulesLocked()
 }
 
 func (v *vps) Stream(context.Context, remote.Cmd, func(string)) error {
@@ -355,5 +388,69 @@ func TestConfigChangedOnServer(t *testing.T) {
 	j, _ = h.wait(j)
 	if j.State != model.JobFailed || !strings.Contains(j.ErrorMessage, "Импортируйте сервер заново") || len(h.v.writes) != 0 {
 		t.Fatalf("%s: %s", j.State, j.ErrorMessage)
+	}
+}
+
+// A port change opens the new port before the restart and closes the one
+// HyRoute opened earlier after the new config works; the admin's rules
+// stay, and a failed apply closes what it opened.
+func TestApplyFirewall(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.v.mu.Lock()
+	h.v.ufw = map[string]bool{"443/udp": true} // the admin's
+	h.v.mu.Unlock()
+	fwOf := func() model.Firewall {
+		in, _ := h.db.Installation(ctx, h.server)
+		return in.Firewall
+	}
+	apply := func(base int, fn func(string) string) (model.Job, string) {
+		t.Helper()
+		j, err := h.app.Submit(ctx, h.server, base, h.edit(fn), nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h.wait(j)
+	}
+
+	j, log := apply(1, func(s string) string { return strings.Replace(s, "listen: :443", "listen: :8443", 1) })
+	if j.State != model.JobCompleted {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	if r := h.v.rules(); !slices.Equal(r, []string{"443/udp", "8443/udp"}) {
+		t.Fatalf("rules %q\n%s", r, log)
+	}
+	if fw := fwOf(); fw != (model.Firewall{Tool: "ufw", Ports: "8443/udp"}) {
+		t.Fatalf("recorded %+v", fw)
+	}
+	// ACME ports of the old config were there already: not touched.
+	if slices.ContainsFunc(h.v.cmds, func(c string) bool { return strings.Contains(c, "/tcp") }) {
+		t.Fatalf("ran %q", h.v.cmds)
+	}
+
+	// A failed apply to 9443 closes 9443 again.
+	j, log = apply(2, func(s string) string {
+		return strings.Replace(s, "listen: :8443", "listen: :9443", 1) + "crash: true\n"
+	})
+	if j.State != model.JobFailed || !slices.Contains(h.v.cmds, "ufw allow 9443/udp") {
+		t.Fatalf("%s\n%s", j.State, log)
+	}
+	if r := h.v.rules(); !slices.Equal(r, []string{"443/udp", "8443/udp"}) {
+		t.Fatalf("rules after the rollback %q\n%s", r, log)
+	}
+	if fw := fwOf(); fw != (model.Firewall{Tool: "ufw", Ports: "8443/udp"}) {
+		t.Fatalf("recorded %+v", fw)
+	}
+
+	// Back to 443: the admin's rule serves it, HyRoute's 8443 is closed.
+	j, log = apply(2, func(s string) string { return strings.Replace(s, "listen: :8443", "listen: :443", 1) })
+	if j.State != model.JobCompleted {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	if r := h.v.rules(); !slices.Equal(r, []string{"443/udp"}) {
+		t.Fatalf("rules %q\n%s", r, log)
+	}
+	if fw := fwOf(); fw != (model.Firewall{Tool: "ufw"}) {
+		t.Fatalf("recorded %+v", fw)
 	}
 }

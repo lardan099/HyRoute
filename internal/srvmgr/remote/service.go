@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -128,17 +129,41 @@ func (p PortSpec) String() string {
 	return fmt.Sprintf("%d/%s", p.From, p.Proto)
 }
 
+func (p PortSpec) ufw() string {
+	if p.To != p.From {
+		return fmt.Sprintf("%d:%d/%s", p.From, p.To, p.Proto)
+	}
+	return fmt.Sprintf("%d/%s", p.From, p.Proto)
+}
+
+// ParsePortSpec reads what PortSpec.String writes.
+func ParsePortSpec(s string) (PortSpec, error) {
+	var p PortSpec
+	ports, proto, ok := strings.Cut(s, "/")
+	if !ok {
+		return p, fmt.Errorf("bad port spec %q", s)
+	}
+	from, to, isRange := strings.Cut(ports, "-")
+	if !isRange {
+		to = from
+	}
+	var err1, err2 error
+	p.From, err1 = strconv.Atoi(from)
+	p.To, err2 = strconv.Atoi(to)
+	p.Proto = proto
+	if err1 != nil || err2 != nil || p.check() != nil {
+		return PortSpec{}, fmt.Errorf("bad port spec %q", s)
+	}
+	return p, nil
+}
+
 // UFWAllow opens a port or range in ufw (existing rules are kept as they
 // are; ufw skips duplicates).
 func UFWAllow(ctx context.Context, ex Executor, p PortSpec, sudo bool) error {
 	if err := p.check(); err != nil {
 		return err
 	}
-	spec := fmt.Sprintf("%d/%s", p.From, p.Proto)
-	if p.To != p.From {
-		spec = fmt.Sprintf("%d:%d/%s", p.From, p.To, p.Proto)
-	}
-	_, err := run(ctx, ex, "ufw allow", Cmd{Args: []string{"ufw", "allow", spec}, Sudo: sudo})
+	_, err := run(ctx, ex, "ufw allow", Cmd{Args: []string{"ufw", "allow", p.ufw()}, Sudo: sudo})
 	return err
 }
 
@@ -154,6 +179,77 @@ func FirewalldAllow(ctx context.Context, ex Executor, p PortSpec, sudo bool) err
 	}
 	_, err := run(ctx, ex, "firewall-cmd", Cmd{Args: []string{"firewall-cmd", arg}, Sudo: sudo})
 	return err
+}
+
+// PortAllowed reports whether tool (ufw or firewalld) has a rule that
+// allows exactly this port or range. A wider rule does not count: it is
+// not the one HyRoute would add or remove.
+func PortAllowed(ctx context.Context, ex Executor, tool string, p PortSpec, sudo bool) (bool, error) {
+	if err := p.check(); err != nil {
+		return false, err
+	}
+	switch tool {
+	case "ufw":
+		// The rules as added, whether ufw is active or not.
+		out, err := run(ctx, ex, "ufw show added", Cmd{Args: []string{"ufw", "show", "added"}, Sudo: sudo})
+		if err != nil {
+			return false, err
+		}
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			for _, r := range []string{"ufw allow " + p.ufw(), "ufw allow in " + p.ufw()} {
+				if line == r || strings.HasPrefix(line, r+" ") {
+					return true, nil
+				}
+			}
+		}
+		return false, nil
+	case "firewalld":
+		res, err := ex.Run(ctx, Cmd{Args: []string{"firewall-cmd", "--permanent", "--query-port=" + p.String()}, Sudo: sudo})
+		if err != nil {
+			return false, err
+		}
+		switch strings.TrimSpace(string(res.Stdout)) {
+		case "yes":
+			return true, nil
+		case "no":
+			return false, nil
+		}
+		return false, &ExitError{Op: "firewall-cmd --query-port", Code: res.ExitCode, Stderr: strings.TrimSpace(string(res.Stderr))}
+	}
+	return false, fmt.Errorf("unknown firewall %q", tool)
+}
+
+// OpenPort adds an allow rule for the port or range to tool.
+func OpenPort(ctx context.Context, ex Executor, tool string, p PortSpec, sudo bool) error {
+	switch tool {
+	case "ufw":
+		return UFWAllow(ctx, ex, p, sudo)
+	case "firewalld":
+		return FirewalldAllow(ctx, ex, p, sudo)
+	}
+	return fmt.Errorf("unknown firewall %q", tool)
+}
+
+// ClosePort removes the allow rule OpenPort added (other rules for the
+// port stay).
+func ClosePort(ctx context.Context, ex Executor, tool string, p PortSpec, sudo bool) error {
+	if err := p.check(); err != nil {
+		return err
+	}
+	switch tool {
+	case "ufw":
+		_, err := run(ctx, ex, "ufw delete", Cmd{Args: []string{"ufw", "--force", "delete", "allow", p.ufw()}, Sudo: sudo})
+		return err
+	case "firewalld":
+		arg := "--remove-port=" + p.String()
+		if _, err := run(ctx, ex, "firewall-cmd", Cmd{Args: []string{"firewall-cmd", "--permanent", arg}, Sudo: sudo}); err != nil {
+			return err
+		}
+		_, err := run(ctx, ex, "firewall-cmd", Cmd{Args: []string{"firewall-cmd", arg}, Sudo: sudo})
+		return err
+	}
+	return fmt.Errorf("unknown firewall %q", tool)
 }
 
 // UserHome is a user's home directory from the passwd database ("" when
