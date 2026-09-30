@@ -1,0 +1,25 @@
+# Keys a future Hysteria might add, at every level, next to known ones.
+Listen: :443
+futureTopLevel:
+  nested: [1, 2, 3]
+  deeper:
+    flag: true
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+  futureTLSOption: 42
+auth:
+  type: password
+  password: fake-auth-password
+quic:
+  maxIdleTimeout: 30s
+  futureQUICKnob: fast
+outbounds:
+  - name: out
+    type: direct
+    direct:
+      mode: auto
+      futureDirectOption: [a, b]
+    futureOutboundOption: yes
+udpIdleTimeout: 60000000000
+anotherFutureKey: "last"

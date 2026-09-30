@@ -161,10 +161,10 @@
 **Done:** тесты на fake executor для Debian/Ubuntu, неподдерживаемой ОС, занятого порта, отсутствия доступа к GitHub.
 
 ### P1-08 Typed model конфига Hysteria
-- [ ] Typed-структуры server config (listen, tls, acme, auth, obfs, masquerade, resolver, sniff, bandwidth, quic, outbounds, acl, trafficStats, и т.д. по актуальной документации).
-- [ ] Сохранение unknown fields при round-trip (новые поля Hysteria не теряются).
-- [ ] Генератор client config.
-- [ ] Валидация на стороне controller.
+- [x] Typed-структуры server config (listen, tls, acme, auth, obfs, masquerade, resolver, sniff, bandwidth, quic, outbounds, acl, trafficStats, и т.д. по актуальной документации).
+- [x] Сохранение unknown fields при round-trip (новые поля Hysteria не теряются).
+- [x] Генератор client config.
+- [x] Валидация на стороне controller.
 
 **Done:** round-trip тесты (включая unknown fields и конфиги из `reference/server-snapshot/`, если он есть); тесты валидации.
 

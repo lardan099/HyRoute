@@ -234,22 +234,33 @@ queued → connecting → preflight → downloading → installing → configuri
 
 `internal/hyconfig`:
 
-- Typed-структуры серверного конфига по Full Server Config: `listen`,
-  `tls`, `acme`, `obfs` (salamander, gecko), `quic`, `bandwidth`,
-  `ignoreClientBandwidth`, `speedTest`, `disableUDP`, `udpIdleTimeout`,
-  `auth` (password, userpass, http, command), `resolver`, `sniff`, `acl`,
-  `outbounds`, `trafficStats`, `masquerade`; и клиентского (для выдачи
+- Typed-структуры серверного конфига по Full Server Config (app
+  v2.12.3): `listen`, `tls`, `acme`, `ech`, `obfs` (salamander, gecko),
+  `quic`, `mimic`, `congestion`, `bandwidth`, `ignoreClientBandwidth`,
+  `speedTest`, `disableUDP`, `udpIdleTimeout`, `auth` (password,
+  userpass, http, command), `resolver`, `sniff`, `acl`, `outbounds`,
+  `trafficStats`, `masquerade`, `realm`; и клиентского (для выдачи
   пользователю): `server`, `auth`, `tls`, `obfs`, `transport`, `quic`,
-  `bandwidth`, `fastOpen`, `lazy`, режимы `socks5`/`http`.
+  `congestion`, `bandwidth`, `fastOpen`, `lazy`, `mimic`, `realm`, режимы
+  `socks5`/`http` (остальные режимы — неизвестные поля).
 - **Неизвестные поля.** Каждая структура хранит нераспознанные ключи
   своего уровня (`Unknown` — упорядоченный список пар `yaml.Node`).
   Разбор идёт через `yaml.Node`, сериализация — известные поля в
-  каноническом порядке, затем неизвестные как были. Новые поля Hysteria не
-  теряются при правке. Комментарии YAML при правке через модель не
-  сохраняются (raw-редактор P1-13 показывает diff до применения).
-- Валидация на стороне controller: обязательные поля, взаимоисключающие
-  (`tls` и `acme`, `hopInterval` и `min/maxHopInterval`), формат портов и
-  диапазонов, длительности, пароли obfs и auth не пустые. Проверка
+  каноническом порядке, затем неизвестные как были. Ключи сопоставляются
+  без учёта регистра, как в Hysteria. Новые поля Hysteria не теряются при
+  правке; `UnknownFields` перечисляет их пути для предупреждений импорта.
+  Комментарии YAML при правке через модель не сохраняются (raw-редактор
+  P1-13 показывает diff до применения).
+- `ParseListen` разбирает `listen` (порт, диапазон, первый порт, который
+  слушает сервер); `ClientFor(server, ClientOptions)` строит клиентский
+  конфиг из серверного и того, что знает только controller (публичный
+  адрес, pin самоподписанного сертификата, выбранный пользователь,
+  hopInterval, скорости).
+- Валидация на стороне controller (`Validate` → список `Problem`: поле,
+  текст, ошибка или предупреждение): обязательные поля по выбранному типу,
+  взаимоисключающие (`tls` и `acme`, `acl.file` и `acl.inline`,
+  `hopInterval` и `min/maxHopInterval`), формат портов и диапазонов,
+  длительности и их допустимые границы, скорости, пароли obfs и auth. Проверка
   самой Hysteria (`hysteria server --config … --check`, если версия её
   умеет; иначе — запуск с таймаутом) — в P1-13.
 - Никаких regex-замен в YAML.

@@ -292,5 +292,55 @@
   установленная Hysteria, нет `ss`, задание целиком через движок.
 - Тестовый сервер владельца: из облачного окружения SSH до внешних адресов
   не проходит (прокси окружения пропускает только TLS — соединение на
-  порт 22 сбрасывается), поэтому проверка на живом VPS ждёт владельца.
+  порт 22 сбрасывается), поэтому проверку на живом VPS провёл владелец:
+  чистый Ubuntu 24.04 x86_64 — все проверки ok, «Можно развёртывать».
   Учётные данные сервера нигде не сохранены.
+
+### P1-08 Typed model конфига Hysteria — выполнено
+
+- `internal/hyconfig`: серверный конфиг — все поля Full Server Config
+  Hysteria app v2.12.3 (сверено с документацией и `app/cmd/server.go`):
+  listen, tls, acme (включая dns и устаревшие disableHTTP/alt*Port), ech,
+  auth, obfs (salamander, gecko), masquerade, bandwidth,
+  ignoreClientBandwidth, congestion, quic, speedTest, disableUDP,
+  udpIdleTimeout, resolver, sniff, acl, outbounds, trafficStats, mimic,
+  realm. Клиентский — server, auth, tls, obfs, transport, quic (с
+  sockopts), congestion, bandwidth, fastOpen, lazy, mimic, realm, socks5,
+  http; режимы forwarding/tproxy/tun не моделируются и сохраняются как
+  неизвестные.
+- Неизвестные поля: каждый уровень хранит нераспознанные ключи
+  (`Unknown`, пары `yaml.Node`) и пишет их после известных в исходном
+  порядке. Ключи сопоставляются без учёта регистра, как в Hysteria
+  (viper), и пишутся в канонической форме. Длительность-число остаётся
+  числом (иначе Hysteria не поймёт строку «60000000000»). Ссылки YAML
+  внутри неизвестных значений раскрываются (якорь мог стоять на
+  известном поле), с лимитом против alias-бомб; `<<` и несколько
+  документов — понятная ошибка.
+- Валидация (`Validate` → `[]Problem` с полем, текстом по-русски,
+  ошибка/предупреждение) повторяет проверки Hysteria: tls xor acme,
+  обязательные поля по выбранному типу, списки значений (без учёта
+  регистра), порты и диапазоны listen, скорости с единицами и минимумом
+  65536 Б/с, окна QUIC ≥ 16384, maxIdleTimeout 4–120 с, udpIdleTimeout
+  2–600 с, пароль obfs ≥ 4 байт, размеры пакетов gecko, уникальные имена
+  outbounds, bind IP vs device, masquerade, acl file xor inline, пользователи
+  userpass (двоеточие, совпадение без учёта регистра). Предупреждения:
+  trafficStats без секрета, mimic, число без единиц, короткий пароль,
+  Realms, неизвестные поля.
+- Генератор клиента `ClientFor(server, ClientOptions)`: адрес и порты из
+  listen (IPv6 в скобках, диапазон для port hopping + hopInterval), auth
+  (password, выбранный пользователь userpass как `user:pass`; для
+  http/command — только явно заданный), SNI первого ACME-домена при
+  подключении по IP, самоподписанный сертификат — `insecure` + `pinSHA256`,
+  obfs (только пароль), mimic, скорости, socks5/http на loopback;
+  результат проходит `Client.Validate`.
+- Тесты: round-trip полного, ACME и «будущего» конфига (сравнение как
+  дерева YAML + побайтовая стабильность второго прохода), все документированные
+  поля известны, неизвестные поля на всех уровнях и в списках
+  сохраняются после правки, ошибки разбора, якоря, alias-бомба, клиентский
+  round-trip, reflection-тест «у каждого типа модели есть Unknown и
+  YAML-методы», таблица ошибок и предупреждений валидации, генератор
+  (self-signed, ACME по домену и по IPv6, hopping, NAT-порты, userpass,
+  внешний auth, mimic/gecko, отказы), fuzz round-trip (минута без находок).
+  Фикстуры в `internal/hyconfig/testdata` — только example.com,
+  адреса из документационных диапазонов и пароли `fake-…`.
+  `reference/server-snapshot/` в репозитории нет.

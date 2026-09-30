@@ -1,0 +1,57 @@
+# Client config with fields the model does not cover (forwarding, tun).
+server: vpn.example.com:443,20000-50000
+auth: fake-auth-password
+tls:
+  sni: vpn.example.com
+  insecure: true
+  pinSHA256: deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+  ca: /etc/ssl/fake-ca.crt
+  clientCertificate: client.crt
+  clientKey: client.key
+  ech: fake-ech-config
+obfs:
+  type: gecko
+  gecko:
+    password: fake-obfs-password
+    minPacketSize: 600
+    maxPacketSize: 1100
+transport:
+  type: udp
+  udp:
+    hopInterval: 30s
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+  maxIdleTimeout: 30s
+  keepAlivePeriod: 10s
+  disablePathMTUDiscovery: true
+  disableChromeParrot: true
+  sockopts:
+    bindInterface: eth0
+    fwmark: 1234
+    fdControlUnixSocket: /tmp/fake.sock
+congestion:
+  type: reno
+bandwidth:
+  up: 50 mbps
+  down: 200 mbps
+fastOpen: true
+lazy: true
+socks5:
+  listen: 127.0.0.1:1080
+  username: fake-user
+  password: fake-socks-password
+  disableUDP: true
+http:
+  listen: 127.0.0.1:8080
+  username: fake-user
+  password: fake-http-password
+  realm: fake
+tcpForwarding:
+  - listen: 127.0.0.1:6600
+    remote: 192.0.2.1:22
+tun:
+  name: hytun
+  mtu: 1500
