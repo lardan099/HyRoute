@@ -30,6 +30,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/importer"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/logbuf"
+	"github.com/lardan099/hyroute/internal/srvmgr/monitor"
 	"github.com/lardan099/hyroute/internal/srvmgr/preflight"
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
@@ -133,6 +134,15 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		stopJobs()
 		<-jobsDone
 	}()
+	if cfg.MonitorInterval > 0 {
+		mon := &monitor.Collector{Store: db, Conn: conn, Log: log, Interval: cfg.MonitorInterval}
+		monDone := make(chan struct{})
+		go func() {
+			mon.Run(jobsCtx)
+			close(monDone)
+		}()
+		defer func() { stopJobs(); <-monDone }()
+	}
 
 	var certs *certFiles
 	if cfg.TLS() {

@@ -32,6 +32,7 @@ type Store interface {
 	Jobs
 	Configs
 	Installations
+	Metrics
 	Close() error
 }
 
@@ -93,6 +94,9 @@ type Servers interface {
 	UpdateServer(ctx context.Context, s *model.Server, seal SealFunc, drop []model.CredKind) error
 	// SetServerState changes only the state.
 	SetServerState(ctx context.Context, id int64, state model.ServerState, at time.Time) error
+	// SwapServerState sets state only while the server is in one of from,
+	// atomically; false: it was not (or there is no such server).
+	SwapServerState(ctx context.Context, id int64, from []model.ServerState, state model.ServerState, at time.Time) (bool, error)
 	// DeleteServer fails with ErrBusy while the server has an unfinished
 	// job: its rollback needs the credentials and the host key.
 	DeleteServer(ctx context.Context, id int64) error
@@ -162,4 +166,18 @@ type Installations interface {
 	// SetFirewall records the firewall rules HyRoute opened on the server
 	// (ErrNotFound: no installation).
 	SetFirewall(ctx context.Context, serverID int64, fw model.Firewall) error
+}
+
+// Metrics stores monitoring points.
+type Metrics interface {
+	// AddMetric stores a sample (m.Step 0); a second one at the same
+	// second replaces the first.
+	AddMetric(ctx context.Context, m model.Metric) error
+	// Metrics are the points of step (0 or model.MetricStep) with
+	// from <= At < to, oldest first.
+	Metrics(ctx context.Context, serverID int64, step int, from, to time.Time) ([]model.Metric, error)
+	// CompactMetrics averages the samples of every finished 15-minute
+	// period into a point of model.MetricStep, then drops samples older
+	// than keepSamples and averages older than keepAverages.
+	CompactMetrics(ctx context.Context, now time.Time, keepSamples, keepAverages time.Duration) error
 }

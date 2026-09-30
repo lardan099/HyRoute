@@ -34,6 +34,7 @@ func TestReadOnly(t *testing.T) {
 		{"sh", "-c", `command -v "$1" >/dev/null 2>&1`, "sh", "curl"},
 		{"getent", "passwd", "hysteria"},
 		{"df", "-Pk", "/"}, {"nproc"},
+		{"head", "-n", "200", "--", "/proc/stat", "/proc/meminfo"},
 	}
 	for _, a := range allowed {
 		if _, err := ex.Run(ctx, remote.Cmd{Args: a, Sudo: true}); err != nil {

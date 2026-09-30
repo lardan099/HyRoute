@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
@@ -139,6 +140,24 @@ func (d *DB) SetServerState(ctx context.Context, id int64, state model.ServerSta
 		return store.ErrNotFound
 	}
 	return nil
+}
+
+func (d *DB) SwapServerState(ctx context.Context, id int64, from []model.ServerState, state model.ServerState, at time.Time) (bool, error) {
+	if len(from) == 0 {
+		return false, nil
+	}
+	args := []any{string(state), unixTime(at), id}
+	marks := make([]string, len(from))
+	for i, f := range from {
+		marks[i] = "?"
+		args = append(args, string(f))
+	}
+	res, err := d.db.ExecContext(ctx, `UPDATE servers SET state = ?, updated_at = ? WHERE id = ? AND state IN (`+strings.Join(marks, ", ")+`)`, args...)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 func (d *DB) DeleteServer(ctx context.Context, id int64) error {

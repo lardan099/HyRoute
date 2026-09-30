@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func env(m map[string]string) func(string) string {
@@ -22,7 +23,7 @@ func TestLoadDefaults(t *testing.T) {
 	if c.MasterKeyFile != filepath.Join(c.DataDir, "master.key") {
 		t.Fatalf("master key file %q", c.MasterKeyFile)
 	}
-	if c.TrustProxy || c.LogLevel != "info" {
+	if c.TrustProxy || c.LogLevel != "info" || c.MonitorInterval != time.Minute {
 		t.Fatalf("%+v", c)
 	}
 }
@@ -78,11 +79,23 @@ func TestLoadErrors(t *testing.T) {
 		{"-log-level", "loud"},
 		{"-data-dir", ""},
 		{"-tls-cert", "/a/cert.pem"},
+		{"-monitor-interval", "5s"},
 		{"-tls-key", "/a/key.pem"},
 		{"extra"},
 	} {
 		if _, err := Load(args, env(nil), io.Discard); err == nil {
 			t.Errorf("%v: no error", args)
 		}
+	}
+}
+
+func TestMonitorInterval(t *testing.T) {
+	c, err := Load([]string{"-monitor-interval", "0"}, env(nil), io.Discard)
+	if err != nil || c.MonitorInterval != 0 {
+		t.Fatalf("off: %v %v", c.MonitorInterval, err)
+	}
+	c, err = Load(nil, env(map[string]string{"HYROUTE_SERVER_MONITOR_INTERVAL": "5m"}), io.Discard)
+	if err != nil || c.MonitorInterval != 5*time.Minute {
+		t.Fatalf("env: %v %v", c.MonitorInterval, err)
 	}
 }

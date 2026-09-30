@@ -63,6 +63,7 @@ var readFlags = map[string][]string{
 	"test":       {"-e", "-f", "-d", "-x"},
 	"stat":       {"-L", "-c", "--"},
 	"cat":        {"--"},
+	"head":       {"-n", "--"},
 	"sha256sum":  {"--"},
 	"ss":         {"-Hlntup"},
 	"ps":         {"-o", "-p"},

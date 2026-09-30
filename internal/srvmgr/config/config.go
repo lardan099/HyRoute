@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // Config is the controller configuration.
@@ -34,6 +35,8 @@ type Config struct {
 	TrustProxy bool
 	// LogLevel is debug, info, warn or error.
 	LogLevel string
+	// MonitorInterval is how often servers are sampled (0: never).
+	MonitorInterval time.Duration
 }
 
 // DefaultListen is the address used when none is given.
@@ -72,6 +75,7 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 	fs.StringVar(&c.TLSKey, "tls-key", env("TLS_KEY", ""), "TLS private key (PEM) (env HYROUTE_SERVER_TLS_KEY)")
 	fs.BoolVar(&c.InsecureHTTP, "insecure-http", isTrue(env("INSECURE_HTTP", "")), "allow plaintext HTTP on an address reachable from the network (env HYROUTE_SERVER_INSECURE_HTTP)")
 	fs.BoolVar(&c.TrustProxy, "trust-proxy", isTrue(env("TRUST_PROXY", "")), "trust X-Forwarded-* from a reverse proxy on loopback (env HYROUTE_SERVER_TRUST_PROXY)")
+	fs.DurationVar(&c.MonitorInterval, "monitor-interval", envDuration(getenv("HYROUTE_SERVER_MONITOR_INTERVAL"), time.Minute), "how often to sample the servers' CPU, memory, disk and network; 0 turns it off (env HYROUTE_SERVER_MONITOR_INTERVAL)")
 	fs.StringVar(&c.LogLevel, "log-level", env("LOG_LEVEL", "info"), "debug, info, warn or error (env HYROUTE_SERVER_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -86,6 +90,15 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 }
 
 func isTrue(v string) bool { return v == "1" || strings.EqualFold(v, "true") }
+
+// envDuration is v as a duration, def when empty or unreadable (the flag
+// check reports nothing for the env, so a typo keeps the default).
+func envDuration(v string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(strings.TrimSpace(v)); err == nil {
+		return d
+	}
+	return def
+}
 
 // TLS reports whether the admin is served over HTTPS.
 func (c Config) TLS() bool { return c.TLSCert != "" }
@@ -104,6 +117,9 @@ func (c Config) validate() error {
 	}
 	if c.DataDir == "" {
 		return errors.New("data-dir is empty")
+	}
+	if c.MonitorInterval != 0 && c.MonitorInterval < 10*time.Second {
+		return fmt.Errorf("monitor-interval %s: at least 10s, or 0 to turn monitoring off", c.MonitorInterval)
 	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":
