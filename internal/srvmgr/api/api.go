@@ -15,6 +15,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
+	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
@@ -27,6 +28,7 @@ type Deps struct {
 	Servers *servers.Service
 	Connect *connect.Connector
 	Jobs    *jobs.Engine
+	Deploy  *deploy.Submitter
 	Log     *slog.Logger
 	Version string
 	// TrustProxy: believe X-Forwarded-For/-Proto from a reverse proxy on
@@ -69,6 +71,8 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/servers/{id}/check", s.authed(anyRole, s.checkServer))
 	mux.HandleFunc("POST /api/v1/servers/{id}/host-key", s.authed(anyRole, s.trustHostKey))
 	mux.HandleFunc("POST /api/v1/servers/{id}/preflight", s.authed(anyRole, s.startPreflight))
+	mux.HandleFunc("POST /api/v1/servers/{id}/deploy", s.authed(anyRole, s.startDeploy))
+	mux.HandleFunc("GET /api/v1/servers/{id}/config", s.authed(anyRole, s.currentConfig))
 	mux.HandleFunc("GET /api/v1/jobs", s.authed(anyRole, s.listJobs))
 	mux.HandleFunc("GET /api/v1/jobs/{id}", s.authed(anyRole, s.getJob))
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs", s.authed(anyRole, s.jobLogs))

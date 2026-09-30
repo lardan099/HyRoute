@@ -216,6 +216,47 @@ export interface PreflightReport {
   blocked: boolean;
 }
 
+export type TLSMode = 'self-signed' | 'acme';
+export type DeploySource = 'auto' | 'direct' | 'relay';
+
+// DeployParams are the choices of a deploy; passwords and the certificate
+// are made by the controller (a redeploy keeps them).
+export interface DeployParams {
+  version?: string;
+  port?: number;
+  hopPorts?: string;
+  tls: TLSMode;
+  domain?: string;
+  email?: string;
+  challenge?: 'http' | 'tls';
+  sni?: string;
+  obfs?: boolean;
+  masquerade?: string;
+  source?: DeploySource;
+  keepFirewall?: boolean;
+  replace?: boolean;
+}
+
+// ServerConfig is the current config revision of a server: its summary,
+// never the config itself.
+export interface ServerConfig {
+  revision: number;
+  sha256: string;
+  source: 'deploy' | 'import' | 'edit';
+  jobId: number;
+  createdAt: string;
+  meta: {
+    version?: string;
+    listen?: string;
+    ports?: string;
+    tls?: string;
+    pinSHA256?: string;
+    sni?: string;
+    obfs?: string;
+    auth?: string;
+  };
+}
+
 export const jobEventsURL = (id: number) => `/api/v1/jobs/${id}/events`;
 
 // ServerInput: credentials left undefined keep the stored ones on update.
@@ -256,5 +297,7 @@ export const api = {
   jobs: (serverId = 0) => request<Job[]>('GET', '/jobs' + (serverId ? `?server=${serverId}` : '')),
   job: (id: number) => request<JobDetail>('GET', `/jobs/${id}`),
   retryJob: (id: number) => request<Job>('POST', `/jobs/${id}/retry`),
+  startDeploy: (serverId: number, p: DeployParams) => request<Job>('POST', `/servers/${serverId}/deploy`, p),
+  serverConfig: (serverId: number) => request<ServerConfig>('GET', `/servers/${serverId}/config`),
   startPreflight: (serverId: number, udpPort = 443) => request<Job>('POST', `/servers/${serverId}/preflight`, { udpPort }),
 };

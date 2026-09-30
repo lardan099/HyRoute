@@ -6,6 +6,7 @@
   import { canWrite, session } from '../session.svelte';
   import { duration, jobTone, stepTone, when } from './format';
   import PreflightReport from './PreflightReport.svelte';
+  import DeployResult from './DeployResult.svelte';
 
   let { id, servers }: { id: number; servers: Record<number, Server> } = $props();
 
@@ -123,7 +124,11 @@
     </div>
   {/if}
 
-  {#if report}<PreflightReport {report} />{/if}
+  {#if job.kind === 'deploy' && job.state === 'completed'}
+    <DeployResult serverId={job.serverId} jobId={job.id} />
+  {/if}
+  <!-- A deploy shows its preflight report only when the server was not ready. -->
+  {#if report && (job.kind !== 'deploy' || (job.state === 'failed' && report.blocked))}<PreflightReport {report} />{/if}
 
   <div class="cols">
     <section class="card steps">

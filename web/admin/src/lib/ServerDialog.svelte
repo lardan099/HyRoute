@@ -6,7 +6,9 @@
   import { t, type Key } from '../i18n';
   import Dialog from './Dialog.svelte';
 
-  let { server, onclose, onsaved }: { server: Server | null; onclose: () => void; onsaved: (s: Server) => void } = $props();
+  // onsaved gets deploy = true when a new server was added with "Добавить
+  // и развернуть".
+  let { server, onclose, onsaved }: { server: Server | null; onclose: () => void; onsaved: (s: Server, deploy: boolean) => void } = $props();
 
   // The form starts from the server as it was when the dialog opened.
   const s = untrack(() => server);
@@ -33,6 +35,7 @@
 
   async function save(e: SubmitEvent) {
     e.preventDefault();
+    const deploy = (e.submitter as HTMLButtonElement | null)?.value === 'deploy';
     busy = true;
     error = null;
     const input = {
@@ -51,7 +54,7 @@
       keyPassphrase: authType === 'key' && (keyPassphrase !== '' || key.trim() !== '') ? keyPassphrase : undefined,
     };
     try {
-      onsaved(s ? await api.updateServer(s.id, input) : await api.createServer(input));
+      onsaved(s ? await api.updateServer(s.id, input) : await api.createServer(input), deploy);
     } catch (err) {
       error = asApiError(err);
     } finally {
@@ -127,7 +130,8 @@
   </form>
   {#snippet actions()}
     <button type="button" onclick={onclose}>{t('common.cancel')}</button>
-    <button class="primary" type="submit" form="server-form" disabled={busy}>{s ? t('common.save') : t('servers.add')}</button>
+    {#if !s}<button type="submit" form="server-form" value="add" disabled={busy}>{t('servers.add')}</button>{/if}
+    <button class="primary" type="submit" form="server-form" value={s ? 'save' : 'deploy'} disabled={busy}>{s ? t('common.save') : t('deploy.addAndDeploy')}</button>
   {/snippet}
 </Dialog>
 

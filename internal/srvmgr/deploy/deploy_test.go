@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/remote"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
+	"github.com/lardan099/hyroute/internal/srvmgr/store"
 	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
 )
 
@@ -554,5 +556,65 @@ func TestACMERollbackKeepsForeignCert(t *testing.T) {
 	// ACME needs TCP 80 free: preflight asked for it.
 	if !s.ran("ss -Hlntup") {
 		t.Fatal("ports not checked")
+	}
+}
+
+func TestSubmitterKeepsPasswords(t *testing.T) {
+	s := newSim()
+	h := newHarness(t, s)
+	sub := &Submitter{Store: h.db, Keys: h.keys, Jobs: h.eng}
+	ctx := context.Background()
+
+	_, err := sub.Submit(ctx, h.server, Params{TLS: "none"}, 0)
+	var fe *model.FieldError
+	if !errors.As(err, &fe) || !strings.HasPrefix(fe.Msg, "Неизвестный режим TLS") || !strings.HasSuffix(fe.Msg, ".") {
+		t.Fatalf("bad params: %v", err)
+	}
+	if _, err := sub.Submit(ctx, 999, params(), 0); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing server: %v", err)
+	}
+
+	j, err := sub.Submit(ctx, h.server, params(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j = h.wait(j.ID); j.State != model.JobCompleted {
+		t.Fatalf("first deploy: %s %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
+	}
+	first, _ := s.file(ConfigPath)
+	cert, _ := s.file(CertPath)
+
+	// The same deploy again: same passwords and certificate, nothing written.
+	s.reset()
+	j, _ = sub.Submit(ctx, h.server, params(), 0)
+	if j = h.wait(j.ID); j.State != model.JobCompleted {
+		t.Fatalf("redeploy: %s %s", j.State, j.ErrorMessage)
+	}
+	if again, _ := s.file(ConfigPath); !bytes.Equal(again, first) || len(s.writes) != 0 {
+		t.Fatalf("redeploy changed the config: %v", s.writes)
+	}
+
+	// Obfuscation added: the auth password and the pin stay.
+	p := params()
+	p.Obfs = true
+	j, _ = sub.Submit(ctx, h.server, p, 0)
+	if j = h.wait(j.ID); j.State != model.JobCompleted {
+		t.Fatalf("obfs deploy: %s %s", j.State, j.ErrorMessage)
+	}
+	before, _ := hyconfig.ParseServer(first)
+	b, _ := s.file(ConfigPath)
+	after, err := hyconfig.ParseServer(b)
+	if err != nil || after.Auth.Password != before.Auth.Password || after.Obfs.Salamander.Password == "" {
+		t.Fatalf("passwords after adding obfs: %v", err)
+	}
+	if c, _ := s.file(CertPath); !bytes.Equal(c, cert) {
+		t.Fatal("the certificate changed")
+	}
+	sec, err := CurrentSecrets(ctx, h.db, h.keys, h.server)
+	if err != nil || sec[SecretAuth] != before.Auth.Password || sec[SecretObfs] != after.Obfs.Salamander.Password {
+		t.Fatalf("current secrets: %v", err)
+	}
+	if revs := h.revisions(); len(revs) != 2 || revs[0].Meta.Obfs != "salamander" || revs[0].Meta.PinSHA256 != revs[1].Meta.PinSHA256 {
+		t.Fatalf("revisions (newest first): %d", len(revs))
 	}
 }

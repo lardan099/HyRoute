@@ -363,12 +363,12 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | POST | `/api/v1/servers/{id}/check` | operator+ | подключение и проверка прав (ничего не меняет) |
 | POST | `/api/v1/servers/{id}/host-key` | operator+ | TOFU / re-trust с отпечатком (`replace`) |
 | POST | `/api/v1/servers/{id}/preflight` | operator+ | job preflight |
-| POST | `/api/v1/servers/{id}/deploy` | operator+ | job Quick Deploy |
+| POST | `/api/v1/servers/{id}/deploy` | operator+ | job Quick Deploy; нужен подтверждённый ключ SSH; пароли прежней ревизии сохраняются |
 | POST | `/api/v1/servers/{id}/import` | operator+ | job импорта |
 | GET | `/api/v1/servers/{id}/status` | любая | статус сервиса |
 | POST | `/api/v1/servers/{id}/service/{start,stop,restart}` | operator+ | с подтверждением в UI |
 | GET | `/api/v1/servers/{id}/journal` (SSE) | любая | журнал Hysteria через redaction |
-| GET/POST | `/api/v1/servers/{id}/config` | читать: любая; применить: operator+ | текущий конфиг (секреты скрыты), diff, apply |
+| GET/POST | `/api/v1/servers/{id}/config` | читать: любая; применить: operator+ | сводка текущей ревизии (версия, порты, TLS, pin, obfs; без конфига и паролей); редактор, diff, apply — P1-13 |
 | GET | `/api/v1/servers/{id}/client` | любая | ссылка/QR/конфиг без секретов; `?reveal=1` — operator+, пишется в audit log |
 | GET | `/api/v1/jobs`, `/api/v1/jobs/{id}` | любая | список (`?server=`, `?before=`), детали с шагами |
 | GET | `/api/v1/jobs/{id}/logs` | любая | строки журнала после `?after=` |

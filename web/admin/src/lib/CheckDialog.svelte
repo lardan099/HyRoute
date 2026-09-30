@@ -7,7 +7,10 @@
   import { t } from '../i18n';
   import Dialog from './Dialog.svelte';
 
-  let { server, onclose, onchanged }: { server: Server; onclose: () => void; onchanged: () => void } = $props();
+  // oncontinue: the check is a step before something else (a deploy),
+  // offered once the server is reachable with admin rights.
+  let { server, onclose, onchanged, oncontinue, continueLabel = '' }: { server: Server; onclose: () => void; onchanged: () => void; oncontinue?: () => void; continueLabel?: string } =
+    $props();
 
   let busy = $state(true);
   let result = $state<CheckResult | null>(null);
@@ -94,6 +97,9 @@
     {:else if !busy && error?.code === 'host_key_changed'}
       <button onclick={onclose}>{t('common.cancel')}</button>
       <button class="primary danger-bg" disabled={!understood} onclick={() => trust(true)}>{t('check.retrust')}</button>
+    {:else if !busy && result?.ok && oncontinue}
+      <button onclick={onclose}>{t('common.cancel')}</button>
+      <button class="primary" onclick={oncontinue}>{continueLabel}</button>
     {:else}
       {#if !busy && error}<button onclick={check}>{t('common.retry')}</button>{/if}
       <button class="primary" onclick={onclose}>{t('common.close')}</button>

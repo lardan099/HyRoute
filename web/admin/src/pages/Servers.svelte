@@ -6,6 +6,7 @@
   import Dialog from '../lib/Dialog.svelte';
   import ServerDialog from '../lib/ServerDialog.svelte';
   import CheckDialog from '../lib/CheckDialog.svelte';
+  import DeployDialog from '../lib/DeployDialog.svelte';
   import { flag, stateTone } from '../lib/format';
   import { go } from '../router.svelte';
 
@@ -14,6 +15,9 @@
   let editing = $state<Server | null | undefined>(undefined); // undefined: closed, null: new
   let deleting = $state<Server | null>(null);
   let checking = $state<Server | null>(null);
+  // checkThenDeploy: the check dialog is the first step of a deploy.
+  let checkThenDeploy = $state(false);
+  let deploying = $state<Server | null>(null);
   let deleteError = $state<ApiError | null>(null);
   let writable = $derived(canWrite(session.user));
 
@@ -33,6 +37,17 @@
       go('deployments', j.id);
     } catch (e) {
       error = asApiError(e);
+    }
+  }
+
+  // deploy opens the deploy form; a server whose SSH key is not confirmed
+  // yet is checked first.
+  function deploy(s: Server) {
+    if (s.hostKey) {
+      deploying = s;
+    } else {
+      checking = s;
+      checkThenDeploy = true;
     }
   }
 
@@ -85,17 +100,18 @@
             </td>
             <td class="mono">{s.sshUser}@{s.host}{s.sshPort !== 22 ? ':' + s.sshPort : ''}</td>
             <td>{t(`srvrole.${s.role}` as Key)}</td>
-            <td>
+            <td class="state">
               <span class="dot {stateTone(s.state)}"></span> {t(`state.${s.state}` as Key)}
               {#if !s.hostKey}<div class="small faint">{t('servers.keyNotConfirmed')}</div>{/if}
             </td>
             <td class="act">
-              {#if writable}
-                <button class="ghost" onclick={() => (checking = s)}>{t('check.button')}</button>
+              {#if writable}<div class="acts">
+                <button class="ghost" onclick={() => deploy(s)}>{t('deploy.button')}</button>
+                <button class="ghost" onclick={() => ((checking = s), (checkThenDeploy = false))}>{t('check.button')}</button>
                 <button class="ghost" onclick={() => preflight(s)}>{t('preflight.button')}</button>
                 <button class="ghost" onclick={() => (editing = s)}>{t('common.edit')}</button>
                 <button class="ghost danger" onclick={() => ((deleting = s), (deleteError = null))}>{t('common.delete')}</button>
-              {/if}
+              </div>{/if}
             </td>
           </tr>
         {/each}
@@ -108,15 +124,31 @@
   <ServerDialog
     server={editing}
     onclose={() => (editing = undefined)}
-    onsaved={() => {
+    onsaved={(s, andDeploy) => {
       editing = undefined;
       load();
+      if (andDeploy) deploy(s);
     }}
   />
 {/if}
 
 {#if checking}
-  <CheckDialog server={checking} onclose={() => (checking = null)} onchanged={load} />
+  <CheckDialog
+    server={checking}
+    onclose={() => (checking = null)}
+    onchanged={load}
+    oncontinue={checkThenDeploy
+      ? () => {
+          deploying = checking;
+          checking = null;
+        }
+      : undefined}
+    continueLabel={t('deploy.continue')}
+  />
+{/if}
+
+{#if deploying}
+  <DeployDialog server={deploying} onclose={() => (deploying = null)} onstarted={(j) => go('deployments', j.id)} />
 {/if}
 
 {#if deleting}
@@ -133,12 +165,14 @@
 <style>
   .head { margin-bottom: 16px; }
   .empty p { margin: 0; color: var(--muted); }
-  .table { padding: 6px 8px; }
+  .table { padding: 6px 8px; overflow-x: auto; }
   th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12.5px; padding: 8px; }
   td { padding: 10px 8px; border-top: 1px solid var(--border); vertical-align: middle; }
   .name { font-weight: 600; }
   .sub { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 2px; }
-  .act { text-align: right; white-space: nowrap; }
+  .state { white-space: nowrap; }
+  .acts { display: flex; justify-content: flex-end; gap: 2px; }
+  .acts button { padding: 6px 8px; }
   p { margin: 0; }
   :global(button.danger-bg) { background: var(--block); }
 </style>
