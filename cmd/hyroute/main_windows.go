@@ -184,6 +184,9 @@ func main() {
 		ctl.Log.Warn("files next to HyRoute.exe do not match the ones HyRoute was built with (damaged or replaced); verified copies were downloaded instead",
 			"files", strings.Join(staged.Replaced, ", "))
 	}
+	for _, d := range core.MovedAside() {
+		ctl.Log.Warn("a HyRoute folder under ProgramData was not made by HyRoute (another program made it, or takeown gave it to a user): it was renamed and made anew; the renamed folder is not used and can be deleted", "renamed", d)
+	}
 	if runtimeDir != core.DefaultDir("runtime") {
 		ctl.Log.Warn("the shared copies of hysteria.exe and WinDivert are in use by a HyRoute of another version (another Windows user): this one runs its own", "runtime", runtimeDir)
 	}
