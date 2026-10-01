@@ -1,11 +1,14 @@
 package hyconfig
 
 import (
+	"fmt"
 	"os"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -207,6 +210,59 @@ func TestAliasIntoKnownField(t *testing.T) {
 	bomb := "a: &a [x, x, x, x, x, x, x, x, x, x]\nb: &b [*a, *a, *a, *a, *a, *a, *a, *a, *a, *a]\nc: &c [*b, *b, *b, *b, *b, *b, *b, *b, *b, *b]\nd: &d [*c, *c, *c, *c, *c, *c, *c, *c, *c, *c]\ne: [*d, *d, *d, *d, *d, *d, *d, *d, *d, *d]\n"
 	if _, err := ParseServer([]byte(bomb)); err == nil {
 		t.Fatal("alias bomb accepted")
+	}
+}
+
+// The alias budget is one for the whole document: many keys each aliasing
+// one big anchor stay under a per-value budget but add up (47 KB of YAML
+// made ParseServer allocate gigabytes).
+func TestAliasBombAcrossKeys(t *testing.T) {
+	var big strings.Builder
+	big.WriteString("[x")
+	for range 8999 {
+		big.WriteString(",x")
+	}
+	big.WriteString("]")
+	var keys, nested, outbounds strings.Builder
+	for i := range 3000 {
+		fmt.Fprintf(&keys, "k%d: *a\n", i)
+		fmt.Fprintf(&nested, "  k%d: *a\n", i)
+		outbounds.WriteString("  - *o\n")
+	}
+	for name, doc := range map[string]string{
+		"top-level keys":  "x-a: &a " + big.String() + "\n" + keys.String(),
+		"nested keys":     "x-a: &a " + big.String() + "\ntls:\n" + nested.String(),
+		"list of structs": "outbounds:\n  - &o\n    name: o\n    type: direct\n    x-big: " + big.String() + "\n" + outbounds.String(),
+	} {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		start := time.Now()
+		_, err := ParseServer([]byte(doc))
+		took := time.Since(start)
+		runtime.ReadMemStats(&after)
+		if err == nil || !strings.Contains(err.Error(), "слишком много ссылок YAML") {
+			t.Errorf("%s (%d KB): %v", name, len(doc)>>10, err)
+		}
+		if mb := (after.TotalAlloc - before.TotalAlloc) >> 20; mb > 64 {
+			t.Errorf("%s: parsing allocated %d MB in %v", name, mb, took)
+		}
+	}
+	if _, err := ParseClient([]byte("x-a: &a " + big.String() + "\n" + keys.String())); err == nil {
+		t.Error("client config: alias bomb accepted")
+	}
+	if _, err := ParseServer([]byte("x-a: &a [x, *a]\n")); err == nil {
+		t.Error("alias inside its own anchor accepted")
+	}
+
+	// Aliases that add up to less than the budget still work.
+	var ok strings.Builder
+	ok.WriteString("x-a: &a [" + strings.Repeat("x, ", 99) + "x]\n")
+	for i := range 50 {
+		fmt.Fprintf(&ok, "k%d: *a\n", i)
+	}
+	s := parseServer(t, []byte(ok.String()))
+	if len(s.Unknown) != 2*51 || len(s.Unknown[len(s.Unknown)-1].Content) != 100 {
+		t.Fatalf("unknown keys %d", len(s.Unknown))
 	}
 }
 

@@ -115,10 +115,60 @@ func decodeKnown(n *yaml.Node, v any, unk *Unknown) error {
 	return nil
 }
 
+// maxExpand bounds the nodes YAML aliases may add to a document, all of
+// them together (alias bombs), and the size of one copied unknown value.
 const maxExpand = 10000
 
+// checkAliases fails when replacing every alias of the document with its
+// target would add more than maxExpand nodes, or when an alias is inside
+// its own anchor. Aliases are expanded more than once while decoding (in
+// copies of unknown values, in the known fields), each time within the
+// size counted here, so the work stays near the size of the text.
+func checkAliases(root *yaml.Node) error {
+	const counting = -1
+	size := map[*yaml.Node]int{} // expanded size of anchored nodes
+	added := 0
+	var walk func(*yaml.Node) (int, error)
+	walk = func(n *yaml.Node) (int, error) {
+		if n.Kind == yaml.AliasNode && n.Alias != nil {
+			s, ok := size[n.Alias]
+			if !ok {
+				var err error
+				if s, err = walk(n.Alias); err != nil {
+					return 0, err
+				}
+			}
+			if s == counting {
+				return 0, fmt.Errorf("строка %d: ссылка YAML *%s внутри своего якоря", n.Line, n.Value)
+			}
+			if added += s; added > maxExpand {
+				return 0, fmt.Errorf("строка %d: слишком много ссылок YAML: раскрытые, они добавили бы в конфиг больше %d элементов", n.Line, maxExpand)
+			}
+			return s, nil
+		}
+		if n.Anchor != "" {
+			size[n] = counting
+		}
+		s := 1
+		for _, c := range n.Content {
+			cs, err := walk(c)
+			if err != nil {
+				return 0, err
+			}
+			s += cs
+		}
+		if n.Anchor != "" {
+			size[n] = s
+		}
+		return s, nil
+	}
+	_, err := walk(root)
+	return err
+}
+
 // expandAliases copies n with every alias replaced by a copy of its
-// target, within a node budget (alias bombs).
+// target, within a node budget (alias bombs). parseDoc has already bounded
+// the expansion of the whole document.
 func expandAliases(n *yaml.Node, budget *int) (*yaml.Node, error) {
 	if *budget--; *budget < 0 {
 		return nil, errors.New("слишком много ссылок YAML")
@@ -175,6 +225,9 @@ func parseDoc(b []byte, v any) error {
 	}
 	if len(doc.Content) == 0 {
 		return errors.New("конфиг пуст")
+	}
+	if err := checkAliases(doc.Content[0]); err != nil {
+		return err
 	}
 	return doc.Content[0].Decode(v)
 }
