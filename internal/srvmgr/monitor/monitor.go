@@ -1,6 +1,7 @@
 // Package monitor samples the servers' CPU, memory, disk, load and network
-// over SSH on a schedule and keeps the points (store.Metrics), and checks
-// the health of servers with Hysteria installed (health.go). It reads
+// over SSH on a schedule and keeps the points (store.Metrics), checks
+// the health of servers with Hysteria installed (health.go) and counts
+// their traffic per user from the Hysteria stats API (traffic.go). It reads
 // only (remote.ReadOnly, no sudo) and runs outside the job engine: a
 // sample never waits for a job and never blocks one.
 package monitor
@@ -33,6 +34,7 @@ type Store interface {
 	UnfinishedJobs(ctx context.Context) ([]model.Job, error)
 	store.Metrics
 	store.HealthChecks
+	store.Traffic
 }
 
 // Connector opens an SSH connection to a server (connect.Connector).
@@ -55,13 +57,14 @@ type Collector struct {
 	Timeout  time.Duration
 	Parallel int
 	// KeepSamples (default 48 h) and KeepAverages (default 30 days);
-	// KeepHealth (default 7 days).
-	KeepSamples, KeepAverages, KeepHealth time.Duration
+	// KeepHealth (default 7 days); KeepTraffic (default 90 days).
+	KeepSamples, KeepAverages, KeepHealth, KeepTraffic time.Duration
 	// Probe checks a UDP port from the controller (quicprobe.Probe).
 	Probe func(ctx context.Context, addr, salamander string) (time.Duration, error)
 
 	mu          sync.Mutex
 	prev        map[int64]last
+	traffic     map[int64]counters
 	refused     map[int64]refusal
 	lastCompact time.Time
 }
@@ -165,6 +168,9 @@ func (c *Collector) defaults() {
 	if c.KeepHealth == 0 {
 		c.KeepHealth = 7 * 24 * time.Hour
 	}
+	if c.KeepTraffic == 0 {
+		c.KeepTraffic = 90 * 24 * time.Hour
+	}
 	if c.Probe == nil {
 		c.Probe = quicprobe.Probe
 	}
@@ -176,6 +182,9 @@ func (c *Collector) defaults() {
 	}
 	if c.refused == nil {
 		c.refused = map[int64]refusal{}
+	}
+	if c.traffic == nil {
+		c.traffic = map[int64]counters{}
 	}
 }
 
@@ -251,6 +260,9 @@ func (c *Collector) Round(ctx context.Context) {
 		if err := c.Store.PruneHealth(ctx, now.Add(-c.KeepHealth)); err != nil && ctx.Err() == nil {
 			c.Log.Warn("monitor: prune health", "err", err)
 		}
+		if err := c.Store.PruneTraffic(ctx, now.Add(-c.KeepTraffic)); err != nil && ctx.Err() == nil {
+			c.Log.Warn("monitor: prune traffic", "err", err)
+		}
 	}
 }
 
@@ -325,6 +337,11 @@ func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool, lo
 	if err := c.Store.AddMetric(ctx, Point(srv.ID, now, s, prev, p.at)); err != nil && ctx.Err() == nil {
 		c.Log.Warn("monitor: store", "server", srv.Name, "err", err)
 		return
+	}
+	// A job may be changing the config (and the secret): its servers are
+	// read once it ends; the counters carry the traffic in between.
+	if !busy {
+		c.readTraffic(cctx, srv, ro)
 	}
 	if hc == nil && !busy {
 		if ok, _ := c.Store.SwapServerState(ctx, srv.ID, []model.ServerState{model.StateOffline}, model.StateHealthy, now); ok {

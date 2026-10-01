@@ -20,6 +20,7 @@
     to,
     gap,
     max,
+    legendValues = true,
   }: {
     label: string;
     times: number[]; // ms, ascending
@@ -29,6 +30,7 @@
     to: number;
     gap: number; // ms
     max?: number; // fixed top (100 for percent)
+    legendValues?: boolean; // the legend shows each series' last value
   } = $props();
 
   const H = 150;
@@ -122,7 +124,7 @@
     <div class="legend small">
       {#each series as s (s.name)}
         {@const last = [...s.values].reverse().find((v) => v !== null)}
-        <span><i style="background:{s.color}"></i>{s.name} <b>{last != null ? format(last) : '—'}</b></span>
+        <span><i style="background:{s.color}"></i>{s.name}{#if legendValues} <b>{last != null ? format(last) : '—'}</b>{/if}</span>
       {/each}
     </div>
   {/if}

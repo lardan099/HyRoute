@@ -15,6 +15,7 @@
   import ConfigHistory from '../lib/ConfigHistory.svelte';
   import MetricsCard from '../lib/MetricsCard.svelte';
   import HealthCard from '../lib/HealthCard.svelte';
+  import TrafficCard from '../lib/TrafficCard.svelte';
 
   let { id }: { id: number } = $props();
 
@@ -245,6 +246,7 @@
 
   {#key id}<HealthCard serverId={id} />{/key}
   {#key id}<MetricsCard serverId={id} />{/key}
+  {#key id}<TrafficCard serverId={id} {writable} />{/key}
 
   {#key config?.revision}<ClientCard serverId={id} serverName={server.name} />{/key}
 

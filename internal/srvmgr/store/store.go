@@ -34,6 +34,7 @@ type Store interface {
 	Installations
 	Metrics
 	HealthChecks
+	Traffic
 	Close() error
 }
 
@@ -184,6 +185,18 @@ type Metrics interface {
 	// LatestMetrics is the newest sample of each server taken at or after
 	// since.
 	LatestMetrics(ctx context.Context, since time.Time) ([]model.Metric, error)
+}
+
+// Traffic keeps what each Hysteria user moved per hour.
+type Traffic interface {
+	// AddTraffic adds bytes per user (Tx and Rx of each entry) to the hour
+	// of at.
+	AddTraffic(ctx context.Context, serverID int64, at time.Time, users map[string]model.TrafficHour) error
+	// Traffic is the server's traffic per user and hour for the hours
+	// that start in [from rounded down to the hour, to), oldest first.
+	Traffic(ctx context.Context, serverID int64, from, to time.Time) ([]model.TrafficHour, error)
+	// PruneTraffic drops hours that start before before.
+	PruneTraffic(ctx context.Context, before time.Time) error
 }
 
 // HealthChecks stores the results of server health checks.

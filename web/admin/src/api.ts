@@ -394,6 +394,43 @@ export interface HealthCheck {
   egress?: string;
 }
 
+export type TrafficPeriod = '24h' | '7d' | '30d' | '90d';
+
+// Traffic of a server's Hysteria users: tx is the client's upload, rx its
+// download.
+export interface ServerTraffic {
+  period: TrafficPeriod;
+  from: string;
+  to: string;
+  enabled: boolean;
+  hours: { t: string; tx: number; rx: number }[];
+  users: { user: string; tx: number; rx: number }[];
+}
+
+export interface TrafficOnline {
+  at: string;
+  users: { user: string; connections: number }[];
+}
+
+export interface TrafficStream {
+  state: string;
+  user: string;
+  connection: number;
+  stream: number;
+  addr: string;
+  hookedAddr: string;
+  tx: number;
+  rx: number;
+  since: string;
+  lastActive: string;
+}
+
+export interface TrafficStreams {
+  at: string;
+  total: number;
+  streams: TrafficStream[];
+}
+
 export interface ServerHealth {
   latest: HealthCheck | null;
   changes: HealthCheck[];
@@ -552,6 +589,9 @@ export const api = {
   applyConfig: (serverId: number, input: ConfigInput) => request<Job>('POST', `/servers/${serverId}/config/apply`, input),
   serverMetrics: (serverId: number, period: MetricPeriod) => request<MetricSeries>('GET', `/servers/${serverId}/metrics?period=${period}`),
   serverHealth: (serverId: number) => request<ServerHealth>('GET', `/servers/${serverId}/health`),
+  serverTraffic: (serverId: number, period: TrafficPeriod) => request<ServerTraffic>('GET', `/servers/${serverId}/traffic?period=${period}`),
+  trafficOnline: (serverId: number) => request<TrafficOnline>('GET', `/servers/${serverId}/traffic/online`),
+  trafficStreams: (serverId: number) => request<TrafficStreams>('GET', `/servers/${serverId}/traffic/streams`),
   latestMetrics: () => request<LatestMetric[]>('GET', '/metrics/latest'),
   configRevisions: (serverId: number) => request<ConfigRevision[]>('GET', `/servers/${serverId}/config/revisions`),
   configRevision: (serverId: number, rev: number) => request<ConfigView>('GET', `/servers/${serverId}/config/revisions/${rev}`),
