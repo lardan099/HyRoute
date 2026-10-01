@@ -72,6 +72,95 @@ func TestMergeSameHostDifferentPorts(t *testing.T) {
 	}
 }
 
+// oldPortLinks are links whose ports HyRoute up to v1.3.0-beta.3 saved
+// differently: it appended mport to the authority port, the parser now
+// leaves out an authority port mport already covers.
+var oldPortLinks = []struct{ link, saved, now string }{
+	{"hysteria2://fake-a@a.example:443/?mport=443,20000-30000#A", "443,443,20000-30000", "443,20000-30000"},
+	{"hysteria2://fake-b@b.example:25000/?mport=20000-30000#B", "25000,20000-30000", "20000-30000"},
+	{"hy2://fake-c@c.example:443/?mport=443#C", "443,443", "443"},
+	{"hysteria2://fake-d@d.example:443/?mport=20000-30000#D", "443,20000-30000", "443,20000-30000"},
+}
+
+// The first update after the upgrade finds every server saved with the
+// old ports, even when the panel changed all the names (traffic left):
+// same IDs, nothing added, missing or removed.
+func TestMergeOldPortSpecs(t *testing.T) {
+	src := "sub:s1"
+	var saved []hysteria.Profile
+	var text []string
+	for i, c := range oldPortLinks {
+		p, _, err := hysteria.ParseURI(c.link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Ports != c.now {
+			t.Fatalf("%s: %q", c.link, p.Ports)
+		}
+		p.ID, p.Source, p.Ports, p.Name = fmt.Sprintf("old%d", i), src, c.saved, p.Name+" | 10 GB left"
+		saved = append(saved, p)
+		text = append(text, c.link)
+	}
+	fresh := ParseLinks(strings.Join(text, "\n"))
+	if len(fresh.Profiles) != len(oldPortLinks) {
+		t.Fatalf("%+v", fresh)
+	}
+	inUse := func(string) bool { return true } // unmatched ones would stay as missing
+	list, st := mergeSubscription(saved, src, fresh.Profiles, inUse, newID)
+	if st != (MergeStats{Updated: len(oldPortLinks)}) || len(list) != len(oldPortLinks) {
+		t.Fatalf("%+v %+v", st, list)
+	}
+	for i, x := range list {
+		if x.ID != fmt.Sprintf("old%d", i) || x.Missing || x.Ports != oldPortLinks[i].now {
+			t.Fatalf("%d: %+v", i, x)
+		}
+	}
+
+	// A copy added by hand back then is still a duplicate of the
+	// subscription's server.
+	for i, x := range list {
+		manual := saved[i]
+		manual.Source = ""
+		if connKey(manual) != connKey(x) || endpointKey(manual) != endpointKey(x) {
+			t.Errorf("%s: %q and %q are different servers", oldPortLinks[i].link, manual.Ports, x.Ports)
+		}
+	}
+}
+
+// The duplicate checks see servers saved with the old ports: their links
+// are not imported again, and a subscription's copy marks them.
+func TestDuplicatesOldPortSpecs(t *testing.T) {
+	c, _ := newCtl(t)
+	var text []string
+	c.mu.Lock()
+	for i, x := range oldPortLinks {
+		p, _, err := hysteria.ParseURI(x.link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.ID, p.Ports = fmt.Sprintf("old%d", i), x.saved
+		c.profiles.List = append(c.profiles.List, p)
+		text = append(text, x.link)
+	}
+	c.mu.Unlock()
+	res, err := c.ImportURIs(strings.Join(text, "\n"))
+	if err != nil || len(res.Added) != 0 || len(res.Skipped) != len(oldPortLinks) {
+		t.Fatalf("%+v %v", res, err)
+	}
+	c.mu.Lock()
+	for i, x := range oldPortLinks {
+		p, _, _ := hysteria.ParseURI(x.link)
+		p.ID, p.Source = fmt.Sprintf("sub%d", i), "sub:s1"
+		c.profiles.List = append(c.profiles.List, p)
+	}
+	c.mu.Unlock()
+	for _, s := range c.Profiles()[:len(oldPortLinks)] {
+		if s.DuplicateOf == "" {
+			t.Errorf("%s (%s) is not marked as a copy", s.Name, s.Server)
+		}
+	}
+}
+
 // An update must not undo what the user set on a subscription server
 // outside the share link, nor restart its Hysteria for nothing.
 func TestMergeKeepsLocalSettings(t *testing.T) {

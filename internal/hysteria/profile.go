@@ -161,6 +161,10 @@ func ParsePorts(s string) ([]PortRange, error) {
 	return out, nil
 }
 
+// NormalizePorts is the port set of a spec in one form, for telling
+// whether two profiles name the same server (see hy2uri.NormalizePorts).
+func NormalizePorts(s string) string { return hy2uri.NormalizePorts(s) }
+
 // ServerString formats host (or an override IP) with the ports spec the way
 // Hysteria's "server" field expects it (see hy2uri.ServerString).
 func ServerString(host, ports string) string { return hy2uri.ServerString(host, ports) }

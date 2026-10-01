@@ -136,6 +136,35 @@ func TestParseErrors(t *testing.T) {
 	}
 }
 
+func TestNormalizePorts(t *testing.T) {
+	for in, want := range map[string]string{
+		"443":                      "443",
+		"443,443":                  "443",
+		"443,443,20000-30000":      "443,20000-30000",
+		"20000-30000,443":          "443,20000-30000",
+		"25000,20000-30000":        "20000-30000",
+		"443, 444,445-500,499-600": "443-600",
+		"1-65535,443":              "1-65535",
+		"8443,443":                 "443,8443",
+		"443,,444":                 "443,,444", // invalid: as is, without spaces
+		" 0 , 1":                   "0,1",
+	} {
+		if got := NormalizePorts(in); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+		if got := NormalizePorts(want); got != want {
+			t.Errorf("%q again: %q", want, got)
+		}
+	}
+	// What HyRoute up to v1.3.0-beta.3 saved for a link (authority port,
+	// then mport) is the same set as what the parser gives now.
+	for _, c := range [][2]string{{"443", "443,20000-30000"}, {"25000", "20000-30000"}, {"443", "443"}, {"20000-30000", "25000-26000"}, {"443", " 20000-30000 "}} {
+		if a, b := NormalizePorts(c[0]+","+c[1]), NormalizePorts(mergePorts(c[0], c[1])); a != b {
+			t.Errorf("%q + %q: before %q, now %q", c[0], c[1], a, b)
+		}
+	}
+}
+
 func TestValidPin(t *testing.T) {
 	colons := strings.ToUpper(strings.Join(splitEvery(pin, 2), ":"))
 	for _, p := range []string{pin, colons, strings.ReplaceAll(colons, ":", "-")} {

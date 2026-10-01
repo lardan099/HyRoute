@@ -202,7 +202,10 @@ func validSubURL(raw string) error {
 // equal, and a 10 000-server restore must not compare every pair.
 type srvIndex map[string][]int
 
-func hostKey(p *hysteria.Profile) string { return p.Host + "\x00" + p.Ports }
+// hostKey takes the ports as a set, like connKey: a backup made by
+// HyRoute up to v1.3.0-beta.3 may hold "443,443,20000-30000" for the
+// server a subscription now gives as "443,20000-30000".
+func hostKey(p *hysteria.Profile) string { return p.Host + "\x00" + hysteria.NormalizePorts(p.Ports) }
 
 func indexOf(list []hysteria.Profile) srvIndex {
 	ix := srvIndex{}
@@ -218,11 +221,13 @@ func indexOf(list []hysteria.Profile) srvIndex {
 // (ambiguous when there were several). IDs and names never match alone.
 func matchServer(b hysteria.Profile, pool []hysteria.Profile, ix srvIndex, secretFree bool, skip func(int) bool) (int, bool) {
 	var cand []int
+	b.Ports = hysteria.NormalizePorts(b.Ports)
 	for _, i := range ix[hostKey(&b)] {
 		if skip != nil && skip(i) {
 			continue
 		}
 		x := pool[i]
+		x.Ports = b.Ports // the same set: hostKey
 		if secretFree && hysteria.SameConnectionNoSecrets(b, x) || !secretFree && hysteria.SameConnection(b, x) {
 			cand = append(cand, i)
 		}
@@ -853,7 +858,10 @@ func (x *planCtx) resolve(id, where string) string {
 			return ""
 		}
 		sameName := func(p hysteria.Profile) bool { return strings.EqualFold(strings.TrimSpace(p.Name), name) }
-		sameAddr := func(p hysteria.Profile) bool { return strings.EqualFold(p.Host, d.Host) && p.Ports == d.Ports }
+		ports := hysteria.NormalizePorts(d.Ports) // a set, as in hostKey
+		sameAddr := func(p hysteria.Profile) bool {
+			return strings.EqualFold(p.Host, d.Host) && hysteria.NormalizePorts(p.Ports) == ports
+		}
 		if r := pick(func(p hysteria.Profile) bool { return sameAddr(p) && sameName(p) }, nil); r != "" {
 			x.tmap[id] = r
 			x.pl.line(msg("").t("Сервер «" + d.Name + "» найден среди ваших по имени и адресу."))

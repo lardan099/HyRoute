@@ -6,10 +6,12 @@
 package hy2uri
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -208,6 +210,9 @@ func (l *Link) Validate() error {
 
 // mergePorts adds the mport list to the authority port. Links that keep
 // the first port in the authority usually include it in mport too.
+// HyRoute up to v1.3.0-beta.3 always appended ("443,443,20000-30000"),
+// and servers saved then keep that spec: compare specs with
+// NormalizePorts, which gives both forms the same value.
 func mergePorts(ports, extra string) string {
 	own, err1 := ParsePorts(ports)
 	rs, err2 := ParsePorts(extra)
@@ -412,6 +417,36 @@ func ParsePorts(s string) ([]PortRange, error) {
 		out = append(out, PortRange{a, b})
 	}
 	return out, nil
+}
+
+// NormalizePorts is the set of ports a spec lists, in one form: ranges
+// sorted, overlapping and adjacent ones joined, every port once
+// ("443,443,20000-30000" and "20000-30000,443" are "443,20000-30000",
+// "25000,20000-30000" is "20000-30000"). Specs with the same set reach
+// the same server, so matching saved servers against parsed links goes
+// by it. A spec ParsePorts rejects comes back without spaces.
+func NormalizePorts(s string) string {
+	rs, err := ParsePorts(s)
+	if err != nil {
+		return strings.Join(strings.Fields(s), "")
+	}
+	slices.SortFunc(rs, func(a, b PortRange) int { return cmp.Compare(a.From, b.From) })
+	out := rs[:1]
+	for _, r := range rs[1:] {
+		if last := &out[len(out)-1]; int(r.From) <= int(last.To)+1 {
+			last.To = max(last.To, r.To)
+		} else {
+			out = append(out, r)
+		}
+	}
+	parts := make([]string, len(out))
+	for i, r := range out {
+		parts[i] = strconv.Itoa(int(r.From))
+		if r.To != r.From {
+			parts[i] += "-" + strconv.Itoa(int(r.To))
+		}
+	}
+	return strings.Join(parts, ",")
 }
 
 func parsePort(s string) (uint16, error) {

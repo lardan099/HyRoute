@@ -135,6 +135,30 @@ func TestPlanLegacyRulesOnlyTargets(t *testing.T) {
 	}
 }
 
+// A backup made by HyRoute up to v1.3.0-beta.3 may hold a server's ports
+// in the old spelling (merge_test.go: oldPortLinks): it is still the
+// server the subscription now gives with the new one.
+func TestPlanOldPortSpecs(t *testing.T) {
+	for _, c := range oldPortLinks {
+		p, _, err := hysteria.ParseURI(c.link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.ID = "aaaaaaaa0001"
+		s := p
+		s.ID, s.Name, s.Ports, s.Auth = "0000000000ff", "copy", c.saved, ""
+		for _, mode := range []string{"replace", "add"} {
+			pl := plan(baseState(p), payload(false).put("servers", bkServers{List: []hysteria.Profile{s}}).p, map[string]string{"servers": mode})
+			if pl.err != "" {
+				t.Fatal(pl.err)
+			}
+			if l := pl.next.Profiles.List; len(l) != 1 || l[0].ID != p.ID || l[0].Auth != p.Auth {
+				t.Errorf("%s, %s: %+v", c.saved, mode, l)
+			}
+		}
+	}
+}
+
 func TestPlanSecretsNeedSameConnection(t *testing.T) {
 	cur := baseState(srv("aaaaaaaa0001", "NL", "nl.example"))
 	for _, mode := range []string{"replace", "add"} {

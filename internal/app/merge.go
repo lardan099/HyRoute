@@ -16,9 +16,13 @@ type MergeStats struct {
 }
 
 // connKey is a profile's connection identity: the share link without the
-// name (all connection parameters, secrets included).
+// name (all connection parameters, secrets included). The ports count as
+// a set: servers saved by HyRoute up to v1.3.0-beta.3 repeat the link's
+// authority port ("443,443,20000-30000"), the same link parses to
+// "443,20000-30000" today.
 func connKey(p hysteria.Profile) string {
 	p.Name, p.ID, p.Source, p.Missing = "", "", "", false
+	p.Ports = hysteria.NormalizePorts(p.Ports)
 	return p.URI()
 }
 
@@ -37,8 +41,9 @@ func sameServers(a, b []hysteria.Profile) bool {
 	return len(a) > 0 && slices.Equal(set(a), set(b))
 }
 
+// endpointKey is host and port set (see connKey).
 func endpointKey(p hysteria.Profile) string {
-	return strings.ToLower(p.Host) + ":" + p.Ports
+	return strings.ToLower(p.Host) + ":" + hysteria.NormalizePorts(p.Ports)
 }
 
 // mergeSubscription replaces the profiles of subscription source in list
