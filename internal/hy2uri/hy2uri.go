@@ -299,10 +299,12 @@ func splitHostPorts(hp string) (host, ports string, err error) {
 			return "", "", errors.New("bad IPv6 host")
 		}
 		host, rest := hp[1:end], hp[end+1:]
-		if rest == "" {
+		switch {
+		case strings.Contains(host, "["): // "[[]": no link could carry it back
+			return "", "", fmt.Errorf("bad host %q", hp)
+		case rest == "":
 			return host, "443", nil
-		}
-		if !strings.HasPrefix(rest, ":") {
+		case !strings.HasPrefix(rest, ":"):
 			return "", "", fmt.Errorf("bad host %q", hp)
 		}
 		return host, rest[1:], nil

@@ -151,6 +151,8 @@ func TestParseErrors(t *testing.T) {
 		"hy2://fake@:443",
 		"hy2://fake@[2001:db8::1",
 		"hy2://fake@[2001:db8::1]x",
+		"hy2://fake@[[]",
+		"hy2://fake@[[2001:db8::1]:443",
 		"hy2://fake@vpn.example.com:0",
 		"hy2://fake@vpn.example.com:http",
 		"hy2://fake@vpn.example.com:500-400",
