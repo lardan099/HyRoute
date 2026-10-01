@@ -22,6 +22,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/api"
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
+	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/config"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/datadir"
@@ -139,6 +140,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	engine.Register(tuning.Kind())
 	applier := apply.New(apply.Deps{Store: db, Keys: keys, Jobs: engine})
 	engine.Register(applier.Kind())
+	linker := cascade.New(cascade.Deps{Store: db, Keys: keys, Jobs: engine})
+	engine.Register(linker.Kind())
 	jobsCtx, stopJobs := context.WithCancel(context.WithoutCancel(ctx))
 	jobsDone := make(chan struct{})
 	go func() {
@@ -188,6 +191,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			Jobs:       engine,
 			Deploy:     &deploy.Submitter{Store: db, Keys: keys, Jobs: engine},
 			Apply:      applier,
+			Cascade:    linker,
 			Keys:       keys,
 			Logs:       logs,
 			Log:        log,

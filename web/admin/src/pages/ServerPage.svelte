@@ -113,7 +113,7 @@
     }
   }
 
-  const sourceName = { deploy: 'srv.sourceDeploy', import: 'srv.sourceImport', edit: 'srv.sourceEdit', rollback: 'srv.sourceRollback', rotate: 'srv.sourceRotate' } as const;
+  const sourceName = { deploy: 'srv.sourceDeploy', import: 'srv.sourceImport', edit: 'srv.sourceEdit', rollback: 'srv.sourceRollback', rotate: 'srv.sourceRotate', cascade: 'srv.sourceCascade' } as const;
 
   // After the history or the editor: the summary may have changed.
   async function closePanel() {

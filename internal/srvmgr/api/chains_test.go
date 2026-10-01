@@ -75,6 +75,28 @@ func TestChainsAPI(t *testing.T) {
 	}
 	code(t, owner.do("GET", "/api/v1/chains/999", nil, nil), http.StatusNotFound, "not_found")
 
+	// Deploying the link is a job on both servers; it needs to know where
+	// Hysteria is on them.
+	code(t, owner.do("POST", "/api/v1/chains/"+id+"/link", nil, nil), http.StatusConflict, "no_installation")
+	for _, sid := range ids {
+		e.db.SetInstallation(ctx, model.Installation{ServerID: sid, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", User: "hysteria", At: time.Now()})
+	}
+	code(t, viewer.do("POST", "/api/v1/chains/"+id+"/link", nil, nil), http.StatusForbidden, "forbidden")
+	rec = owner.do("POST", "/api/v1/chains/"+id+"/link", nil, nil)
+	var job jobJSON
+	json.Unmarshal(rec.Body.Bytes(), &job)
+	if rec.Code != http.StatusAccepted || job.Kind != "link" || job.ServerID != ids[0] || len(job.Servers) != 1 || job.Servers[0] != ids[1] {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if sealed, _ := e.db.LinkSecrets(ctx, ch.ID, 0); len(sealed) == 0 {
+		t.Fatal("no link secrets")
+	}
+	code(t, owner.do("POST", "/api/v1/chains/"+id+"/link", nil, nil), http.StatusConflict, "server_busy")
+	code(t, owner.do("DELETE", "/api/v1/servers/"+strconv.FormatInt(ids[0], 10), nil, nil), http.StatusConflict, "server_busy")
+	queued, _ := e.db.JobByID(ctx, job.ID)
+	queued.State = model.JobFailed
+	e.db.UpdateJob(ctx, queued)
+
 	// Deployed: the job removes it (P3-02c), not DELETE.
 	c, _ := e.db.ChainByID(ctx, ch.ID)
 	l := c.Links[0]

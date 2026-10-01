@@ -1521,3 +1521,37 @@ P1-09 (общий пакет ссылок).
   каждому, сервер не из задания недоступен, история обоих),
   `TestRollbackOnTwoServers`, `TestRecoveryFinishesRollbackOnTwoServers`,
   `TestRetryOfJobOnTwoServers`, `TestJobsSharingAServerTakeTurns`.
+
+### P3-02b (2) Задание `link`
+
+- `cascade.Linker`: `Submit` (секреты связи создаются и запечатываются
+  один раз; параметры задания — базовые ревизии обоих серверов с SHA-256
+  их файлов и прежнее состояние связи) и вид задания `link` из 13 шагов:
+  подключение к обоим серверам, проверка (конфиги не менялись мимо
+  HyRoute, нет чужого пользователя `link-…` и чужого outbound `cascade`
+  при первом развёртывании, порт клиента связи по `ss`), пользователь на
+  exit с перезапуском и ожиданием порта (exit с `password` не трогается),
+  конфиг и unit клиента связи, проверка связи `hysteria ping`, outbound на
+  entry с перезапуском и ожиданием порта, commit, уборка копий.
+- Каждый шаг заново собирает кандидаты из запечатанных ревизий и секретов
+  связи — продолжение после перезапуска пишет те же файлы; commit не
+  сохраняет ревизию второй раз.
+- Откат в обратном порядке; бывшая служба связи получает прежние unit и
+  конфиг и перезапускается, новая удаляется. Неудачное первое
+  развёртывание — связь `failed`, повторное — прежнее состояние.
+- Ревизии от каскада — источник `cascade` (миграция 0018 пересобирает
+  `server_configs`, как 0013); подписи в истории ревизий и в диалоге
+  развёртывания: развёртывание поверх такого конфига уберёт связь.
+- `ParsePing` читает JSON-лог `hysteria ping`: время рукопожатия — по
+  меткам времени («ping mode» → «connected to server»), в строке
+  «connected» поле `time` — длительность (последний ключ в JSON).
+- API: `POST /api/v1/chains/{id}/link` (202, задание; 409 `no_config`,
+  `no_installation`, `server_busy`); controller регистрирует задание.
+- Тесты на симуляторе двух серверов (systemd, ss, sha256sum, `hysteria
+  ping`, который проверяет пароль связи по конфигу exit):
+  `TestLinkUserpassExit` (всё на местах, ревизии, секретов нет в
+  параметрах и журнале, повтор ничего не перезапускает),
+  `TestLinkPasswordExit`, `TestLinkExitFailsRollsBack` (журнал скрыт),
+  `TestLinkClientFailsRollsBack`, `TestLinkRefusesForeignParts`,
+  `TestLinkFailedRedeployKeepsLink`, `TestLinkResumesAfterRestart`,
+  `TestParsePing`, `TestPickPort`; API — в `TestChainsAPI`.

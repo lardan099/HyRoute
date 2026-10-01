@@ -13,6 +13,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
+	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
 	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
@@ -65,9 +66,11 @@ func newEnv(t *testing.T) *testEnv {
 	e.jobs.Register(tuning.Kind())
 	e.apply = apply.New(apply.Deps{Store: db, Keys: keys, Jobs: e.jobs})
 	e.jobs.Register(e.apply.Kind())
+	linker := cascade.New(cascade.Deps{Store: db, Keys: keys, Jobs: e.jobs})
+	e.jobs.Register(linker.Kind())
 	e.keys = keys
 	e.h = New(Deps{Store: db, Auth: e.auth, Servers: e.servers, Connect: e.connect, Jobs: e.jobs,
-		Deploy: &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}, Apply: e.apply, Keys: keys})
+		Deploy: &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}, Apply: e.apply, Cascade: linker, Keys: keys})
 	return e
 }
 

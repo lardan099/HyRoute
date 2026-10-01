@@ -1,0 +1,654 @@
+package cascade
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io/fs"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/lardan099/hyroute/internal/hyconfig"
+	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
+	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/redact"
+	"github.com/lardan099/hyroute/internal/srvmgr/remote"
+	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
+	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
+)
+
+const (
+	cfgPath  = "/etc/hysteria/config.yaml"
+	unitName = "hysteria-server.service"
+	binPath  = "/usr/local/bin/hysteria"
+)
+
+const entryYAML = `listen: :443
+acme:
+  domains:
+    - entry.example.com
+auth:
+  type: password
+  password: fake-entry-pass
+`
+
+const exitUP = `listen: :8443
+acme:
+  domains:
+    - exit.example.com
+auth:
+  type: userpass
+  userpass:
+    alice: fake-alice-pass
+`
+
+const exitPW = `listen: :8443
+acme:
+  domains:
+    - exit.example.com
+auth:
+  type: password
+  password: fake-exit-pass
+`
+
+// host is a server with Hysteria and systemd. Its server unit runs the
+// config on disk; the link unit runs when its config and unit are there.
+// `hysteria ping` reaches the exit host when it runs and accepts the
+// link client's auth.
+type host struct {
+	mu    sync.Mutex
+	name  string
+	files map[string][]byte
+	modes map[string]string
+	units map[string]string // unit → state
+	cmds  []string
+	exit  *host // the exit, for ping
+	// down: ping cannot reach this exit; bad: a server config with it
+	// fails.
+	down bool
+	bad  string
+	// pingHook runs at each ping (tests block in it).
+	pingHook func()
+}
+
+func newHost(name, cfg string) *host {
+	h := &host{name: name, files: map[string][]byte{cfgPath: []byte(cfg)}, modes: map[string]string{cfgPath: "640 root hysteria"}, units: map[string]string{}}
+	h.restart(unitName)
+	return h
+}
+
+func (h *host) serverOK() (int, bool) {
+	c, err := hyconfig.ParseServer(h.files[cfgPath])
+	if err != nil || hyconfig.HasErrors(c.Validate()) || (h.bad != "" && strings.Contains(string(h.files[cfgPath]), h.bad)) {
+		return 0, false
+	}
+	l, _ := hyconfig.ParseListen(c.Listen)
+	return l.First, true
+}
+
+// restart starts a unit again: the server with its config, a link unit
+// when its unit file and config are there.
+func (h *host) restart(unit string) {
+	if unit == unitName {
+		if _, ok := h.serverOK(); ok {
+			h.units[unit] = "active"
+		} else {
+			h.units[unit] = "failed"
+		}
+		return
+	}
+	_, hasUnit := h.files["/etc/systemd/system/"+unit]
+	_, hasCfg := h.files["/etc/hysteria/"+strings.TrimSuffix(strings.TrimPrefix(unit, "hyroute-"), ".service")+".yaml"]
+	if hasUnit && hasCfg {
+		h.units[unit] = "active"
+	} else {
+		h.units[unit] = "failed"
+	}
+}
+
+func ok(out string) remote.Result { return remote.Result{Stdout: []byte(out)} }
+
+func (h *host) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
+	a := cmd.Args
+	if len(a) > 1 && a[0] == binPath && a[len(a)-2] == "ping" {
+		return h.ping(a)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	line := strings.Join(a, " ")
+	h.cmds = append(h.cmds, line)
+	last := a[len(a)-1]
+	switch {
+	case line == "id -un":
+		return ok("root\n"), nil
+	case line == "id -u":
+		return ok("0\n"), nil
+	case a[0] == "hostname":
+		return ok(h.name + "\n"), nil
+	case line == "uname -sr":
+		return ok("Linux 6.8.0\n"), nil
+	case line == "uname -m":
+		return ok("x86_64\n"), nil
+	case a[0] == "sha256sum":
+		b, found := h.files[last]
+		if !found {
+			return remote.Result{ExitCode: 1, Stderr: []byte("No such file")}, nil
+		}
+		s := sha256.Sum256(b)
+		return ok(hex.EncodeToString(s[:]) + "  " + last + "\n"), nil
+	case a[0] == "cp":
+		h.files[last] = append([]byte(nil), h.files[a[len(a)-2]]...)
+		h.modes[last] = h.modes[a[len(a)-2]]
+		return ok(""), nil
+	case a[0] == "mv":
+		src := a[len(a)-2]
+		b, found := h.files[src]
+		if !found {
+			return remote.Result{ExitCode: 1, Stderr: []byte("mv: cannot stat")}, nil
+		}
+		h.files[last] = b
+		delete(h.files, src)
+		return ok(""), nil
+	case a[0] == "rm":
+		delete(h.files, last)
+		return ok(""), nil
+	case a[0] == "stat":
+		b, found := h.files[last]
+		if !found {
+			return remote.Result{ExitCode: 1, Stderr: []byte("No such file")}, nil
+		}
+		return ok(fmt.Sprintf("%s %d\n", h.modes[last], len(b))), nil
+	case line == "systemctl daemon-reload":
+		return ok(""), nil
+	case len(a) == 4 && a[0] == "systemctl" && a[1] == "is-active":
+		st := h.units[last]
+		if st == "" {
+			st = "inactive"
+		}
+		code := 0
+		if st != "active" {
+			code = 3
+		}
+		return remote.Result{Stdout: []byte(st + "\n"), ExitCode: code}, nil
+	case len(a) == 4 && a[0] == "systemctl" && (a[1] == "restart" || a[1] == "start"):
+		h.restart(last)
+		return ok(""), nil
+	case len(a) == 4 && a[0] == "systemctl" && a[1] == "stop":
+		h.units[last] = "inactive"
+		return ok(""), nil
+	case len(a) == 4 && a[0] == "systemctl" && (a[1] == "enable" || a[1] == "disable"):
+		return ok(""), nil
+	case a[0] == "ss":
+		out := ""
+		if port, up := h.serverOK(); up && h.units[unitName] == "active" {
+			out = fmt.Sprintf("udp UNCONN 0 0 *:%d *:* users:((\"hysteria\",pid=4242,fd=7))\n", port)
+		}
+		return ok(out), nil
+	case a[0] == "journalctl":
+		return ok("FATAL something broke (auth fake-alice-pass)\n"), nil
+	}
+	return remote.Result{ExitCode: 127, Stderr: []byte("host: unknown command " + line)}, nil
+}
+
+// ping answers as `hysteria ping --log-format json` does.
+func (h *host) ping(a []string) (remote.Result, error) {
+	h.mu.Lock()
+	hook := h.pingHook
+	h.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	h.mu.Lock()
+	cfg := h.files[a[2]]
+	h.cmds = append(h.cmds, strings.Join(a, " "))
+	h.mu.Unlock()
+	fail := func(msg string) (remote.Result, error) {
+		return remote.Result{ExitCode: 1, Stderr: []byte(`{"level":"info","time":1000,"msg":"ping mode"}` + "\n" +
+			`{"level":"fatal","time":1300,"msg":"failed to initialize client","error":"` + msg + `"}` + "\n")}, nil
+	}
+	c, err := hyconfig.ParseClient(cfg)
+	if err != nil {
+		return fail("no config")
+	}
+	x := h.exit
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	srv, err := hyconfig.ParseServer(x.files[cfgPath])
+	accepted := false
+	if err == nil {
+		switch srv.Auth.Type {
+		case "password":
+			accepted = c.Auth == srv.Auth.Password
+		case "userpass":
+			u, p, _ := strings.Cut(c.Auth, ":")
+			accepted = srv.Auth.UserPass[u] == p && p != ""
+		}
+	}
+	switch {
+	case x.down || x.units[unitName] != "active":
+		return fail("timeout: no recent network activity")
+	case !accepted:
+		return fail("authentication error, HTTP status code: 404")
+	}
+	return remote.Result{Stderr: []byte(`{"level":"info","time":1000,"msg":"ping mode"}` + "\n" +
+		`{"level":"info","time":1042,"msg":"connected to server","addr":"203.0.113.2:8443","udpEnabled":true,"tx":0}` + "\n" +
+		`{"level":"info","time":1042,"msg":"connecting","addr":"` + a[len(a)-1] + `"}` + "\n" +
+		`{"level":"info","time":1055,"msg":"connected","time":"12.5ms"}` + "\n")}, nil
+}
+
+func (h *host) Stream(context.Context, remote.Cmd, func(string)) error {
+	return errors.New("no streams")
+}
+
+func (h *host) ReadFile(_ context.Context, p string, _ bool) ([]byte, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	b, found := h.files[p]
+	if !found {
+		return nil, fmt.Errorf("%s: %w", p, fs.ErrNotExist)
+	}
+	return append([]byte(nil), b...), nil
+}
+
+func (h *host) WriteFile(_ context.Context, p string, data []byte, f remote.FileSpec) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.files[p] = append([]byte(nil), data...)
+	h.modes[p] = fmt.Sprintf("%o %s %s", f.Mode.Perm(), f.Owner, f.Group)
+	return nil
+}
+
+func (h *host) Close() error { return nil }
+
+func (h *host) file(p string) (string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	b, found := h.files[p]
+	return string(b), found
+}
+
+func (h *host) unit(u string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.units[u]
+}
+
+func (h *host) restarts(unit string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, c := range h.cmds {
+		if c == "systemctl restart -- "+unit {
+			n++
+		}
+	}
+	return n
+}
+
+type hosts map[int64]*host
+
+func (hs hosts) Connect(_ context.Context, id int64) (remote.Executor, error) {
+	if h, found := hs[id]; found {
+		return h, nil
+	}
+	return nil, errors.New("no such server")
+}
+
+type world struct {
+	t           *testing.T
+	db          *sqlite.DB
+	keys        *secrets.Keyring
+	entry, exit *host
+	in, out     int64 // entry and exit server IDs
+	chain       int64
+	linker      *Linker
+	stop        func()
+}
+
+func newWorld(t *testing.T, exitCfg string) *world {
+	t.Helper()
+	ctx := context.Background()
+	db, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	keys, _ := secrets.NewKeyring(map[uint32][]byte{1: bytes.Repeat([]byte{6}, 32)})
+	w := &world{t: t, db: db, keys: keys}
+	add := func(name, host, cfg string) int64 {
+		s := model.Server{Name: name, Host: host, SSHPort: 22, SSHUser: "root", AuthType: model.AuthPassword, State: model.StateHealthy}
+		db.CreateServer(ctx, &s, nil)
+		db.SetInstallation(ctx, model.Installation{ServerID: s.ID, Binary: binPath, Config: cfgPath, Unit: unitName, User: "hysteria", Version: "v2.12.3", Managed: true, At: time.Now()})
+		c := model.ServerConfig{ServerID: s.ID, SHA256: sha([]byte(cfg)), Meta: model.ConfigMeta{TLS: "acme", Auth: "x"}, Source: model.ConfigDeploy, At: time.Now()}
+		db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return keys.Seal([]byte(cfg), model.ConfigContext(s.ID, rev)) })
+		return s.ID
+	}
+	w.in, w.out = add("Entry", "198.51.100.1", entryYAML), add("Exit", "203.0.113.2", exitCfg)
+	w.exit, w.entry = newHost("exit", exitCfg), newHost("entry", entryYAML)
+	w.entry.exit = w.exit
+	now := time.Now()
+	ch := model.Chain{Name: "DE", Nodes: []int64{w.in, w.out}, Links: []model.ChainLink{{}}, CreatedAt: now, UpdatedAt: now}
+	if err := db.CreateChain(ctx, &ch, nil); err != nil {
+		t.Fatal(err)
+	}
+	w.chain = ch.ID
+	w.linker, w.stop = w.controller()
+	return w
+}
+
+// controller starts a controller process on the world's database; stop
+// ends it as a dying process would.
+func (w *world) controller() (*Linker, func()) {
+	eng := jobs.New(w.db, w.keys, redact.New(), hosts{w.in: w.entry, w.out: w.exit}, nil)
+	eng.Poll = 10 * time.Millisecond
+	l := New(Deps{Store: w.db, Keys: w.keys, Jobs: eng, VerifyTimeout: 300 * time.Millisecond, Poll: 10 * time.Millisecond})
+	eng.Register(l.Kind())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { eng.Run(ctx); close(done) }()
+	var once sync.Once
+	stop := func() { once.Do(func() { cancel(); <-done }) }
+	w.t.Cleanup(stop)
+	return l, stop
+}
+
+func (w *world) submit() model.Job {
+	w.t.Helper()
+	j, err := w.linker.Submit(context.Background(), w.chain, 0, 0)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return j
+}
+
+func (w *world) wait(j model.Job) (model.Job, string) {
+	w.t.Helper()
+	for i := 0; i < 500 && !j.State.Terminal(); i++ {
+		time.Sleep(10 * time.Millisecond)
+		j, _ = w.db.JobByID(context.Background(), j.ID)
+	}
+	time.Sleep(20 * time.Millisecond) // the Finished hook
+	ls, _ := w.db.JobLogs(context.Background(), j.ID, 0, 0)
+	var b strings.Builder
+	for _, l := range ls {
+		b.WriteString(l.Message + "\n")
+	}
+	return j, b.String()
+}
+
+func (w *world) link() model.ChainLink {
+	c, err := w.db.ChainByID(context.Background(), w.chain)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return c.Links[0]
+}
+
+func (w *world) revs(server int64) []model.ServerConfig {
+	rs, _ := w.db.ListConfigs(context.Background(), server)
+	return rs
+}
+
+func (w *world) secrets() Secrets {
+	sealed, _ := w.db.LinkSecrets(context.Background(), w.chain, 0)
+	s, err := OpenSecrets(w.keys, w.chain, 0, sealed)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return s
+}
+
+func linkCfg(w *world) string { return "/etc/hysteria/link-" + ID(w.chain, 0) + ".yaml" }
+
+func TestLinkUserpassExit(t *testing.T) {
+	w := newWorld(t, exitUP)
+	j := w.submit()
+	if j.ServerID != w.in || len(j.Servers) != 1 || j.Servers[0] != w.out {
+		t.Fatalf("servers %d %v", j.ServerID, j.Servers)
+	}
+	j, log := w.wait(j)
+	if j.State != model.JobCompleted {
+		t.Fatalf("%s: %s %s\n%s", j.State, j.ErrorMessage, j.ErrorDetails, log)
+	}
+	s := w.secrets()
+	if strings.Contains(string(j.Params), s.ExitPassword) || strings.Contains(log, s.ExitPassword) || strings.Contains(log, s.SOCKSPassword) {
+		t.Fatalf("a secret of the link in params or log: %s\n%s", j.Params, log)
+	}
+
+	// The exit has the link's user, the entry the outbound first.
+	exitNow, _ := w.exit.file(cfgPath)
+	ec, _ := hyconfig.ParseServer([]byte(exitNow))
+	user := User(w.chain, 0)
+	if ec.Auth.UserPass[user] != s.ExitPassword || ec.Auth.UserPass["alice"] != "fake-alice-pass" {
+		t.Fatalf("exit users %v", ec.Auth.UserPass)
+	}
+	entryNow, _ := w.entry.file(cfgPath)
+	nc, _ := hyconfig.ParseServer([]byte(entryNow))
+	p, _ := ParseParams(w.link().Params)
+	if len(nc.Outbounds) != 1 || nc.Outbounds[0].Name != OutboundName || nc.Outbounds[0].SOCKS5.Addr != fmt.Sprintf("127.0.0.1:%d", p.LocalPort) || p.LocalPort < 40000 {
+		t.Fatalf("entry outbounds %+v, port %d", nc.Outbounds, p.LocalPort)
+	}
+	client, found := w.entry.file(linkCfg(w))
+	cc, _ := hyconfig.ParseClient([]byte(client))
+	if !found || cc.Auth != user+":"+s.ExitPassword || cc.SOCKS5.Password != s.SOCKSPassword || w.entry.modes[linkCfg(w)] != "640  hysteria" {
+		t.Fatalf("client %v %q %s", found, client, w.entry.modes[linkCfg(w)])
+	}
+	if u, _ := w.entry.file("/etc/systemd/system/" + UnitName(w.chain, 0)); !strings.Contains(u, "--disable-update-check") || w.entry.unit(UnitName(w.chain, 0)) != "active" {
+		t.Fatalf("unit %q, %s", u, w.entry.unit(UnitName(w.chain, 0)))
+	}
+	if !strings.Contains(log, "рукопожатие 42ms") || !strings.Contains(log, "открыт 203.0.113.2:22 за 13ms") {
+		t.Fatalf("log:\n%s", log)
+	}
+
+	// Both revisions are stored, source cascade; the link is active.
+	er, xr := w.revs(w.in), w.revs(w.out)
+	if len(er) != 2 || len(xr) != 2 || er[0].Source != model.ConfigCascade || xr[0].Source != model.ConfigCascade || er[0].SHA256 != sha([]byte(entryNow)) || xr[0].SHA256 != sha([]byte(exitNow)) {
+		t.Fatalf("revisions %+v %+v", er, xr)
+	}
+	l := w.link()
+	if l.State != model.LinkActive || l.FromRevision != er[0].Revision || l.ToRevision != xr[0].Revision || l.ConfigSHA256 != sha([]byte(client)) {
+		t.Fatalf("link %+v", l)
+	}
+	for _, f := range []string{cfgPath + Backup, linkCfg(w) + Backup} {
+		if _, found := w.entry.file(f); found {
+			t.Fatalf("%s left on the entry", f)
+		}
+	}
+
+	// Again: nothing to change, no service of a server restarted.
+	before := w.exit.restarts(unitName) + w.entry.restarts(unitName)
+	j, log = w.wait(w.submit())
+	if j.State != model.JobCompleted || w.exit.restarts(unitName)+w.entry.restarts(unitName) != before || len(w.revs(w.in)) != 2 || len(w.revs(w.out)) != 2 {
+		t.Fatalf("redeploy: %s, restarts %d → %d\n%s", j.State, before, w.exit.restarts(unitName)+w.entry.restarts(unitName), log)
+	}
+}
+
+func TestLinkPasswordExit(t *testing.T) {
+	w := newWorld(t, exitPW)
+	j, log := w.wait(w.submit())
+	if j.State != model.JobCompleted {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	if now, _ := w.exit.file(cfgPath); now != exitPW || w.exit.restarts(unitName) != 0 || len(w.revs(w.out)) != 1 {
+		t.Fatalf("a password exit was changed: restarts %d, revisions %d", w.exit.restarts(unitName), len(w.revs(w.out)))
+	}
+	client, _ := w.entry.file(linkCfg(w))
+	if cc, _ := hyconfig.ParseClient([]byte(client)); cc.Auth != "fake-exit-pass" {
+		t.Fatalf("client auth %q", cc.Auth)
+	}
+	if l := w.link(); l.State != model.LinkActive || l.ToRevision != 1 {
+		t.Fatalf("link %+v", l)
+	}
+}
+
+// The exit does not take its config with the link: it goes back, and
+// nothing reaches the entry.
+func TestLinkExitFailsRollsBack(t *testing.T) {
+	w := newWorld(t, exitUP)
+	w.exit.bad = "link-"
+	j, log := w.wait(w.submit())
+	if j.State != model.JobFailed || !strings.Contains(j.ErrorMessage, "сервере выхода не заработала") {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	if strings.Contains(log, "fake-alice-pass") {
+		t.Fatalf("journal not redacted:\n%s", log)
+	}
+	if now, _ := w.exit.file(cfgPath); now != exitUP || w.exit.unit(unitName) != "active" {
+		t.Fatalf("exit not restored: %s", w.exit.unit(unitName))
+	}
+	if now, _ := w.entry.file(cfgPath); now != entryYAML || len(w.entry.cmds) == 0 {
+		t.Fatal("entry changed")
+	}
+	if _, found := w.entry.file(linkCfg(w)); found {
+		t.Fatal("link config written")
+	}
+	if l := w.link(); l.State != model.LinkFailed || len(w.revs(w.out)) != 1 {
+		t.Fatalf("link %+v", l)
+	}
+}
+
+// The link client does not reach the exit: the link's files go, the exit
+// gets its config back, the entry is not touched.
+func TestLinkClientFailsRollsBack(t *testing.T) {
+	w := newWorld(t, exitUP)
+	w.exit.down = true
+	j, log := w.wait(w.submit())
+	if j.State != model.JobFailed || !strings.Contains(j.ErrorMessage, "Клиент связи не подключился") || !strings.Contains(j.ErrorMessage, "timeout") {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	unit := UnitName(w.chain, 0)
+	if _, found := w.entry.file("/etc/systemd/system/" + unit); found || w.entry.unit(unit) == "active" {
+		t.Fatal("link unit left")
+	}
+	if _, found := w.entry.file(linkCfg(w)); found {
+		t.Fatal("link config left")
+	}
+	if now, _ := w.exit.file(cfgPath); now != exitUP || w.exit.restarts(unitName) != 2 {
+		t.Fatalf("exit restarts %d", w.exit.restarts(unitName))
+	}
+	if now, _ := w.entry.file(cfgPath); now != entryYAML || w.entry.restarts(unitName) != 0 {
+		t.Fatal("entry touched")
+	}
+	if l := w.link(); l.State != model.LinkFailed {
+		t.Fatalf("link %+v", l)
+	}
+}
+
+// Before the first deployment a user or outbound of the link's name made
+// by someone else stops the job before anything changes.
+func TestLinkRefusesForeignParts(t *testing.T) {
+	w := newWorld(t, exitUP)
+	foreign := strings.Replace(exitUP, "    alice: fake-alice-pass\n", "    alice: fake-alice-pass\n    "+User(w.chain, 0)+": fake-someone\n", 1)
+	w.exit.files[cfgPath] = []byte(foreign)
+	ctx := context.Background()
+	c := model.ServerConfig{ServerID: w.out, SHA256: sha([]byte(foreign)), Meta: model.ConfigMeta{TLS: "acme"}, Source: model.ConfigEdit, At: time.Now()}
+	w.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return w.keys.Seal([]byte(foreign), model.ConfigContext(w.out, rev)) })
+	j, _ := w.wait(w.submit())
+	if j.State != model.JobFailed || !strings.Contains(j.ErrorMessage, "заведённый не этим каскадом") {
+		t.Fatalf("%s: %s", j.State, j.ErrorMessage)
+	}
+	if now, _ := w.exit.file(cfgPath); now != foreign {
+		t.Fatal("exit changed")
+	}
+}
+
+// A redeployment that fails leaves the link as it was: active, with its
+// old client config running.
+func TestLinkFailedRedeployKeepsLink(t *testing.T) {
+	w := newWorld(t, exitUP)
+	if j, log := w.wait(w.submit()); j.State != model.JobCompleted {
+		t.Fatalf("%s\n%s", j.ErrorMessage, log)
+	}
+	old, _ := w.entry.file(linkCfg(w))
+	l := w.link()
+	p, _ := ParseParams(l.Params)
+	p.NoUDP = true
+	l.Params = p.Raw()
+	w.db.UpdateLink(context.Background(), l)
+	w.exit.down = true
+	j, log := w.wait(w.submit())
+	if j.State != model.JobFailed {
+		t.Fatalf("%s\n%s", j.State, log)
+	}
+	if now, _ := w.entry.file(linkCfg(w)); now != old {
+		t.Fatal("old client config not back")
+	}
+	unit := UnitName(w.chain, 0)
+	if _, found := w.entry.file("/etc/systemd/system/" + unit); !found {
+		t.Fatal("unit of the deployed link removed")
+	}
+	if got := w.link(); got.State != model.LinkActive {
+		t.Fatalf("link %s after a failed redeploy", got.State)
+	}
+}
+
+// The controller dies while the link comes up: the next one goes on and
+// stores each revision once.
+func TestLinkResumesAfterRestart(t *testing.T) {
+	w := newWorld(t, exitUP)
+	reached := make(chan struct{})
+	var once sync.Once
+	block := make(chan struct{})
+	w.entry.pingHook = func() {
+		once.Do(func() { close(reached) })
+		<-block
+	}
+	j := w.submit()
+	<-reached
+	stopped := make(chan struct{})
+	go func() { w.stop(); close(stopped) }()
+	time.Sleep(30 * time.Millisecond) // the controller is cancelled
+	w.entry.mu.Lock()
+	w.entry.pingHook = nil
+	w.entry.mu.Unlock()
+	close(block)
+	<-stopped
+	w.linker, w.stop = w.controller()
+	j, log := w.wait(j)
+	if j.State != model.JobCompleted {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	if len(w.revs(w.in)) != 2 || len(w.revs(w.out)) != 2 || w.link().State != model.LinkActive {
+		t.Fatalf("revisions %d %d, link %s", len(w.revs(w.in)), len(w.revs(w.out)), w.link().State)
+	}
+}
+
+func TestParsePing(t *testing.T) {
+	out := []byte(`{"level":"info","time":1000,"msg":"ping mode"}
+{"level":"info","time":1042,"msg":"connected to server","addr":"x","udpEnabled":true,"tx":0}
+{"level":"info","time":1043,"msg":"connecting","addr":"1.1.1.1:443"}
+{"level":"info","time":1055,"msg":"connected","time":"12.5ms"}
+`)
+	p := ParsePing(out)
+	if !p.Connected || p.Handshake != 42*time.Millisecond || !p.TCP || p.TCPTime != 12500*time.Microsecond || p.Error != "" {
+		t.Fatalf("%+v", p)
+	}
+	p = ParsePing([]byte(`{"level":"info","time":1000,"msg":"ping mode"}
+{"level":"info","time":1040,"msg":"connected to server"}
+{"level":"fatal","time":1300,"msg":"failed to connect","error":"connection refused","time":"200ms"}
+`))
+	if !p.Connected || p.TCP || p.Error != "failed to connect: connection refused" {
+		t.Fatalf("%+v", p)
+	}
+	if p = ParsePing([]byte("garbage\n{\"msg\":\"failed to initialize client\",\"error\":\"timeout\"}")); p.Connected || p.Error == "" {
+		t.Fatalf("%+v", p)
+	}
+}
+
+func TestPickPort(t *testing.T) {
+	used := map[int]bool{}
+	p := pickPort(3, 0, used)
+	if p < 40000 || p > 49999 {
+		t.Fatal(p)
+	}
+	used[p] = true
+	if q := pickPort(3, 0, used); q == p || q < 40000 || q > 49999 {
+		t.Fatal(q)
+	}
+}

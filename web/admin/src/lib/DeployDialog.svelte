@@ -111,6 +111,7 @@
     rollback: 'deploy.changedRollback',
     import: 'deploy.changedImport',
     rotate: 'deploy.changedRotate',
+    cascade: 'deploy.changedCascade',
   };
   const outModes: [string, Key][] = [
     ['', 'deploy.outModeDefault'],

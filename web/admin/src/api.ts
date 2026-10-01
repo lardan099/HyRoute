@@ -316,7 +316,7 @@ export const dnsProviders: Record<string, { key: string; required: boolean }[]> 
   vultr: [{ key: 'vultr_api_token', required: true }],
 };
 
-export type ConfigSource = 'deploy' | 'import' | 'edit' | 'rollback' | 'rotate';
+export type ConfigSource = 'deploy' | 'import' | 'edit' | 'rollback' | 'rotate' | 'cascade';
 
 // Rotation: what gets new values (users: of userpass auth; none: all).
 export interface Rotation {

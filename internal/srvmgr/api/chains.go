@@ -167,3 +167,29 @@ func (s *server) deleteChain(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// linkChain queues the job that deploys the chain's link (again).
+func (s *server) linkChain(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, errNotFound)
+		return
+	}
+	if s.Cascade == nil {
+		writeError(w, errNotFound)
+		return
+	}
+	j, err := s.Cascade.Submit(r.Context(), id, 0, principal(r).User.ID)
+	switch {
+	case errors.Is(err, cascade.ErrNoConfig):
+		s.fail(w, r, &Error{Status: http.StatusConflict, Code: "no_config", Message: "HyRoute не знает конфиг одного из серверов каскада: разверните на нём Hysteria или импортируйте его."})
+		return
+	case errors.Is(err, cascade.ErrNoInstallation):
+		s.fail(w, r, &Error{Status: http.StatusConflict, Code: "no_installation", Message: "HyRoute не знает, где Hysteria на одном из серверов каскада: разверните её или импортируйте сервер."})
+		return
+	case err != nil:
+		s.fail(w, r, jobError(err))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, toJobJSON(j))
+}

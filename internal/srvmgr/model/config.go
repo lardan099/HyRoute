@@ -16,6 +16,9 @@ const (
 	ConfigRollback ConfigSource = "rollback"
 	// ConfigRotate: new passwords or a new certificate (P2-05).
 	ConfigRotate ConfigSource = "rotate"
+	// ConfigCascade: a cascade link added or removed its part (P3-02):
+	// the link's user on the exit, the outbound on the entry.
+	ConfigCascade ConfigSource = "cascade"
 )
 
 // ConfigMeta is the non-secret summary of a config revision: what the UI

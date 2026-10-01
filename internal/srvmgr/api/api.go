@@ -15,6 +15,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
+	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
@@ -33,6 +34,8 @@ type Deps struct {
 	Jobs    *jobs.Engine
 	Deploy  *deploy.Submitter
 	Apply   *apply.Applier
+	// Cascade deploys cascade links (P3-02).
+	Cascade *cascade.Linker
 	// Keys open config revisions (the passwords journals are redacted
 	// with).
 	Keys *secrets.Keyring
@@ -117,6 +120,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/chains/{id}", s.authed(anyRole, s.getChain))
 	mux.HandleFunc("PATCH /api/v1/chains/{id}", s.authed(anyRole, s.updateChain))
 	mux.HandleFunc("DELETE /api/v1/chains/{id}", s.authed(anyRole, s.deleteChain))
+	mux.HandleFunc("POST /api/v1/chains/{id}/link", s.authed(anyRole, s.linkChain))
 	mux.HandleFunc("GET /api/v1/servers/{id}/status", s.authed(anyRole, s.serviceStatus))
 	mux.HandleFunc("POST /api/v1/servers/{id}/service/{action}", s.authed(anyRole, s.serviceAction))
 	mux.HandleFunc("GET /api/v1/servers/{id}/journal", s.authed(anyRole, s.journal))
