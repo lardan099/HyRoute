@@ -112,7 +112,15 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	if err := prepareSetup(ctx, authSvc, tokenFile, log); err != nil {
 		return err
 	}
-	go cleanupSessions(ctx, authSvc, log)
+	// The cleanup writes to the database: it ends before db.Close (defers
+	// run in reverse), also when run returns early (a bad TLS file).
+	sessCtx, stopSessions := context.WithCancel(ctx)
+	sessDone := make(chan struct{})
+	go func() {
+		cleanupSessions(sessCtx, authSvc, log)
+		close(sessDone)
+	}()
+	defer func() { stopSessions(); <-sessDone }()
 	inventory := servers.New(db, keys)
 	conn := connect.New(inventory, db, red)
 	engine := jobs.New(db, keys, red, conn, log)
