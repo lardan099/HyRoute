@@ -104,3 +104,111 @@ func TestReadFirewallSbin(t *testing.T) {
 		t.Fatalf("ufw status without sudo: %+v", c[len(c)-1])
 	}
 }
+
+// Rules as iptables -S INPUT and nft list ruleset print them.
+const (
+	iptablesOracle = `-P INPUT ACCEPT
+-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+-A INPUT -p icmp -j ACCEPT
+-A INPUT -i lo -j ACCEPT
+-A INPUT -p udp -m udp --sport 123 -j ACCEPT
+-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT
+-A INPUT -m comment --comment "reject the rest" -j REJECT --reject-with icmp-host-prohibited
+`
+	iptablesDropPolicy = "-P INPUT DROP\n-A INPUT -i lo -j ACCEPT\n-A INPUT -p tcp -m tcp --dport 22 -j ACCEPT\n"
+	// fail2ban's jump comes first, the last rule only drops one address.
+	iptablesOpen = "-P INPUT ACCEPT\n-A INPUT -p tcp -m multiport --dports 22 -j f2b-sshd\n-A INPUT -s 203.0.113.9/32 -j DROP\n"
+	nftFinal     = `table inet filter {
+	set blocked {
+		type ipv4_addr
+		elements = { 198.51.100.1, 198.51.100.2,
+			     198.51.100.3 }
+	}
+
+	chain input {
+		type filter hook input priority filter; policy accept;
+		ct state established,related accept
+		iif "lo" accept
+		ip saddr {
+			203.0.113.1,
+			203.0.113.2
+		} drop
+		tcp dport { 22, 80 } accept
+		counter packets 12 bytes 720 log prefix "nft input: " reject with icmpx admin-prohibited
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+	}
+}
+`
+	nftPolicy = `table inet filter {
+	chain input {
+		type filter hook input priority filter; policy drop;
+		ct state established,related accept
+	}
+}
+`
+	// Drops only in forward and output; input ends with a conditional
+	// drop.
+	nftOpen = `table inet filter {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		ct state invalid drop
+		tcp dport 22 ct state new limit rate 10/minute accept
+		ip saddr { 203.0.113.1, 203.0.113.2 } drop
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		drop
+	}
+
+	chain output {
+		type filter hook output priority filter; policy drop;
+	}
+}
+`
+)
+
+func TestReadFirewall(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		iptables  string // "": not installed
+		nft       string
+		tool      string
+		deny, end bool
+	}{
+		{"oracle cloud", iptablesOracle, "", "iptables", true, true},
+		{"iptables drop policy", iptablesDropPolicy, "", "iptables", true, false},
+		{"iptables open", iptablesOpen, "", "none", false, false},
+		// The nftables backend shows the same rules in nft: named iptables.
+		{"iptables-nft", iptablesOracle, nftFinal, "iptables", true, true},
+		{"nft final reject", "-P INPUT ACCEPT\n", nftFinal, "nftables", true, true},
+		{"nft drop policy", "", nftPolicy, "nftables", true, false},
+		{"nft open", "-P INPUT ACCEPT\n", nftOpen, "none", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var tools []string
+			ex := fake.New()
+			if tc.iptables != "" {
+				tools = append(tools, "iptables")
+				ex.On("iptables", "-S", "INPUT").Reply(tc.iptables, 0)
+			}
+			if tc.nft != "" {
+				tools = append(tools, "nft")
+				ex.On("nft", "list", "ruleset").Reply(tc.nft, 0)
+			}
+			ex.On("sh", "-c").Do(func(c remote.Cmd) (remote.Result, error) {
+				if slices.Contains(tools, c.Args[len(c.Args)-1]) {
+					return remote.Result{}, nil
+				}
+				return remote.Result{ExitCode: 1}, nil
+			})
+			fw, err := remote.ReadFirewall(context.Background(), ex, false)
+			if err != nil || fw.Tool != tc.tool || fw.DropPolicy != tc.deny || fw.FinalRule != tc.end || fw.UFW || fw.Firewalld {
+				t.Fatalf("%+v %v", fw, err)
+			}
+		})
+	}
+}

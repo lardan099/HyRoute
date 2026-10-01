@@ -190,6 +190,8 @@ func Run(ctx context.Context, ex remote.Executor, probe remote.Probe, opt Option
 	switch {
 	case fw.UFW || fw.Firewalld:
 		r.add("firewall", OK, "Брандмауэр: "+fw.Tool, "Порты Hysteria откроются его средствами.")
+	case fw.DropPolicy && fw.FinalRule:
+		r.add("firewall", Warn, "Брандмауэр: "+fw.Tool+" отклоняет входящие последним правилом", "Всё, что не разрешено правилами выше, отклоняется (так настроены, например, образы Oracle Cloud). HyRoute Server не пишет правила iptables/nftables сам: разрешите UDP-порт Hysteria правилом выше запрещающего и сохраните правила, чтобы они пережили перезагрузку.")
 	case fw.DropPolicy:
 		r.add("firewall", Warn, "Брандмауэр: "+fw.Tool+" с запретом по умолчанию", "HyRoute Server не пишет правила iptables/nftables сам: откройте UDP-порт Hysteria вручную или включите ufw/firewalld.")
 	default:

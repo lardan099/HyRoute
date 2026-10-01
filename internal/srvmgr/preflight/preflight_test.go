@@ -298,3 +298,43 @@ func TestNoSS(t *testing.T) {
 		t.Fatalf("%+v", r.Checks)
 	}
 }
+
+func check(r Report, id string) Check {
+	for _, c := range r.Checks {
+		if c.ID == id {
+			return c
+		}
+	}
+	return Check{}
+}
+
+// A last rule that rejects everything (Oracle Cloud) is a closed firewall,
+// as a drop policy is.
+func TestFirewallFinalReject(t *testing.T) {
+	for _, tc := range []struct {
+		rules, title string
+		level        Level
+	}{
+		{"-P INPUT ACCEPT\n-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT\n-A INPUT -j REJECT --reject-with icmp-host-prohibited\n", "последним правилом", Warn},
+		{"-P INPUT DROP\n-A INPUT -p tcp -m tcp --dport 22 -j ACCEPT\n", "с запретом по умолчанию", Warn},
+		{"-P INPUT ACCEPT\n-A INPUT -p tcp -m tcp --dport 22 -j ACCEPT\n", "не ограничены", OK},
+	} {
+		f := server{os: osUbuntu2204, github: "200"}.fake()
+		f.On("sh", "-c").Do(func(c remote.Cmd) (remote.Result, error) {
+			switch c.Args[len(c.Args)-1] {
+			case "curl", "ss", "iptables":
+				return remote.Result{}, nil
+			}
+			return remote.Result{ExitCode: 1}, nil
+		})
+		f.On("iptables", "-S", "INPUT").Reply(tc.rules, 0)
+		r, err := Run(context.Background(), f, rootProbe, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := check(r, "firewall")
+		if c.Level != tc.level || !strings.Contains(c.Title, tc.title) || r.Blocked {
+			t.Errorf("%q: %+v", tc.rules, c)
+		}
+	}
+}

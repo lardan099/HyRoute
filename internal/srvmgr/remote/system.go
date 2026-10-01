@@ -250,12 +250,17 @@ type Firewall struct {
 	UFW       bool // ufw is active
 	Firewalld bool // firewalld is running
 	// DropPolicy: nftables or iptables drop incoming by default (without
-	// ufw/firewalld managing them).
+	// ufw/firewalld managing them): the input chain's policy, or its last
+	// rule drops or rejects whatever the rules above did not accept.
 	DropPolicy bool
-	Tool       string // ufw, firewalld, nftables, iptables, none
+	// FinalRule: that default is the last rule, the policy accepts
+	// (Oracle Cloud images: -P INPUT ACCEPT, last -A INPUT -j REJECT).
+	FinalRule bool
+	Tool      string // ufw, firewalld, nftables, iptables, none
 }
 
-// ReadFirewall finds the active firewall manager and the default policy.
+// ReadFirewall finds the active firewall manager and whether incoming
+// connections are denied by default.
 func ReadFirewall(ctx context.Context, ex Executor, sudo bool) (Firewall, error) {
 	var fw Firewall
 	if ok, err := HasSystemCommand(ctx, ex, "ufw"); err != nil {
@@ -282,18 +287,8 @@ func ReadFirewall(ctx context.Context, ex Executor, sudo bool) (Firewall, error)
 			return fw, nil
 		}
 	}
-	if ok, err := HasSystemCommand(ctx, ex, "nft"); err != nil {
-		return fw, err
-	} else if ok {
-		res, err := ex.Run(ctx, Cmd{Args: []string{"nft", "list", "chains"}, Sudo: sudo})
-		if err != nil {
-			return fw, err
-		}
-		if res.OK() && inputDropNft(string(res.Stdout)) {
-			fw.DropPolicy, fw.Tool = true, "nftables"
-			return fw, nil
-		}
-	}
+	// iptables first: with its nftables backend the same rules show in nft
+	// too, and the admin knows them as iptables rules.
 	if ok, err := HasSystemCommand(ctx, ex, "iptables"); err != nil {
 		return fw, err
 	} else if ok {
@@ -301,20 +296,141 @@ func ReadFirewall(ctx context.Context, ex Executor, sudo bool) (Firewall, error)
 		if err != nil {
 			return fw, err
 		}
-		if res.OK() && strings.Contains(string(res.Stdout), "-P INPUT DROP") {
-			fw.DropPolicy, fw.Tool = true, "iptables"
-			return fw, nil
+		if res.OK() {
+			if deny, final := iptablesDeny(string(res.Stdout)); deny {
+				fw.DropPolicy, fw.FinalRule, fw.Tool = true, final, "iptables"
+				return fw, nil
+			}
+		}
+	}
+	if ok, err := HasSystemCommand(ctx, ex, "nft"); err != nil {
+		return fw, err
+	} else if ok {
+		res, err := ex.Run(ctx, Cmd{Args: []string{"nft", "list", "ruleset"}, Sudo: sudo})
+		if err != nil {
+			return fw, err
+		}
+		if res.OK() {
+			if deny, final := nftDeny(string(res.Stdout)); deny {
+				fw.DropPolicy, fw.FinalRule, fw.Tool = true, final, "nftables"
+				return fw, nil
+			}
 		}
 	}
 	fw.Tool = "none"
 	return fw, nil
 }
 
-// inputDropNft finds a filter chain on the input hook with policy drop.
-func inputDropNft(chains string) bool {
-	for _, line := range strings.Split(chains, "\n") {
-		if strings.Contains(line, "hook input") && strings.Contains(line, "policy drop") {
+// quotedRe is a quoted word of iptables -S or nft output (a comment or a
+// log prefix), which may hold spaces.
+var quotedRe = regexp.MustCompile(`"[^"]*"`)
+
+// words splits a rule into words, a quoted string being one.
+func words(rule string) []string {
+	return strings.Fields(quotedRe.ReplaceAllString(rule, `""`))
+}
+
+// iptablesDeny reads iptables -S INPUT: deny when the policy drops, or
+// final when the policy accepts but the last rule drops or rejects
+// everything that reached it.
+func iptablesDeny(rules string) (deny, final bool) {
+	var last string
+	for _, line := range strings.Split(rules, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "-P INPUT DROP":
+			return true, false
+		case strings.HasPrefix(line, "-A INPUT "):
+			last = line
+		}
+	}
+	if last != "" && iptablesCatchAll(words(last)[2:]) {
+		return true, true
+	}
+	return false, false
+}
+
+// iptablesCatchAll: a rule (after "-A INPUT") that drops or rejects every
+// packet, optionally of one interface and with a comment.
+func iptablesCatchAll(w []string) bool {
+	for i := 0; i < len(w); i++ {
+		switch w[i] {
+		case "!":
+		case "-i", "--in-interface", "--comment":
+			i++
+		case "-m":
+			if i+1 >= len(w) || w[i+1] != "comment" {
+				return false
+			}
+			i++
+		case "-j":
+			return i+1 < len(w) && (w[i+1] == "DROP" || w[i+1] == "REJECT")
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// nftDeny reads nft list ruleset: deny when a filter chain on the input
+// hook has policy drop, or final when the last rule of one drops or
+// rejects everything that reached it.
+func nftDeny(ruleset string) (deny, final bool) {
+	var (
+		inChain bool
+		input   bool
+		depth   int // braces open inside the chain
+		stmt    string
+		last    string
+	)
+	for _, raw := range strings.Split(ruleset, "\n") {
+		line := strings.TrimSpace(raw)
+		if !inChain {
+			if strings.HasPrefix(line, "chain ") && strings.HasSuffix(line, "{") {
+				inChain, input, depth, stmt, last = true, false, 1, "", ""
+			}
+			continue
+		}
+		if depth == 1 && line == "}" {
+			if input && last != "" && nftCatchAll(words(last)) {
+				final = true
+			}
+			inChain = false
+			continue
+		}
+		// A rule may hold a set in braces, split over lines.
+		depth += strings.Count(line, "{") - strings.Count(line, "}")
+		stmt = strings.TrimSpace(stmt + " " + line)
+		if depth > 1 {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(stmt, "type filter hook input "):
+			input = true
+			if strings.Contains(stmt, "policy drop") {
+				return true, false
+			}
+		case stmt == "", strings.HasPrefix(stmt, "type "), strings.HasPrefix(stmt, "#"), strings.HasPrefix(stmt, "comment "):
+		default:
+			last = stmt
+		}
+		stmt = ""
+	}
+	return final, final
+}
+
+// nftCatchAll: a rule that drops or rejects every packet, optionally of one
+// interface, counted and logged.
+func nftCatchAll(w []string) bool {
+	for i := 0; i < len(w); i++ {
+		switch w[i] {
+		case "drop", "reject":
 			return true
+		case "counter", "log", "meta":
+		case "packets", "bytes", "prefix", "level", "iif", "iifname":
+			i++
+		default:
+			return false
 		}
 	}
 	return false
