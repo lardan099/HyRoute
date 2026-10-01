@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/hyconfig"
+	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
 	"github.com/lardan099/hyroute/internal/srvmgr/firewall"
 	"github.com/lardan099/hyroute/internal/srvmgr/importer"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
@@ -42,6 +44,12 @@ type Params struct {
 	SHA256 string `json:"sha256"`
 	// From is the revision a rollback installs again (0: an edit).
 	From int `json:"from,omitempty"`
+	// Rotated says what a rotation replaces ("auth", "user:<name>",
+	// "obfs", "cert"); empty for an edit or a rollback.
+	Rotated []string `json:"rotated,omitempty"`
+	// Pin is of the new certificate a rotation installs (in the job's
+	// secrets with its key).
+	Pin string `json:"pin,omitempty"`
 }
 
 // Store is what applying keeps in the controller's database.
@@ -119,10 +127,19 @@ func (a *Applier) Kind() *jobs.Kind {
 			if err := json.Unmarshal(raw, &p); err != nil {
 				return nil, err
 			}
-			return []jobs.Step{
+			steps := []jobs.Step{
 				{Name: "connect", Phase: model.JobConnecting, Safe: true, Run: x.connect},
 				{Name: "validate", Phase: model.JobPreflight, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.validate(ctx, env, p) }},
 				{Name: "prepare", Phase: model.JobConfiguring, Safe: true, Run: x.prepare, Undo: x.undoPrepare},
+			}
+			if p.Pin != "" {
+				// A rotation of the certificate.
+				steps = append(steps, jobs.Step{Name: "cert", Phase: model.JobConfiguring, Safe: true,
+					Done: func(ctx context.Context, env *jobs.Env) (bool, error) { return x.certDone(ctx, env, p) },
+					Run:  func(ctx context.Context, env *jobs.Env) error { return x.cert(ctx, env, p) },
+					Undo: x.undoCert})
+			}
+			return append(steps, []jobs.Step{
 				{Name: "install", Phase: model.JobConfiguring, Safe: true,
 					Done: func(ctx context.Context, env *jobs.Env) (bool, error) { return x.installed(ctx, env, p) },
 					Run:  func(ctx context.Context, env *jobs.Env) error { return x.install(ctx, env, p) },
@@ -134,7 +151,7 @@ func (a *Applier) Kind() *jobs.Kind {
 					Done: func(ctx context.Context, env *jobs.Env) (bool, error) { return x.committed(ctx, env, p) },
 					Run:  func(ctx context.Context, env *jobs.Env) error { return x.commit(ctx, env, p) }},
 				{Name: "cleanup", Phase: model.JobVerifying, Safe: true, Run: x.cleanup},
-			}, nil
+			}...), nil
 		},
 		// Every step looks at the server first: after a restart the job
 		// goes on from the nearest safe step.
@@ -321,6 +338,154 @@ func (x *applier) backup(ctx context.Context, env *jobs.Env, ex remote.Executor,
 		return jobs.Fail("Не удалось сохранить копию конфига.", err)
 	}
 	env.Logf("Копия прежнего конфига: %s%s.", in.Config, Backup)
+	return nil
+}
+
+// backupFile records the state of the file at path under flag (its
+// SHA-256 or remote.Absent) before anything changes it, then keeps a copy
+// as path.hyroute-prev. A run again keeps the first record and copies
+// again while the file is in that state; in another state the file is
+// this job's already, and the copy is the original.
+func (x *applier) backupFile(ctx context.Context, env *jobs.Env, ex remote.Executor, path, flag string) error {
+	state, err := remote.FileState(ctx, ex, path, sudo(env))
+	if err != nil {
+		return err
+	}
+	if prev := env.Get(flag); prev != "" && prev != state {
+		return nil
+	}
+	if err := env.Set(flag, state); err != nil {
+		return err
+	}
+	if state == remote.Absent {
+		return nil
+	}
+	if err := remote.CopyFile(ctx, ex, path, path+Backup, sudo(env)); err != nil {
+		return jobs.Fail("Не удалось сохранить копию "+path+".", err)
+	}
+	return nil
+}
+
+// restoreFile puts back the file backupFile recorded under flag.
+func (x *applier) restoreFile(ctx context.Context, env *jobs.Env, path, flag string) error {
+	state := env.Get(flag)
+	if state == "" {
+		return jobs.ErrNothingToUndo
+	}
+	ex, err := exec(ctx, env)
+	if err != nil {
+		return err
+	}
+	changed, err := remote.RestoreFile(ctx, ex, path, path+Backup, state, sudo(env))
+	if errors.Is(err, remote.ErrBackupMismatch) {
+		return fmt.Errorf("%w: %s оставлен как есть, проверьте его вручную", err, path)
+	}
+	if err == nil && !changed {
+		return jobs.ErrNothingToUndo
+	}
+	return err
+}
+
+// certFiles are where the candidate keeps its certificate and key.
+func certFiles(env *jobs.Env) (cert, key string, err error) {
+	_, c, err := candidate(env)
+	if err != nil {
+		return "", "", err
+	}
+	if c.TLS == nil || c.TLS.Cert == "" || c.TLS.Key == "" {
+		return "", "", jobs.Fail("В конфиге нет файлов сертификата.", nil)
+	}
+	return c.TLS.Cert, c.TLS.Key, nil
+}
+
+// certDone: the new certificate is in place.
+func (x *applier) certDone(ctx context.Context, env *jobs.Env, p Params) (bool, error) {
+	cert, _, err := certFiles(env)
+	if err != nil {
+		return false, err
+	}
+	ex, err := exec(ctx, env)
+	if err != nil {
+		return false, err
+	}
+	b, err := ex.ReadFile(ctx, cert, sudo(env))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	pin, _ := deploy.Pin(b)
+	return pin == p.Pin, nil
+}
+
+// cert writes the new certificate and key of a rotation over the files
+// the config names, keeping copies and the rights of the old files.
+func (x *applier) cert(ctx context.Context, env *jobs.Env, p Params) error {
+	cert, key, err := certFiles(env)
+	if err != nil {
+		return err
+	}
+	in, err := x.installation(ctx, env)
+	if err != nil {
+		return err
+	}
+	ex, err := exec(ctx, env)
+	if err != nil {
+		return err
+	}
+	certPEM, keyPEM := env.Secret(SecretCert), env.Secret(SecretKey)
+	if pin, err := deploy.Pin([]byte(certPEM)); err != nil || pin != p.Pin || keyPEM == "" {
+		return jobs.Fail("Нового сертификата в задании нет.", err)
+	}
+	for _, f := range []struct {
+		path, flag string
+		data       string
+		spec       remote.FileSpec
+	}{
+		{cert, "certState", certPEM, remote.FileSpec{Mode: 0o644}},
+		{key, "keyState", keyPEM, remote.FileSpec{Mode: 0o640, Group: in.User}},
+	} {
+		if err := x.backupFile(ctx, env, ex, f.path, f.flag); err != nil {
+			return err
+		}
+		fi, ok, err := remote.Stat(ctx, ex, f.path, sudo(env))
+		if err != nil {
+			return err
+		}
+		spec := f.spec
+		if ok {
+			spec.Mode, spec.Owner, spec.Group = fi.Mode, fi.Owner, fi.Group
+		}
+		spec.Sudo = sudo(env)
+		if err := env.Set("changed", "1"); err != nil {
+			return err
+		}
+		if err := ex.WriteFile(ctx, f.path, []byte(f.data), spec); err != nil {
+			return jobs.Fail("Не удалось записать "+f.path+".", err)
+		}
+	}
+	env.Logf("Новый самоподписанный сертификат записан: %s; pinSHA256 %s.", cert, p.Pin)
+	return nil
+}
+
+func (x *applier) undoCert(ctx context.Context, env *jobs.Env) error {
+	if env.Get("certState") == "" && env.Get("keyState") == "" {
+		return jobs.ErrNothingToUndo
+	}
+	cert, key, err := certFiles(env)
+	if err != nil {
+		return err
+	}
+	cerr := x.restoreFile(ctx, env, cert, "certState")
+	kerr := x.restoreFile(ctx, env, key, "keyState")
+	for _, err := range []error{cerr, kerr} {
+		if err != nil && !errors.Is(err, jobs.ErrNothingToUndo) {
+			return err
+		}
+	}
+	if cerr != nil && kerr != nil {
+		return jobs.ErrNothingToUndo
+	}
 	return nil
 }
 
@@ -634,7 +799,7 @@ func (x *applier) committed(ctx context.Context, env *jobs.Env, p Params) (bool,
 	if err != nil {
 		return false, err
 	}
-	return cur.SHA256 == p.SHA256, nil
+	return cur.SHA256 == p.SHA256 && (p.Pin == "" || cur.Meta.PinSHA256 == p.Pin), nil
 }
 
 func (x *applier) commit(ctx context.Context, env *jobs.Env, p Params) error {
@@ -662,8 +827,14 @@ func (x *applier) commit(ctx context.Context, env *jobs.Env, p Params) error {
 		}
 	}
 	rev := model.ServerConfig{ServerID: env.ServerID, SHA256: p.SHA256, Meta: meta, Source: model.ConfigEdit, JobID: env.JobID, By: env.CreatedBy, At: x.Now()}
-	if p.From != 0 {
+	switch {
+	case p.From != 0:
 		rev.Source, rev.FromRevision = model.ConfigRollback, p.From
+	case len(p.Rotated) > 0:
+		rev.Source = model.ConfigRotate
+	}
+	if p.Pin != "" && meta.PinSHA256 != p.Pin {
+		return jobs.Fail("На сервере не тот сертификат, который записало задание.", nil)
 	}
 	err = x.Store.AddConfig(ctx, &rev, func(r int) ([]byte, error) {
 		return x.Keys.Seal(b, model.ConfigContext(env.ServerID, r))
@@ -674,9 +845,21 @@ func (x *applier) commit(ctx context.Context, env *jobs.Env, p Params) error {
 	if err := remote.RemoveFile(ctx, ex, in.Config+Backup, sudo(env)); err != nil {
 		env.Warnf("Копия прежнего конфига %s%s осталась на сервере.", in.Config, Backup)
 	}
-	if p.From != 0 {
+	// The old key is not kept: a rotation is meant to retire it.
+	if p.Pin != "" {
+		for _, f := range []string{c.TLS.Cert, c.TLS.Key} {
+			if err := remote.RemoveFile(ctx, ex, f+Backup, sudo(env)); err != nil {
+				env.Warnf("Копия прежнего файла %s%s осталась на сервере: удалите её.", f, Backup)
+			}
+		}
+	}
+	switch {
+	case len(p.Rotated) > 0:
+		env.Logf("Новые значения сохранены в controller как ревизия %d. Старые ссылки клиентов больше не работают: выдайте новые.", rev.Revision)
+		return nil
+	case p.From != 0:
 		env.Logf("Возвращена версия %d; в controller она сохранена как ревизия %d.", p.From, rev.Revision)
-	} else {
+	default:
 		env.Logf("Конфиг сохранён в controller как ревизия %d.", rev.Revision)
 	}
 	return nil

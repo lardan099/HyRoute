@@ -100,6 +100,37 @@ func (s *server) applyConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, toJobJSON(j))
 }
 
+// rotateInput: the revision the admin looked at and what to replace.
+type rotateInput struct {
+	Base int `json:"base"`
+	apply.Rotation
+}
+
+// rotateConfig starts the apply job that replaces passwords or the
+// self-signed certificate.
+func (s *server) rotateConfig(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, errNotFound)
+		return
+	}
+	var in rotateInput
+	if err := readJSON(r, &in); err != nil {
+		writeError(w, err)
+		return
+	}
+	if _, err := s.installed(r, id); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	j, err := s.Apply.Rotate(r.Context(), id, in.Base, in.Rotation, principal(r).User.ID)
+	if err != nil {
+		s.fail(w, r, jobError(configError(err)))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, toJobJSON(j))
+}
+
 // revisionJSON is a config revision in the history (no config text).
 type revisionJSON struct {
 	Revision     int                `json:"revision"`

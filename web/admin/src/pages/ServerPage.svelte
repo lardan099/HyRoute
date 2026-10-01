@@ -10,6 +10,7 @@
   import Dialog from '../lib/Dialog.svelte';
   import DeployDialog from '../lib/DeployDialog.svelte';
   import MaintainDialog from '../lib/MaintainDialog.svelte';
+  import RotateDialog from '../lib/RotateDialog.svelte';
   import JournalView from '../lib/JournalView.svelte';
   import ConfigEditor from '../lib/ConfigEditor.svelte';
   import ClientCard from '../lib/ClientCard.svelte';
@@ -29,6 +30,7 @@
   let confirming = $state<ServiceAction | null>(null);
   let deploying = $state(false);
   let maintaining = $state(false);
+  let rotating = $state(false);
   let editing = $state(false);
   let history = $state(false);
   let action = $state<{ name: ServiceAction; job: Job; done: boolean; ok: boolean } | null>(null);
@@ -106,7 +108,7 @@
     }
   }
 
-  const sourceName = { deploy: 'srv.sourceDeploy', import: 'srv.sourceImport', edit: 'srv.sourceEdit', rollback: 'srv.sourceRollback' } as const;
+  const sourceName = { deploy: 'srv.sourceDeploy', import: 'srv.sourceImport', edit: 'srv.sourceEdit', rollback: 'srv.sourceRollback', rotate: 'srv.sourceRotate' } as const;
 
   // After the history or the editor: the summary may have changed.
   async function closePanel() {
@@ -223,6 +225,7 @@
         <div class="row">
           <h2 class="grow">{t('srv.config')}</h2>
           {#if config}<button class="ghost" onclick={() => (history = true)}>{t('hist.open')}</button>{/if}
+          {#if config && writable}<button class="ghost" onclick={() => (rotating = true)}>{t('rot.open')}</button>{/if}
           {#if config && writable}<button class="ghost" onclick={() => (editing = true)}>{t('cfg.edit')}</button>{/if}
         </div>
         {#if config}
@@ -266,6 +269,10 @@
         <button class="primary {confirming === 'stop' ? 'danger-bg' : ''}" onclick={() => run(confirming!)}>{actionName(confirming!)}</button>
       {/snippet}
     </Dialog>
+  {/if}
+
+  {#if rotating && config}
+    <RotateDialog {server} {config} onclose={() => (rotating = false)} onstarted={(j) => go('deployments', j.id)} />
   {/if}
 
   {#if maintaining && status}

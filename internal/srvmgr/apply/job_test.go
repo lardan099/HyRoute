@@ -55,6 +55,8 @@ type vps struct {
 	ufw    map[string]bool // ufw rules ("8443/udp"); nil: no ufw
 	bad    string          // a config containing it makes the service fail
 	noSS   bool            // no ss (iproute2) on the server
+	// crash: the service fails with these files (locked).
+	crash func(files map[string][]byte) bool
 }
 
 func newVPS() *vps {
@@ -65,7 +67,7 @@ func newVPS() *vps {
 
 func (v *vps) start() {
 	c, err := hyconfig.ParseServer(v.files[cfgPath])
-	if err != nil || hyconfig.HasErrors(c.Validate()) || strings.Contains(string(v.files[cfgPath]), "crash: true") || (v.bad != "" && strings.Contains(string(v.files[cfgPath]), v.bad)) {
+	if err != nil || hyconfig.HasErrors(c.Validate()) || strings.Contains(string(v.files[cfgPath]), "crash: true") || (v.bad != "" && strings.Contains(string(v.files[cfgPath]), v.bad)) || (v.crash != nil && v.crash(v.files)) {
 		v.state, v.port = "failed", 0
 		return
 	}

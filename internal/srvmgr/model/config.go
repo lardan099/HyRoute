@@ -14,6 +14,8 @@ const (
 	ConfigEdit   ConfigSource = "edit"
 	// ConfigRollback: an earlier revision installed again (FromRevision).
 	ConfigRollback ConfigSource = "rollback"
+	// ConfigRotate: new passwords or a new certificate (P2-05).
+	ConfigRotate ConfigSource = "rotate"
 )
 
 // ConfigMeta is the non-secret summary of a config revision: what the UI

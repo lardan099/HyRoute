@@ -449,6 +449,21 @@ verify (`hysteria version` сообщает нужную версию, служ�
 конфига: у задания своих секретов нет. Копии `.hyroute-prev` остаются на
 сервере, как после развёртывания.
 
+Ротация (P2-05b) — то же задание `apply`. `Applier.Rotate` берёт
+текущую ревизию (база должна совпадать), меняет выбранное в typed-модели
+(`auth.password`, пароли выбранных `auth.userpass`, `obfs.salamander.password`
+— `generated()`, 24 случайных байта) и сериализует её; сертификат меняется
+только у самоподписанного (`Meta.TLS = self-signed`) с абсолютными путями:
+`deploy.SelfSigned(Meta.SNI, host)`, сертификат и ключ — в секретах
+задания, `Params.Pin` — его pin, `Params.Rotated` — что меняется (без
+значений). Только сертификат — конфиг остаётся байт в байт. Шаг `cert`
+перед `install`: состояние файлов cert/key записывается до изменения,
+копии `.hyroute-prev`, запись с правами прежних файлов; откат — прежние
+файлы. Commit сверяет pin на сервере с `Params.Pin`, ревизия получает
+источник `rotate` (миграция 0013) и новый pin в meta; копии старых
+сертификата и ключа удаляются. Ссылки клиентов строятся из текущей
+ревизии, поэтому новые появляются сразу после задания.
+
 ## Мониторинг (P2-02)
 
 `monitor.Collector` раз в `-monitor-interval` (по умолчанию минута, 0 —
@@ -607,6 +622,7 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | GET | `/api/v1/servers/{id}/config/revisions/{rev}` | operator+ | конфиг ревизии, секреты замаскированы |
 | GET | `/api/v1/servers/{id}/config/compare?from=&to=` | operator+ | diff двух ревизий без секретов, изменённые секреты — путями |
 | POST | `/api/v1/servers/{id}/config/rollback` | operator+ | `{base, revision}`: задание `apply` с конфигом ревизии |
+| POST | `/api/v1/servers/{id}/config/rotate` | operator+ | `{base, auth, users, obfs, cert}`: задание `apply` с новыми паролями и/или самоподписанным сертификатом; что не подходит к конфигу — 400 `invalid` |
 | GET | `/api/v1/servers/{id}/client` | любая | сводка для клиентов без секретов |
 | POST | `/api/v1/servers/{id}/client/reveal` | operator+ | `{user}` → ссылки (официальная и совместимая), `config.yaml`, QR; CSRF, `no-store`, пишется в audit log |
 | GET | `/api/v1/jobs`, `/api/v1/jobs/{id}` | любая | список (`?server=`, `?before=`), детали с шагами |

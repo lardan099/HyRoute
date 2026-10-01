@@ -151,6 +151,8 @@
   // controller may refuse it as well). Preflight only reads.
   let newest = $state(0);
   let confirmRetry = $state(false);
+  // A rotation: the client links changed.
+  let rotated = $derived(!!job && Array.isArray(job.params?.rotated));
   let stale = $derived(!!job && job.kind !== 'preflight' && newest > job.id);
 
   async function loadNewest() {
@@ -213,6 +215,12 @@
 
   {#if job.kind === 'deploy' && job.state === 'completed'}
     <DeployResult serverId={job.serverId} jobId={job.id} />
+  {/if}
+  {#if job.kind === 'apply' && job.state === 'completed' && rotated}
+    <div class="note ok">
+      {t('rot.done')}
+      <button class="link" onclick={() => go('servers', job!.serverId)}>{t('rot.links')}</button>
+    </div>
   {/if}
   {#if job.kind === 'import' && report}<ImportReport {report} />{/if}
   <!-- A deploy shows its preflight report only when the server was not ready. -->

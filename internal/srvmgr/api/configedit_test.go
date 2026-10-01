@@ -166,3 +166,37 @@ func ownerID(t *testing.T, e *testEnv) int64 {
 	}
 	return u.ID
 }
+
+func TestRotateAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": "S", "host": "s.example.com", "authType": "password", "password": fakeSSHPass}, nil)
+	var srv serverJSON
+	json.Unmarshal(rec.Body.Bytes(), &srv)
+	id := strconv.FormatInt(srv.ID, 10)
+	cfg := "listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-rotate-pass-1\n"
+	c := model.ServerConfig{ServerID: srv.ID, SHA256: "x", Source: model.ConfigDeploy, At: time.Now(), Meta: model.ConfigMeta{TLS: "acme"}}
+	e.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return e.keys.Seal([]byte(cfg), model.ConfigContext(srv.ID, rev)) })
+	auth1 := map[string]any{"base": 1, "auth": true}
+
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/rotate", auth1, nil), http.StatusConflict, "no_installation")
+	e.db.SetInstallation(ctx, model.Installation{ServerID: srv.ID, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", At: time.Now()})
+	e.db.SetHostKey(ctx, model.HostKey{ServerID: srv.ID, Type: "ssh-ed25519", Key: []byte("fake"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()})
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/rotate", map[string]any{"base": 1}, nil), http.StatusBadRequest, "invalid")
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/rotate", map[string]any{"base": 1, "cert": true}, nil), http.StatusBadRequest, "invalid")
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/rotate", map[string]any{"base": 2, "auth": true}, nil), http.StatusConflict, "config_changed")
+
+	var u model.User
+	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
+	e.db.CreateUser(ctx, &u)
+	code(t, e.login("viewer").do("POST", "/api/v1/servers/"+id+"/config/rotate", auth1, nil), http.StatusForbidden, "forbidden")
+
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/config/rotate", auth1, nil)
+	var j jobJSON
+	json.Unmarshal(rec.Body.Bytes(), &j)
+	if rec.Code != http.StatusAccepted || j.Kind != "apply" || !strings.Contains(string(j.Params), `"rotated":["auth"]`) || strings.Contains(rec.Body.String(), "fake-rotate") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}

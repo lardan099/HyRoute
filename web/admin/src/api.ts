@@ -252,7 +252,15 @@ export interface DeployParams {
   overwrite?: boolean;
 }
 
-export type ConfigSource = 'deploy' | 'import' | 'edit' | 'rollback';
+export type ConfigSource = 'deploy' | 'import' | 'edit' | 'rollback' | 'rotate';
+
+// Rotation: what gets new values (users: of userpass auth; none: all).
+export interface Rotation {
+  auth: boolean;
+  users?: string[];
+  obfs: boolean;
+  cert: boolean;
+}
 
 // ServerConfig is the current config revision of a server: its summary,
 // never the config itself.
@@ -614,6 +622,7 @@ export const api = {
     request<ConfigComparison>('GET', `/servers/${serverId}/config/compare?from=${from}&to=${to}`),
   rollbackConfig: (serverId: number, base: number, revision: number) =>
     request<Job>('POST', `/servers/${serverId}/config/rollback`, { base, revision }),
+  rotateConfig: (serverId: number, base: number, r: Rotation) => request<Job>('POST', `/servers/${serverId}/config/rotate`, { base, ...r }),
   clientSummary: (serverId: number) => request<ClientSummary>('GET', `/servers/${serverId}/client`),
   clientProfile: (serverId: number, user = '') =>
     request<ClientProfile>('POST', `/servers/${serverId}/client/reveal`, { user }),

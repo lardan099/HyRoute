@@ -99,6 +99,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/servers/{id}/config/revisions/{rev}", s.authed(writers, s.configRevision))
 	mux.HandleFunc("GET /api/v1/servers/{id}/config/compare", s.authed(writers, s.compareConfigs))
 	mux.HandleFunc("POST /api/v1/servers/{id}/config/rollback", s.authed(anyRole, s.rollbackConfig))
+	mux.HandleFunc("POST /api/v1/servers/{id}/config/rotate", s.authed(anyRole, s.rotateConfig))
 	mux.HandleFunc("GET /api/v1/servers/{id}/status", s.authed(anyRole, s.serviceStatus))
 	mux.HandleFunc("POST /api/v1/servers/{id}/service/{action}", s.authed(anyRole, s.serviceAction))
 	mux.HandleFunc("GET /api/v1/servers/{id}/journal", s.authed(anyRole, s.journal))

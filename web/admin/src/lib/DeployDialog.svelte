@@ -57,6 +57,7 @@
     edit: 'deploy.changedEdit',
     rollback: 'deploy.changedRollback',
     import: 'deploy.changedImport',
+    rotate: 'deploy.changedRotate',
   };
 
   // A certificate name for the placeholder: the masquerade site's.
