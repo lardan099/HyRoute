@@ -415,6 +415,9 @@ func (e *Engine) rollback(ctx context.Context, j *model.Job, env *Env, steps []S
 		j.State = model.JobRollingBack
 		e.save(ctx, j, env)
 		e.log(j.ID, "warn", j.CurrentStep, "Откат изменений этого задания.")
+		// The step may have failed because the connection broke: the
+		// rollback goes over a new one.
+		env.reconnect()
 		for _, k := range undo {
 			env.step = steps[k].Name
 			uerr := steps[k].Undo(context.WithoutCancel(ctx), env)

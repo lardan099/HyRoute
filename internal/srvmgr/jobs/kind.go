@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/remote"
@@ -96,9 +97,48 @@ type Env struct {
 	mu       sync.Mutex
 	data     map[string]string
 	secrets  map[string]string
-	exec     remote.Executor
+	exec     *conn
 	setErr   error
 	rollback Rollback
+	// redial: the connection was given up (lost, or before a rollback),
+	// and the next Exec opens a new one once: if that fails, dialErr is
+	// what later calls get, without dialing again.
+	redial  bool
+	dialErr error
+}
+
+// conn is the job's connection. It notes that the connection is lost (an
+// operation failed with remote.UnreachableError), so that the next
+// Env.Exec opens a new one.
+type conn struct {
+	remote.Executor
+	lost atomic.Bool
+}
+
+func (c *conn) note(err error) error {
+	var ue *remote.UnreachableError
+	if errors.As(err, &ue) {
+		c.lost.Store(true)
+	}
+	return err
+}
+
+func (c *conn) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
+	res, err := c.Executor.Run(ctx, cmd)
+	return res, c.note(err)
+}
+
+func (c *conn) Stream(ctx context.Context, cmd remote.Cmd, line func(string)) error {
+	return c.note(c.Executor.Stream(ctx, cmd, line))
+}
+
+func (c *conn) ReadFile(ctx context.Context, path string, sudo bool) ([]byte, error) {
+	b, err := c.Executor.ReadFile(ctx, path, sudo)
+	return b, c.note(err)
+}
+
+func (c *conn) WriteFile(ctx context.Context, path string, data []byte, f remote.FileSpec) error {
+	return c.note(c.Executor.WriteFile(ctx, path, data, f))
 }
 
 // Rollback is how the rollback of a failed job went.
@@ -200,12 +240,19 @@ func (e *Env) Warnf(format string, args ...any) {
 }
 
 // Exec is the connection to the job's server, opened on first use and
-// closed when the job ends.
+// closed when the job ends. A lost connection is replaced by a new one,
+// once.
 func (e *Env) Exec(ctx context.Context) (remote.Executor, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.exec != nil {
+	if e.exec != nil && !e.exec.lost.Load() {
 		return e.exec, nil
+	}
+	if e.exec != nil {
+		e.dropLocked()
+	}
+	if e.dialErr != nil {
+		return nil, e.dialErr
 	}
 	if e.ServerID == 0 {
 		return nil, errors.New("job has no server")
@@ -215,10 +262,33 @@ func (e *Env) Exec(ctx context.Context) (remote.Executor, error) {
 	}
 	ex, err := e.eng.Connect.Connect(ctx, e.ServerID)
 	if err != nil {
+		if e.redial {
+			e.dialErr = err
+		}
 		return nil, err
 	}
-	e.exec = ex
-	return ex, nil
+	e.exec, e.redial = &conn{Executor: ex}, false
+	return e.exec, nil
+}
+
+// dropLocked gives up the connection: it is closed in the background (a
+// dead one may take long), and the next Exec dials again.
+func (e *Env) dropLocked() {
+	if e.exec != nil {
+		go e.exec.Close()
+		e.exec = nil
+	}
+	e.redial = true
+}
+
+// reconnect makes the next Exec open a new connection, for the rollback:
+// the one the failed step used may be dead without anything having
+// noticed yet.
+func (e *Env) reconnect() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.dropLocked()
+	e.dialErr = nil
 }
 
 func (e *Env) close() {
