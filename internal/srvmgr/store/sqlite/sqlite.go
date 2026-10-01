@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 
@@ -41,7 +42,11 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "synchronous(NORMAL)")
 	q.Add("_txlock", "immediate")
-	sqldb, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?"+q.Encode())
+	uri, err := fileURI(path)
+	if err != nil {
+		return nil, err
+	}
+	sqldb, err := sql.Open("sqlite", uri+"?"+q.Encode())
 	if err != nil {
 		return nil, err
 	}
@@ -52,6 +57,25 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	}
 	return d, nil
 }
+
+// fileURI is the SQLite URI of a database file: an absolute path with '/'
+// separators (file:///var/lib/x.db, file:///C:/x.db) where %, ? and #,
+// which escape or end the path in a URI, are percent-encoded: unescaped,
+// SQLite cut the path at # or decoded %XX in it and opened another file
+// than the owner-only one Open created.
+func fileURI(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	p := filepath.ToSlash(abs)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p // C:/… → /C:/…, the Windows VFS drops the slash
+	}
+	return "file://" + uriEscaper.Replace(p), nil
+}
+
+var uriEscaper = strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23")
 
 // Close closes the database.
 func (d *DB) Close() error { return d.db.Close() }
