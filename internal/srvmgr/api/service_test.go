@@ -48,6 +48,13 @@ func TestServiceAPI(t *testing.T) {
 	ctx := context.Background()
 	srv := sshtest.Start(t, "root", fakeSSHPass)
 	srv.SetExec(statusExec)
+	// The status reads these over SFTP: fixed Linux files, so the test does
+	// not depend on the machine it runs on (Windows has no /proc).
+	srv.SetFiles(map[string]string{
+		"/proc/meminfo": "MemTotal:        2048000 kB\nMemFree:          512000 kB\nMemAvailable:    1024000 kB\n",
+		"/proc/uptime":  "12345.67 23456.78\n",
+		"/proc/loadavg": "0.10 0.20 0.30 1/100 4242\n",
+	})
 	rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": "S", "host": srv.Host, "sshPort": srv.Port, "authType": "password", "password": fakeSSHPass}, nil)
 	var created serverJSON
 	json.Unmarshal(rec.Body.Bytes(), &created)

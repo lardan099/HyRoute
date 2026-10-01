@@ -1,7 +1,8 @@
 // Package sshtest is an in-process SSH server for tests of the remote
 // layer: password and public key auth, exec requests handled by a function
 // (by default the local /bin/sh, with "sudo -n --" stripped as if the user
-// were root), the SFTP subsystem on the local filesystem, and a host key
+// were root), the SFTP subsystem on the local filesystem (or on fixed
+// files, SetFiles), and a host key
 // that can be swapped to simulate a reinstalled server.
 package sshtest
 
@@ -45,6 +46,7 @@ type Server struct {
 	mu      sync.Mutex
 	hostKey ssh.Signer
 	exec    ExecFunc
+	files   memFS
 	lines   []string
 	ln      net.Listener
 	wg      sync.WaitGroup
@@ -115,6 +117,16 @@ func (s *Server) SetHostKey(k ssh.Signer) {
 func (s *Server) SetExec(f ExecFunc) {
 	s.mu.Lock()
 	s.exec = f
+	s.mu.Unlock()
+}
+
+// SetFiles makes the SFTP subsystem serve only these files, read-only, from
+// memory (path → content) instead of the local filesystem. Tests of code
+// that reads /proc or /etc of the server use it: the local filesystem is
+// the one of the test machine, which on Windows has no /proc at all.
+func (s *Server) SetFiles(files map[string]string) {
+	s.mu.Lock()
+	s.files = memFS(files)
 	s.mu.Unlock()
 }
 
@@ -257,6 +269,13 @@ func (s *Server) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 				continue
 			}
 			req.Reply(true, nil)
+			s.mu.Lock()
+			files := s.files
+			s.mu.Unlock()
+			if files != nil {
+				sftp.NewRequestServer(ch, files.handlers()).Serve()
+				return
+			}
 			srv, err := sftp.NewServer(ch)
 			if err != nil {
 				return
