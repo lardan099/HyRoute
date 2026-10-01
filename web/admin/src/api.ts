@@ -219,6 +219,18 @@ export interface PreflightReport {
 export type TLSMode = 'self-signed' | 'acme';
 export type DeploySource = 'auto' | 'direct' | 'relay';
 
+// The Hysteria version HyRoute deploys unless asked otherwise (its hashes
+// are pinned in hyrelease).
+export const defaultHysteria = 'v2.12.3';
+
+export type MaintainOp = 'upgrade' | 'reinstall';
+
+export interface MaintainParams {
+  op: MaintainOp;
+  version?: string;
+  source?: DeploySource;
+}
+
 // DeployParams are the choices of a deploy; passwords and the certificate
 // are made by the controller (a redeploy keeps them).
 export interface DeployParams {
@@ -321,6 +333,8 @@ export interface ServiceStatus {
   uptimeSec: number;
   memoryMiB: number;
   version: string;
+  // managed: HyRoute installed it (a reinstall is possible).
+  managed: boolean;
   ports: number[];
   system: {
     uptimeSec: number;
@@ -573,6 +587,7 @@ export const api = {
   retryJob: (id: number) => request<Job>('POST', `/jobs/${id}/retry`),
   startDeploy: (serverId: number, p: DeployParams) => request<Job>('POST', `/servers/${serverId}/deploy`, p),
   startImport: (serverId: number) => request<Job>('POST', `/servers/${serverId}/import`),
+  startMaintain: (serverId: number, p: MaintainParams) => request<Job>('POST', `/servers/${serverId}/maintain`, p),
   serviceStatus: (serverId: number) => request<ServiceStatus>('GET', `/servers/${serverId}/status`),
   serviceAction: (serverId: number, action: ServiceAction) => request<Job>('POST', `/servers/${serverId}/service/${action}`),
   journal: (serverId: number, lines = 500) => request<JournalEntry[]>('GET', `/servers/${serverId}/journal?lines=${lines}`),

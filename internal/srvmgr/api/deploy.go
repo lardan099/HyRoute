@@ -49,6 +49,35 @@ func (s *server) startDeploy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, toJobJSON(j))
 }
 
+// startMaintain starts an upgrade or a reinstall of Hysteria.
+func (s *server) startMaintain(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, errNotFound)
+		return
+	}
+	var p deploy.MaintainParams
+	if err := readJSON(r, &p); err != nil {
+		writeError(w, err)
+		return
+	}
+	if _, err := s.installed(r, id); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	j, err := s.Deploy.Maintain(r.Context(), id, p, principal(r).User.ID)
+	switch {
+	case errors.Is(err, deploy.ErrNoInstallation):
+		writeError(w, errNoInstallation)
+	case errors.Is(err, deploy.ErrNotManaged):
+		writeError(w, &Error{Status: http.StatusConflict, Code: "not_managed", Message: "Hysteria на этом сервере импортирована: переустановить можно только установку HyRoute. Обновить версию можно и у импортированной."})
+	case err != nil:
+		s.fail(w, r, jobError(err))
+	default:
+		writeJSON(w, http.StatusAccepted, toJobJSON(j))
+	}
+}
+
 // configJSON is a config revision without the config: what the UI shows
 // and what client links need besides the passwords.
 type configJSON struct {

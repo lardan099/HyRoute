@@ -32,6 +32,8 @@ type Status struct {
 	UptimeSec int64  `json:"uptimeSec"`
 	MemoryMiB int    `json:"memoryMiB"`
 	Version   string `json:"version"`
+	// Managed: HyRoute installed it (it can be reinstalled).
+	Managed bool `json:"managed"`
 	// Ports are the UDP ports Hysteria listens on.
 	Ports  []int  `json:"ports"`
 	System System `json:"system"`
@@ -50,7 +52,7 @@ type System struct {
 
 // Read reads the status; ex should be read-only.
 func Read(ctx context.Context, ex remote.Executor, in model.Installation, sudo bool, now time.Time) (Status, error) {
-	s := Status{Unit: in.Unit, Ports: []int{}}
+	s := Status{Unit: in.Unit, Managed: in.Managed, Ports: []int{}}
 	u, err := remote.Unit(ctx, ex, in.Unit)
 	if err != nil {
 		return s, err

@@ -44,6 +44,19 @@ type harness struct {
 	res    *hyrelease.Resolver
 	stop   context.CancelFunc
 	done   chan struct{}
+
+	mu   sync.Mutex
+	bins map[string][]byte // the fake releases: version → binary
+}
+
+// release publishes a fake release of version with binary b: its
+// hashes.txt and binary on the release server, the binary downloadable
+// on the server too.
+func (h *harness) release(version string, b []byte) {
+	h.mu.Lock()
+	h.bins[version] = b
+	h.mu.Unlock()
+	h.sim.AddDownload(h.res.URL(version, "hysteria-linux-amd64"), b)
 }
 
 type conn struct{ s *sim }
@@ -68,22 +81,27 @@ func newHarness(t *testing.T, s *sim) *harness {
 	if err := db.CreateServer(ctx, &srv, nil); err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, db: db, keys: keys, sim: s, server: srv.ID}
-	body := fakeBinary
+	h := &harness{t: t, db: db, keys: keys, sim: s, server: srv.ID, bins: map[string][]byte{}}
 	h.rel = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// /app/<version>/<file>
+		f := strings.Split(r.URL.Path, "/")
+		h.mu.Lock()
+		b, found := h.bins[f[len(f)-2]]
+		h.mu.Unlock()
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/hashes.txt"):
-			w.Write([]byte(sum(fakeBinary) + "  build/hysteria-linux-amd64\n"))
-		case strings.HasSuffix(r.URL.Path, "/hysteria-linux-amd64"):
-			w.Write(body)
+		case !found:
+			http.NotFound(w, r)
+		case f[len(f)-1] == "hashes.txt":
+			w.Write([]byte(sum(b) + "  build/hysteria-linux-amd64\n"))
+		case f[len(f)-1] == "hysteria-linux-amd64":
+			w.Write(b)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	t.Cleanup(h.rel.Close)
-	res := &hyrelease.Resolver{Base: h.rel.URL, HTTP: h.rel.Client()}
-	s.downloads[res.URL(testVersion, "hysteria-linux-amd64")] = fakeBinary
-	h.res = res
+	h.res = &hyrelease.Resolver{Base: h.rel.URL, HTTP: h.rel.Client()}
+	h.release(testVersion, fakeBinary)
 	h.startEngine()
 	t.Cleanup(h.kill)
 	return h
@@ -93,7 +111,9 @@ func newHarness(t *testing.T, s *sim) *harness {
 func (h *harness) startEngine() {
 	h.eng = jobs.New(h.db, h.keys, redact.New(), conn{h.sim}, nil)
 	h.eng.Poll = 10 * time.Millisecond
-	h.eng.Register(Kind(Deps{Store: h.db, Keys: h.keys, Resolver: h.res, VerifyTimeout: 200 * time.Millisecond, Poll: 10 * time.Millisecond}))
+	d := Deps{Store: h.db, Keys: h.keys, Resolver: h.res, VerifyTimeout: 200 * time.Millisecond, Poll: 10 * time.Millisecond}
+	h.eng.Register(Kind(d))
+	h.eng.Register(Maintenance(d))
 	ctx, cancel := context.WithCancel(context.Background())
 	h.stop, h.done = cancel, make(chan struct{})
 	go func() { h.eng.Run(ctx); close(h.done) }()

@@ -426,6 +426,29 @@ SQLite не меняет CHECK). Неудачный возврат откаты�
 обоих конфигов). Регулярная сверка desired/actual (reconciliation) —
 Phase 4.
 
+## Обслуживание (P2-05)
+
+Задание `maintain` (пакет `deploy`, общие с развёртыванием шаги и
+`Deps`): `{op: upgrade|reinstall, version, source}`. Submit требует
+записанной установки; `reinstall` — только своей (`Managed`, стандартные
+пути) и всегда с записанной версией (`DefaultVersion`, если она
+неизвестна). Шаги: connect → check (архитектура по `uname -m`, сборка
+и хеш релиза найдены, доступ к GitHub для `auto`, текущая версия в журнал)
+→ prepare (прежние состояние службы и сервера) → binary (Done: SHA-256
+файла `Installation.Binary` равен хешу релиза; иначе загрузка как в
+развёртывании, проверка хеша на сервере, копия `.hyroute-prev`, `install`;
+откат — прежний файл) → для `reinstall`: user, files (права
+`/etc/hysteria`, конфига, сертификата и ключа как после развёртывания;
+не откатываются), unit (откат — прежний unit и `daemon-reload`) →
+restart (пропускается, если ничего не изменилось и служба работает) →
+verify (`hysteria version` сообщает нужную версию, служба active и UDP-порт
+текущего конфига слушает hysteria; без `ss` — доверие systemd после
+второго опроса) → commit (`Installation.Version`). Откат последним шагом
+перезапускает прежнюю установку (или оставляет службу остановленной, если
+она не работала). Журнал службы при ошибке редактируется паролями текущего
+конфига: у задания своих секретов нет. Копии `.hyroute-prev` остаются на
+сервере, как после развёртывания.
+
 ## Мониторинг (P2-02)
 
 `monitor.Collector` раз в `-monitor-interval` (по умолчанию минута, 0 —
@@ -569,6 +592,7 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | POST | `/api/v1/servers/{id}/preflight` | operator+ | job preflight |
 | POST | `/api/v1/servers/{id}/deploy` | operator+ | job Quick Deploy; нужен подтверждённый ключ SSH; пароли прежней ревизии (любой `auth`) сохраняются; текущий конфиг не из развёртывания (правка, возврат, импорт) заменяется только с `"overwrite": true`, иначе 409 `config_changed` |
 | POST | `/api/v1/servers/{id}/import` | operator+ | job импорта |
+| POST | `/api/v1/servers/{id}/maintain` | operator+ | `{op: upgrade\|reinstall, version, source}`: задание `maintain`; без установки 409 `no_installation`, переустановка импортированной — 409 `not_managed` |
 | GET | `/api/v1/servers/{id}/status` | любая | статус сервиса |
 | POST | `/api/v1/servers/{id}/service/{start,stop,restart}` | operator+ | с подтверждением в UI |
 | GET | `/api/v1/servers/{id}/journal` | любая | журнал Hysteria через redaction (шаблоны + пароли текущего конфига): JSON последних записей или SSE с `?follow=1` |

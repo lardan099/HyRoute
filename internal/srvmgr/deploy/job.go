@@ -51,8 +51,8 @@ type Deps struct {
 
 type deployer struct{ Deps }
 
-// Kind is the deploy job.
-func Kind(d Deps) *jobs.Kind {
+// withDefaults fills the unset Deps.
+func withDefaults(d Deps) Deps {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
@@ -68,7 +68,12 @@ func Kind(d Deps) *jobs.Kind {
 	if d.Relay == nil {
 		d.Relay = hyrelease.NewRelay(d.Resolver)
 	}
-	x := &deployer{d}
+	return d
+}
+
+// Kind is the deploy job.
+func Kind(d Deps) *jobs.Kind {
+	x := &deployer{withDefaults(d)}
 	return &jobs.Kind{
 		Name: JobKind,
 		Steps: func(raw json.RawMessage) ([]jobs.Step, error) {
@@ -94,8 +99,12 @@ func (x *deployer) steps(p Params) []jobs.Step {
 		{Name: "preflight", Phase: model.JobPreflight, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.preflight(ctx, env, p) }},
 		{Name: "prepare", Phase: model.JobInstalling, Safe: true, Run: x.prepare, Undo: x.undoPrepare},
 		{Name: "binary", Phase: model.JobDownloading, Safe: true,
-			Done: func(ctx context.Context, env *jobs.Env) (bool, error) { return x.binaryDone(ctx, env, p) },
-			Run:  func(ctx context.Context, env *jobs.Env) error { return x.binary(ctx, env, p) },
+			Done: func(ctx context.Context, env *jobs.Env) (bool, error) {
+				return x.binaryDone(ctx, env, p.Version, BinaryPath)
+			},
+			Run: func(ctx context.Context, env *jobs.Env) error {
+				return x.binary(ctx, env, p.Version, p.Source, BinaryPath)
+			},
 			Undo: x.restoreFile(BinaryPath, "binaryBackup")},
 		{Name: "user", Phase: model.JobInstalling, Safe: true, Done: x.userDone, Run: x.user},
 		{Name: "tls", Phase: model.JobConfiguring, Safe: true,
@@ -295,16 +304,17 @@ func (x *deployer) undoPrepare(ctx context.Context, env *jobs.Env) error {
 	return nil
 }
 
-func (x *deployer) asset(ctx context.Context, env *jobs.Env, p Params) (hyrelease.Asset, error) {
-	a, err := x.Resolver.Resolve(ctx, p.Version, env.Get("arch"))
+func (x *deployer) asset(ctx context.Context, env *jobs.Env, version string) (hyrelease.Asset, error) {
+	a, err := x.Resolver.Resolve(ctx, version, env.Get("arch"))
 	if err != nil {
 		return a, jobs.Fail("Не удалось найти сборку Hysteria для сервера.", err)
 	}
 	return a, nil
 }
 
-func (x *deployer) binaryDone(ctx context.Context, env *jobs.Env, p Params) (bool, error) {
-	a, err := x.asset(ctx, env, p)
+// binaryDone: the file at path is the release binary of version.
+func (x *deployer) binaryDone(ctx context.Context, env *jobs.Env, version, path string) (bool, error) {
+	a, err := x.asset(ctx, env, version)
 	if err != nil {
 		return false, err
 	}
@@ -312,19 +322,22 @@ func (x *deployer) binaryDone(ctx context.Context, env *jobs.Env, p Params) (boo
 	if err != nil {
 		return false, err
 	}
-	sum, err := remote.FileSHA256(ctx, ex, BinaryPath, sudo(env))
+	sum, err := remote.FileSHA256(ctx, ex, path, sudo(env))
 	if err != nil {
 		return false, err
 	}
 	if sum == a.SHA256 {
-		env.Logf("Hysteria %s уже установлена.", a.Version)
+		env.Logf("Hysteria %s уже установлена, SHA-256 совпадает с хешем релиза.", a.Version)
 		return true, nil
 	}
 	return false, nil
 }
 
-func (x *deployer) binary(ctx context.Context, env *jobs.Env, p Params) error {
-	a, err := x.asset(ctx, env, p)
+// binary puts the release binary of version at path: downloaded from
+// source, checked against the release hash, with a copy of the file it
+// replaces (restoreFile(path, "binaryBackup") undoes it).
+func (x *deployer) binary(ctx context.Context, env *jobs.Env, version, source, path string) error {
+	a, err := x.asset(ctx, env, version)
 	if err != nil {
 		return err
 	}
@@ -333,7 +346,7 @@ func (x *deployer) binary(ctx context.Context, env *jobs.Env, p Params) error {
 		return err
 	}
 	src := x.Relay
-	if p.Source == SourceDirect || (p.Source == SourceAuto && env.Get("github") == "true") {
+	if source == SourceDirect || ((source == SourceAuto || source == "") && env.Get("github") == "true") {
 		src = x.Direct
 	}
 	su := sudo(env)
@@ -352,13 +365,13 @@ func (x *deployer) binary(ctx context.Context, env *jobs.Env, p Params) error {
 		return jobs.Fail("Не удалось загрузить Hysteria на сервер.", err)
 	}
 	env.Logf("SHA-256 совпал с хешем релиза.")
-	if err := x.backup(ctx, env, ex, BinaryPath, "binaryBackup"); err != nil {
+	if err := x.backup(ctx, env, ex, path, "binaryBackup"); err != nil {
 		return err
 	}
-	if err := remote.InstallFile(ctx, ex, tmp, BinaryPath, 0o755, "root", "root", su); err != nil {
+	if err := remote.InstallFile(ctx, ex, tmp, path, 0o755, "root", "root", su); err != nil {
 		return jobs.Fail("Не удалось установить Hysteria.", err)
 	}
-	env.Logf("Установлено: %s.", BinaryPath)
+	env.Logf("Установлено: %s.", path)
 	return nil
 }
 

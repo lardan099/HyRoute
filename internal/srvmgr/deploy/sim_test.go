@@ -19,10 +19,13 @@ import (
 // ufw. Faults are injected with failOn (a command prefix fails) and
 // badConfig (the service dies with this config).
 type sim struct {
-	mu        sync.Mutex
-	files     map[string][]byte
-	dirs      map[string]bool
-	users     map[string]bool
+	mu    sync.Mutex
+	files map[string][]byte
+	dirs  map[string]bool
+	users map[string]bool
+	// modes are "mode owner group" of files and directories ("644 root
+	// root" when not set).
+	modes     map[string]string
 	downloads map[string][]byte // URL → body for curl on the server
 	github    bool
 	ufw       bool
@@ -35,6 +38,8 @@ type sim struct {
 
 	failOn    map[string]bool
 	badConfig func(cfg []byte) bool
+	// badBinary: the service dies with this binary.
+	badBinary func(bin []byte) bool
 	// before sees every command before it runs (outside the lock).
 	before func(line string)
 	// written sees every written path after the write (outside the lock).
@@ -52,6 +57,7 @@ func newSim() *sim {
 		},
 		dirs:      map[string]bool{"/etc": true, "/tmp": true, "/usr/local/bin": true, "/etc/systemd/system": true},
 		users:     map[string]bool{"root": true},
+		modes:     map[string]string{},
 		downloads: map[string][]byte{},
 		ufwRules:  map[string]bool{},
 		github:    true,
@@ -76,7 +82,8 @@ func (s *sim) exists(p string) bool {
 // a valid config are there.
 func (s *sim) start() {
 	cfg, okCfg := s.files[ConfigPath]
-	_, okBin := s.files[BinaryPath]
+	bin, okBin := s.files[BinaryPath]
+	okBin = okBin && (s.badBinary == nil || !s.badBinary(bin))
 	c, err := hyconfig.ParseServer(cfg)
 	if !okBin || !okCfg || err != nil || hyconfig.HasErrors(c.Validate()) || !s.users[User] || (s.badConfig != nil && s.badConfig(cfg)) {
 		s.state, s.running = "failed", nil
@@ -212,8 +219,15 @@ func (s *sim) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 		}
 		return ok(""), nil
 	case "install":
+		// install [-d] -m MODE -o OWNER -g GROUP -- …
+		i := 1
+		if a[1] == "-d" {
+			i = 2
+		}
+		mode := strings.TrimPrefix(a[i+1], "0") + " " + a[i+3] + " " + a[i+5]
 		if a[1] == "-d" {
 			s.dirs[last] = true
+			s.modes[last] = mode
 			return ok(""), nil
 		}
 		src := a[len(a)-2]
@@ -222,6 +236,7 @@ func (s *sim) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 			return fail(1, "install: cannot stat"), nil
 		}
 		s.files[last] = append([]byte(nil), b...)
+		s.modes[last] = mode
 		return ok(""), nil
 	case "mv", "cp":
 		src := a[len(a)-2]
@@ -230,17 +245,52 @@ func (s *sim) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 			return fail(1, a[0]+": cannot stat "+src), nil
 		}
 		s.files[last] = b
+		if m, found := s.modes[src]; found {
+			s.modes[last] = m
+		} else {
+			delete(s.modes, last)
+		}
 		if a[0] == "mv" {
 			delete(s.files, src)
+			delete(s.modes, src)
 		}
+		return ok(""), nil
+	case "stat":
+		if !s.exists(last) {
+			return fail(1, "stat: cannot statx '"+last+"': No such file or directory"), nil
+		}
+		m := s.modes[last]
+		if m == "" {
+			m = "644 root root"
+		}
+		return ok(fmt.Sprintf("%s %d\n", m, len(s.files[last]))), nil
+	case "chown":
+		if !s.exists(last) {
+			return fail(1, "chown: No such file or directory"), nil
+		}
+		f := strings.Fields(s.modeOf(last))
+		og := strings.SplitN(a[2], ":", 2)
+		s.modes[last] = f[0] + " " + og[0] + " " + og[1]
+		return ok(""), nil
+	case "chmod":
+		if !s.exists(last) {
+			return fail(1, "chmod: No such file or directory"), nil
+		}
+		f := strings.Fields(s.modeOf(last))
+		s.modes[last] = strings.TrimPrefix(a[2], "0") + " " + f[1] + " " + f[2]
 		return ok(""), nil
 	case "useradd":
 		s.users[last] = true
 		s.dirs[Home] = true
 		return ok(""), nil
 	case BinaryPath:
-		if _, found := s.files[BinaryPath]; found {
-			return ok("Version:\tv2.99.0\n"), nil
+		// A fake binary tells the version it was made for.
+		if b, found := s.files[BinaryPath]; found {
+			v, isFake := strings.CutPrefix(string(b), "#!fake hysteria ")
+			if !isFake {
+				v = "v2.99.0"
+			}
+			return ok("Version:\t" + v + "\n"), nil
 		}
 		return fail(127, "not found"), nil
 	}
@@ -303,6 +353,7 @@ func (s *sim) WriteFile(ctx context.Context, path string, data []byte, f remote.
 	defer s.mu.Unlock()
 	s.writes = append(s.writes, fmt.Sprintf("%s %04o %s:%s", path, f.Mode.Perm(), or(f.Owner, "root"), or(f.Group, "root")))
 	s.files[path] = append([]byte(nil), data...)
+	s.modes[path] = fmt.Sprintf("%o %s %s", f.Mode.Perm(), or(f.Owner, "root"), or(f.Group, "root"))
 	hook := s.written
 	s.mu.Unlock()
 	if hook != nil {
@@ -310,6 +361,14 @@ func (s *sim) WriteFile(ctx context.Context, path string, data []byte, f remote.
 	}
 	s.mu.Lock()
 	return nil
+}
+
+// modeOf is "mode owner group" of a path (locked).
+func (s *sim) modeOf(p string) string {
+	if m := s.modes[p]; m != "" {
+		return m
+	}
+	return "644 root root"
 }
 
 func or(v, d string) string {

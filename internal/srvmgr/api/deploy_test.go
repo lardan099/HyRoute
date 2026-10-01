@@ -112,3 +112,43 @@ func TestImportAPI(t *testing.T) {
 	}
 	code(t, owner.do("POST", "/api/v1/servers/"+id+"/import", nil, nil), http.StatusConflict, "server_busy")
 }
+
+func TestMaintainAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": "NL", "host": "nl.example.com", "authType": "password", "password": fakeSSHPass}, nil)
+	var srv serverJSON
+	json.Unmarshal(rec.Body.Bytes(), &srv)
+	id := strconv.FormatInt(srv.ID, 10)
+	upgrade := map[string]any{"op": "upgrade", "version": "v2.12.3"}
+	reinstall := map[string]any{"op": "reinstall"}
+
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/maintain", upgrade, nil), http.StatusConflict, "no_installation")
+	in := model.Installation{ServerID: srv.ID, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", Version: "v2.11.0", At: time.Now()}
+	e.db.SetInstallation(ctx, in)
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/maintain", upgrade, nil), http.StatusConflict, "host_key_required")
+	e.db.SetHostKey(ctx, model.HostKey{ServerID: srv.ID, Type: "ssh-ed25519", Key: []byte("fake"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()})
+
+	// An imported installation: upgraded, not reinstalled.
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/maintain", reinstall, nil), http.StatusConflict, "not_managed")
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/maintain", map[string]any{"op": "upgrade", "version": "latest"}, nil), http.StatusBadRequest, "invalid")
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/maintain", map[string]any{"op": "remove"}, nil), http.StatusBadRequest, "invalid")
+
+	var u model.User
+	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
+	e.db.CreateUser(ctx, &u)
+	code(t, e.login("viewer").do("POST", "/api/v1/servers/"+id+"/maintain", upgrade, nil), http.StatusForbidden, "forbidden")
+
+	in.Managed = true
+	e.db.SetInstallation(ctx, in)
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/maintain", reinstall, nil)
+	var j jobJSON
+	json.Unmarshal(rec.Body.Bytes(), &j)
+	// A reinstall keeps the installed version.
+	if rec.Code != http.StatusAccepted || j.Kind != "maintain" || !strings.Contains(string(j.Params), `"version":"v2.11.0"`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/maintain", upgrade, nil), http.StatusConflict, "server_busy")
+}

@@ -91,9 +91,9 @@ func (r *Report) add(id string, l Level, title, details string) {
 // releases (the direct download source).
 const ReleaseURL = "https://github.com/apernet/hysteria/releases/latest"
 
-// hysteriaArch maps uname -m to the suffix of Hysteria's Linux release
-// assets (hysteria-linux-<arch>).
-func hysteriaArch(m string) string {
+// HysteriaArch maps uname -m to the suffix of Hysteria's Linux release
+// assets (hysteria-linux-<arch>); "" when there is no build.
+func HysteriaArch(m string) string {
 	switch m {
 	case "x86_64", "amd64":
 		return "amd64"
@@ -120,7 +120,7 @@ func Run(ctx context.Context, ex remote.Executor, probe remote.Probe, opt Option
 		opt.UDPPort = 443
 	}
 	sudo := probe.NeedSudo()
-	r := Report{User: probe.User, Root: probe.Root, Kernel: probe.Kernel, Arch: probe.Arch, HysteriaArch: hysteriaArch(probe.Arch)}
+	r := Report{User: probe.User, Root: probe.Root, Kernel: probe.Kernel, Arch: probe.Arch, HysteriaArch: HysteriaArch(probe.Arch)}
 
 	if !probe.Privileged() {
 		r.add("privileges", Fail, "Нет прав администратора", "Пользователь SSH не root и не может выполнять sudo без пароля.")

@@ -130,7 +130,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	conn := connect.New(inventory, db, red)
 	engine := jobs.New(db, keys, red, conn, log)
 	engine.Register(preflight.Kind())
-	engine.Register(deploy.Kind(deploy.Deps{Store: db, Keys: keys, Resolver: &hyrelease.Resolver{}}))
+	deployDeps := deploy.Deps{Store: db, Keys: keys, Resolver: &hyrelease.Resolver{}}
+	engine.Register(deploy.Kind(deployDeps))
+	engine.Register(deploy.Maintenance(deployDeps))
 	engine.Register(importer.Kind(importer.Deps{Store: db, Keys: keys}))
 	engine.Register(service.Kind(service.Deps{Store: db, Keys: keys}))
 	applier := apply.New(apply.Deps{Store: db, Keys: keys, Jobs: engine})

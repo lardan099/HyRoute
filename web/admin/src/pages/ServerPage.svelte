@@ -9,6 +9,7 @@
   import { flag, stateTone, uptime } from '../lib/format';
   import Dialog from '../lib/Dialog.svelte';
   import DeployDialog from '../lib/DeployDialog.svelte';
+  import MaintainDialog from '../lib/MaintainDialog.svelte';
   import JournalView from '../lib/JournalView.svelte';
   import ConfigEditor from '../lib/ConfigEditor.svelte';
   import ClientCard from '../lib/ClientCard.svelte';
@@ -27,6 +28,7 @@
   let loadingStatus = $state(false);
   let confirming = $state<ServiceAction | null>(null);
   let deploying = $state(false);
+  let maintaining = $state(false);
   let editing = $state(false);
   let history = $state(false);
   let action = $state<{ name: ServiceAction; job: Job; done: boolean; ok: boolean } | null>(null);
@@ -193,6 +195,7 @@
             {#if !status.active}<button class="primary" disabled={!!action && !action.done} onclick={() => ask('start')}>{t('srv.start')}</button>{/if}
             <button disabled={!!action && !action.done} onclick={() => ask('restart')}>{t('srv.restart')}</button>
             {#if status.active}<button class="danger" disabled={!!action && !action.done} onclick={() => ask('stop')}>{t('srv.stop')}</button>{/if}
+            <button class="ghost" disabled={!!action && !action.done} onclick={() => (maintaining = true)}>{t('srv.maintain')}</button>
           </div>
         {/if}
       {/if}
@@ -263,6 +266,10 @@
         <button class="primary {confirming === 'stop' ? 'danger-bg' : ''}" onclick={() => run(confirming!)}>{actionName(confirming!)}</button>
       {/snippet}
     </Dialog>
+  {/if}
+
+  {#if maintaining && status}
+    <MaintainDialog {server} {status} onclose={() => (maintaining = false)} onstarted={(j) => go('deployments', j.id)} />
   {/if}
 
   {#if deploying}

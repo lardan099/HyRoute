@@ -217,6 +217,28 @@ func MakeDir(ctx context.Context, ex Executor, path string, mode fs.FileMode, ow
 	return err
 }
 
+// SetOwnerMode gives an existing file (or directory) an owner, a group
+// and permission bits.
+func SetOwnerMode(ctx context.Context, ex Executor, path string, mode fs.FileMode, owner, group string, sudo bool) error {
+	if err := CheckPath(path); err != nil {
+		return err
+	}
+	if owner == "" {
+		owner = "root"
+	}
+	if group == "" {
+		group = "root"
+	}
+	if !nameRe.MatchString(owner) || !nameRe.MatchString(group) {
+		return errors.New("bad owner")
+	}
+	if _, err := run(ctx, ex, "chown", Cmd{Args: []string{"chown", "--", owner + ":" + group, path}, Sudo: sudo}); err != nil {
+		return err
+	}
+	_, err := run(ctx, ex, "chmod", Cmd{Args: []string{"chmod", "--", fmt.Sprintf("%04o", mode.Perm()), path}, Sudo: sudo})
+	return err
+}
+
 // FileInfo is what stat tells about a file.
 type FileInfo struct {
 	Mode  fs.FileMode // permission bits

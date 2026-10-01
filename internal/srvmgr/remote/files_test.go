@@ -90,6 +90,29 @@ func TestInstallFile(t *testing.T) {
 	}
 }
 
+func TestSetOwnerMode(t *testing.T) {
+	ctx := context.Background()
+	ex := fake.New()
+	ex.On("chown").Reply("", 0)
+	ex.On("chmod").Reply("", 0)
+	if err := remote.SetOwnerMode(ctx, ex, "/etc/hysteria/config.yaml", 0o640, "", "hysteria", true); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"chown -- root:hysteria /etc/hysteria/config.yaml", "chmod -- 0640 /etc/hysteria/config.yaml"}
+	if got := ex.Commands(); !slices.Equal(got, want) {
+		t.Fatalf("%q", got)
+	}
+	for _, bad := range [][2]string{{"/x", "root:root"}, {"relative", "root"}} {
+		if err := remote.SetOwnerMode(ctx, ex, bad[0], 0o600, bad[1], "", true); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	ex.On("chown").Reply("", 1)
+	if err := remote.SetOwnerMode(ctx, ex, "/x", 0o600, "", "", true); err == nil {
+		t.Fatal("failed chown passed")
+	}
+}
+
 func TestDownloadRejects(t *testing.T) {
 	ctx := context.Background()
 	ex := fake.New()

@@ -56,7 +56,9 @@ func newEnv(t *testing.T) *testEnv {
 	e.connect.Timeout = 5 * time.Second
 	e.jobs = jobs.New(db, keys, redact.New(), e.connect, nil)
 	e.jobs.Poll = 20 * time.Millisecond
-	e.jobs.Register(deploy.Kind(deploy.Deps{Store: db, Keys: keys, Resolver: &hyrelease.Resolver{}}))
+	dd := deploy.Deps{Store: db, Keys: keys, Resolver: &hyrelease.Resolver{}}
+	e.jobs.Register(deploy.Kind(dd))
+	e.jobs.Register(deploy.Maintenance(dd))
 	e.jobs.Register(importer.Kind(importer.Deps{Store: db, Keys: keys}))
 	e.jobs.Register(service.Kind(service.Deps{Store: db, Keys: keys}))
 	e.apply = apply.New(apply.Deps{Store: db, Keys: keys, Jobs: e.jobs})

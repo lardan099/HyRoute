@@ -9,6 +9,7 @@
   import {
     api,
     asApiError,
+    defaultHysteria,
     type ApiError,
     type ConfigFields,
     type ConfigMeta,
@@ -24,7 +25,7 @@
 
   let { server, onclose, onstarted }: { server: Server; onclose: () => void; onstarted: (j: Job) => void } = $props();
 
-  const defaultVersion = 'v2.12.3';
+  const defaultVersion = defaultHysteria;
   const defaultHop = '20000-50000';
 
   let tls = $state<TLSMode>('self-signed');
