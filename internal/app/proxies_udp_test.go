@@ -184,14 +184,15 @@ func TestProxyUDPEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	echoThrough(t, a, echo, "ping")
-	if st := m.Statuses()[0]; st.Sent != 4 || st.Recv != 9 {
-		t.Fatalf("server figures %d/%d", st.Sent, st.Recv)
-	}
-	v = c.Proxies()[0]
+	// The proxy counts a reply once it has sent it on: the client may have
+	// it a moment before the figures do.
+	waitUntil(t, "the server's figures", func() bool { st := m.Statuses()[0]; return st.Sent == 4 && st.Recv == 9 })
+	waitUntil(t, "the proxy's figures", func() bool { v = c.Proxies()[0]; return v.Recv == 9 })
 	if v.Active != 0 || v.UDPActive != 1 || v.Sent != 4 || v.Recv != 9 {
 		t.Fatalf("%+v", v)
 	}
-	recs := proxyUDPViews(c, "x", false)
+	var recs []flows.View
+	waitUntil(t, "the record's figures", func() bool { recs = proxyUDPViews(c, "x", false); return len(recs) == 1 && recs[0].Recv == 9 })
 	if len(recs) != 1 || recs[0].Route != "tunnel" || recs[0].Profile != "p1" || recs[0].Group != "" ||
 		recs[0].Outcome != "proxied" || recs[0].Sent != 4 || recs[0].Recv != 9 || recs[0].Domain != "" {
 		t.Fatalf("%+v", recs)
