@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -38,24 +39,24 @@ func start(t *testing.T, s *Server) string {
 func listenFree(t *testing.T, s *Server) {
 	t.Helper()
 	// A port number free for UDP too: shared mode binds UDP on the TCP
-	// port number, and Windows reserves UDP ranges of its own (Hyper-V,
-	// WSL, Docker) that an ephemeral TCP port may fall into. An ephemeral
-	// UDP port never does; TCP is then tried on the same number.
+	// port number (and only retries in the background when it cannot).
+	// Windows reserves ranges of its own for either protocol (Hyper-V,
+	// WSL, Docker), and hands out ephemeral ports one after another, so a
+	// run of ephemeral UDP numbers can lie in a range reserved for TCP:
+	// numbers are drawn at random, and UDP is checked before TCP is tried.
 	var err error
-	for range 20 {
+	for range 100 {
+		port := 20000 + rand.IntN(40000)
 		var pc *net.UDPConn
-		if pc, err = net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)}); err != nil {
-			t.Fatal(err)
+		if pc, err = net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port}); err != nil {
+			continue
 		}
-		port := pc.LocalAddr().(*net.UDPAddr).Port
 		pc.Close()
 		if err = s.Listen(net.JoinHostPort("127.0.0.1", fmt.Sprint(port))); err == nil {
-			break
+			return
 		}
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Fatal(err)
 }
 
 func origin(t *testing.T) *httptest.Server {
