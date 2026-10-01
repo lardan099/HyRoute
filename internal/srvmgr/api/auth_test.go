@@ -68,6 +68,7 @@ func newEnv(t *testing.T) *testEnv {
 	e.jobs.Register(e.apply.Kind())
 	linker := cascade.New(cascade.Deps{Store: db, Keys: keys, Jobs: e.jobs})
 	e.jobs.Register(linker.Kind())
+	e.jobs.Register(linker.UnlinkKind())
 	e.keys = keys
 	e.h = New(Deps{Store: db, Auth: e.auth, Servers: e.servers, Connect: e.connect, Jobs: e.jobs,
 		Deploy: &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}, Apply: e.apply, Cascade: linker, Keys: keys})

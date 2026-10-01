@@ -86,9 +86,23 @@ func (s *server) listChains(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]chainJSON, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, toChainJSON(topology.Of(c), names))
+		out = append(out, toChainJSON(topology.Of(s.sync(r, c)), names))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// sync marks links stale whose servers changed since they were deployed
+// (and active again when the change does not touch them). A failure only
+// leaves the state as stored.
+func (s *server) sync(r *http.Request, c model.Chain) model.Chain {
+	if s.Cascade == nil {
+		return c
+	}
+	got, err := s.Cascade.Sync(r.Context(), c)
+	if err != nil {
+		s.Log.Warn("cascade: link state not checked", "chain", c.ID, "err", err)
+	}
+	return got
 }
 
 func (s *server) getChain(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +116,7 @@ func (s *server) getChain(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, mapError(err))
 		return
 	}
-	s.writeChain(w, r, http.StatusOK, topology.Of(c))
+	s.writeChain(w, r, http.StatusOK, topology.Of(s.sync(r, c)))
 }
 
 func (s *server) writeChain(w http.ResponseWriter, r *http.Request, status int, c topology.Info) {
@@ -186,6 +200,41 @@ func (s *server) linkChain(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, cascade.ErrNoInstallation):
 		s.fail(w, r, &Error{Status: http.StatusConflict, Code: "no_installation", Message: "HyRoute не знает, где Hysteria на одном из серверов каскада: разверните её или импортируйте сервер."})
+		return
+	case err != nil:
+		s.fail(w, r, jobError(err))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, toJobJSON(j))
+}
+
+// unlinkChain queues the job that takes the chain's link off its servers
+// ({"delete": true}: the chain goes too).
+func (s *server) unlinkChain(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok || s.Cascade == nil {
+		writeError(w, errNotFound)
+		return
+	}
+	var in struct {
+		Delete bool `json:"delete"`
+	}
+	if r.ContentLength != 0 {
+		if err := readJSON(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+	j, err := s.Cascade.Unlink(r.Context(), id, 0, in.Delete, principal(r).User.ID)
+	switch {
+	case errors.Is(err, cascade.ErrNotDeployed):
+		s.fail(w, r, &Error{Status: http.StatusConflict, Code: "not_deployed", Message: "Связь каскада не развёрнута на серверах: каскад удаляется без задания."})
+		return
+	case errors.Is(err, cascade.ErrNoConfig):
+		s.fail(w, r, &Error{Status: http.StatusConflict, Code: "no_config", Message: "HyRoute не знает конфиг одного из серверов каскада: импортируйте его."})
+		return
+	case errors.Is(err, cascade.ErrNoInstallation):
+		s.fail(w, r, &Error{Status: http.StatusConflict, Code: "no_installation", Message: "HyRoute не знает, где Hysteria на одном из серверов каскада: импортируйте сервер."})
 		return
 	case err != nil:
 		s.fail(w, r, jobError(err))

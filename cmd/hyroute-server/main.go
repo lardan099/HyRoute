@@ -142,6 +142,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	engine.Register(applier.Kind())
 	linker := cascade.New(cascade.Deps{Store: db, Keys: keys, Jobs: engine})
 	engine.Register(linker.Kind())
+	engine.Register(linker.UnlinkKind())
 	jobsCtx, stopJobs := context.WithCancel(context.WithoutCancel(ctx))
 	jobsDone := make(chan struct{})
 	go func() {

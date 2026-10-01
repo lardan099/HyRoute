@@ -73,6 +73,8 @@ type host struct {
 	// fails.
 	down bool
 	bad  string
+	// need: a server config without it fails.
+	need string
 	// pingHook runs at each ping (tests block in it).
 	pingHook func()
 }
@@ -85,7 +87,7 @@ func newHost(name, cfg string) *host {
 
 func (h *host) serverOK() (int, bool) {
 	c, err := hyconfig.ParseServer(h.files[cfgPath])
-	if err != nil || hyconfig.HasErrors(c.Validate()) || (h.bad != "" && strings.Contains(string(h.files[cfgPath]), h.bad)) {
+	if err != nil || hyconfig.HasErrors(c.Validate()) || (h.bad != "" && strings.Contains(string(h.files[cfgPath]), h.bad)) || (h.need != "" && !strings.Contains(string(h.files[cfgPath]), h.need)) {
 		return 0, false
 	}
 	l, _ := hyconfig.ParseListen(c.Listen)
@@ -349,6 +351,7 @@ func (w *world) controller() (*Linker, func()) {
 	eng.Poll = 10 * time.Millisecond
 	l := New(Deps{Store: w.db, Keys: w.keys, Jobs: eng, VerifyTimeout: 300 * time.Millisecond, Poll: 10 * time.Millisecond})
 	eng.Register(l.Kind())
+	eng.Register(l.UnlinkKind())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { eng.Run(ctx); close(done) }()

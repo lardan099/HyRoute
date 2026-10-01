@@ -96,6 +96,7 @@ func TestChainsAPI(t *testing.T) {
 	queued, _ := e.db.JobByID(ctx, job.ID)
 	queued.State = model.JobFailed
 	e.db.UpdateJob(ctx, queued)
+	code(t, owner.do("POST", "/api/v1/chains/"+id+"/unlink", map[string]any{"delete": true}, nil), http.StatusConflict, "not_deployed")
 
 	// Deployed: the job removes it (P3-02c), not DELETE.
 	c, _ := e.db.ChainByID(ctx, ch.ID)

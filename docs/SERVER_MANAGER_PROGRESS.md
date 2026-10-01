@@ -1555,3 +1555,29 @@ P1-09 (общий пакет ссылок).
   `TestLinkClientFailsRollsBack`, `TestLinkRefusesForeignParts`,
   `TestLinkFailedRedeployKeepsLink`, `TestLinkResumesAfterRestart`,
   `TestParsePing`, `TestPickPort`; API — в `TestChainsAPI`.
+
+### P3-02c Снятие связи и устаревание
+
+- Задание `unlink` (`Linker.Unlink`, `POST /api/v1/chains/{id}/unlink`,
+  `{"delete": true}` — удалить и каскад): outbound с entry первым (трафик
+  не уходит в исчезающую связь), затем служба связи (stop, disable,
+  удаление unit, `daemon-reload`), конфиг клиента связи, пользователь на
+  exit с `userpass`; ревизии без связи — источник `cascade`. Без delete
+  связь снова `new` и без секретов. Неразвёрнутую связь снимать нечего —
+  409 `not_deployed`. Кандидаты строятся из базовых ревизий без чтения
+  каскада, поэтому продолжение после перезапуска работает и после
+  удаления каскада.
+- `Linker.Sync`: связь `stale`, если её новое развёртывание на текущих
+  ревизиях что-то изменило бы (пользователь или пароль на exit, конфиг
+  клиента связи, outbound на entry); `stale`, которую развёртывание не
+  меняет, снова `active` с новыми ревизиями. Вызывается при чтении
+  каскадов в API. Предупреждения в диалогах ротации, портов и
+  развёртывания — с интерфейсом (P3-04b).
+- Тесты: `TestUnlinkDeletesChain` (всё убрано, службы работают, каскад
+  удалён, роли standalone, ревизии `cascade`), `TestUnlinkKeepsChain`
+  (связь снова `new`, новое развёртывание с новыми секретами),
+  `TestUnlinkRollsBack` (entry не стартует без outbound — всё как было,
+  связь `active`), `TestUnlinkNotDeployed`, `TestSync` (ротация пароля
+  связи → `stale` → «Обновить» → `active`; правка entry без outbound не
+  портит связь; развёртывание поверх entry → `stale`); 409
+  `not_deployed` в `TestChainsAPI`.

@@ -121,6 +121,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("PATCH /api/v1/chains/{id}", s.authed(anyRole, s.updateChain))
 	mux.HandleFunc("DELETE /api/v1/chains/{id}", s.authed(anyRole, s.deleteChain))
 	mux.HandleFunc("POST /api/v1/chains/{id}/link", s.authed(anyRole, s.linkChain))
+	mux.HandleFunc("POST /api/v1/chains/{id}/unlink", s.authed(anyRole, s.unlinkChain))
 	mux.HandleFunc("GET /api/v1/servers/{id}/status", s.authed(anyRole, s.serviceStatus))
 	mux.HandleFunc("POST /api/v1/servers/{id}/service/{action}", s.authed(anyRole, s.serviceAction))
 	mux.HandleFunc("GET /api/v1/servers/{id}/journal", s.authed(anyRole, s.journal))

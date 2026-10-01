@@ -607,13 +607,13 @@ func (x *linker) exitVerify(ctx context.Context, env *jobs.Env, p jobParams) err
 	if err != nil {
 		return err
 	}
-	return x.waitServer(ctx, env, p.Exit, pl.inExit, pl.exitParsed, pl, "выхода")
+	return x.waitServer(ctx, env, p.Exit, pl.inExit, pl.exitParsed, pl.redactor(), "выхода")
 }
 
 // waitServer waits until a server's service runs and Hysteria listens on
 // its port (systemd is trusted where ss is missing, once the service
 // stayed up for a poll).
-func (x *linker) waitServer(ctx context.Context, env *jobs.Env, server int64, in model.Installation, c *hyconfig.Server, pl *plan, role string) error {
+func (x *linker) waitServer(ctx context.Context, env *jobs.Env, server int64, in model.Installation, c *hyconfig.Server, red *redact.Redactor, role string) error {
 	ex, err := execOn(ctx, env, server)
 	if err != nil {
 		return err
@@ -654,7 +654,7 @@ func (x *linker) waitServer(ctx context.Context, env *jobs.Env, server int64, in
 			}
 		}
 		if st == "failed" || time.Now().After(deadline) {
-			x.journal(ctx, env, ex, in.Unit, su, pl)
+			x.journal(ctx, env, ex, in.Unit, su, red)
 			return jobs.Fail(fmt.Sprintf("Hysteria на сервере %s не заработала (служба: %s). Изменения откатываются.", role, st), nil)
 		}
 		select {
@@ -667,12 +667,11 @@ func (x *linker) waitServer(ctx context.Context, env *jobs.Env, server int64, in
 
 // journal logs the last lines of a unit with every secret of the link
 // hidden.
-func (x *linker) journal(ctx context.Context, env *jobs.Env, ex remote.Executor, unit string, su bool, pl *plan) {
+func (x *linker) journal(ctx context.Context, env *jobs.Env, ex remote.Executor, unit string, su bool, r *redact.Redactor) {
 	lines, err := remote.JournalTail(ctx, ex, unit, 20, su)
 	if err != nil || len(lines) == 0 {
 		return
 	}
-	r := pl.redactor()
 	env.Logf("Последние строки журнала %s:", unit)
 	for _, l := range lines {
 		env.Logf("  %s", r.String(l))
@@ -828,7 +827,7 @@ func (x *linker) linkCheck(ctx context.Context, env *jobs.Env, p jobParams) erro
 			last = ping.Error
 		}
 		if st == "failed" || time.Now().After(deadline) {
-			x.journal(ctx, env, ex, unit, su, pl)
+			x.journal(ctx, env, ex, unit, su, pl.redactor())
 			msg := "Клиент связи не подключился к серверу выхода"
 			if last != "" {
 				msg += " (" + pl.redactor().String(last) + ")"
@@ -913,7 +912,7 @@ func (x *linker) entryVerify(ctx context.Context, env *jobs.Env, p jobParams) er
 	if err != nil {
 		return err
 	}
-	return x.waitServer(ctx, env, p.Entry, pl.inEntry, pl.entryParsed, pl, "входа")
+	return x.waitServer(ctx, env, p.Entry, pl.inEntry, pl.entryParsed, pl.redactor(), "входа")
 }
 
 // committed: both revisions are stored and the link is active with this
