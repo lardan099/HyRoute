@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/lardan099/hyroute/internal/hyconfig"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
@@ -176,13 +178,23 @@ func (hc *check) onServer(ctx context.Context, ex remote.Executor, took time.Dur
 	h.Status = model.StateHealthy
 	if len(why) > 0 {
 		h.Status = model.StateDegraded
-		h.Reason = strings.ToUpper(why[0][:1]) + why[0][1:]
+		h.Reason = capitalize(why[0])
 		if len(why) > 1 {
 			h.Reason += "; " + strings.Join(why[1:], "; ")
 		}
 		h.Reason += "."
 	}
 	return *h
+}
+
+// capitalize upper-cases the first letter: the first rune, not the first
+// byte, which is half of a Cyrillic letter.
+func capitalize(s string) string {
+	r, n := utf8.DecodeRuneInString(s)
+	if r == utf8.RuneError {
+		return s
+	}
+	return string(unicode.ToUpper(r)) + s[n:]
 }
 
 // finish stores the check and sets the server's state from it.

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/quicprobe"
@@ -133,7 +134,7 @@ func TestHealth(t *testing.T) {
 	}{
 		{good, model.StateHealthy, model.StateHealthy, ""},
 		{closed, model.StateDegraded, model.StateDegraded, "UDP 443 не отвечает снаружи"},
-		{stopped, model.StateDegraded, model.StateDegraded, "hysteria-server.service: failed"},
+		{stopped, model.StateDegraded, model.StateDegraded, "Служба hysteria-server.service: failed"},
 		{gone, model.StateOffline, model.StateOffline, "SSH не отвечает; UDP 443 тоже не отвечает"},
 		{noSSH, model.StateDegraded, model.StateDegraded, "но Hysteria отвечает на UDP 443"},
 		{attention, model.StateDegraded, model.StateNeedsAttention, "failed"}, // recorded, state is the admin's
@@ -142,6 +143,9 @@ func TestHealth(t *testing.T) {
 		h := last(tc.id)
 		if h.Status != tc.status || state(tc.id) != tc.state || !strings.Contains(h.Reason, tc.reason) {
 			t.Errorf("server %d: check %s (%q), state %s", tc.id, h.Status, h.Reason, state(tc.id))
+		}
+		if !utf8.ValidString(h.Reason) {
+			t.Errorf("server %d: reason is not UTF-8: %q", tc.id, h.Reason)
 		}
 		if strings.Contains(h.Reason, "fake-health") {
 			t.Errorf("secret in the reason: %q", h.Reason)
