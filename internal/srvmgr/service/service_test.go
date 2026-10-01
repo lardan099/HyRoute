@@ -206,7 +206,7 @@ func TestServiceJob(t *testing.T) {
 	for _, c := range []struct {
 		a     remote.ServiceAction
 		state model.ServerState
-	}{{remote.ServiceRestart, model.StateHealthy}, {remote.ServiceStop, model.StateNeedsAttention}, {remote.ServiceStart, model.StateHealthy}} {
+	}{{remote.ServiceRestart, model.StateHealthy}, {remote.ServiceStop, model.StateDegraded}, {remote.ServiceStart, model.StateHealthy}} {
 		j, log := h.run(c.a)
 		if j.State != model.JobCompleted {
 			t.Fatalf("%s: %s %s\n%s", c.a, j.State, j.ErrorMessage, log)

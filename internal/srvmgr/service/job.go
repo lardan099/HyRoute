@@ -78,13 +78,15 @@ type JobStore interface {
 }
 
 // finished: a running service makes the server healthy; one that is
-// stopped (on purpose or not) needs attention.
+// stopped (on purpose or not) is degraded, a state the health checks
+// own: they move the server on as soon as the service runs again, also
+// when it was started on the server by hand.
 func (x *control) finished(ctx context.Context, env *jobs.Env, j model.Job) {
 	var p Params
 	if json.Unmarshal(j.Params, &p) != nil {
 		return
 	}
-	state := model.StateNeedsAttention
+	state := model.StateDegraded
 	if j.State == model.JobCompleted && p.Action != remote.ServiceStop {
 		state = model.StateHealthy
 	}
