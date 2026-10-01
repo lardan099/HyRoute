@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"regexp"
 	"strings"
 )
@@ -104,4 +105,28 @@ func CheckPath(p string) error {
 		return fmt.Errorf("bad remote path %q", p)
 	}
 	return nil
+}
+
+// LoopbackDialer opens a TCP connection from the server itself to a port
+// on its loopback (SSH direct-tcpip): what listens on 127.0.0.1 there is
+// reachable without opening anything to the network. Only loopback: the
+// controller never reaches further through a server.
+type LoopbackDialer interface {
+	DialLoopback(ctx context.Context, port int) (net.Conn, error)
+}
+
+// ErrNoTunnel: the executor cannot open connections on the server.
+var ErrNoTunnel = errors.New("remote: no tunnel to the server's loopback")
+
+// DialLoopback opens a connection to 127.0.0.1:port on the server of ex,
+// ErrNoTunnel when ex cannot.
+func DialLoopback(ctx context.Context, ex Executor, port int) (net.Conn, error) {
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("remote: bad port %d", port)
+	}
+	d, ok := ex.(LoopbackDialer)
+	if !ok {
+		return nil, ErrNoTunnel
+	}
+	return d.DialLoopback(ctx, port)
 }

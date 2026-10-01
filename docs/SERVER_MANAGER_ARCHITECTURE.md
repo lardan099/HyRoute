@@ -137,6 +137,8 @@ env), `setup-token` на время первого запуска.
 | `chains` | id, name (unique), notes, created_by, created_at, updated_at | каскад (P3-01), миграция 0016 |
 | `chain_nodes` | chain_id, idx, server_id | серверы цепочки по порядку, entry — idx 0; сервер из цепочки не удаляется |
 | `chain_links` | chain_id, idx, params (json без секретов), secrets (envelope, контекст `chain/<id>/link/<idx>`), state (new/linking/active/stale/unlinking/failed), from_revision, to_revision, config_sha256, updated_at | связь узлов idx и idx + 1 |
+| `link_checks` | chain_id, idx, at, status, reason, service, handshake_ms, tcp_ms | проверки связей с entry (P3-03), 7 дней |
+| `job_servers` | job_id, server_id | другие серверы задания (связь каскада меняет entry и exit) |
 
 Ссылки для клиентов не хранятся: они собираются из текущей ревизии по
 запросу (`profile`).
@@ -877,6 +879,42 @@ entry, не задевшая outbound, связь не портит). API чте
 вызывает `Sync`; «Обновить связь» — то же задание `link` от текущих
 ревизий.
 
+### Проверки связи (P3-03)
+
+SOCKS5 клиента Hysteria отвечает одним кодом (host unreachable) на любую
+ошибку, поэтому `cascade.CheckLink` смотрит с entry по двум сигналам:
+
+1. Служба связи `active`.
+2. SSH-туннель к loopback entry (`remote.LoopbackDialer`, direct-tcpip:
+   только `127.0.0.1:<порт>`, дальше сервера controller не ходит) и
+   SOCKS5 клиента связи с логином и паролем outbound `cascade` entry —
+   ровно то, что делает сам Hysteria; затем CONNECT к цели проверки.
+   Пароль не принят — Offline («обновите связь»); клиент не отвечает —
+   Offline; клиент ответил отказом — exit или цель не открылись (решает
+   пункт 3). Подключение без туннеля (тестовые executor'ы) пропускает
+   этот сигнал.
+3. `hysteria ping` с конфигом связи до цели: нет «connected to server» —
+   exit не отвечает (Offline); рукопожатие (по меткам времени лога)
+   дольше 2 с — Degraded; цель не открылась ни через туннель, ни через
+   ping — Degraded «сервер выхода не открывает цель».
+
+Цель — `checkTarget` связи или адрес и SSH-порт exit. Причины проходят
+через redactor с секретами связи. Задание `link` ждёт той же проверки
+(не Offline), Degraded — предупреждение в журнале задания.
+
+Сборщик мониторинга (`Collector.Links` = `cascade.Checker`) после проверки
+здоровья entry (P2-03) проверяет связи, которые начинаются на нём, по
+тому же SSH-подключению; круг такого сервера длиннее на `LinkTimeout`
+(30 с). Результаты — в `link_checks` (миграция 0019, 7 дней, чистка
+вместе с проверками здоровья). Entry с Offline-связью — Degraded с
+причиной «Каскад до «X» не работает: …». Серверы задания на нескольких
+серверах сборщик не трогает все, пока задание идёт.
+
+API каскадов отдаёт у развёрнутой связи последнюю проверку (`check`), у
+каскада — худшую из них (`health`) и `egress`: исходящий адрес exit из его
+проверки здоровья, только если первый outbound exit — `direct` (иначе
+трафик уходит дальше, через тот outbound) и каскад не Offline.
+
 ## REST API v1
 
 Ошибки: `{"error": {"code": "host_key_unknown", "message": "понятный текст",
@@ -899,6 +937,7 @@ entry, не задевшая outbound, связь не портит). API чте
 | DELETE | `/api/v1/chains/{id}` | operator+ | только неразвёрнутый каскад (все связи new или failed), иначе 409 `chain_deployed` |
 | POST | `/api/v1/chains/{id}/link` | operator+ | задание `link` на entry и exit (202, задание); 409 `no_config`, `no_installation`, `server_busy` |
 | POST | `/api/v1/chains/{id}/unlink` | operator+ | `{delete}` — задание `unlink` (202); 409 `not_deployed`, `server_busy` |
+| GET | `/api/v1/chains/{id}/checks` | все | `?idx=&limit=` — проверки связи, новые первыми (7 дней) |
 | POST | `/api/v1/servers/{id}/check` | operator+ | подключение и проверка прав (ничего не меняет) |
 | POST | `/api/v1/servers/{id}/host-key` | operator+ | TOFU / re-trust с отпечатком (`replace`) |
 | POST | `/api/v1/servers/{id}/preflight` | operator+ | job preflight |

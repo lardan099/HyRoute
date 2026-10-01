@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -786,8 +785,10 @@ func (x *linker) undoLinkService(ctx context.Context, env *jobs.Env, p jobParams
 	return remote.DaemonReload(ctx, ex, su)
 }
 
-// linkCheck waits until the link service runs and its client reaches the
-// exit (`hysteria ping` with the link's config).
+// linkCheck waits until the link works as the monitor checks it
+// (CheckLink): the service runs, its SOCKS5 takes the outbound's password
+// through a tunnel to the entry's loopback, the client reaches the exit.
+// The exit answering but not opening the check target is a warning.
 func (x *linker) linkCheck(ctx context.Context, env *jobs.Env, p jobParams) error {
 	pl, err := x.plan(ctx, p)
 	if err != nil {
@@ -798,41 +799,27 @@ func (x *linker) linkCheck(ctx context.Context, env *jobs.Env, p jobParams) erro
 		return err
 	}
 	su := sudo(env, p.Entry)
-	target, err := pl.target()
-	if err != nil {
+	if _, err := checkTarget(pl.params, pl.exit); err != nil {
 		return jobs.Fail("Адрес проверки связи не подходит.", err)
 	}
-	unit := UnitName(p.Chain, p.Idx)
+	pr := Probe{Chain: p.Chain, Link: pl.link, Params: pl.params, Secrets: pl.secrets, Entry: pl.inEntry, Exit: pl.exit, Sudo: su}
 	deadline := time.Now().Add(x.VerifyTimeout)
-	last := ""
 	for {
-		st, err := remote.ActiveState(ctx, ex, unit)
-		if err != nil {
-			return err
+		c := CheckLink(ctx, ex, pr, x.Now())
+		if c.Status != model.StateOffline {
+			env.Logf("Связь работает: сервер выхода ответил клиенту связи (рукопожатие %d мс).", c.HandshakeMillis)
+			if c.TCPMillis > 0 {
+				target, _ := checkTarget(pl.params, pl.exit)
+				env.Logf("Через сервер выхода открыт %s за %d мс.", target, c.TCPMillis)
+			}
+			if c.Status == model.StateDegraded {
+				env.Warnf("%s.", capitalize(c.Reason))
+			}
+			return nil
 		}
-		if st == "active" {
-			ping, err := PingLink(ctx, ex, pl.inEntry.Binary, pl.linkPath, target, su)
-			if err != nil {
-				return err
-			}
-			if ping.Connected {
-				env.Logf("Связь работает: сервер выхода ответил клиенту связи (рукопожатие %s).", ping.Handshake.Round(time.Millisecond))
-				if ping.TCP {
-					env.Logf("Через сервер выхода открыт %s за %s.", target, ping.TCPTime.Round(time.Millisecond))
-				} else {
-					env.Warnf("Сервер выхода не открыл %s (%s): цель проверки недоступна с него, сама связь работает.", target, pl.redactor().String(ping.Error))
-				}
-				return nil
-			}
-			last = ping.Error
-		}
-		if st == "failed" || time.Now().After(deadline) {
-			x.journal(ctx, env, ex, unit, su, pl.redactor())
-			msg := "Клиент связи не подключился к серверу выхода"
-			if last != "" {
-				msg += " (" + pl.redactor().String(last) + ")"
-			}
-			return jobs.Fail(msg+". Изменения откатываются.", nil)
+		if c.Service == "failed" || time.Now().After(deadline) {
+			x.journal(ctx, env, ex, UnitName(p.Chain, p.Idx), su, pl.redactor())
+			return jobs.Fail("Связь не заработала: "+c.Reason+". Изменения откатываются.", nil)
 		}
 		select {
 		case <-ctx.Done():
@@ -842,12 +829,12 @@ func (x *linker) linkCheck(ctx context.Context, env *jobs.Env, p jobParams) erro
 	}
 }
 
-// target is what the link check opens through the exit.
-func (pl *plan) target() (string, error) {
-	if pl.params.CheckTarget != "" {
-		return CheckAddr(pl.params.CheckTarget)
+// capitalize makes the first letter upper case.
+func capitalize(s string) string {
+	for i, r := range s {
+		return strings.ToUpper(string(r)) + s[i+len(string(r)):]
 	}
-	return CheckAddr(net.JoinHostPort(pl.exit.Host, strconv.Itoa(pl.exit.SSHPort)))
+	return s
 }
 
 // PingLink runs `hysteria ping` with the link client's config on the entry.

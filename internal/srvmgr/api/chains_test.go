@@ -113,3 +113,64 @@ func TestChainsAPI(t *testing.T) {
 		t.Fatalf("role after delete: %s", rec.Body)
 	}
 }
+
+// A deployed link shows its latest check, the chain the worst of them,
+// and the exit's address out while the exit sends straight out.
+func TestChainHealthAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	var ids []int64
+	for i, name := range []string{"Entry", "Exit"} {
+		rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": name, "host": "192.0.2.7" + strconv.Itoa(i), "authType": "password", "password": fakeSSHPass}, nil)
+		var srv serverJSON
+		json.Unmarshal(rec.Body.Bytes(), &srv)
+		c := model.ServerConfig{ServerID: srv.ID, SHA256: "x", Meta: model.ConfigMeta{Auth: "password"}, Source: model.ConfigDeploy, At: time.Now()}
+		e.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) {
+			return e.keys.Seal([]byte("listen: :443\nauth:\n  type: password\n  password: fake-health-api\n"), model.ConfigContext(srv.ID, rev))
+		})
+		ids = append(ids, srv.ID)
+	}
+	rec := owner.do("POST", "/api/v1/chains", map[string]any{"name": "DE", "nodes": ids}, nil)
+	var ch chainJSON
+	json.Unmarshal(rec.Body.Bytes(), &ch)
+	id := strconv.FormatInt(ch.ID, 10)
+	if ch.Health != "" || ch.Links[0].Check != nil || ch.Egress != "" {
+		t.Fatalf("new chain: %s", rec.Body)
+	}
+	c, _ := e.db.ChainByID(ctx, ch.ID)
+	l := c.Links[0]
+	l.State = model.LinkActive
+	e.db.UpdateLink(ctx, l)
+	if err := e.db.AddHealth(ctx, model.Health{ServerID: ids[1], At: time.Now(), Status: model.StateHealthy, UDP: model.UDPOK, Egress: "203.0.113.9"}); err != nil {
+		t.Fatal(err)
+	}
+	e.db.AddLinkCheck(ctx, model.LinkCheck{ChainID: ch.ID, At: time.Unix(1_700_000_000, 0), Status: model.StateOffline, Reason: "сервер выхода не отвечает"})
+	e.db.AddLinkCheck(ctx, model.LinkCheck{ChainID: ch.ID, At: time.Unix(1_700_000_060, 0), Status: model.StateDegraded, Reason: "не открывает", HandshakeMillis: 40})
+
+	rec = owner.do("GET", "/api/v1/chains/"+id, nil, nil)
+	json.Unmarshal(rec.Body.Bytes(), &ch)
+	if ch.Health != model.StateDegraded || ch.Links[0].Check == nil || ch.Links[0].Check.HandshakeMs != 40 || ch.Egress != "203.0.113.9" {
+		t.Fatalf("%s", rec.Body)
+	}
+	rec = owner.do("GET", "/api/v1/chains/"+id+"/checks?idx=0", nil, nil)
+	var checks []linkCheckJSON
+	json.Unmarshal(rec.Body.Bytes(), &checks)
+	if rec.Code != http.StatusOK || len(checks) != 2 || checks[0].Status != model.StateDegraded || checks[1].Status != model.StateOffline {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	code(t, owner.do("GET", "/api/v1/chains/"+id+"/checks?idx=5", nil, nil), http.StatusNotFound, "not_found")
+
+	// The exit sends through an outbound of its own: its address is not
+	// the chain's egress.
+	cx := model.ServerConfig{ServerID: ids[1], SHA256: "y", Source: model.ConfigEdit, At: time.Now()}
+	e.db.AddConfig(ctx, &cx, func(rev int) ([]byte, error) {
+		return e.keys.Seal([]byte("listen: :443\nauth:\n  type: password\n  password: fake-health-api\noutbounds:\n  - name: warp\n    type: socks5\n    socks5:\n      addr: 127.0.0.1:40000\n"), model.ConfigContext(ids[1], rev))
+	})
+	rec = owner.do("GET", "/api/v1/chains", nil, nil)
+	var list []chainJSON
+	json.Unmarshal(rec.Body.Bytes(), &list)
+	if len(list) != 1 || list[0].Egress != "" || list[0].Health != model.StateDegraded {
+		t.Fatalf("%s", rec.Body)
+	}
+}

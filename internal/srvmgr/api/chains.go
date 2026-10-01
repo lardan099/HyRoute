@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/hyconfig"
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/topology"
@@ -14,14 +15,34 @@ import (
 // links between them with their settings; the links' secrets never
 // leave the controller.
 type chainJSON struct {
-	ID        int64           `json:"id"`
-	Name      string          `json:"name"`
-	Notes     string          `json:"notes"`
-	State     model.LinkState `json:"state"`
+	ID    int64           `json:"id"`
+	Name  string          `json:"name"`
+	Notes string          `json:"notes"`
+	State model.LinkState `json:"state"`
+	// Health is the worst latest check of its deployed links ("": none
+	// checked yet).
+	Health model.ServerState `json:"health"`
+	// Egress is the exit's address out, when the exit sends straight out
+	// (its first outbound is direct) and the chain is not offline.
+	Egress    string          `json:"egress"`
 	Nodes     []chainNodeJSON `json:"nodes"`
 	Links     []chainLinkJSON `json:"links"`
 	CreatedAt time.Time       `json:"createdAt"`
 	UpdatedAt time.Time       `json:"updatedAt"`
+}
+
+// linkCheckJSON is one check of a link (P3-03).
+type linkCheckJSON struct {
+	At          time.Time         `json:"at"`
+	Status      model.ServerState `json:"status"`
+	Reason      string            `json:"reason"`
+	Service     string            `json:"service"`
+	HandshakeMs int               `json:"handshakeMs"`
+	TCPMs       int               `json:"tcpMs"`
+}
+
+func toLinkCheckJSON(c model.LinkCheck) *linkCheckJSON {
+	return &linkCheckJSON{At: c.At, Status: c.Status, Reason: c.Reason, Service: c.Service, HandshakeMs: c.HandshakeMillis, TCPMs: c.TCPMillis}
 }
 
 type chainNodeJSON struct {
@@ -37,6 +58,8 @@ type chainLinkJSON struct {
 	State     model.LinkState `json:"state"`
 	Params    cascade.Params  `json:"params"`
 	UpdatedAt time.Time       `json:"updatedAt"`
+	// Check is the latest check (null: none yet, or not deployed).
+	Check *linkCheckJSON `json:"check"`
 }
 
 func toChainJSON(i topology.Info, names map[int64]string) chainJSON {
@@ -86,7 +109,10 @@ func (s *server) listChains(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]chainJSON, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, toChainJSON(topology.Of(s.sync(r, c)), names))
+		c = s.sync(r, c)
+		j := toChainJSON(topology.Of(c), names)
+		s.linkHealth(r, &j, c)
+		out = append(out, j)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -125,7 +151,9 @@ func (s *server) writeChain(w http.ResponseWriter, r *http.Request, status int, 
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, status, toChainJSON(c, names))
+	j := toChainJSON(c, names)
+	s.linkHealth(r, &j, c.Chain)
+	writeJSON(w, status, j)
 }
 
 func (s *server) createChain(w http.ResponseWriter, r *http.Request) {
@@ -241,4 +269,78 @@ func (s *server) unlinkChain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, toJobJSON(j))
+}
+
+// linkHealth adds the latest check of each deployed link, the chain's health
+// (the worst of them) and its egress address.
+func (s *server) linkHealth(r *http.Request, out *chainJSON, c model.Chain) {
+	ctx := r.Context()
+	rank := map[model.ServerState]int{model.StateHealthy: 1, model.StateDegraded: 2, model.StateOffline: 3}
+	for i, l := range c.Links {
+		if i >= len(out.Links) || (l.State != model.LinkActive && l.State != model.LinkStale) {
+			continue
+		}
+		cs, err := s.Store.LinkChecks(ctx, c.ID, l.Idx, time.Time{}, 1)
+		if err != nil || len(cs) == 0 {
+			continue
+		}
+		out.Links[i].Check = toLinkCheckJSON(cs[0])
+		if rank[cs[0].Status] > rank[out.Health] {
+			out.Health = cs[0].Status
+		}
+	}
+	if out.Health == "" || out.Health == model.StateOffline || !s.directOut(r, c.Exit()) {
+		return
+	}
+	if hs, err := s.Store.HealthHistory(ctx, c.Exit(), time.Time{}, 1); err == nil && len(hs) > 0 {
+		out.Egress = hs[0].Egress
+	}
+}
+
+// directOut: the server's current config sends traffic straight out.
+func (s *server) directOut(r *http.Request, id int64) bool {
+	cur, err := s.Store.CurrentConfig(r.Context(), id)
+	if err != nil || s.Keys == nil {
+		return false
+	}
+	b, err := s.Keys.Open(cur.Sealed, model.ConfigContext(id, cur.Revision))
+	if err != nil {
+		return false
+	}
+	c, err := hyconfig.ParseServer(b)
+	return err == nil && cascade.DirectOut(c)
+}
+
+// chainChecks is the check history of a chain's link (?idx=, ?limit=,
+// newest first, 7 days at most).
+func (s *server) chainChecks(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, errNotFound)
+		return
+	}
+	c, err := s.Store.ChainByID(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	idx := int(queryInt(r, "idx"))
+	if idx < 0 || idx >= len(c.Links) {
+		writeError(w, errNotFound)
+		return
+	}
+	limit := int(queryInt(r, "limit"))
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	cs, err := s.Store.LinkChecks(r.Context(), id, idx, time.Time{}, limit)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	out := make([]*linkCheckJSON, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, toLinkCheckJSON(c))
+	}
+	writeJSON(w, http.StatusOK, out)
 }

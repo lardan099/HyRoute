@@ -445,7 +445,7 @@ func TestLinkUserpassExit(t *testing.T) {
 	if u, _ := w.entry.file("/etc/systemd/system/" + UnitName(w.chain, 0)); !strings.Contains(u, "--disable-update-check") || w.entry.unit(UnitName(w.chain, 0)) != "active" {
 		t.Fatalf("unit %q, %s", u, w.entry.unit(UnitName(w.chain, 0)))
 	}
-	if !strings.Contains(log, "рукопожатие 42ms") || !strings.Contains(log, "открыт 203.0.113.2:22 за 13ms") {
+	if !strings.Contains(log, "рукопожатие 42 мс") || !strings.Contains(log, "открыт 203.0.113.2:22 за 12 мс") {
 		t.Fatalf("log:\n%s", log)
 	}
 
@@ -522,7 +522,7 @@ func TestLinkClientFailsRollsBack(t *testing.T) {
 	w := newWorld(t, exitUP)
 	w.exit.down = true
 	j, log := w.wait(w.submit())
-	if j.State != model.JobFailed || !strings.Contains(j.ErrorMessage, "Клиент связи не подключился") || !strings.Contains(j.ErrorMessage, "timeout") {
+	if j.State != model.JobFailed || !strings.Contains(j.ErrorMessage, "Связь не заработала") || !strings.Contains(j.ErrorMessage, "timeout") {
 		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
 	}
 	unit := UnitName(w.chain, 0)

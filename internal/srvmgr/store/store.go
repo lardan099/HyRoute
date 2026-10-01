@@ -39,6 +39,7 @@ type Store interface {
 	Traffic
 	Presets
 	Chains
+	LinkChecks
 	Close() error
 }
 
@@ -260,4 +261,16 @@ type HealthChecks interface {
 	HealthHistory(ctx context.Context, serverID int64, since time.Time, limit int) ([]model.Health, error)
 	// PruneHealth drops checks older than before.
 	PruneHealth(ctx context.Context, before time.Time) error
+}
+
+// LinkChecks stores the checks of cascade links.
+type LinkChecks interface {
+	// AddLinkCheck stores a check; a second one of the link at the same
+	// second replaces the first.
+	AddLinkCheck(ctx context.Context, c model.LinkCheck) error
+	// LinkChecks are the link's checks with At >= since, newest first, at
+	// most limit (0: all).
+	LinkChecks(ctx context.Context, chainID int64, idx int, since time.Time, limit int) ([]model.LinkCheck, error)
+	// PruneLinkChecks drops checks older than before.
+	PruneLinkChecks(ctx context.Context, before time.Time) error
 }

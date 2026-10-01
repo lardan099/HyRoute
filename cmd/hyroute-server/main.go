@@ -156,7 +156,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		<-jobsDone
 	}()
 	if cfg.MonitorInterval > 0 {
-		mon := &monitor.Collector{Store: db, Conn: conn, Keys: keys, Log: log, Interval: cfg.MonitorInterval}
+		mon := &monitor.Collector{Store: db, Conn: conn, Keys: keys, Log: log, Interval: cfg.MonitorInterval, Links: &cascade.Checker{Store: db, Keys: keys}}
 		monDone := make(chan struct{})
 		go func() {
 			mon.Run(jobsCtx)

@@ -16,6 +16,7 @@ import (
 	"io"
 	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -210,6 +211,10 @@ func (s *Server) handle(c net.Conn) {
 	defer conn.Close()
 	go ssh.DiscardRequests(reqs)
 	for nc := range chans {
+		if nc.ChannelType() == "direct-tcpip" {
+			s.forward(nc)
+			continue
+		}
 		if nc.ChannelType() != "session" {
 			nc.Reject(ssh.UnknownChannelType, "only sessions")
 			continue
@@ -286,4 +291,40 @@ func (s *Server) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 			req.Reply(false, nil)
 		}
 	}
+}
+
+// forward serves a direct-tcpip channel to the machine's own loopback
+// (the server's 127.0.0.1 is this test machine's); anything else is
+// refused.
+func (s *Server) forward(nc ssh.NewChannel) {
+	var p struct {
+		Host     string
+		Port     uint32
+		OrigHost string
+		OrigPort uint32
+	}
+	if err := ssh.Unmarshal(nc.ExtraData(), &p); err != nil || (p.Host != "127.0.0.1" && p.Host != "localhost") || p.Port == 0 || p.Port > 65535 {
+		nc.Reject(ssh.Prohibited, "loopback only")
+		return
+	}
+	dst, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(p.Port))))
+	if err != nil {
+		nc.Reject(ssh.ConnectionFailed, err.Error())
+		return
+	}
+	ch, reqs, err := nc.Accept()
+	if err != nil {
+		dst.Close()
+		return
+	}
+	go ssh.DiscardRequests(reqs)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		done := make(chan struct{}, 2)
+		go func() { io.Copy(dst, ch); dst.Close(); done <- struct{}{} }()
+		go func() { io.Copy(ch, dst); ch.Close(); done <- struct{}{} }()
+		<-done
+		<-done
+	}()
 }

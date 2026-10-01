@@ -37,6 +37,14 @@ type Store interface {
 	store.Traffic
 }
 
+// LinkChecker checks the cascade links that start at a server
+// (cascade.Checker).
+type LinkChecker interface {
+	HasLinks(ctx context.Context, serverID int64) bool
+	CheckLinks(ctx context.Context, entry model.Server, ex remote.Executor) (down string, err error)
+	Prune(ctx context.Context, before time.Time) error
+}
+
 // Connector opens an SSH connection to a server (connect.Connector).
 type Connector interface {
 	Connect(ctx context.Context, serverID int64) (remote.Executor, error)
@@ -61,6 +69,11 @@ type Collector struct {
 	KeepSamples, KeepAverages, KeepHealth, KeepTraffic time.Duration
 	// Probe checks a UDP port from the controller (quicprobe.Probe).
 	Probe func(ctx context.Context, addr, salamander string) (time.Duration, error)
+	// Links checks the cascade links that start at a server (nil: none);
+	// LinkTimeout is the time added to such a server's round (default
+	// 30 s).
+	Links       LinkChecker
+	LinkTimeout time.Duration
 
 	mu          sync.Mutex
 	prev        map[int64]last
@@ -156,6 +169,9 @@ func (c *Collector) defaults() {
 	if c.Timeout == 0 {
 		c.Timeout = 20 * time.Second
 	}
+	if c.LinkTimeout == 0 {
+		c.LinkTimeout = 30 * time.Second
+	}
 	if c.Parallel == 0 {
 		c.Parallel = 4
 	}
@@ -223,7 +239,9 @@ func (c *Collector) Round(ctx context.Context) {
 	busy := map[int64]bool{}
 	if js, err := c.Store.UnfinishedJobs(ctx); err == nil {
 		for _, j := range js {
-			busy[j.ServerID] = true
+			for _, s := range j.AllServers() {
+				busy[s] = true
+			}
 		}
 	} else if ctx.Err() == nil {
 		c.Log.Warn("monitor: jobs", "err", err)
@@ -263,6 +281,11 @@ func (c *Collector) Round(ctx context.Context) {
 		if err := c.Store.PruneTraffic(ctx, now.Add(-c.KeepTraffic)); err != nil && ctx.Err() == nil {
 			c.Log.Warn("monitor: prune traffic", "err", err)
 		}
+		if c.Links != nil {
+			if err := c.Links.Prune(ctx, now.Add(-c.KeepHealth)); err != nil && ctx.Err() == nil {
+				c.Log.Warn("monitor: prune link checks", "err", err)
+			}
+		}
 	}
 }
 
@@ -272,7 +295,12 @@ var up = []model.ServerState{model.StateHealthy, model.StateDegraded}
 
 // collect samples one server; login is its loginKey.
 func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool, login string) {
-	cctx, cancel := context.WithTimeout(ctx, c.Timeout)
+	// An entry of a cascade checks its links after its own health.
+	timeout, links := c.Timeout, !busy && c.Links != nil && c.Links.HasLinks(ctx, srv.ID)
+	if links {
+		timeout += c.LinkTimeout
+	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	// Servers with Hysteria get a health check; the UDP probe runs while
 	// SSH connects.
@@ -316,7 +344,21 @@ func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool, lo
 	defer stop()
 	ro := remote.ReadOnly(ex)
 	if hc != nil {
-		defer func() { c.finish(ctx, srv, hc.onServer(cctx, ro, sshTook)) }()
+		defer func() {
+			h := hc.onServer(cctx, ro, sshTook)
+			if links {
+				// Over the connection itself: the check tunnels to the
+				// entry's loopback.
+				down, err := c.Links.CheckLinks(cctx, srv, ex)
+				if err != nil && ctx.Err() == nil {
+					c.Log.Warn("monitor: cascade links", "server", srv.Name, "err", err)
+				}
+				if down != "" && h.Status == model.StateHealthy {
+					h.Status, h.Reason = model.StateDegraded, capitalize(down)
+				}
+			}
+			c.finish(ctx, srv, h)
+		}()
 	}
 	s, err := remote.ReadSample(cctx, ro)
 	if err != nil {

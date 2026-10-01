@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -336,4 +337,15 @@ func (e *Env) close() {
 			l.exec = nil
 		}
 	}
+}
+
+// DialLoopback opens the server's loopback through the job's connection
+// (remote.ErrNoTunnel when the connection cannot).
+func (c *conn) DialLoopback(ctx context.Context, port int) (net.Conn, error) {
+	d, ok := c.Executor.(remote.LoopbackDialer)
+	if !ok {
+		return nil, remote.ErrNoTunnel
+	}
+	nc, err := d.DialLoopback(ctx, port)
+	return nc, c.note(err)
 }

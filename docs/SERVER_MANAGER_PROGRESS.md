@@ -1581,3 +1581,33 @@ P1-09 (общий пакет ссылок).
   связи → `stale` → «Обновить» → `active`; правка entry без outbound не
   портит связь; развёртывание поверх entry → `stale`); 409
   `not_deployed` в `TestChainsAPI`.
+
+### P3-03 Проверки связи
+
+- `remote.LoopbackDialer` и `remote.DialLoopback`: соединение с
+  `127.0.0.1:<порт>` сервера через SSH (direct-tcpip) — только loopback;
+  `sshexec.Client` его умеет, `sshtest` обслуживает direct-tcpip только к
+  loopback, подключение задания (`jobs`) пропускает его дальше, executor
+  без туннеля — `ErrNoTunnel`. `socks5.Client` получил необязательный
+  `Dial` (поверх туннеля); без него всё как раньше.
+- `cascade.CheckLink`: служба связи; SOCKS5 клиента связи через туннель с
+  паролем outbound entry и CONNECT к цели; `hysteria ping`. Offline —
+  служба не работает, SOCKS5 не отвечает или не принял пароль, exit не
+  отвечает; Degraded — цель не открылась ни одним путём или рукопожатие
+  дольше 2 с. Задание `link` ждёт той же проверки.
+- `cascade.Checker` в сборщике мониторинга: после проверки здоровья entry
+  по тому же подключению (круг длиннее на 30 с), результаты в
+  `link_checks` (миграция 0019, 7 дней); entry с Offline-связью —
+  Degraded «Каскад до «X» не работает: …». Исправлено: сборщик не
+  трогает все серверы задания на нескольких серверах, а не только
+  первый.
+- API: у связи последняя проверка, у каскада худшая (`health`) и
+  `egress` (адрес exit, если его первый outbound `direct`, и каскад не
+  Offline); `GET /api/v1/chains/{id}/checks`.
+- Тесты: `TestCheckLink` (9 случаев: всё работает, без туннеля, служба
+  упала, другой пароль, никто не слушает, exit молчит, цель закрыта,
+  цель закрыта только для ping, медленно; секретов в причинах нет),
+  `TestCheckerCheckLinks` (на развёрнутом каскаде симулятора: хранение,
+  причина с именем exit, чистка), `TestDialLoopback` (sshexec ↔ sshtest),
+  `TestHealthCascadeLinks` (entry Degraded по связи, оба сервера задания
+  пропущены), `TestChainHealthAPI`.

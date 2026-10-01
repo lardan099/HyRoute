@@ -108,3 +108,20 @@ type ChainLink struct {
 func LinkSecretContext(chainID int64, idx int) string {
 	return "chain/" + strconv.FormatInt(chainID, 10) + "/link/" + strconv.Itoa(idx)
 }
+
+// LinkCheck is one check of a link from its entry (P3-03).
+type LinkCheck struct {
+	ChainID int64
+	Idx     int
+	At      time.Time
+	// Status is StateHealthy, StateDegraded or StateOffline.
+	Status ServerState
+	// Reason says why it is not healthy (for people).
+	Reason string
+	// Service is the active state of the link service on the entry.
+	Service string
+	// HandshakeMillis: the link client's handshake with the exit; TCPMillis:
+	// opening the check target through the exit (0: not opened).
+	HandshakeMillis int
+	TCPMillis       int
+}

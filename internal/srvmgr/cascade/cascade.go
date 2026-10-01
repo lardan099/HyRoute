@@ -319,3 +319,11 @@ func UnitText(entry model.Installation, chainID int64, idx int) (string, error) 
 	b.WriteString("Environment=HYSTERIA_LOG_LEVEL=info\nNoNewPrivileges=true\nRestart=always\nRestartSec=5s\n\n[Install]\nWantedBy=multi-user.target\n")
 	return b.String(), nil
 }
+
+// DirectOut reports whether server config c sends its clients' traffic
+// straight out: its first outbound (the default) is direct, or it has
+// none. Only then is the server's own address the egress of a chain
+// ending there.
+func DirectOut(c *hyconfig.Server) bool {
+	return len(c.Outbounds) == 0 || strings.EqualFold(c.Outbounds[0].Type, "direct")
+}

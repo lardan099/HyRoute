@@ -670,3 +670,19 @@ func (c *Client) output(ctx context.Context, op string, cmd remote.Cmd) (string,
 	}
 	return strings.TrimSpace(string(res.Stdout)), nil
 }
+
+// DialLoopback opens 127.0.0.1:port on the server through the SSH
+// connection (direct-tcpip).
+func (c *Client) DialLoopback(ctx context.Context, port int) (net.Conn, error) {
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("sshexec: bad port %d", port)
+	}
+	if err := c.alive(); err != nil {
+		return nil, err
+	}
+	conn, err := c.ssh.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		return nil, c.failed(ctx, err)
+	}
+	return conn, nil
+}
