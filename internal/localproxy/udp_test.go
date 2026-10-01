@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/netip"
 	"runtime"
@@ -414,12 +415,12 @@ func TestUDPOff(t *testing.T) {
 }
 
 // freeBoth finds a port free for TCP and UDP and returns the UDP socket
-// holding it.
+// holding it. Numbers are drawn at random, as in listenFree.
 func freeBoth(t *testing.T) *net.UDPConn {
-	for range 50 {
-		pc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	for range 100 {
+		pc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 20000 + rand.IntN(40000)})
 		if err != nil {
-			t.Fatal(err)
+			continue
 		}
 		ln, err := net.Listen("tcp4", pc.LocalAddr().String())
 		if err == nil {
