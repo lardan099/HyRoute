@@ -1,5 +1,6 @@
 // Package monitor samples the servers' CPU, memory, disk, load and network
-// over SSH on a schedule and keeps the points (store.Metrics). It reads
+// over SSH on a schedule and keeps the points (store.Metrics), and checks
+// the health of servers with Hysteria installed (health.go). It reads
 // only (remote.ReadOnly, no sudo) and runs outside the job engine: a
 // sample never waits for a job and never blocks one.
 package monitor
@@ -12,7 +13,9 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/quicprobe"
 	"github.com/lardan099/hyroute/internal/srvmgr/remote"
+	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
 
@@ -21,7 +24,11 @@ type Store interface {
 	ListServers(ctx context.Context) ([]model.Server, error)
 	HostKey(ctx context.Context, serverID int64) (model.HostKey, error)
 	SwapServerState(ctx context.Context, id int64, from []model.ServerState, state model.ServerState, at time.Time) (bool, error)
+	Installation(ctx context.Context, serverID int64) (model.Installation, error)
+	CurrentConfig(ctx context.Context, serverID int64) (model.ServerConfig, error)
+	UnfinishedJobs(ctx context.Context) ([]model.Job, error)
 	store.Metrics
+	store.HealthChecks
 }
 
 // Connector opens an SSH connection to a server (connect.Connector).
@@ -33,15 +40,21 @@ type Connector interface {
 type Collector struct {
 	Store Store
 	Conn  Connector
-	Log   *slog.Logger
-	Now   func() time.Time
+	// Keys open config revisions (the port and obfs password of the UDP
+	// check); nil: no UDP check.
+	Keys *secrets.Keyring
+	Log  *slog.Logger
+	Now  func() time.Time
 	// Interval between rounds (default 1 min), Timeout per server
 	// (default 20 s), Parallel connections at most (default 4).
 	Interval time.Duration
 	Timeout  time.Duration
 	Parallel int
-	// KeepSamples (default 48 h) and KeepAverages (default 30 days).
-	KeepSamples, KeepAverages time.Duration
+	// KeepSamples (default 48 h) and KeepAverages (default 30 days);
+	// KeepHealth (default 7 days).
+	KeepSamples, KeepAverages, KeepHealth time.Duration
+	// Probe checks a UDP port from the controller (quicprobe.Probe).
+	Probe func(ctx context.Context, addr, salamander string) (time.Duration, error)
 
 	mu          sync.Mutex
 	prev        map[int64]last
@@ -71,6 +84,12 @@ func (c *Collector) defaults() {
 	}
 	if c.KeepAverages == 0 {
 		c.KeepAverages = 30 * 24 * time.Hour
+	}
+	if c.KeepHealth == 0 {
+		c.KeepHealth = 7 * 24 * time.Hour
+	}
+	if c.Probe == nil {
+		c.Probe = quicprobe.Probe
 	}
 	if c.Log == nil {
 		c.Log = slog.New(slog.DiscardHandler)
@@ -110,6 +129,16 @@ func (c *Collector) Round(ctx context.Context) {
 		}
 		return
 	}
+	// A job changes the server as it goes (restarts, ports): its health
+	// is the job's business until it ends.
+	busy := map[int64]bool{}
+	if js, err := c.Store.UnfinishedJobs(ctx); err == nil {
+		for _, j := range js {
+			busy[j.ServerID] = true
+		}
+	} else if ctx.Err() == nil {
+		c.Log.Warn("monitor: jobs", "err", err)
+	}
 	sem := make(chan struct{}, c.Parallel)
 	var wg sync.WaitGroup
 	for _, srv := range list {
@@ -120,7 +149,7 @@ func (c *Collector) Round(ctx context.Context) {
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
-			c.collect(ctx, srv)
+			c.collect(ctx, srv, busy[srv.ID])
 		}()
 	}
 	wg.Wait()
@@ -135,6 +164,9 @@ func (c *Collector) Round(ctx context.Context) {
 		if err := c.Store.CompactMetrics(ctx, now, c.KeepSamples, c.KeepAverages); err != nil && ctx.Err() == nil {
 			c.Log.Warn("monitor: compact", "err", err)
 		}
+		if err := c.Store.PruneHealth(ctx, now.Add(-c.KeepHealth)); err != nil && ctx.Err() == nil {
+			c.Log.Warn("monitor: prune health", "err", err)
+		}
 	}
 }
 
@@ -142,16 +174,29 @@ func (c *Collector) Round(ctx context.Context) {
 // others belong to jobs and the admin.
 var up = []model.ServerState{model.StateHealthy, model.StateDegraded}
 
-func (c *Collector) collect(ctx context.Context, srv model.Server) {
+func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool) {
 	cctx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()
+	// Servers with Hysteria get a health check; the UDP probe runs while
+	// SSH connects.
+	var hc *check
+	if !busy {
+		hc = c.startCheck(cctx, srv)
+	}
+	start := time.Now()
 	ex, err := c.Conn.Connect(cctx, srv.ID)
+	sshTook := time.Since(start)
 	if err != nil {
 		if ctx.Err() != nil {
 			return
 		}
 		var unreachable *remote.UnreachableError
-		if errors.As(err, &unreachable) {
+		down := errors.As(err, &unreachable)
+		if hc != nil {
+			c.finish(ctx, srv, hc.sshFailed(err, down))
+			return
+		}
+		if down {
 			if ok, _ := c.Store.SwapServerState(ctx, srv.ID, up, model.StateOffline, c.Now()); ok {
 				c.Log.Warn("monitor: server unreachable", "server", srv.Name, "err", err)
 			}
@@ -161,7 +206,11 @@ func (c *Collector) collect(ctx context.Context, srv model.Server) {
 		return
 	}
 	defer ex.Close()
-	s, err := remote.ReadSample(cctx, remote.ReadOnly(ex))
+	ro := remote.ReadOnly(ex)
+	if hc != nil {
+		defer func() { c.finish(ctx, srv, hc.onServer(cctx, ro, sshTook)) }()
+	}
+	s, err := remote.ReadSample(cctx, ro)
 	if err != nil {
 		if ctx.Err() == nil {
 			c.Log.Warn("monitor: sample", "server", srv.Name, "err", err)
@@ -181,8 +230,10 @@ func (c *Collector) collect(ctx context.Context, srv model.Server) {
 		c.Log.Warn("monitor: store", "server", srv.Name, "err", err)
 		return
 	}
-	if ok, _ := c.Store.SwapServerState(ctx, srv.ID, []model.ServerState{model.StateOffline}, model.StateHealthy, now); ok {
-		c.Log.Info("monitor: server reachable again", "server", srv.Name)
+	if hc == nil && !busy {
+		if ok, _ := c.Store.SwapServerState(ctx, srv.ID, []model.ServerState{model.StateOffline}, model.StateHealthy, now); ok {
+			c.Log.Info("monitor: server reachable again", "server", srv.Name)
+		}
 	}
 }
 

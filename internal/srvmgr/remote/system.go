@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"net"
 	"regexp"
 	"slices"
 	"strconv"
@@ -485,3 +486,26 @@ func LoadAverage(ctx context.Context, ex Executor) ([3]float64, error) {
 	}
 	return l, nil
 }
+
+// RouteSource is the source address the server uses to reach the
+// internet: the route lookup (ip route get) sends nothing. Behind NAT it
+// is the private address.
+func RouteSource(ctx context.Context, ex Executor) (string, error) {
+	out, err := run(ctx, ex, "ip route", Cmd{Args: []string{"ip", "-o", "route", "get", routeProbe}})
+	if err != nil {
+		return "", err
+	}
+	f := strings.Fields(out)
+	for i := 0; i+1 < len(f); i++ {
+		if f[i] == "src" {
+			if ip := net.ParseIP(f[i+1]); ip != nil {
+				return ip.String(), nil
+			}
+		}
+	}
+	return "", errors.New("ip route: no source address")
+}
+
+// routeProbe is a public address to look the route up for (TEST-NET would
+// take a default route too, but some providers route it nowhere).
+const routeProbe = "1.1.1.1"

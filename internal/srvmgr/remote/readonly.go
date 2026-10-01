@@ -81,6 +81,9 @@ func reads(a []string) bool {
 	if a[0] == "systemctl" {
 		return len(a) > 1 && slices.Contains(readSystemctl, a[1]) && flagsIn(a[2:], []string{"--no-pager", "--no-legend", "--plain", "--all", "--type=service", "-p", "--"})
 	}
+	if a[0] == "ip" {
+		return slices.Equal(a, []string{"ip", "-o", "route", "get", routeProbe})
+	}
 	if a[0] == "sh" {
 		return len(a) == 5 && a[1] == "-c" && a[2] == hasCommandScript && a[3] == "sh"
 	}

@@ -33,6 +33,7 @@ type Store interface {
 	Configs
 	Installations
 	Metrics
+	HealthChecks
 	Close() error
 }
 
@@ -183,4 +184,16 @@ type Metrics interface {
 	// LatestMetrics is the newest sample of each server taken at or after
 	// since.
 	LatestMetrics(ctx context.Context, since time.Time) ([]model.Metric, error)
+}
+
+// HealthChecks stores the results of server health checks.
+type HealthChecks interface {
+	// AddHealth stores a check; a second one at the same second replaces
+	// the first.
+	AddHealth(ctx context.Context, h model.Health) error
+	// HealthHistory is the server's checks with At >= since, newest first,
+	// at most limit (0: all).
+	HealthHistory(ctx context.Context, serverID int64, since time.Time, limit int) ([]model.Health, error)
+	// PruneHealth drops checks older than before.
+	PruneHealth(ctx context.Context, before time.Time) error
 }
