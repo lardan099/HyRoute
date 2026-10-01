@@ -176,6 +176,13 @@ func (d *DB) DeleteServer(ctx context.Context, id int64) error {
 		if err := busy(ctx, t, id); err != nil {
 			return err
 		}
+		var chains int
+		if err := t.QueryRowContext(ctx, `SELECT COUNT(*) FROM chain_nodes WHERE server_id = ?`, id).Scan(&chains); err != nil {
+			return err
+		}
+		if chains > 0 {
+			return store.ErrInChain
+		}
 		res, err := t.ExecContext(ctx, `DELETE FROM servers WHERE id = ?`, id)
 		if err != nil {
 			return err

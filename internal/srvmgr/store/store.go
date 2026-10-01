@@ -18,6 +18,8 @@ var (
 	ErrConflict = errors.New("conflict")
 	// ErrBusy: the server has an unfinished job.
 	ErrBusy = errors.New("server has an unfinished job")
+	// ErrInChain: the server is a node of a cascade.
+	ErrInChain = errors.New("server is in a cascade")
 )
 
 // Store is the whole persistent state of the controller.
@@ -36,7 +38,36 @@ type Store interface {
 	HealthChecks
 	Traffic
 	Presets
+	Chains
 	Close() error
+}
+
+// Chains stores cascades (P3-01). The role of a server follows its place
+// in the chains (entry, relay, exit; standalone in none): every change of
+// the chains updates servers.role in the same transaction.
+type Chains interface {
+	// CreateChain inserts c with its nodes and links (in state new),
+	// setting c.ID and the links' From and To, after check accepted it
+	// against every chain stored so far; check runs inside the
+	// transaction, so two chains created at once cannot both pass it.
+	// ErrConflict if the name is taken.
+	CreateChain(ctx context.Context, c *model.Chain, check func(existing []model.Chain) error) error
+	// UpdateChain changes the name and notes; ErrConflict if the name is
+	// taken.
+	UpdateChain(ctx context.Context, id int64, name, notes string, at time.Time) error
+	// DeleteChain removes the chain with its nodes, links and their
+	// secrets.
+	DeleteChain(ctx context.Context, id int64, at time.Time) error
+	ChainByID(ctx context.Context, id int64) (model.Chain, error)
+	// ListChains is every chain, by name.
+	ListChains(ctx context.Context) ([]model.Chain, error)
+	// UpdateLink writes the params, state, applied revisions and config
+	// hash of a link.
+	UpdateLink(ctx context.Context, l model.ChainLink) error
+	// SetLinkSecrets stores the sealed secrets of a link (nil: none).
+	SetLinkSecrets(ctx context.Context, chainID int64, idx int, sealed []byte, at time.Time) error
+	// LinkSecrets are the sealed secrets of a link (nil: none).
+	LinkSecrets(ctx context.Context, chainID int64, idx int) ([]byte, error)
 }
 
 // Presets stores config presets. Names are unique case-insensitively.
@@ -117,7 +148,8 @@ type Servers interface {
 	// atomically; false: it was not (or there is no such server).
 	SwapServerState(ctx context.Context, id int64, from []model.ServerState, state model.ServerState, at time.Time) (bool, error)
 	// DeleteServer fails with ErrBusy while the server has an unfinished
-	// job: its rollback needs the credentials and the host key.
+	// job: its rollback needs the credentials and the host key; and with
+	// ErrInChain while it is a node of a cascade.
 	DeleteServer(ctx context.Context, id int64) error
 	ServerByID(ctx context.Context, id int64) (model.Server, error)
 	ListServers(ctx context.Context) ([]model.Server, error)

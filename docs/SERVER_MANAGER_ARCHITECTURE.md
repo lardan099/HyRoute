@@ -136,9 +136,12 @@ env), `setup-token` на время первого запуска.
 | `job_steps` | job_id, idx, name, state, attempt, started_at, finished_at, error | |
 | `job_logs` | job_id, seq, ts, level, step, message | message уже прошёл redaction |
 | `audit_log` | id, ts, user_id, action, target, details | кто что сделал (вход, выход, пользователи, подтверждение ключа, показ ссылок) |
+| `chains` | id, name (unique), notes, created_by, created_at, updated_at | каскад (P3-01), миграция 0016 |
+| `chain_nodes` | chain_id, idx, server_id | серверы цепочки по порядку, entry — idx 0; сервер из цепочки не удаляется |
+| `chain_links` | chain_id, idx, params (json без секретов), secrets (envelope, контекст `chain/<id>/link/<idx>`), state (new/linking/active/stale/unlinking/failed), from_revision, to_revision, config_sha256, updated_at | связь узлов idx и idx + 1 |
 
 Ссылки для клиентов не хранятся: они собираются из текущей ревизии по
-запросу (`profile`). Таблицы топологии (`chains`, `chain_hops`) — Phase 3.
+запросу (`profile`).
 
 Секреты — только в колонках-envelope (`secrets.Sealed`, BLOB). Тест
 P1-04 сканирует файл БД на открытые значения тестовых секретов.
@@ -721,12 +724,24 @@ UI: карточка «Трафик клиентов» на странице с�
 
 ## Topology
 
-План (Phase 3): `chains` и `chain_hops` — цепочка из N узлов с ролями
-entry/relay/exit. В Phase 1 у сервера есть только поле роли. Каскад
-Entry → Exit (Phase 3): на entry работает сервер
-Hysteria и клиент Hysteria до exit (outbound `socks5` на локальный
-клиент), промежуточные credentials генерируются. Модель не ограничивает
-число узлов, поэтому N-hop (Phase 4) не требует миграции схемы.
+Каскад (Phase 3) — цепочка (`model.Chain`): серверы по порядку, entry
+первым и exit последним, и связь (`model.ChainLink`) между каждой парой
+соседей. На entry работает сервер Hysteria и клиент Hysteria до exit
+(outbound `socks5` на локальный клиент), промежуточные credentials
+генерируются. Модель не ограничивает число узлов, поэтому N-hop
+(Phase 4) не требует миграции схемы; в Phase 3 проверка разрешает два.
+
+- Роль сервера (`servers.role`) следует из его места в цепочках:
+  idx 0 — entry, последний — exit, между ними — relay, вне цепочек —
+  standalone. Store меняет роли в той же транзакции, что и цепочки
+  (`syncRoles`); роли, заданные руками до каскадов, миграция 0016
+  перевела в standalone.
+- `CreateChain` принимает проверку и вызывает её внутри транзакции со
+  всеми сохранёнными цепочками (`_txlock=immediate`: пишущие транзакции
+  идут по одной), поэтому две цепочки, созданные одновременно, не
+  обходят проверку петель.
+- Сервер из цепочки не удаляется (`store.ErrInChain`), связи и их
+  секреты удаляются вместе с цепочкой.
 
 ## REST API v1
 
