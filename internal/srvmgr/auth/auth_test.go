@@ -387,8 +387,14 @@ func TestHashingBounded(t *testing.T) {
 	if p := peak.Load(); p < 1 || p > MaxHashing {
 		t.Fatalf("%d argon2id runs at once", p)
 	}
-	if r.ok == 0 || r.limited != 0 || r.other != 0 || r.ok+r.bad+r.busy != 40 {
+	// Which requests get a slot is up to the scheduler: all of them may
+	// be the wrong name. Some were hashed, the rest refused at once.
+	if r.ok+r.bad == 0 || r.limited != 0 || r.other != 0 || r.ok+r.bad+r.busy != 40 {
 		t.Fatalf("%+v", r)
+	}
+	// The slots are free again: the right password gets in.
+	if _, err := s.Login(context.Background(), "owner", goodPass, meta("10.1.1.1")); err != nil {
+		t.Fatalf("login after the burst: %v", err)
 	}
 }
 
