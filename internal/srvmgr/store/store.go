@@ -35,7 +35,21 @@ type Store interface {
 	Metrics
 	HealthChecks
 	Traffic
+	Presets
 	Close() error
+}
+
+// Presets stores config presets. Names are unique case-insensitively.
+type Presets interface {
+	// CreatePreset sets p.ID; ErrConflict if the name is taken.
+	CreatePreset(ctx context.Context, p *model.Preset) error
+	// UpdatePreset replaces the name, config and notes; ErrConflict if
+	// the name is taken.
+	UpdatePreset(ctx context.Context, p model.Preset) error
+	DeletePreset(ctx context.Context, id int64) error
+	PresetByID(ctx context.Context, id int64) (model.Preset, error)
+	// ListPresets is every preset, by name.
+	ListPresets(ctx context.Context) ([]model.Preset, error)
 }
 
 // Users stores admin accounts. Usernames are unique case-insensitively.

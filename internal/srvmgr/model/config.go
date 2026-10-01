@@ -76,3 +76,16 @@ type Firewall struct {
 	// Keep: the admin chose at deploy to leave the firewall alone.
 	Keep bool
 }
+
+// Preset is a reusable part of a server config (package preset): its
+// sections as YAML, without secrets and server addresses.
+type Preset struct {
+	ID     int64
+	Name   string
+	Config string
+	// Notes say what was left out when it was made.
+	Notes     []string
+	CreatedBy int64 // 0: unknown or removed
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}

@@ -452,6 +452,34 @@ queued → connecting → preflight → downloading → installing → configuri
   `listenHTTPS`), иначе правка конфига закрыла бы порты, открытые
   развёртыванием.
 
+## Пресеты (P2-08)
+
+- Пресет (пакет `preset`) — часть конфига сервера по разделам: `ports`
+  (порты без адреса), `obfs` (тип, без пароля), `masquerade`, `speed`
+  (bandwidth, ignoreClientBandwidth, congestion, speedTest), `quic`,
+  `udp` (disableUDP, udpIdleTimeout), `resolver`, `sniff`, `acl`,
+  `outbounds`. Хранится в таблице `presets` (миграция 0015) как YAML
+  частичного `hyconfig.Server`, с заметками о том, что не вошло.
+- `Extract` делает пресет из конфига через typed model и никогда не
+  берёт: tls, acme, auth, trafficStats, ech, mimic, realm, неизвестные
+  поля (везде, рекурсивно), пароли и токены, имя и пароль в URL,
+  секретные заголовки маскировки, адреса сервера (хост в listen и в
+  listenHTTP/HTTPS маскировки, bindIPv4/IPv6 выходов) и выходы-прокси на
+  других серверах (сохраняются только прокси на самом сервере, вроде
+  WARP на 127.0.0.1, без имени и пароля).
+- `Overlay` кладёт выбранные разделы пресета поверх конфига: раздел
+  целиком становится пресетовым, остальное не меняется; `ports`
+  сохраняет адрес целевого конфига; `obfs` оставляет пароль, если тип тот
+  же, иначе создаёт новый (ссылки клиентов меняются).
+- Экспорт — JSON `{"format": "hyroute-preset", "version": 1, "name",
+  "config", "notes"}`; импорт проверяет формат и версию и снова
+  пропускает конфиг через `Extract`, так что файл, исправленный вручную,
+  не принесёт секретов и адресов. Названия уникальны без учёта регистра
+  в любом алфавите (SQLite NOCASE знает только ASCII, проверка в Go).
+- Пресеты видят все роли (в них нет секретов), меняют operator+;
+  создание, клонирование, переименование, импорт и удаление пишутся в
+  аудит.
+
 ## Импорт (P1-11)
 
 Все команды — через `remote.ReadOnly`. Служба ищется среди стандартной
@@ -681,6 +709,11 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | POST | `/api/v1/servers/{id}/check` | operator+ | подключение и проверка прав (ничего не меняет) |
 | POST | `/api/v1/servers/{id}/host-key` | operator+ | TOFU / re-trust с отпечатком (`replace`) |
 | POST | `/api/v1/servers/{id}/preflight` | operator+ | job preflight |
+| GET | `/api/v1/presets`, `/api/v1/presets/{id}` | все | пресеты (разделы, заметки, YAML без секретов) |
+| POST | `/api/v1/presets` | operator+ | `{name, serverId}` — из конфига сервера, `{name, from}` — копия пресета |
+| PATCH, DELETE | `/api/v1/presets/{id}` | operator+ | переименовать `{name}`, удалить |
+| GET | `/api/v1/presets/{id}/export` | все | файл пресета (JSON с версией формата) |
+| POST | `/api/v1/presets/import` | operator+ | тело — файл пресета; занятое название получает номер |
 | POST | `/api/v1/servers/{id}/ports` | operator+ | `{base, ports, host, hopInterval}`: новые порты — задание `apply` (202, `{job}`); только интервал — сохраняется сразу (200, `{job: null}`) |
 | POST | `/api/v1/servers/{id}/deploy` | operator+ | job Quick Deploy: тело — `deploy.Params` и `secrets` (`dns`, `outPassword`; в params задания не попадают); нужен подтверждённый ключ SSH; пароли прежней ревизии (любой `auth`, если `auth` не меняется) сохраняются; текущий конфиг не из развёртывания (правка, возврат, импорт) заменяется только с `"overwrite": true`, иначе 409 `config_changed` |
 | POST | `/api/v1/servers/{id}/import` | operator+ | job импорта |
