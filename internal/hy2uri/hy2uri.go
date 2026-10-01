@@ -115,15 +115,19 @@ func Parse(s string) (l Link, warnings []string, err error) {
 	used := map[string]bool{}
 	get := func(k string) string { used[k] = true; return q.Get(k) }
 
-	m := get("mport")
-	if m == "" {
-		m = get("ports")
-	}
-	if m != "" {
+	if m := get("mport"); m != "" {
 		if _, err := ParsePorts(m); err != nil {
 			return l, nil, fmt.Errorf("bad mport: %w", err)
 		}
 		l.Ports = mergePorts(l.Ports, m)
+	} else if m := get("ports"); m != "" {
+		// A rarer alias: the client ignored it until v1.3.0, so a value
+		// it cannot read leaves the link as it was then.
+		if _, err := ParsePorts(m); err != nil {
+			warnings = append(warnings, "ignored ports "+strconv.Quote(m)+": "+err.Error())
+		} else {
+			l.Ports = mergePorts(l.Ports, m)
+		}
 	}
 	if v := get("mportHopInt"); v != "" {
 		n, err := strconv.Atoi(v)

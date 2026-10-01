@@ -97,6 +97,15 @@ func TestParseForeign(t *testing.T) {
 		// The documented alias "ports".
 		{"hy2://fake-password@vpn.example.com:443/?ports=443,20000-50000",
 			Link{Auth: "fake-password", Host: "vpn.example.com", Ports: "443,20000-50000"}, nil},
+		// A "ports" HyRoute cannot read is left out, as before the alias
+		// was supported (a bad mport is an error).
+		{"hy2://fake-password@vpn.example.com:443/?ports=20000:30000",
+			Link{Auth: "fake-password", Host: "vpn.example.com", Ports: "443"},
+			[]string{`ignored ports "20000:30000": bad port "20000:30000"`}},
+		// mport wins; ports next to it is reported.
+		{"hy2://fake-password@vpn.example.com:443/?mport=20000-30000&ports=1000-2000",
+			Link{Auth: "fake-password", Host: "vpn.example.com", Ports: "443,20000-30000"},
+			[]string{"ignored parameter ports"}},
 		// Xray: pcs and fm.
 		{`hy2://fake-password@[2001:db8::1]:443?pcs=` + pin + `&fm={"udp":[{"type":"salamander","settings":{"password":"fake-obfs"}}]}`,
 			Link{Auth: "fake-password", Host: "2001:db8::1", Ports: "443", ObfsType: "salamander", ObfsPassword: "fake-obfs", PinSHA256: pin}, nil},
