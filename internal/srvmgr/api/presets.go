@@ -7,7 +7,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/preset"
+	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
 
 // presetJSON is a preset: its config has no secrets and no server
@@ -173,3 +175,70 @@ func (s *server) importPreset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) presets() *preset.Service { return &preset.Service{Store: s.Store, Keys: s.Keys} }
+
+// presetApplyInput: the revision the admin looked at, the preset and its
+// sections to lay over the server's config.
+type presetApplyInput struct {
+	Base     int      `json:"base"`
+	Preset   int64    `json:"preset"`
+	Sections []string `json:"sections"`
+}
+
+func (s *server) readPresetApply(w http.ResponseWriter, r *http.Request) (int64, presetApplyInput, model.Preset, bool) {
+	var in presetApplyInput
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, errNotFound)
+		return 0, in, model.Preset{}, false
+	}
+	if err := readJSON(r, &in); err != nil {
+		writeError(w, err)
+		return 0, in, model.Preset{}, false
+	}
+	if _, err := s.Servers.Get(r.Context(), id); err != nil {
+		s.fail(w, r, mapError(err))
+		return 0, in, model.Preset{}, false
+	}
+	p, err := s.Store.PresetByID(r.Context(), in.Preset)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, &Error{Status: http.StatusNotFound, Code: "no_preset", Message: "Такого пресета нет."})
+		return 0, in, model.Preset{}, false
+	} else if err != nil {
+		s.fail(w, r, err)
+		return 0, in, model.Preset{}, false
+	}
+	return id, in, p, true
+}
+
+// presetPreview is the check and diff of laying a preset's sections over
+// the server's config; nothing is stored or sent to the server.
+func (s *server) presetPreview(w http.ResponseWriter, r *http.Request) {
+	id, in, p, ok := s.readPresetApply(w, r)
+	if !ok {
+		return
+	}
+	ch, err := s.editor().PresetPreview(r.Context(), id, in.Base, p, in.Sections)
+	if err != nil {
+		s.fail(w, r, configError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, ch)
+}
+
+// presetApply queues the apply job for a preset's sections.
+func (s *server) presetApply(w http.ResponseWriter, r *http.Request) {
+	id, in, p, ok := s.readPresetApply(w, r)
+	if !ok {
+		return
+	}
+	if _, err := s.installed(r, id); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	j, err := s.Apply.ApplyPreset(r.Context(), id, in.Base, p, in.Sections, principal(r).User.ID)
+	if err != nil {
+		s.fail(w, r, jobError(configError(err)))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, toJobJSON(j))
+}

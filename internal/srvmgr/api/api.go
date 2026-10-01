@@ -108,6 +108,8 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("PATCH /api/v1/presets/{id}", s.authed(anyRole, s.renamePreset))
 	mux.HandleFunc("DELETE /api/v1/presets/{id}", s.authed(anyRole, s.deletePreset))
 	mux.HandleFunc("GET /api/v1/presets/{id}/export", s.authed(anyRole, s.exportPreset))
+	mux.HandleFunc("POST /api/v1/servers/{id}/preset/preview", s.authed(anyRole, s.presetPreview))
+	mux.HandleFunc("POST /api/v1/servers/{id}/preset/apply", s.authed(anyRole, s.presetApply))
 	mux.HandleFunc("GET /api/v1/servers/{id}/status", s.authed(anyRole, s.serviceStatus))
 	mux.HandleFunc("POST /api/v1/servers/{id}/service/{action}", s.authed(anyRole, s.serviceAction))
 	mux.HandleFunc("GET /api/v1/servers/{id}/journal", s.authed(anyRole, s.journal))

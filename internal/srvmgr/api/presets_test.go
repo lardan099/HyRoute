@@ -82,3 +82,44 @@ func TestPresetsAPI(t *testing.T) {
 	}
 	code(t, owner.do("GET", "/api/v1/presets/"+id, nil, nil), http.StatusNotFound, "not_found")
 }
+
+// A preset's sections over a server: the preview shows the diff, the
+// apply starts the job; read-only may do neither.
+func TestPresetApplyAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": "S", "host": "192.0.2.81", "authType": "password", "password": fakeSSHPass}, nil)
+	var srv serverJSON
+	json.Unmarshal(rec.Body.Bytes(), &srv)
+	id := strconv.FormatInt(srv.ID, 10)
+	cfg := "listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-preset-apply-pass\n"
+	c := model.ServerConfig{ServerID: srv.ID, SHA256: "x", Source: model.ConfigDeploy, At: time.Now()}
+	e.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return e.keys.Seal([]byte(cfg), model.ConfigContext(srv.ID, rev)) })
+	p := model.Preset{Name: "Быстрый", Config: "bandwidth:\n  up: 900 mbps\n", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	e.db.CreatePreset(ctx, &p)
+	body := map[string]any{"base": 1, "preset": p.ID, "sections": []string{"speed"}}
+
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/preset/preview", body, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "900 mbps") || strings.Contains(rec.Body.String(), "fake-preset-apply") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/preset/preview", map[string]any{"base": 1, "preset": 999, "sections": []string{"speed"}}, nil), http.StatusNotFound, "no_preset")
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/preset/preview", map[string]any{"base": 1, "preset": p.ID, "sections": []string{"acl"}}, nil), http.StatusBadRequest, "invalid")
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/preset/apply", body, nil), http.StatusConflict, "no_installation")
+
+	e.db.SetInstallation(ctx, model.Installation{ServerID: srv.ID, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", At: time.Now()})
+	e.db.SetHostKey(ctx, model.HostKey{ServerID: srv.ID, Type: "ssh-ed25519", Key: []byte("fake"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()})
+	var u model.User
+	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
+	e.db.CreateUser(ctx, &u)
+	code(t, e.login("viewer").do("POST", "/api/v1/servers/"+id+"/preset/apply", body, nil), http.StatusForbidden, "forbidden")
+
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/preset/apply", body, nil)
+	var j jobJSON
+	json.Unmarshal(rec.Body.Bytes(), &j)
+	if rec.Code != http.StatusAccepted || j.Kind != "apply" || !strings.Contains(string(j.Params), `"preset":"Быстрый"`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}

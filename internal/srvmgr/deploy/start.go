@@ -35,8 +35,15 @@ var ErrConfigChanged = errors.New("deploy: the current config was not made by a 
 // entered. Bad params and combinations of them are a *model.FieldError:
 // the config is built and checked before the job is queued.
 func (s *Submitter) Submit(ctx context.Context, serverID int64, p Params, in Input, actor int64) (model.Job, error) {
+	if p.Preset != nil {
+		// The preset as it is now goes into the job.
+		p.Preset.Name, p.Preset.Config = "", ""
+	}
 	if err := p.Normalize(); err != nil {
 		return model.Job{}, &model.FieldError{Field: "params", Msg: sentence(err.Error())}
+	}
+	if err := s.loadPreset(ctx, &p); err != nil {
+		return model.Job{}, err
 	}
 	srv, err := s.Store.ServerByID(ctx, serverID)
 	if err != nil {

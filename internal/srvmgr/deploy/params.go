@@ -99,7 +99,10 @@ type Params struct {
 	UDP       UDP       `json:"udp,omitzero"`
 	Sniff     Sniff     `json:"sniff,omitzero"`
 	Outbound  Outbound  `json:"outbound,omitzero"`
-	Source    string    `json:"source,omitempty"` // auto (default), direct, relay
+	// Preset: sections of a preset laid over the config the params make
+	// (presets.go).
+	Preset *Preset `json:"preset,omitempty"`
+	Source string  `json:"source,omitempty"` // auto (default), direct, relay
 	// KeepFirewall: do not open ports in ufw or firewalld.
 	KeepFirewall bool `json:"keepFirewall,omitempty"`
 	// Replace an installation HyRoute did not make (its files are kept
@@ -166,6 +169,9 @@ func (p *Params) Normalize() error {
 	if err := p.normalizeAdvanced(); err != nil {
 		return err
 	}
+	if err := p.normalizePreset(); err != nil {
+		return err
+	}
 	if p.Source == "" {
 		p.Source = SourceAuto
 	}
@@ -202,6 +208,9 @@ func (p *Params) CertName() string {
 // TCPPorts are the TCP ports the deploy needs free and open: those of the
 // ACME challenge or of the masquerade site.
 func (p *Params) TCPPorts() []int {
+	if ports := p.presetTCPPorts(); len(ports) > 0 {
+		return ports
+	}
 	switch {
 	case p.Masq.TCP && p.Masq.Type != "":
 		return []int{80, 443}
@@ -478,6 +487,9 @@ func BuildConfig(p Params, s map[string]string) (*hyconfig.Server, error) {
 		c.Obfs = hyconfig.Obfs{Type: "salamander", Salamander: hyconfig.Salamander{Password: s[SecretObfs]}}
 	}
 	buildAdvanced(c, p, s)
+	if err := p.overlayPreset(c); err != nil {
+		return nil, err
+	}
 	for _, pr := range c.Validate() {
 		if !pr.Warning {
 			return nil, fmt.Errorf("%s: %s", pr.Field, pr.Message)

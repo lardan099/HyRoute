@@ -476,3 +476,82 @@ func TestSubmitAdvancedRefused(t *testing.T) {
 		t.Fatalf("jobs %v", js)
 	}
 }
+
+const presetYAML = `masquerade:
+  type: string
+  string:
+    content: soon
+  listenHTTP: :80
+  listenHTTPS: :443
+bandwidth:
+  up: 800 mbps
+acl:
+  inline:
+    - reject(geoip:private)
+    - direct(all)
+`
+
+// A deploy lays the chosen sections of a preset over its config; the job
+// keeps the preset as it was, and the TCP ports of its site are opened.
+func TestDeployPreset(t *testing.T) {
+	ctx := context.Background()
+	s := newSim()
+	s.ufw = true
+	h := newHarness(t, s)
+	m := model.Preset{Name: "Сайт", Config: presetYAML}
+	if err := h.db.CreatePreset(ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	sub := &Submitter{Store: h.db, Keys: h.keys, Jobs: h.eng}
+	p := params()
+	p.Masquerade = ""
+	p.Preset = &Preset{ID: m.ID, Sections: []string{"masquerade", "speed", "acl"}}
+	j, err := sub.Submit(ctx, h.server, p, Input{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The preset changes afterwards: the job is not affected.
+	m.Config = "bandwidth:\n  up: 1 mbps\n"
+	h.db.UpdatePreset(ctx, m)
+	if j = h.wait(j.ID); j.State != model.JobCompleted {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
+	}
+	b, _ := s.file(ConfigPath)
+	c, _ := hyconfig.ParseServer(b)
+	if c.Bandwidth.Up != "800 mbps" || len(c.ACL.Inline) != 2 || c.Masquerade.String.Content != "soon" || c.Masquerade.ListenHTTPS != ":443" {
+		t.Fatalf("config:\n%s", b)
+	}
+	if !s.ufwRules["80/tcp"] || !s.ufwRules["443/tcp"] {
+		t.Fatalf("rules %v", s.rules())
+	}
+	if !strings.Contains(string(j.Params), `"name":"Сайт"`) || !strings.Contains(h.log(j.ID), "Разделы пресета «Сайт»: masquerade, speed, acl.") {
+		t.Fatalf("%s\n%s", j.Params, h.log(j.ID))
+	}
+}
+
+func TestDeployPresetRefused(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, newSim())
+	m := model.Preset{Name: "Сайт", Config: presetYAML}
+	h.db.CreatePreset(ctx, &m)
+	sub := &Submitter{Store: h.db, Keys: h.keys, Jobs: h.eng}
+	cases := map[string]func(*Params){
+		"порты и обфускацию задаёт форма": func(p *Params) { p.Preset = &Preset{ID: m.ID, Sections: []string{"ports"}} },
+		"и в форме, и в пресете":          func(p *Params) { p.Preset = &Preset{ID: m.ID, Sections: []string{"masquerade"}} },
+		"нет раздела":                     func(p *Params) { p.Preset = &Preset{ID: m.ID, Sections: []string{"sniff"}} },
+		"Такого пресета нет":              func(p *Params) { p.Preset = &Preset{ID: 999, Sections: []string{"acl"}} },
+		"выберите разделы":                func(p *Params) { p.Preset = &Preset{ID: m.ID} },
+		"нужны Let's Encrypt": func(p *Params) {
+			p.Masquerade, p.TLS, p.Domain = "", TLSACME, "vpn.example.com"
+			p.Preset = &Preset{ID: m.ID, Sections: []string{"masquerade"}}
+		},
+	}
+	for want, edit := range cases {
+		p := params()
+		edit(&p)
+		var fe *model.FieldError
+		if _, err := sub.Submit(ctx, h.server, p, Input{}, 0); !errors.As(err, &fe) || !strings.Contains(strings.ToLower(fe.Msg), strings.ToLower(want)) {
+			t.Errorf("%s: %v", want, err)
+		}
+	}
+}

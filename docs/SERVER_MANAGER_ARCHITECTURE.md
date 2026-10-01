@@ -479,6 +479,18 @@ queued → connecting → preflight → downloading → installing → configuri
 - Пресеты видят все роли (в них нет секретов), меняют operator+;
   создание, клонирование, переименование, импорт и удаление пишутся в
   аудит.
+- Применение к серверу: текущий конфиг + `Overlay` выбранных разделов →
+  тот же `apply.Build`, что у редактора (проверка, политика, diff без
+  секретов, список меняющихся секретов), → обычное задание `apply` с
+  копией, перезапуском, проверкой и откатом. В params задания — название
+  пресета и разделы (журнал, страница задания).
+- При развёртывании (`deploy.Params.Preset`) берутся разделы
+  masquerade, speed, quic, udp, resolver, sniff, acl, outbounds — порты и
+  обфускацию задаёт форма, от них зависят ссылки. Раздел задаётся либо в
+  форме, либо в пресете. `Submit` читает пресет в params задания, так что
+  повтор шага собирает тот же конфиг, даже если пресет потом изменили;
+  TCP-порты маскировки пресета проверяются и открываются, как у формы,
+  и не сочетаются с проверкой Let's Encrypt по HTTP или TLS.
 
 ## Импорт (P1-11)
 
@@ -714,6 +726,8 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | PATCH, DELETE | `/api/v1/presets/{id}` | operator+ | переименовать `{name}`, удалить |
 | GET | `/api/v1/presets/{id}/export` | все | файл пресета (JSON с версией формата) |
 | POST | `/api/v1/presets/import` | operator+ | тело — файл пресета; занятое название получает номер |
+| POST | `/api/v1/servers/{id}/preset/preview` | operator+ | `{base, preset, sections}`: проверка и diff конфига с разделами пресета |
+| POST | `/api/v1/servers/{id}/preset/apply` | operator+ | то же — задание `apply` |
 | POST | `/api/v1/servers/{id}/ports` | operator+ | `{base, ports, host, hopInterval}`: новые порты — задание `apply` (202, `{job}`); только интервал — сохраняется сразу (200, `{job: null}`) |
 | POST | `/api/v1/servers/{id}/deploy` | operator+ | job Quick Deploy: тело — `deploy.Params` и `secrets` (`dns`, `outPassword`; в params задания не попадают); нужен подтверждённый ключ SSH; пароли прежней ревизии (любой `auth`, если `auth` не меняется) сохраняются; текущий конфиг не из развёртывания (правка, возврат, импорт) заменяется только с `"overwrite": true`, иначе 409 `config_changed` |
 | POST | `/api/v1/servers/{id}/import` | operator+ | job импорта |

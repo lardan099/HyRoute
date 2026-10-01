@@ -34,6 +34,7 @@ type Store interface {
 	store.Installations
 	ServerByID(ctx context.Context, id int64) (model.Server, error)
 	SetServerState(ctx context.Context, id int64, state model.ServerState, at time.Time) error
+	PresetByID(ctx context.Context, id int64) (model.Preset, error)
 }
 
 // Deps are the deploy's collaborators.
@@ -606,6 +607,9 @@ func (x *deployer) config(ctx context.Context, env *jobs.Env, p Params) error {
 		return jobs.Fail("Не удалось записать конфиг.", err)
 	}
 	env.Logf("Конфиг записан: %s (listen %s).", ConfigPath, p.Listen())
+	if n := p.presetNote(); n != "" {
+		env.Logf("%s", n)
+	}
 	return nil
 }
 

@@ -51,6 +51,10 @@ type Params struct {
 	// Pin is of the new certificate a rotation installs (in the job's
 	// secrets with its key).
 	Pin string `json:"pin,omitempty"`
+	// Preset and Sections: the preset whose sections the job lays over
+	// the config (for the log and the job page).
+	Preset   string   `json:"preset,omitempty"`
+	Sections []string `json:"sections,omitempty"`
 }
 
 // Store is what applying keeps in the controller's database.
@@ -894,6 +898,8 @@ func (x *applier) commit(ctx context.Context, env *jobs.Env, p Params) error {
 		return nil
 	case p.From != 0:
 		env.Logf("Возвращена версия %d; в controller она сохранена как ревизия %d.", p.From, rev.Revision)
+	case p.Preset != "":
+		env.Logf("Разделы пресета «%s» (%s) применены; конфиг сохранён в controller как ревизия %d.", p.Preset, strings.Join(p.Sections, ", "), rev.Revision)
 	default:
 		env.Logf("Конфиг сохранён в controller как ревизия %d.", rev.Revision)
 	}
