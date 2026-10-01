@@ -3,6 +3,7 @@ package remote_test
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/remote"
@@ -75,5 +76,31 @@ func TestPortAllowedFirewalld(t *testing.T) {
 	c := ex.Commands()
 	if !slices.Equal(c[len(c)-2:], []string{"firewall-cmd --permanent --remove-port=8443/udp", "firewall-cmd --remove-port=8443/udp"}) {
 		t.Fatalf("%q", c)
+	}
+}
+
+// debianUser is a fake Debian server seen by a non-root user with sudo:
+// the programs in tools live in /usr/sbin, which only a lookup that adds
+// the sbin directories finds.
+func debianUser(tools ...string) *fake.Executor {
+	ex := fake.New()
+	ex.On("sh", "-c").Do(func(c remote.Cmd) (remote.Result, error) {
+		if strings.Contains(c.Args[2], "/usr/sbin") && slices.Contains(tools, c.Args[len(c.Args)-1]) {
+			return remote.Result{}, nil
+		}
+		return remote.Result{ExitCode: 1}, nil
+	})
+	return ex
+}
+
+func TestReadFirewallSbin(t *testing.T) {
+	ex := debianUser("ufw", "iptables")
+	ex.On("ufw", "status").Reply("Status: active\n\nTo Action From\n", 0)
+	fw, err := remote.ReadFirewall(context.Background(), ex, true)
+	if err != nil || !fw.UFW || fw.Tool != "ufw" {
+		t.Fatalf("%+v %v", fw, err)
+	}
+	if c := ex.Calls(); !c[len(c)-1].Sudo {
+		t.Fatalf("ufw status without sudo: %+v", c[len(c)-1])
 	}
 }

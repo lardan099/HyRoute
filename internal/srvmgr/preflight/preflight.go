@@ -217,7 +217,7 @@ func Run(ctx context.Context, ex remote.Executor, probe remote.Probe, opt Option
 		return r, err
 	}
 
-	hasSS, err := remote.HasCommand(ctx, ex, "ss")
+	hasSS, err := remote.HasSystemCommand(ctx, ex, "ss")
 	if err != nil {
 		return r, err
 	}

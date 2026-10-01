@@ -59,13 +59,30 @@ var commandNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._+-]{0,63}$`)
 // hasCommandScript looks a program up on the PATH; the name comes as $1.
 const hasCommandScript = `command -v "$1" >/dev/null 2>&1`
 
+// hasSystemCommandScript also looks in the sbin directories: a non-root
+// SSH session on Debian runs commands with a PATH without them, while
+// root's PATH and sudo's secure_path have them.
+const hasSystemCommandScript = `PATH="$PATH:/usr/local/sbin:/usr/sbin:/sbin"; command -v "$1" >/dev/null 2>&1`
+
 // HasCommand reports whether a program is on the PATH (the name is passed
 // as a positional parameter, never spliced into the script).
 func HasCommand(ctx context.Context, ex Executor, name string) (bool, error) {
+	return hasCommand(ctx, ex, hasCommandScript, name)
+}
+
+// HasSystemCommand reports whether an administration program (ufw, nft,
+// iptables, ss) is installed: on the PATH or in an sbin directory. Such
+// programs run as root, by sudo or in root's session, where those
+// directories are on the PATH.
+func HasSystemCommand(ctx context.Context, ex Executor, name string) (bool, error) {
+	return hasCommand(ctx, ex, hasSystemCommandScript, name)
+}
+
+func hasCommand(ctx context.Context, ex Executor, script, name string) (bool, error) {
 	if !commandNameRe.MatchString(name) {
 		return false, errors.New("bad command name")
 	}
-	res, err := ex.Run(ctx, Cmd{Args: []string{"sh", "-c", hasCommandScript, "sh", name}})
+	res, err := ex.Run(ctx, Cmd{Args: []string{"sh", "-c", script, "sh", name}})
 	if err != nil {
 		return false, err
 	}
@@ -241,7 +258,7 @@ type Firewall struct {
 // ReadFirewall finds the active firewall manager and the default policy.
 func ReadFirewall(ctx context.Context, ex Executor, sudo bool) (Firewall, error) {
 	var fw Firewall
-	if ok, err := HasCommand(ctx, ex, "ufw"); err != nil {
+	if ok, err := HasSystemCommand(ctx, ex, "ufw"); err != nil {
 		return fw, err
 	} else if ok {
 		res, err := ex.Run(ctx, Cmd{Args: []string{"ufw", "status"}, Sudo: sudo})
@@ -253,7 +270,7 @@ func ReadFirewall(ctx context.Context, ex Executor, sudo bool) (Firewall, error)
 			return fw, nil
 		}
 	}
-	if ok, err := HasCommand(ctx, ex, "firewall-cmd"); err != nil {
+	if ok, err := HasSystemCommand(ctx, ex, "firewall-cmd"); err != nil {
 		return fw, err
 	} else if ok {
 		res, err := ex.Run(ctx, Cmd{Args: []string{"firewall-cmd", "--state"}, Sudo: sudo})
@@ -265,7 +282,7 @@ func ReadFirewall(ctx context.Context, ex Executor, sudo bool) (Firewall, error)
 			return fw, nil
 		}
 	}
-	if ok, err := HasCommand(ctx, ex, "nft"); err != nil {
+	if ok, err := HasSystemCommand(ctx, ex, "nft"); err != nil {
 		return fw, err
 	} else if ok {
 		res, err := ex.Run(ctx, Cmd{Args: []string{"nft", "list", "chains"}, Sudo: sudo})
@@ -277,7 +294,7 @@ func ReadFirewall(ctx context.Context, ex Executor, sudo bool) (Firewall, error)
 			return fw, nil
 		}
 	}
-	if ok, err := HasCommand(ctx, ex, "iptables"); err != nil {
+	if ok, err := HasSystemCommand(ctx, ex, "iptables"); err != nil {
 		return fw, err
 	} else if ok {
 		res, err := ex.Run(ctx, Cmd{Args: []string{"iptables", "-S", "INPUT"}, Sudo: sudo})

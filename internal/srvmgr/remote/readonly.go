@@ -85,7 +85,7 @@ func reads(a []string) bool {
 		return slices.Equal(a, []string{"ip", "-o", "route", "get", routeProbe})
 	}
 	if a[0] == "sh" {
-		return len(a) == 5 && a[1] == "-c" && a[2] == hasCommandScript && a[3] == "sh"
+		return len(a) == 5 && a[1] == "-c" && (a[2] == hasCommandScript || a[2] == hasSystemCommandScript) && a[3] == "sh"
 	}
 	if len(a) == 2 && a[1] == "version" && strings.HasPrefix(path.Base(a[0]), "hysteria") && path.IsAbs(a[0]) {
 		return true

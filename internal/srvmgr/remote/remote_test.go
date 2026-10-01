@@ -1,7 +1,11 @@
 package remote
 
 import (
+	"context"
+	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -68,5 +72,82 @@ func TestCheckPath(t *testing.T) {
 		if CheckPath(bad) == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// userShell runs commands with the local /bin/sh and the PATH of a
+// non-root SSH session on Debian: no sbin directories.
+type userShell struct{}
+
+func (userShell) Run(ctx context.Context, cmd Cmd) (Result, error) {
+	c := exec.CommandContext(ctx, "/bin/sh", "-c", `exec "$@"`, "sh")
+	c.Args = append(c.Args, cmd.Args...)
+	c.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin"}
+	err := c.Run()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return Result{ExitCode: ee.ExitCode()}, nil
+	}
+	return Result{}, err
+}
+
+func (userShell) Stream(context.Context, Cmd, func(string)) error { return errors.ErrUnsupported }
+func (userShell) ReadFile(context.Context, string, bool) ([]byte, error) {
+	return nil, errors.ErrUnsupported
+}
+func (userShell) WriteFile(context.Context, string, []byte, FileSpec) error {
+	return errors.ErrUnsupported
+}
+func (userShell) Close() error { return nil }
+
+// sbinOnly finds a program installed only in an sbin directory, as ufw,
+// nft and iptables are on Debian.
+func sbinOnly() string {
+	for _, dir := range []string{"/usr/sbin", "/sbin"} {
+		es, _ := os.ReadDir(dir)
+		for _, e := range es {
+			name := e.Name()
+			if !commandNameRe.MatchString(name) {
+				continue
+			}
+			if st, err := os.Stat(filepath.Join(dir, name)); err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0o111 == 0 {
+				continue
+			}
+			elsewhere := false
+			for _, d := range []string{"/usr/local/bin", "/usr/bin", "/bin"} {
+				if _, err := os.Stat(filepath.Join(d, name)); err == nil {
+					elsewhere = true
+				}
+			}
+			if !elsewhere {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+// Administration programs in /usr/sbin are found although a non-root
+// session's PATH lacks it.
+func TestHasSystemCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
+	}
+	name := sbinOnly()
+	if name == "" {
+		t.Skip("no program only in an sbin directory here")
+	}
+	ctx := context.Background()
+	if ok, err := HasCommand(ctx, userShell{}, name); err != nil || ok {
+		t.Fatalf("%s on the user's PATH: %v %v", name, ok, err)
+	}
+	if ok, err := HasSystemCommand(ctx, userShell{}, name); err != nil || !ok {
+		t.Fatalf("%s not found in sbin: %v %v", name, ok, err)
+	}
+	if ok, err := HasSystemCommand(ctx, userShell{}, "no-such-program-hyroute"); err != nil || ok {
+		t.Fatalf("a missing program found: %v %v", ok, err)
+	}
+	if ok, err := HasSystemCommand(ctx, userShell{}, "sh"); err != nil || !ok {
+		t.Fatalf("sh not found: %v %v", ok, err)
 	}
 }
