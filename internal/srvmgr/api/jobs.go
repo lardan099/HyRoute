@@ -89,6 +89,8 @@ func jobError(err error) error {
 		return &Error{Status: http.StatusConflict, Code: "server_busy", Message: "На этом сервере уже выполняется задание. Дождитесь его окончания."}
 	case errors.Is(err, jobs.ErrNotRetryable):
 		return &Error{Status: http.StatusConflict, Code: "not_retryable", Message: "Повторить можно только задание, которое завершилось ошибкой."}
+	case errors.Is(err, jobs.ErrStale):
+		return &Error{Status: http.StatusConflict, Code: "job_stale", Message: "Это задание устарело: после него на сервере выполнялись другие задания или обновился controller, его параметры могли измениться. Повторить можно только последнее задание сервера — запустите задание заново."}
 	}
 	return mapError(err)
 }

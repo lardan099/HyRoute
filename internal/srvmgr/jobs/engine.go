@@ -29,6 +29,10 @@ var (
 	ErrBusy = errors.New("the server already has a job in progress")
 	// ErrNotRetryable: only failed jobs can be retried.
 	ErrNotRetryable = errors.New("only a failed job can be retried")
+	// ErrStale: the failed job is not the newest of its server (a newer
+	// one may have changed what its params and secrets rely on), or this
+	// controller builds other steps for it; it is not retried.
+	ErrStale = errors.New("a newer job ran on the server since this one")
 	// ErrUnknownKind: no kind of this name is registered.
 	ErrUnknownKind = errors.New("unknown job kind")
 )
@@ -52,7 +56,14 @@ type Engine struct {
 	owner  string
 	wake   chan struct{}
 	events *broker
+	// queue makes looking at a server's jobs and queueing one there (a
+	// new job or a retry) one step.
+	queue sync.Mutex
 }
+
+// errStepsChanged: a stored job's steps are not the ones this controller
+// builds for it.
+var errStepsChanged = errors.New("the job's steps changed")
 
 // New returns an engine; register kinds before Run.
 func New(st store.Jobs, keys *secrets.Keyring, red *redact.Redactor, conn Connector, log *slog.Logger) *Engine {
@@ -110,7 +121,10 @@ func (e *Engine) Submit(ctx context.Context, kind string, serverID int64, params
 			return e.Keys.Seal(b, secretContext(id))
 		}
 	}
-	if err := e.Store.CreateJob(ctx, &j, rows, seal); err != nil {
+	e.queue.Lock()
+	err = e.Store.CreateJob(ctx, &j, rows, seal)
+	e.queue.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return model.Job{}, ErrBusy
 		}
@@ -136,9 +150,19 @@ func (e *Engine) Run(ctx context.Context) {
 		if err != nil && ctx.Err() == nil {
 			e.Log.Error("jobs: list", "err", err)
 		}
+		// One job at a time on a server: a queued job waits while another
+		// job of its server is under way.
+		taken := map[int64]bool{}
+		mu.Lock()
+		for _, j := range js {
+			if j.ServerID != 0 && (j.State != model.JobQueued || busy[j.ID]) {
+				taken[j.ServerID] = true
+			}
+		}
+		mu.Unlock()
 		for _, j := range js {
 			mu.Lock()
-			skip := j.State != model.JobQueued || busy[j.ID]
+			skip := j.State != model.JobQueued || busy[j.ID] || taken[j.ServerID]
 			mu.Unlock()
 			if skip {
 				continue
@@ -146,6 +170,9 @@ func (e *Engine) Run(ctx context.Context) {
 			ok, err := e.Store.ClaimJob(ctx, j.ID, e.owner, e.Now().Add(e.Lease))
 			if err != nil || !ok {
 				continue
+			}
+			if j.ServerID != 0 {
+				taken[j.ServerID] = true
 			}
 			select {
 			case sem <- struct{}{}:
@@ -196,11 +223,11 @@ func (e *Engine) prepare(ctx context.Context, id int64) (model.Job, *Kind, []Ste
 		return j, k, nil, nil, nil, err
 	}
 	if len(rows) != len(steps) {
-		return j, k, nil, nil, nil, fmt.Errorf("job has %d steps stored, this controller builds %d", len(rows), len(steps))
+		return j, k, nil, nil, nil, fmt.Errorf("%w: %d stored, this controller builds %d", errStepsChanged, len(rows), len(steps))
 	}
 	for i := range rows {
 		if rows[i].Name != steps[i].Name {
-			return j, k, nil, nil, nil, fmt.Errorf("step %d is %q stored, %q in this controller", i, rows[i].Name, steps[i].Name)
+			return j, k, nil, nil, nil, fmt.Errorf("%w: step %d is %q stored, %q in this controller", errStepsChanged, i, rows[i].Name, steps[i].Name)
 		}
 	}
 	env := &Env{JobID: j.ID, ServerID: j.ServerID, CreatedBy: j.CreatedBy, Params: j.Params, eng: e, data: map[string]string{}}
@@ -449,17 +476,53 @@ func (e *Engine) heartbeat(ctx context.Context, id int64) {
 }
 
 // Retry requeues a failed job from the nearest safe step at or before the
-// first unfinished one.
+// first unfinished one. Only the newest job of a server is retried
+// (ErrStale), and not while another job of the server is unfinished
+// (ErrBusy).
 func (e *Engine) Retry(ctx context.Context, id, actor int64) (model.Job, error) {
+	e.queue.Lock()
+	defer e.queue.Unlock()
 	j, _, steps, rows, env, err := e.prepare(ctx, id)
-	if err != nil {
+	switch {
+	case j.ID == 0:
+		return j, err
+	case j.State != model.JobFailed:
+		return j, ErrNotRetryable
+	case errors.Is(err, errStepsChanged):
+		return j, ErrStale // made by an older controller
+	case err != nil:
 		return j, err
 	}
-	if j.State != model.JobFailed {
-		return j, ErrNotRetryable
+	if err := e.retryable(ctx, j); err != nil {
+		return j, err
 	}
 	e.requeue(ctx, &j, env, steps, rows, fmt.Sprintf("Повтор запрошен пользователем %d.", actor))
 	return j, nil
+}
+
+// retryable checks the other jobs of the server of a failed job; the
+// caller holds e.queue.
+func (e *Engine) retryable(ctx context.Context, j model.Job) error {
+	if j.ServerID == 0 {
+		return nil
+	}
+	newest, err := e.Store.ListJobs(ctx, model.JobFilter{ServerID: j.ServerID, Limit: 1})
+	if err != nil {
+		return err
+	}
+	if len(newest) > 0 && newest[0].ID != j.ID {
+		return ErrStale
+	}
+	open, err := e.Store.UnfinishedJobs(ctx)
+	if err != nil {
+		return err
+	}
+	for _, o := range open {
+		if o.ServerID == j.ServerID && o.ID != j.ID {
+			return ErrBusy
+		}
+	}
+	return nil
 }
 
 func (e *Engine) requeue(ctx context.Context, j *model.Job, env *Env, steps []Step, rows []model.JobStep, why string) {

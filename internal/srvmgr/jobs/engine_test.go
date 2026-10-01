@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,12 +23,13 @@ import (
 const fakeSecret = "fake-job-secret-Zq81"
 
 type harness struct {
-	t    *testing.T
-	db   *sqlite.DB
-	keys *secrets.Keyring
-	eng  *Engine
-	stop context.CancelFunc
-	done chan struct{}
+	t       *testing.T
+	db      *sqlite.DB
+	keys    *secrets.Keyring
+	eng     *Engine
+	stop    context.CancelFunc
+	servers int
+	done    chan struct{}
 }
 
 func newHarness(t *testing.T, db *sqlite.DB, kinds ...*Kind) *harness {
@@ -565,5 +567,173 @@ func TestRecoveryFinishesRollback(t *testing.T) {
 	}
 	if log := h.logText(j.ID); !strings.Contains(log, "Откат продолжается") {
 		t.Fatalf("log: %s", log)
+	}
+}
+
+// newServer adds a server for jobs to run on.
+func (h *harness) newServer() int64 {
+	h.t.Helper()
+	h.servers++
+	n := strconv.Itoa(h.servers)
+	srv := model.Server{Name: "s" + n, Host: "h" + n + ".example", SSHPort: 22, SSHUser: "root", AuthType: model.AuthPassword, Role: model.RoleStandalone, State: model.StateNew}
+	if err := h.db.CreateServer(context.Background(), &srv, nil); err != nil {
+		h.t.Fatal(err)
+	}
+	return srv.ID
+}
+
+// workKind fails when its params ask so, and waits for release when they
+// ask that.
+func workKind(release <-chan struct{}) *Kind {
+	return simpleKind("demo", Step{Name: "work", Phase: model.JobInstalling, Safe: true, Run: func(ctx context.Context, env *Env) error {
+		var p struct{ Block, Fail bool }
+		env.DecodeParams(&p)
+		if p.Block {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		if p.Fail {
+			return Fail("Не вышло.", nil)
+		}
+		return nil
+	}})
+}
+
+var (
+	failing = map[string]bool{"fail": true}
+	waiting = map[string]bool{"block": true}
+)
+
+// A failed job is not retried while a newer job of its server runs, nor
+// after it: that job may have changed what the old params rely on.
+func TestRetryOnlyNewestJobOfServer(t *testing.T) {
+	release := make(chan struct{})
+	h := newHarness(t, nil, workKind(release))
+	h.start()
+	ctx := context.Background()
+	srv := h.newServer()
+	a, _ := h.eng.Submit(ctx, "demo", srv, failing, nil, 0)
+	h.wait(a.ID, model.JobFailed)
+	b, err := h.eng.Submit(ctx, "demo", srv, waiting, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.wait(b.ID, model.JobInstalling)
+	if _, err := h.eng.Retry(ctx, a.ID, 1); !errors.Is(err, ErrStale) {
+		t.Fatalf("retry while a newer job runs: %v", err)
+	}
+	close(release)
+	h.wait(b.ID, model.JobCompleted)
+	if _, err := h.eng.Retry(ctx, a.ID, 1); !errors.Is(err, ErrStale) {
+		t.Fatalf("retry after a newer job: %v", err)
+	}
+	if j, _ := h.db.JobByID(ctx, a.ID); j.State != model.JobFailed || j.Attempt != 1 {
+		t.Fatalf("the refused job changed: %s attempt %d", j.State, j.Attempt)
+	}
+	// The newest job of the server is retried; jobs of other servers do
+	// not count.
+	c, _ := h.eng.Submit(ctx, "demo", srv, failing, nil, 0)
+	h.wait(c.ID, model.JobFailed)
+	other, _ := h.eng.Submit(ctx, "demo", h.newServer(), nil, nil, 0)
+	h.wait(other.ID, model.JobCompleted)
+	if c, err = h.eng.Retry(ctx, c.ID, 1); err != nil || c.State != model.JobQueued {
+		t.Fatalf("retry of the newest job: %v %s", err, c.State)
+	}
+	if c = h.wait(c.ID, model.JobFailed); c.Attempt != 2 {
+		t.Fatalf("attempt %d", c.Attempt)
+	}
+}
+
+// Another unfinished job of the server (one an older controller let run
+// next to it) keeps a failed job from being retried.
+func TestRetryRefusedWhileServerBusy(t *testing.T) {
+	h := newHarness(t, nil, workKind(nil))
+	h.start()
+	ctx := context.Background()
+	srv := h.newServer()
+	a, _ := h.eng.Submit(ctx, "demo", srv, failing, nil, 0)
+	h.wait(a.ID, model.JobFailed)
+	b, _ := h.eng.Submit(ctx, "demo", srv, failing, nil, 0)
+	b = h.wait(b.ID, model.JobFailed)
+	a, _ = h.db.JobByID(ctx, a.ID)
+	a.State, a.LeaseOwner, a.LeaseUntil = model.JobInstalling, "another-process", time.Now().Add(time.Hour)
+	if err := h.db.UpdateJob(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.eng.Retry(ctx, b.ID, 1); !errors.Is(err, ErrBusy) {
+		t.Fatalf("retry on a busy server: %v", err)
+	}
+	if j, _ := h.db.JobByID(ctx, b.ID); j.State != model.JobFailed {
+		t.Fatalf("the refused job is %s", j.State)
+	}
+}
+
+// A retry and a new job on the same server at the same moment: one of
+// them is queued, never both.
+func TestRetryRacesSubmit(t *testing.T) {
+	h := newHarness(t, nil, workKind(nil))
+	ctx := context.Background()
+	for range 20 {
+		srv := h.newServer()
+		a, err := h.eng.Submit(ctx, "demo", srv, nil, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a.State = model.JobFailed
+		h.db.UpdateJob(ctx, a)
+		var won atomic.Int32
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if _, err := h.eng.Retry(ctx, a.ID, 1); err == nil {
+				won.Add(1)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, err := h.eng.Submit(ctx, "demo", srv, nil, nil, 0); err == nil {
+				won.Add(1)
+			}
+		}()
+		wg.Wait()
+		if won.Load() != 1 {
+			t.Fatalf("%d of the retry and the new job were queued", won.Load())
+		}
+	}
+}
+
+// Two queued jobs of one server (left by an older controller) run one
+// after the other, never together.
+func TestOneRunningJobPerServer(t *testing.T) {
+	var running, most atomic.Int32
+	k := simpleKind("demo", Step{Name: "work", Phase: model.JobInstalling, Run: func(context.Context, *Env) error {
+		n := running.Add(1)
+		for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() {
+		}
+		time.Sleep(50 * time.Millisecond)
+		running.Add(-1)
+		return nil
+	}})
+	h := newHarness(t, nil, k)
+	ctx := context.Background()
+	srv := h.newServer()
+	a, _ := h.eng.Submit(ctx, "demo", srv, nil, nil, 0)
+	a.State = model.JobFailed
+	h.db.UpdateJob(ctx, a)
+	b, err := h.eng.Submit(ctx, "demo", srv, nil, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.State = model.JobQueued
+	h.db.UpdateJob(ctx, a)
+	h.start()
+	h.wait(a.ID, model.JobCompleted)
+	h.wait(b.ID, model.JobCompleted)
+	if most.Load() != 1 {
+		t.Fatalf("%d jobs ran on the server at once", most.Load())
 	}
 }
