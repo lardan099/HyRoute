@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -130,12 +131,21 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 }
 
-func TestLoadCreatesAndChecksFile(t *testing.T) {
+func TestCreateAndLoadKeyFile(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "master.key")
-	k1, src, err := Load(env(nil), file)
-	if err != nil || src != Created {
-		t.Fatalf("%v %v", src, err)
+	if _, _, err := Load(env(nil), file); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("no key: %v", err)
+	}
+	if _, err := os.Stat(file); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("Load created a key file")
+	}
+	k1, err := createKeyFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createKeyFile(file); err == nil {
+		t.Fatal("an existing key file overwritten")
 	}
 	if runtime.GOOS != "windows" {
 		st, _ := os.Stat(file)
@@ -163,7 +173,7 @@ func TestLoadCreatesAndChecksFile(t *testing.T) {
 			t.Fatal("symlinked key file accepted")
 		}
 	}
-	if _, _, err := Load(env(nil), filepath.Join(dir, "missing-dir", "master.key")); err == nil {
+	if _, err := createKeyFile(filepath.Join(dir, "missing-dir", "master.key")); err == nil {
 		t.Fatal("key created in a missing directory")
 	}
 }

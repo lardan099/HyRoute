@@ -83,7 +83,17 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			return fmt.Errorf("database: %w", err)
 		}
 	}
-	keys, src, err := secrets.Load(getenv, cfg.MasterKeyFile)
+	db, err := sqlite.Open(ctx, cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("database %s: %w", cfg.DBPath(), err)
+	}
+	defer db.Close()
+	// The key is checked against the database before anything is sealed:
+	// a missing or another key stops the start instead of a new key.
+	keys, src, err := secrets.Open(ctx, getenv, cfg.MasterKeyFile, db)
+	if errors.Is(err, secrets.ErrNoKey) || errors.Is(err, secrets.ErrKeyMismatch) {
+		return fmt.Errorf("база %s: %w", cfg.DBPath(), err)
+	}
 	if err != nil {
 		return fmt.Errorf("master key: %w", err)
 	}
@@ -101,11 +111,6 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	default:
 		log.Info("master key from file", "file", cfg.MasterKeyFile, "version", keys.Current())
 	}
-	db, err := sqlite.Open(ctx, cfg.DBPath())
-	if err != nil {
-		return fmt.Errorf("database %s: %w", cfg.DBPath(), err)
-	}
-	defer db.Close()
 
 	authSvc := auth.New(db)
 	tokenFile := filepath.Join(cfg.DataDir, "setup-token")

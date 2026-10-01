@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -76,14 +75,16 @@ type Source int
 const (
 	FromEnv Source = iota
 	FromFile
-	// Created: there was no key, a new file was written. Losing it loses
-	// every stored credential, so the caller tells the admin to back it up.
+	// Created: there was no key and the database had nothing sealed, a new
+	// file was written. Losing it loses every stored credential, so the
+	// caller tells the admin to back it up.
 	Created
 )
 
 // Load reads the master key from the environment (getenv(EnvMasterKey))
-// or from file. With neither, it creates the file (0600) in an existing
-// directory. The file must not be readable by group or others.
+// or from file. The file must not be readable by group or others. With
+// neither, the error wraps fs.ErrNotExist: only Open, which sees the
+// database, may create a key.
 func Load(getenv func(string) string, file string) (*Keyring, Source, error) {
 	if text := strings.TrimSpace(getenv(EnvMasterKey)); text != "" {
 		keys, err := parseKeys(text)
@@ -94,18 +95,6 @@ func Load(getenv func(string) string, file string) (*Keyring, Source, error) {
 		return k, FromEnv, err
 	}
 	b, err := readKeyFile(file)
-	if errors.Is(err, fs.ErrNotExist) {
-		text, err := NewKeyText()
-		if err != nil {
-			return nil, 0, err
-		}
-		if err := writeKeyFile(file, text); err != nil {
-			return nil, 0, err
-		}
-		keys, _ := parseKeys(text)
-		k, err := NewKeyring(keys)
-		return k, Created, err
-	}
 	if err != nil {
 		return nil, 0, err
 	}
@@ -131,6 +120,23 @@ func readKeyFile(file string) ([]byte, error) {
 		return nil, fmt.Errorf("master key file %s has mode %v: allow only its owner (chmod 600)", file, st.Mode().Perm())
 	}
 	return os.ReadFile(file)
+}
+
+// createKeyFile writes a new version-1 key to file (0600) in an existing
+// directory; an existing file is never overwritten.
+func createKeyFile(file string) (*Keyring, error) {
+	text, err := NewKeyText()
+	if err != nil {
+		return nil, err
+	}
+	if err := writeKeyFile(file, text); err != nil {
+		return nil, err
+	}
+	keys, err := parseKeys(text)
+	if err != nil {
+		return nil, err
+	}
+	return NewKeyring(keys)
 }
 
 func writeKeyFile(file, text string) error {
