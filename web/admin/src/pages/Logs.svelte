@@ -20,32 +20,42 @@
   let loading = $state(false);
   let error = $state<ApiError | null>(null);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // seq numbers the requests: only the latest one may show its answer (the
+  // Hysteria journal comes over SSH in seconds and must not land under
+  // another tab chosen meanwhile).
+  let seq = 0;
 
   let byId = $derived(Object.fromEntries(servers.map((s) => [s.id, s])));
 
   async function load() {
+    const my = ++seq;
     error = null;
     if (source === 'hysteria' && !server) {
       entries = [];
+      loading = false;
       return;
     }
     loading = true;
     try {
+      let got: LogEntry[];
       if (source === 'hysteria') {
         // The journal is filtered here: it comes as a whole from the server.
         const min = rank[(level || 'debug') as keyof typeof rank];
         const q = text.toLowerCase();
-        entries = (await api.journal(server, 1000))
+        got = (await api.journal(server, 1000))
           .filter((e) => rank[e.level] >= min && (!q || e.message.toLowerCase().includes(q)))
           .reverse();
       } else {
-        entries = await api.logs({ source, server: source === 'jobs' ? server : 0, level, q: text, limit: 500 });
+        got = await api.logs({ source, server: source === 'jobs' ? server : 0, level, q: text, limit: 500 });
       }
+      if (my !== seq) return;
+      entries = got;
     } catch (e) {
+      if (my !== seq) return;
       entries = [];
       error = asApiError(e);
     } finally {
-      loading = false;
+      if (my === seq) loading = false;
     }
   }
 
