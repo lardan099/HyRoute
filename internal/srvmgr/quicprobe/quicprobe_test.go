@@ -59,7 +59,9 @@ func probe(addr, key string) (time.Duration, error) {
 
 func TestProbe(t *testing.T) {
 	plain := server(t, "")
-	if rtt, err := probe(plain, ""); err != nil || rtt <= 0 {
+	// rtt may be 0 on loopback: the Windows monotonic clock ticks too
+	// coarsely for it.
+	if rtt, err := probe(plain, ""); err != nil || rtt < 0 {
 		t.Fatalf("plain: %v %v", rtt, err)
 	}
 	obfs := server(t, "fake-obfs-probe-pass")
