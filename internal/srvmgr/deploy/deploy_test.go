@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -719,6 +721,11 @@ func TestDeployOverImport(t *testing.T) {
 		t.Fatalf("%s: %s", j.State, j.ErrorMessage)
 	}
 	sub := &Submitter{Store: h.db, Keys: h.keys, Jobs: h.eng}
+	// The imported config is replaced by the form's only when confirmed.
+	if _, err := sub.Submit(ctx, h.server, p, 0); !errors.Is(err, ErrConfigChanged) {
+		t.Fatalf("replace without overwrite: %v", err)
+	}
+	p.Overwrite = true
 	j, err := sub.Submit(ctx, h.server, p, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -733,5 +740,128 @@ func TestDeployOverImport(t *testing.T) {
 	}
 	if in, _ := h.db.Installation(ctx, h.server); !in.Managed {
 		t.Fatal("installation not HyRoute's after replace")
+	}
+}
+
+// A redeploy over a config changed in the editor is refused without the
+// confirmation; with it, the config is the form's again, and the userpass
+// users keep their passwords.
+func TestRedeployOverEditedConfig(t *testing.T) {
+	s := newSim()
+	h := newHarness(t, s)
+	sub := &Submitter{Store: h.db, Keys: h.keys, Jobs: h.eng}
+	ctx := context.Background()
+	j, err := sub.Submit(ctx, h.server, params(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j = h.wait(j.ID); j.State != model.JobCompleted {
+		t.Fatalf("first deploy: %s %s", j.State, j.ErrorMessage)
+	}
+
+	// The editor: a user per client and bandwidth limits.
+	b, _ := s.file(ConfigPath)
+	c, _ := hyconfig.ParseServer(b)
+	users := map[string]string{"alice": "fake-alice-password", "bob": "fake-bob-password"}
+	c.Auth = hyconfig.Auth{Type: "userpass", UserPass: users}
+	c.Bandwidth = hyconfig.Bandwidth{Up: "100 mbps", Down: "100 mbps"}
+	edited, _ := c.Marshal()
+	s.mu.Lock()
+	s.files[ConfigPath] = edited
+	s.mu.Unlock()
+	meta := h.revisions()[0].Meta
+	meta.Auth = "userpass"
+	err = h.db.AddConfig(ctx, &model.ServerConfig{ServerID: h.server, SHA256: sum(edited), Meta: meta, Source: model.ConfigEdit, At: time.Now()}, func(rev int) ([]byte, error) {
+		return h.keys.Seal(edited, model.ConfigContext(h.server, rev))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := sub.Submit(ctx, h.server, params(), 0); !errors.Is(err, ErrConfigChanged) {
+		t.Fatalf("redeploy over the edit without confirmation: %v", err)
+	}
+	if js, _ := h.db.ListJobs(ctx, model.JobFilter{ServerID: h.server}); len(js) != 1 {
+		t.Fatalf("a refused deploy queued a job: %d jobs", len(js))
+	}
+
+	p := params()
+	p.Overwrite = true
+	j, err = sub.Submit(ctx, h.server, p, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j = h.wait(j.ID); j.State != model.JobCompleted {
+		t.Fatalf("confirmed redeploy: %s %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
+	}
+	check := func(when string) {
+		t.Helper()
+		b, _ := s.file(ConfigPath)
+		after, err := hyconfig.ParseServer(b)
+		if err != nil || after.Auth.Type != "userpass" || !maps.Equal(after.Auth.UserPass, users) || after.Auth.Password != "" {
+			t.Fatalf("%s: auth %+v (%v): client links would break", when, after.Auth, err)
+		}
+		if after.Bandwidth.Up != "" {
+			t.Fatalf("%s: the config is not the form's: %s", when, b)
+		}
+		if rev := h.revisions()[0]; rev.Source != model.ConfigDeploy || rev.Meta.Auth != "userpass" || rev.Meta.PinSHA256 != meta.PinSHA256 {
+			t.Fatalf("%s: revision %+v", when, rev)
+		}
+		for _, pw := range users {
+			if strings.Contains(h.log(j.ID), pw) {
+				t.Fatalf("%s: a password in the job log", when)
+			}
+		}
+	}
+	check("confirmed redeploy")
+
+	// The current config is a deploy's again: no question, same users.
+	j, err = sub.Submit(ctx, h.server, params(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j = h.wait(j.ID); j.State != model.JobCompleted {
+		t.Fatalf("redeploy: %s %s", j.State, j.ErrorMessage)
+	}
+	check("redeploy")
+}
+
+// Every auth type comes through a redeploy as it was; with nothing to
+// keep, the deploy makes a password.
+func TestAuthSecretsKept(t *testing.T) {
+	p := params()
+	if err := p.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []hyconfig.Auth{
+		{Type: "password", Password: "fake-password-1"},
+		{Type: "userpass", UserPass: map[string]string{"alice": "fake-alice-pass", "Bob Smith": "fake-bob-pass"}},
+		{Type: "http", HTTP: hyconfig.AuthHTTP{URL: "https://auth.example.com/check", Insecure: true}},
+		{Type: "http", HTTP: hyconfig.AuthHTTP{URL: "http://127.0.0.1:8080/auth"}},
+		{Type: "command", Command: "/etc/hysteria/auth.sh"},
+	} {
+		sec, err := NewSecrets(p, "192.0.2.10", AuthSecrets(a))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := BuildConfig(p, sec)
+		if err != nil || !reflect.DeepEqual(c.Auth, a) {
+			t.Fatalf("%s: %+v (%v)", a.Type, c, err)
+		}
+	}
+	for _, a := range []hyconfig.Auth{{}, {Type: "password"}, {Type: "userpass"}, {Type: "http"}} {
+		if s := AuthSecrets(a); len(s) != 0 {
+			t.Fatalf("%+v: %v", a, s)
+		}
+		sec, _ := NewSecrets(p, "192.0.2.10", AuthSecrets(a))
+		if c, err := BuildConfig(p, sec); err != nil || c.Auth.Type != "password" || len(c.Auth.Password) != 32 {
+			t.Fatalf("%+v: %+v (%v)", a, c, err)
+		}
+	}
+	// The job keeps each password as a secret of its own (masked in the
+	// job log one by one).
+	s := AuthSecrets(hyconfig.Auth{Type: "userpass", UserPass: map[string]string{"alice": "fake-alice-pass"}})
+	if s[SecretUserPrefix+"alice"] != "fake-alice-pass" {
+		t.Fatalf("%v", s)
 	}
 }

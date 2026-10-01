@@ -502,7 +502,7 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | POST | `/api/v1/servers/{id}/check` | operator+ | подключение и проверка прав (ничего не меняет) |
 | POST | `/api/v1/servers/{id}/host-key` | operator+ | TOFU / re-trust с отпечатком (`replace`) |
 | POST | `/api/v1/servers/{id}/preflight` | operator+ | job preflight |
-| POST | `/api/v1/servers/{id}/deploy` | operator+ | job Quick Deploy; нужен подтверждённый ключ SSH; пароли прежней ревизии сохраняются |
+| POST | `/api/v1/servers/{id}/deploy` | operator+ | job Quick Deploy; нужен подтверждённый ключ SSH; пароли прежней ревизии (любой `auth`) сохраняются; текущий конфиг не из развёртывания (правка, возврат, импорт) заменяется только с `"overwrite": true`, иначе 409 `config_changed` |
 | POST | `/api/v1/servers/{id}/import` | operator+ | job импорта |
 | GET | `/api/v1/servers/{id}/status` | любая | статус сервиса |
 | POST | `/api/v1/servers/{id}/service/{start,stop,restart}` | operator+ | с подтверждением в UI |

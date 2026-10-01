@@ -13,13 +13,16 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"math/big"
 	"net/netip"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -84,6 +87,11 @@ type Params struct {
 	// Replace an installation HyRoute did not make (its files are kept
 	// with the .hyroute-prev suffix).
 	Replace bool `json:"replace,omitempty"`
+	// Overwrite a current config that no deploy made (edited, rolled back
+	// or imported): the deploy builds the config from these params alone,
+	// and what they do not cover (ACL, outbounds, bandwidth…) is lost.
+	// Without it Submit refuses with ErrConfigChanged.
+	Overwrite bool `json:"overwrite,omitempty"`
 }
 
 var (
@@ -184,22 +192,111 @@ func (p *Params) TCPPorts() []int {
 	return []int{80}
 }
 
-// Secret names in the job's sealed secrets.
+// Secret names in the job's sealed secrets. The auth section is kept in
+// one of four forms, as the server had it (a new server gets a password).
+// Every password is a secret of its own, so the job log masks each one.
 const (
-	SecretAuth = "auth"
-	SecretObfs = "obfs"
-	SecretCert = "cert" // self-signed certificate (PEM; not secret, kept with the key)
-	SecretKey  = "key"  // its private key (PEM)
+	SecretAuth = "auth" // password auth
+	// userpass auth: SecretUsers is the JSON list of the user names, and
+	// SecretUserPrefix + name the password of each.
+	SecretUsers      = "users"
+	SecretUserPrefix = "user:"
+	// http auth: the URL of the backend, and "1" when its certificate is
+	// not checked.
+	SecretAuthHTTP         = "authHTTP"
+	SecretAuthHTTPInsecure = "authHTTPInsecure"
+	SecretAuthCommand      = "authCommand" // command auth: the program
+	SecretObfs             = "obfs"
+	SecretCert             = "cert" // self-signed certificate (PEM; not secret, kept with the key)
+	SecretKey              = "key"  // its private key (PEM)
 )
+
+// AuthSecrets are the secrets of an auth section, of any type: what a
+// redeploy keeps so clients go on connecting as before. Empty when it has
+// none.
+func AuthSecrets(a hyconfig.Auth) map[string]string {
+	out := map[string]string{}
+	switch strings.ToLower(a.Type) {
+	case "password":
+		if a.Password != "" {
+			out[SecretAuth] = a.Password
+		}
+	case "userpass":
+		if len(a.UserPass) == 0 {
+			break
+		}
+		names := slices.Sorted(maps.Keys(a.UserPass))
+		b, _ := json.Marshal(names)
+		out[SecretUsers] = string(b)
+		for _, u := range names {
+			out[SecretUserPrefix+u] = a.UserPass[u]
+		}
+	case "http", "https":
+		if a.HTTP.URL != "" {
+			out[SecretAuthHTTP] = a.HTTP.URL
+			if a.HTTP.Insecure {
+				out[SecretAuthHTTPInsecure] = "1"
+			}
+		}
+	case "command", "cmd":
+		if a.Command != "" {
+			out[SecretAuthCommand] = a.Command
+		}
+	}
+	return out
+}
+
+// authOf is the auth section kept in secrets s.
+func authOf(s map[string]string) (hyconfig.Auth, error) {
+	switch {
+	case s[SecretUsers] != "":
+		var names []string
+		if err := json.Unmarshal([]byte(s[SecretUsers]), &names); err != nil {
+			return hyconfig.Auth{}, fmt.Errorf("userpass users: %w", err)
+		}
+		up := make(map[string]string, len(names))
+		for _, u := range names {
+			up[u] = s[SecretUserPrefix+u]
+		}
+		return hyconfig.Auth{Type: "userpass", UserPass: up}, nil
+	case s[SecretAuthHTTP] != "":
+		return hyconfig.Auth{Type: "http", HTTP: hyconfig.AuthHTTP{URL: s[SecretAuthHTTP], Insecure: s[SecretAuthHTTPInsecure] == "1"}}, nil
+	case s[SecretAuthCommand] != "":
+		return hyconfig.Auth{Type: "command", Command: s[SecretAuthCommand]}, nil
+	case s[SecretAuth] != "":
+		return hyconfig.Auth{Type: "password", Password: s[SecretAuth]}, nil
+	}
+	return hyconfig.Auth{}, errors.New("no auth secret")
+}
+
+// secretsOf collects the secrets a config is built from; get reads one by
+// name (a job's Env.Secret).
+func secretsOf(get func(string) string) map[string]string {
+	s := map[string]string{}
+	for _, k := range []string{SecretAuth, SecretUsers, SecretAuthHTTP, SecretAuthHTTPInsecure, SecretAuthCommand, SecretObfs} {
+		if v := get(k); v != "" {
+			s[k] = v
+		}
+	}
+	var names []string
+	json.Unmarshal([]byte(s[SecretUsers]), &names)
+	for _, u := range names {
+		s[SecretUserPrefix+u] = get(SecretUserPrefix + u)
+	}
+	return s
+}
 
 // NewSecrets makes the passwords and, for a self-signed certificate, the
 // certificate for a deploy. host is the server's address (put in the
-// certificate too). Passwords of an existing HyRoute installation are
-// passed in reuse so client links stay valid.
+// certificate too). The secrets of an existing installation (AuthSecrets
+// and the obfuscation password) are passed in reuse so client links stay
+// valid.
 func NewSecrets(p Params, host string, reuse map[string]string) (map[string]string, error) {
-	s := map[string]string{}
+	s := secretsOf(func(k string) string { return reuse[k] })
+	delete(s, SecretObfs)
 	var err error
-	if s[SecretAuth] = reuse[SecretAuth]; s[SecretAuth] == "" {
+	if _, aerr := authOf(s); aerr != nil {
+		clear(s)
 		if s[SecretAuth], err = password(); err != nil {
 			return nil, err
 		}
@@ -299,10 +396,11 @@ func Pin(certPEM []byte) (string, error) {
 
 // BuildConfig is the server config for params and secrets.
 func BuildConfig(p Params, s map[string]string) (*hyconfig.Server, error) {
-	c := &hyconfig.Server{
-		Listen: p.Listen(),
-		Auth:   hyconfig.Auth{Type: "password", Password: s[SecretAuth]},
+	auth, err := authOf(s)
+	if err != nil {
+		return nil, err
 	}
+	c := &hyconfig.Server{Listen: p.Listen(), Auth: auth}
 	switch p.TLS {
 	case TLSSelfSigned:
 		// Clients may connect by IP without SNI: do not require the
@@ -325,7 +423,8 @@ func BuildConfig(p Params, s map[string]string) (*hyconfig.Server, error) {
 	return c, nil
 }
 
-// Meta is the non-secret summary of a deployed config.
+// Meta is the non-secret summary of a deployed config with a password
+// (configYAML sets the auth type a redeploy kept).
 func Meta(p Params, pin string) model.ConfigMeta {
 	m := model.ConfigMeta{Version: p.Version, Listen: p.Listen(), Ports: p.Ports(), TLS: p.TLS, PinSHA256: pin, Auth: "password"}
 	switch p.TLS {

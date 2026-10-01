@@ -537,16 +537,14 @@ func (x *deployer) undoTLS(ctx context.Context, env *jobs.Env) error {
 
 // configYAML is the config this job installs and its meta.
 func (x *deployer) configYAML(env *jobs.Env, p Params) ([]byte, model.ConfigMeta, error) {
-	s := map[string]string{SecretAuth: env.Secret(SecretAuth), SecretObfs: env.Secret(SecretObfs)}
-	if s[SecretAuth] == "" {
-		return nil, model.ConfigMeta{}, errors.New("no auth secret")
-	}
-	c, err := BuildConfig(p, s)
+	c, err := BuildConfig(p, secretsOf(env.Secret))
 	if err != nil {
 		return nil, model.ConfigMeta{}, err
 	}
 	b, err := c.Marshal()
-	return b, Meta(p, env.Get("pin")), err
+	m := Meta(p, env.Get("pin"))
+	m.Auth = strings.ToLower(c.Auth.Type)
+	return b, m, err
 }
 
 func sha(b []byte) string {

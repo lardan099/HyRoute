@@ -13,6 +13,10 @@ import (
 
 var errHostKeyRequired = &Error{Status: http.StatusConflict, Code: "host_key_required", Message: "Сначала проверьте подключение к серверу и подтвердите его ключ SSH."}
 
+// errConfigChanged: the deploy would replace a config no deploy made; the
+// UI asks and sends "overwrite": true.
+var errConfigChanged = &Error{Status: http.StatusConflict, Code: "config_changed", Message: "Текущий конфиг сервера сделан не развёртыванием: его изменили в редакторе, вернули из истории или импортировали. Развёртывание соберёт конфиг заново из параметров формы, и всё, чего в форме нет (ACL, outbounds, bandwidth и другие настройки), пропадёт; пароли клиентов сохранятся. Подтвердите замену конфига."}
+
 func (s *server) startDeploy(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -35,7 +39,10 @@ func (s *server) startDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	j, err := s.Deploy.Submit(r.Context(), id, p, principal(r).User.ID)
-	if err != nil {
+	if errors.Is(err, deploy.ErrConfigChanged) {
+		writeError(w, errConfigChanged)
+		return
+	} else if err != nil {
 		s.fail(w, r, jobError(err))
 		return
 	}

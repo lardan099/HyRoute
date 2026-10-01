@@ -235,6 +235,9 @@ export interface DeployParams {
   source?: DeploySource;
   keepFirewall?: boolean;
   replace?: boolean;
+  // overwrite: replace a current config no deploy made (edited, rolled
+  // back, imported); without it the controller answers 409 config_changed.
+  overwrite?: boolean;
 }
 
 export type ConfigSource = 'deploy' | 'import' | 'edit' | 'rollback';

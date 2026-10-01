@@ -1,10 +1,25 @@
 <script lang="ts">
-  // Deploy Hysteria 2 on a server. The form starts from the last successful
-  // deploy of the server (a redeploy keeps its passwords and certificate)
-  // or from the defaults.
+  // Deploy Hysteria 2 on a server. The form starts from the server's
+  // current config: the params of the deploy that made it, else what the
+  // config says; a server without one gets the defaults. A redeploy keeps
+  // the client passwords. A config no deploy made (edited, rolled back,
+  // imported) is replaced only after the admin confirms that what the form
+  // does not cover is lost.
   import { onMount } from 'svelte';
-  import { api, asApiError, type ApiError, type DeployParams, type DeploySource, type Job, type Server, type TLSMode } from '../api';
-  import { t } from '../i18n';
+  import {
+    api,
+    asApiError,
+    type ApiError,
+    type ConfigFields,
+    type ConfigMeta,
+    type DeployParams,
+    type DeploySource,
+    type Job,
+    type Server,
+    type ServerConfig,
+    type TLSMode,
+  } from '../api';
+  import { t, type Key } from '../i18n';
   import Dialog from './Dialog.svelte';
 
   let { server, onclose, onstarted }: { server: Server; onclose: () => void; onstarted: (j: Job) => void } = $props();
@@ -28,9 +43,20 @@
   let replace = $state(false);
 
   let loading = $state(true);
-  let redeploy = $state(false);
+  // cfg is the server's current config revision (null: none).
+  let cfg = $state<ServerConfig | null>(null);
+  // changed: the current config was not made by a deploy; the deploy
+  // replaces it only with overwrite.
+  let changed = $state(false);
+  let overwrite = $state(false);
   let busy = $state(false);
   let error = $state<ApiError | null>(null);
+
+  const changedKey: Record<string, Key> = {
+    edit: 'deploy.changedEdit',
+    rollback: 'deploy.changedRollback',
+    import: 'deploy.changedImport',
+  };
 
   // A certificate name for the placeholder: the masquerade site's.
   let sniPh = $derived.by(() => {
@@ -41,31 +67,70 @@
     }
   });
 
+  // fromMeta fills what the summary of a config tells.
+  function fromMeta(m: ConfigMeta) {
+    version = m.version || defaultVersion;
+    tls = m.tls === 'acme' ? 'acme' : 'self-signed';
+    const ports = (m.ports ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+    const first = Number(ports[0]);
+    if (Number.isInteger(first) && first >= 1 && first <= 65535) {
+      port = first;
+      hopping = ports.length > 1;
+      if (hopping) hopPorts = ports.slice(1).join(',');
+    }
+    if (tls === 'acme') domain = m.sni ?? '';
+    else sni = m.sni ?? '';
+    obfs = m.obfs === 'salamander';
+  }
+
+  // fromParams fills the form of the deploy that made the config.
+  function fromParams(p: Partial<DeployParams>) {
+    tls = p.tls ?? 'self-signed';
+    port = p.port ?? 443;
+    hopping = !!p.hopPorts;
+    hopPorts = p.hopPorts || defaultHop;
+    domain = p.domain ?? '';
+    email = p.email ?? '';
+    challenge = p.challenge ?? 'http';
+    masquerade = p.masquerade ?? '';
+    obfs = !!p.obfs;
+    sni = p.sni ?? '';
+    version = p.version || defaultVersion;
+    source = p.source ?? 'auto';
+    keepFirewall = !!p.keepFirewall;
+  }
+
+  // fromFields adds what the summary lacks from the config itself.
+  function fromFields(f: ConfigFields) {
+    if (f.masquerade === 'proxy' && f.masqueradeUrl) masquerade = f.masqueradeUrl;
+    if (f.tls === 'acme') {
+      tls = 'acme';
+      domain = f.acmeDomains[0] ?? domain;
+      email = f.acmeEmail ?? '';
+    }
+  }
+
   onMount(async () => {
     try {
-      const last = (await api.jobs(server.id)).find((j) => j.kind === 'deploy' && j.state === 'completed');
-      if (last) {
-        const p = last.params as Partial<DeployParams>;
-        redeploy = true;
-        tls = p.tls ?? 'self-signed';
-        port = p.port ?? 443;
-        hopping = !!p.hopPorts;
-        hopPorts = p.hopPorts || defaultHop;
-        domain = p.domain ?? '';
-        email = p.email ?? '';
-        challenge = p.challenge ?? 'http';
-        masquerade = p.masquerade ?? '';
-        obfs = !!p.obfs;
-        sni = p.sni ?? '';
-        version = p.version || defaultVersion;
-        source = p.source ?? 'auto';
-        keepFirewall = !!p.keepFirewall;
-      }
+      cfg = await api.serverConfig(server.id);
     } catch {
-      // The defaults will do.
-    } finally {
-      loading = false;
+      // No config yet (or no answer): the defaults; the controller still
+      // keeps the passwords and asks before replacing an edited config.
     }
+    if (cfg) {
+      fromMeta(cfg.meta);
+      if (cfg.source === 'deploy') {
+        try {
+          if (cfg.jobId) fromParams((await api.job(cfg.jobId)).params as Partial<DeployParams>);
+        } catch {}
+      } else {
+        changed = true;
+        try {
+          fromFields((await api.configEdit(server.id)).fields);
+        } catch {}
+      }
+    }
+    loading = false;
   });
 
   async function submit(e: SubmitEvent) {
@@ -81,7 +146,9 @@
       obfs,
       source,
       keepFirewall,
-      replace,
+      // An imported installation is replaced together with its config.
+      replace: replace || (changed && overwrite && cfg?.source === 'import'),
+      overwrite: changed && overwrite ? true : undefined,
     };
     if (tls === 'acme') {
       p.domain = domain.trim();
@@ -94,6 +161,12 @@
       onstarted(await api.startDeploy(server.id, p));
     } catch (err) {
       error = asApiError(err);
+      // The config changed since the form opened (or was not known):
+      // the same question as above.
+      if (error.code === 'config_changed') {
+        changed = true;
+        overwrite = false;
+      }
       busy = false;
     }
   }
@@ -104,7 +177,17 @@
     <p class="muted">{t('deploy.loading')}</p>
   {:else}
     <form id="deploy-form" class="form" onsubmit={submit}>
-      {#if redeploy}<div class="note info small">{t('deploy.redeploy')}</div>{/if}
+      {#if changed}
+        <div class="note warn small changed" role="alert">
+          <div>
+            {cfg && changedKey[cfg.source] ? t(changedKey[cfg.source], { rev: cfg.revision }) : t('deploy.changedOther')}
+            {t('deploy.changedText')}
+          </div>
+          <label class="check"><input type="checkbox" bind:checked={overwrite} /> {cfg?.source === 'import' ? t('deploy.overwriteImport') : t('deploy.overwrite')}</label>
+        </div>
+      {:else if cfg}
+        <div class="note info small">{t('deploy.redeploy')}</div>
+      {/if}
 
       <div class="field">
         <span class="lbl">{t('deploy.tls')}</span>
@@ -202,7 +285,7 @@
   {/if}
   {#snippet actions()}
     <button type="button" onclick={onclose}>{t('common.cancel')}</button>
-    <button class="primary" type="submit" form="deploy-form" disabled={busy || loading}>{t('deploy.submit')}</button>
+    <button class="primary" type="submit" form="deploy-form" disabled={busy || loading || (changed && !overwrite)}>{t('deploy.submit')}</button>
   {/snippet}
 </Dialog>
 
@@ -219,4 +302,6 @@
   .seg { align-self: flex-start; }
   summary { cursor: pointer; color: var(--muted); font-size: 13px; }
   .note { margin: 0; }
+  .changed { display: flex; flex-direction: column; gap: 10px; }
+  .changed .check { color: var(--text); font-weight: 600; }
 </style>

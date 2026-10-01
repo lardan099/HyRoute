@@ -64,6 +64,24 @@ func TestDeployAPI(t *testing.T) {
 		t.Fatalf("config: %d %s", rec.Code, rec.Body)
 	}
 
+	// A config changed in the editor: the deploy, which would rebuild it
+	// from the form, asks first; with the confirmation it goes on (and
+	// meets the queued job).
+	edited := model.ServerConfig{ServerID: srv.ID, SHA256: strings.Repeat("1", 64), Meta: meta, Source: model.ConfigEdit, At: time.Now()}
+	err = e.db.AddConfig(ctx, &edited, func(rev int) ([]byte, error) {
+		return e.keys.Seal([]byte("auth:\n  type: password\n  password: fake-auth-for-api-test\nacl:\n  inline: [reject(all)]\n"), model.ConfigContext(srv.ID, rev))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/deploy", good, nil)
+	code(t, rec, http.StatusConflict, "config_changed")
+	if msg := decodeError(t, rec).Message; !strings.Contains(msg, "ACL") {
+		t.Fatalf("message: %q", msg)
+	}
+	overwrite := map[string]any{"tls": "self-signed", "port": 443, "overwrite": true}
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/deploy", overwrite, nil), http.StatusConflict, "server_busy")
+
 	var u model.User
 	u.Username, u.Role = "viewer", model.RoleReadOnly
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
