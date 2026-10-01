@@ -61,8 +61,9 @@ func (v *SysDNSView) Kick() {
 	}
 	v.last.Store(v.now().UnixNano())
 	go func() {
-		defer v.running.Store(false)
 		v.refresh()
+		// Before done: a Kick right after it may start the next refresh.
+		v.running.Store(false)
 		if v.done != nil {
 			v.done()
 		}
