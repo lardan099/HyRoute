@@ -509,6 +509,7 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | POST | `/api/v1/servers/{id}/config/apply` | operator+ | задание `apply` с откатом |
 | GET | `/api/v1/servers/{id}/metrics?period=` | любая роль | ряд метрик: 1h/6h/24h/48h — замеры, 7d/30d — средние по 15 мин |
 | GET | `/api/v1/metrics/latest` | любая роль | последний замер каждого сервера за 5 минут (Overview) |
+| GET | `/api/v1/servers/{id}/health` | любая роль | последняя проверка и смены статуса или причины за неделю (до 50) |
 | GET | `/api/v1/servers/{id}/config/revisions` | любая роль | история ревизий без текста конфига |
 | GET | `/api/v1/servers/{id}/config/revisions/{rev}` | operator+ | конфиг ревизии, секреты замаскированы |
 | GET | `/api/v1/servers/{id}/config/compare?from=&to=` | operator+ | diff двух ревизий без секретов, изменённые секреты — путями |

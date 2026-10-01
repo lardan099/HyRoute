@@ -90,6 +90,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/servers/{id}/config/apply", s.authed(anyRole, s.applyConfig))
 	mux.HandleFunc("GET /api/v1/servers/{id}/metrics", s.authed(anyRole, s.serverMetrics))
 	mux.HandleFunc("GET /api/v1/metrics/latest", s.authed(anyRole, s.latestMetrics))
+	mux.HandleFunc("GET /api/v1/servers/{id}/health", s.authed(anyRole, s.serverHealth))
 	mux.HandleFunc("GET /api/v1/servers/{id}/config/revisions", s.authed(anyRole, s.configRevisions))
 	mux.HandleFunc("GET /api/v1/servers/{id}/config/revisions/{rev}", s.authed(writers, s.configRevision))
 	mux.HandleFunc("GET /api/v1/servers/{id}/config/compare", s.authed(writers, s.compareConfigs))

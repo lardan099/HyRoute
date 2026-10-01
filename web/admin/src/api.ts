@@ -379,6 +379,23 @@ export interface MetricSeries {
   points: MetricPoint[];
 }
 
+export interface HealthCheck {
+  at: string;
+  status: ServerState;
+  reason?: string;
+  sshMs: number;
+  service?: string;
+  listening: boolean | null;
+  udp: 'ok' | 'no_answer' | 'error' | 'skipped';
+  udpMs?: number;
+  egress?: string;
+}
+
+export interface ServerHealth {
+  latest: HealthCheck | null;
+  changes: HealthCheck[];
+}
+
 export interface LatestMetric extends MetricPoint {
   serverId: number;
 }
@@ -523,6 +540,7 @@ export const api = {
   renderConfig: (serverId: number, input: ConfigInput) => request<ConfigCheck>('POST', `/servers/${serverId}/config/render`, input),
   applyConfig: (serverId: number, input: ConfigInput) => request<Job>('POST', `/servers/${serverId}/config/apply`, input),
   serverMetrics: (serverId: number, period: MetricPeriod) => request<MetricSeries>('GET', `/servers/${serverId}/metrics?period=${period}`),
+  serverHealth: (serverId: number) => request<ServerHealth>('GET', `/servers/${serverId}/health`),
   latestMetrics: () => request<LatestMetric[]>('GET', '/metrics/latest'),
   configRevisions: (serverId: number) => request<ConfigRevision[]>('GET', `/servers/${serverId}/config/revisions`),
   configRevision: (serverId: number, rev: number) => request<ConfigView>('GET', `/servers/${serverId}/config/revisions/${rev}`),
