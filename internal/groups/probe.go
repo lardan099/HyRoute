@@ -77,8 +77,14 @@ func (p *Prober) Run(ctx context.Context) {
 			if busy {
 				continue
 			}
+			// select picks at random among ready cases: a free slot must
+			// not start a probe after Run was cancelled.
 			select {
 			case sem <- struct{}{}:
+				if ctx.Err() != nil {
+					<-sem
+					return
+				}
 			case <-ctx.Done():
 				return
 			}
