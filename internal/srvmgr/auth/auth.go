@@ -30,7 +30,16 @@ var (
 	ErrForbidden       = errors.New("not allowed for this role")
 	ErrSetupDone       = errors.New("setup already done")
 	ErrBadSetupToken   = errors.New("wrong setup token")
+	// ErrBusy: all hashing slots are taken (see MaxHashing); the client
+	// retries in a moment. The attempt is not counted as failed.
+	ErrBusy = errors.New("too many password checks at once")
 )
+
+// MaxHashing bounds the argon2id runs at a time: each takes Params.Memory
+// (64 MiB by default), and a flood of logins must not take the memory of
+// the machine. Logins and setup beyond it get ErrBusy at once instead of
+// queueing, logged-in users creating accounts wait for a slot.
+const MaxHashing = 3
 
 // RateLimitedError: too many failed attempts; retry after Wait.
 type RateLimitedError struct{ Wait time.Duration }
@@ -78,8 +87,8 @@ type Service struct {
 	IdleTimeout time.Duration
 	MaxAge      time.Duration
 
-	byIP   *Limiter
-	byUser *Limiter
+	limits *guard
+	slots  chan struct{} // one per argon2id run in progress
 
 	mu        sync.Mutex
 	setupHash []byte // SHA-256 of the one-time setup token, nil if none
@@ -94,8 +103,29 @@ func New(st Store) *Service {
 		Now:         time.Now,
 		IdleTimeout: 12 * time.Hour,
 		MaxAge:      7 * 24 * time.Hour,
-		byIP:        &Limiter{Max: 20, Window: 15 * time.Minute},
-		byUser:      &Limiter{Max: 5, Window: 5 * time.Minute},
+		limits:      newGuard(),
+		slots:       make(chan struct{}, MaxHashing),
+	}
+}
+
+// hashSlot takes one of the MaxHashing slots for argon2id. Without wait it
+// fails at once with ErrBusy: an unauthenticated flood gets a quick answer,
+// not a queue that holds its requests open.
+func (s *Service) hashSlot(ctx context.Context, wait bool) (release func(), err error) {
+	release = func() { <-s.slots }
+	select {
+	case s.slots <- struct{}{}:
+		return release, nil
+	default:
+	}
+	if !wait {
+		return nil, ErrBusy
+	}
+	select {
+	case s.slots <- struct{}{}:
+		return release, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -170,14 +200,16 @@ func validateCredentials(username, password string) error {
 
 // Setup creates the owner with the setup token and logs them in.
 func (s *Service) Setup(ctx context.Context, token, username, password string, m Meta) (Issued, error) {
-	now := s.Now()
-	if w := s.byIP.Wait(m.IP, now); w > 0 {
-		return Issued{}, &RateLimitedError{w}
+	a, err := s.limits.reserve(s.Now, "", addrKey(m.IP))
+	if err != nil {
+		return Issued{}, err
 	}
+	now := a.at
 	s.mu.Lock()
 	want := s.setupHash
 	s.mu.Unlock()
 	if want == nil {
+		s.limits.cancel(a)
 		if need, err := s.SetupNeeded(ctx); err != nil {
 			return Issued{}, err
 		} else if !need {
@@ -186,14 +218,20 @@ func (s *Service) Setup(ctx context.Context, token, username, password string, m
 		return Issued{}, ErrBadSetupToken
 	}
 	if subtle.ConstantTimeCompare(tokenHash(strings.TrimSpace(token)), want) != 1 {
-		s.byIP.Fail(m.IP, now)
+		// The reserved attempt stays as the failure.
 		s.audit(ctx, 0, "setup_failed", "", "wrong setup token from "+m.IP)
 		return Issued{}, ErrBadSetupToken
 	}
+	s.limits.succeeded(a)
 	if err := validateCredentials(username, password); err != nil {
 		return Issued{}, err
 	}
+	release, err := s.hashSlot(ctx, false)
+	if err != nil {
+		return Issued{}, err
+	}
 	hash, err := HashPassword(password, s.Params)
+	release()
 	if err != nil {
 		return Issued{}, err
 	}
@@ -219,45 +257,57 @@ func (s *Service) SetupDone() bool {
 	return s.setupHash == nil
 }
 
-// Login checks the password and opens a session.
+// Login checks the password and opens a session. The attempt is reserved
+// in the rate limit before the password is hashed (see guard), and the
+// hashing takes a slot (see MaxHashing).
 func (s *Service) Login(ctx context.Context, username, password string, m Meta) (Issued, error) {
-	now := s.Now()
-	userKey := strings.ToLower(username)
-	w := max(s.byIP.Wait(m.IP, now), s.byUser.Wait(userKey, now))
-	if w > 0 {
-		// Not audited: a flood of attempts must not fill the database.
-		return Issued{}, &RateLimitedError{w}
-	}
 	if len(password) > MaxPasswordLen || len(username) > 64 {
 		return Issued{}, ErrBadCredentials
 	}
+	a, err := s.limits.reserve(s.Now, strings.ToLower(username), addrKey(m.IP))
+	if err != nil {
+		// Not audited: a flood of attempts must not fill the database.
+		return Issued{}, err
+	}
+	now := a.at
 	u, err := s.Store.UserByName(ctx, username)
+	found := err == nil
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.limits.cancel(a)
+		return Issued{}, err
+	}
+	release, err := s.hashSlot(ctx, false)
+	if err != nil {
+		s.limits.cancel(a)
 		return Issued{}, err
 	}
 	hash := u.PasswordHash
-	if err != nil {
+	if !found {
 		hash = s.dummyHash()
 	}
 	ok, stale, verr := VerifyPassword(hash, password, s.Params)
-	if err != nil || verr != nil || !ok || u.Disabled {
-		s.byIP.Fail(m.IP, now)
-		s.byUser.Fail(userKey, now)
+	ok = ok && found && verr == nil && !u.Disabled
+	fresh := ""
+	if ok && stale {
+		fresh, _ = HashPassword(password, s.Params)
+	}
+	release()
+	if !ok {
+		// The reserved attempt stays as the failure.
 		s.audit(ctx, 0, "login_failed", username, "from "+m.IP)
 		return Issued{}, ErrBadCredentials
 	}
-	s.byUser.Reset(userKey)
-	if stale {
-		if h, err := HashPassword(password, s.Params); err == nil {
-			s.Store.UpdatePasswordHash(ctx, u.ID, h, now)
-		}
+	s.limits.succeeded(a)
+	if fresh != "" {
+		s.Store.UpdatePasswordHash(ctx, u.ID, fresh, now)
 	}
 	s.audit(ctx, u.ID, "login", u.Username, "from "+m.IP)
 	return s.issue(ctx, u, m, now)
 }
 
 // dummyHash is a real hash with the current parameters, so a login with an
-// unknown name takes as long as with a known one.
+// unknown name takes as long as with a known one. The caller holds a
+// hashing slot.
 func (s *Service) dummyHash() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -374,7 +424,12 @@ func (s *Service) CreateUser(ctx context.Context, p Principal, username, passwor
 	if err := validateCredentials(username, password); err != nil {
 		return model.User{}, err
 	}
+	release, err := s.hashSlot(ctx, true)
+	if err != nil {
+		return model.User{}, err
+	}
 	hash, err := HashPassword(password, s.Params)
+	release()
 	if err != nil {
 		return model.User{}, err
 	}

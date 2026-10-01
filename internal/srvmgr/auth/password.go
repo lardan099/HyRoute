@@ -27,6 +27,9 @@ var DefaultParams = Params{Memory: 64 * 1024, Time: 3, Threads: 2, KeyLen: 32, S
 
 var b64 = base64.RawStdEncoding
 
+// idKey is argon2.IDKey; tests wrap it to see how many runs overlap.
+var idKey = argon2.IDKey
+
 // HashPassword returns the PHC string
 // $argon2id$v=19$m=…,t=…,p=…$<salt>$<hash>.
 func HashPassword(password string, p Params) (string, error) {
@@ -34,7 +37,7 @@ func HashPassword(password string, p Params) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	key := argon2.IDKey([]byte(password), salt, p.Time, p.Memory, p.Threads, p.KeyLen)
+	key := idKey([]byte(password), salt, p.Time, p.Memory, p.Threads, p.KeyLen)
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s", argon2.Version, p.Memory, p.Time, p.Threads, b64.EncodeToString(salt), b64.EncodeToString(key)), nil
 }
 
@@ -75,7 +78,7 @@ func VerifyPassword(encoded, password string, want Params) (ok, stale bool, err 
 	if err != nil {
 		return false, false, err
 	}
-	got := argon2.IDKey([]byte(password), salt, p.Time, p.Memory, p.Threads, uint32(len(key)))
+	got := idKey([]byte(password), salt, p.Time, p.Memory, p.Threads, uint32(len(key)))
 	ok = subtle.ConstantTimeCompare(got, key) == 1
 	return ok, p != want, nil
 }

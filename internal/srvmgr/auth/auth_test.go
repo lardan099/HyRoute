@@ -3,10 +3,15 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/argon2"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
@@ -109,6 +114,36 @@ func TestLimiter(t *testing.T) {
 	if l.Wait("k", now) != 0 {
 		t.Fatal("reset did not clear")
 	}
+	// Forgive drops one attempt, the one recorded at that time.
+	for i := 0; i < 3; i++ {
+		l.Fail("k", now.Add(time.Duration(i)*time.Second))
+	}
+	l.Forgive("k", now.Add(time.Second))
+	l.Forgive("k", now.Add(time.Hour)) // not there: nothing happens
+	if w := l.Wait("k", now.Add(3*time.Second)); w != 0 {
+		t.Fatalf("still blocked after forgive: %v", w)
+	}
+	l.Fail("k", now.Add(3*time.Second))
+	if w := l.Wait("k", now.Add(3*time.Second)); w != 57*time.Second {
+		t.Fatalf("wait after forgive %v", w)
+	}
+}
+
+func TestAddrKey(t *testing.T) {
+	for in, want := range map[string]string{
+		"10.0.0.1":             "10.0.0.1",
+		"::ffff:10.0.0.1":      "10.0.0.1",
+		"2001:db8:1:2:3:4:5:6": "2001:db8:1:2::/64",
+		"2001:db8:1:2:ffff::1": "2001:db8:1:2::/64",
+		"2001:db8:1:3:3:4:5:6": "2001:db8:1:3::/64",
+		"fe80::1%eth0":         "fe80::/64",
+		"::1":                  "::/64",
+		"not an address":       "not an address",
+	} {
+		if got := addrKey(in); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
 }
 
 func TestFirstRunSetup(t *testing.T) {
@@ -175,17 +210,20 @@ func TestLoginAndRateLimit(t *testing.T) {
 	if is.User.Username != "owner" {
 		t.Fatalf("%+v", is.User)
 	}
-	// Five failures for one name block it, even with the right password
-	// and from another address.
+	c.add(6 * time.Minute)
+	// Five failures for one name from one address block the name for that
+	// address, even with the right password.
 	for i := 0; i < 5; i++ {
-		s.Login(ctx, "owner", "wrong password!", meta("10.0.0.3"))
+		if _, err := s.Login(ctx, "owner", "wrong password!", meta("10.0.0.3")); !errors.Is(err, ErrBadCredentials) {
+			t.Fatalf("failure %d: %v", i, err)
+		}
 	}
 	var rl *RateLimitedError
-	if _, err := s.Login(ctx, "owner", goodPass, meta("10.0.0.4")); !errors.As(err, &rl) || rl.Wait <= 0 {
+	if _, err := s.Login(ctx, "owner", goodPass, meta("10.0.0.3")); !errors.As(err, &rl) || rl.Wait != 5*time.Minute {
 		t.Fatalf("not rate limited: %v", err)
 	}
 	c.add(6 * time.Minute)
-	if _, err := s.Login(ctx, "owner", goodPass, meta("10.0.0.4")); err != nil {
+	if _, err := s.Login(ctx, "owner", goodPass, meta("10.0.0.3")); err != nil {
 		t.Fatalf("after the window: %v", err)
 	}
 	// Many names from one address block the address.
@@ -194,6 +232,208 @@ func TestLoginAndRateLimit(t *testing.T) {
 	}
 	if _, err := s.Login(ctx, "owner", goodPass, meta("10.0.0.9")); !errors.As(err, &rl) {
 		t.Fatalf("address not rate limited: %v", err)
+	}
+}
+
+// Anybody can hammer the owner's name, but not lock the owner out: a name
+// under attack stays open to addresses without failures of their own.
+func TestOwnerNotLockedOut(t *testing.T) {
+	s, _, c := newService(t)
+	ctx := context.Background()
+	setupOwner(t, s)
+	s.slots = make(chan struct{}, 64) // no ErrBusy here: only the limit counts
+	for i := 0; i < 5; i++ {
+		s.Login(ctx, "owner", "wrong password!", meta("10.0.0.3"))
+	}
+	c.add(time.Minute)
+	var rl *RateLimitedError
+	if _, err := s.Login(ctx, "owner", goodPass, meta("10.0.0.3")); !errors.As(err, &rl) {
+		t.Fatalf("guesser not rate limited: %v", err)
+	}
+	if _, err := s.Login(ctx, "owner", goodPass, meta("10.0.0.4")); err != nil {
+		t.Fatalf("owner locked out: %v", err)
+	}
+	// The owner's login gives the guesser no new tries.
+	if _, err := s.Login(ctx, "owner", goodPass, meta("10.0.0.3")); !errors.As(err, &rl) {
+		t.Fatalf("guesser forgiven by the owner's login: %v", err)
+	}
+	// Another address gets one try while the name is under attack, also
+	// when it sends many at once.
+	if _, err := s.Login(ctx, "owner", "wrong password!", meta("10.0.0.5")); !errors.Is(err, ErrBadCredentials) {
+		t.Fatalf("fresh address: %v", err)
+	}
+	if _, err := s.Login(ctx, "owner", goodPass, meta("10.0.0.5")); !errors.As(err, &rl) {
+		t.Fatalf("second try of a fresh address: %v", err)
+	}
+	r := burst(s, 30, func(int) (string, string, string) { return "owner", "wrong password!", "10.0.0.6" })
+	if r.bad != 1 || r.limited != 29 {
+		t.Fatalf("burst from a fresh address: %+v", r)
+	}
+	// All of it ends with the window.
+	c.add(5 * time.Minute)
+	if _, err := s.Login(ctx, "owner", goodPass, meta("10.0.0.3")); err != nil {
+		t.Fatalf("after the window: %v", err)
+	}
+}
+
+// IPv6 clients are counted by /64: hopping addresses inside one network
+// gives no new tries.
+func TestIPv6CountedByNetwork(t *testing.T) {
+	s, _, _ := newService(t)
+	ctx := context.Background()
+	setupOwner(t, s)
+	for i := 1; i <= 5; i++ {
+		if _, err := s.Login(ctx, "owner", "wrong password!", meta(fmt.Sprintf("2001:db8::%x", i))); !errors.Is(err, ErrBadCredentials) {
+			t.Fatalf("failure %d: %v", i, err)
+		}
+	}
+	var rl *RateLimitedError
+	if _, err := s.Login(ctx, "owner", goodPass, meta("2001:db8::ffff:1")); !errors.As(err, &rl) {
+		t.Fatalf("same /64 not rate limited: %v", err)
+	}
+	if _, err := s.Login(ctx, "owner", goodPass, meta("2001:db8:0:1::1")); err != nil {
+		t.Fatalf("another /64: %v", err)
+	}
+	for i := 0; i < 20; i++ {
+		s.Login(ctx, fmt.Sprintf("user%d", i), "wrong password!", meta(fmt.Sprintf("2001:db8:2::%x", i+1)))
+	}
+	if _, err := s.Login(ctx, "owner", goodPass, meta("2001:db8:2::abcd")); !errors.As(err, &rl) {
+		t.Fatalf("address limit by /64: %v", err)
+	}
+}
+
+// burstResult counts the outcomes of concurrent logins.
+type burstResult struct{ ok, bad, limited, busy, other int }
+
+// burst runs n logins at once; arg gives the name, password and address
+// of each.
+func burst(s *Service, n int, arg func(i int) (name, password, ip string)) burstResult {
+	var (
+		mu    sync.Mutex
+		r     burstResult
+		wg    sync.WaitGroup
+		start = make(chan struct{})
+	)
+	for i := 0; i < n; i++ {
+		name, password, ip := arg(i)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := s.Login(context.Background(), name, password, meta(ip))
+			var rl *RateLimitedError
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				r.ok++
+			case errors.Is(err, ErrBadCredentials):
+				r.bad++
+			case errors.As(err, &rl):
+				r.limited++
+			case errors.Is(err, ErrBusy):
+				r.busy++
+			default:
+				r.other++
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	return r
+}
+
+// Concurrent attempts cannot pass the limit together: each one is counted
+// before its password is hashed.
+func TestConcurrentLoginsCounted(t *testing.T) {
+	s, _, _ := newService(t)
+	setupOwner(t, s)
+	s.slots = make(chan struct{}, 200) // no ErrBusy here: only the limit counts
+	r := burst(s, 100, func(int) (string, string, string) { return "owner", "wrong password!", "10.0.0.3" })
+	if r.bad != 5 || r.limited != 95 {
+		t.Fatalf("one name: %+v", r)
+	}
+	r = burst(s, 100, func(i int) (string, string, string) { return fmt.Sprintf("user%d", i), "wrong password!", "10.0.0.4" })
+	if r.bad != 20 || r.limited != 80 {
+		t.Fatalf("one address: %+v", r)
+	}
+}
+
+// No more than MaxHashing argon2id runs overlap, whatever comes at once:
+// known names and unknown ones (the dummy hash) from many addresses.
+func TestHashingBounded(t *testing.T) {
+	s, _, _ := newService(t)
+	setupOwner(t, s)
+	if cap(s.slots) != MaxHashing {
+		t.Fatalf("%d slots", cap(s.slots))
+	}
+	var cur, peak atomic.Int32
+	idKey = func(password, salt []byte, passes, memory uint32, threads uint8, keyLen uint32) []byte {
+		n := cur.Add(1)
+		defer cur.Add(-1)
+		for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+		}
+		time.Sleep(5 * time.Millisecond)
+		return argon2.IDKey(password, salt, passes, memory, threads, keyLen)
+	}
+	t.Cleanup(func() { idKey = argon2.IDKey })
+	r := burst(s, 40, func(i int) (string, string, string) {
+		name := "owner"
+		if i%2 == 1 {
+			name = "nobody"
+		}
+		return name, goodPass, fmt.Sprintf("10.1.0.%d", i)
+	})
+	if p := peak.Load(); p < 1 || p > MaxHashing {
+		t.Fatalf("%d argon2id runs at once", p)
+	}
+	if r.ok == 0 || r.limited != 0 || r.other != 0 || r.ok+r.bad+r.busy != 40 {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// With every hashing slot taken, logins are refused at once and not
+// counted; logged-in users creating accounts wait for a slot.
+func TestBusy(t *testing.T) {
+	s, _, _ := newService(t)
+	ctx := context.Background()
+	owner, err := s.Authenticate(ctx, setupOwner(t, s).Token)
+	mustNoErr(t, err)
+	for i := 0; i < MaxHashing; i++ {
+		s.slots <- struct{}{}
+	}
+	for i := 0; i < 10; i++ {
+		if _, err := s.Login(ctx, "owner", "wrong password!", meta("10.0.0.3")); !errors.Is(err, ErrBusy) {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+	}
+	if _, err := s.Login(ctx, "owner", goodPass, meta("10.0.0.3")); !errors.Is(err, ErrBusy) {
+		t.Fatalf("right password: %v", err)
+	}
+	short, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	if _, err := s.CreateUser(short, owner, "viewer", goodPass, model.RoleReadOnly); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("create user without a slot: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.CreateUser(ctx, owner, "viewer", goodPass, model.RoleReadOnly)
+		done <- err
+	}()
+	<-s.slots
+	mustNoErr(t, <-done)
+	for i := 1; i < MaxHashing; i++ {
+		<-s.slots
+	}
+	// The refused attempts were not counted: the address has all its tries.
+	for i := 0; i < 5; i++ {
+		if _, err := s.Login(ctx, "owner", "wrong password!", meta("10.0.0.3")); !errors.Is(err, ErrBadCredentials) {
+			t.Fatalf("failure %d: %v", i, err)
+		}
+	}
+	var rl *RateLimitedError
+	if _, err := s.Login(ctx, "owner", goodPass, meta("10.0.0.3")); !errors.As(err, &rl) {
+		t.Fatalf("not rate limited: %v", err)
 	}
 }
 

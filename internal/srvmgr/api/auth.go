@@ -35,6 +35,10 @@ var (
 	errBadJSON      = &Error{Status: http.StatusBadRequest, Code: "bad_request", Message: "Некорректный запрос."}
 )
 
+// busyRetry is the Retry-After of auth.ErrBusy: a password check takes a
+// fraction of a second, so a slot frees up soon.
+const busyRetry = 2
+
 // mapError maps service errors (auth, field validation, not found) to API
 // errors; anything else stays an internal error.
 func mapError(err error) error {
@@ -44,6 +48,8 @@ func mapError(err error) error {
 	case errors.As(err, &rl):
 		secs := int(rl.Wait.Round(time.Second) / time.Second)
 		return &Error{Status: http.StatusTooManyRequests, Code: "rate_limited", Message: "Слишком много неудачных попыток. Повторите через " + strconv.Itoa(max(secs, 1)) + " с.", Details: "retry-after=" + strconv.Itoa(max(secs, 1))}
+	case errors.Is(err, auth.ErrBusy):
+		return &Error{Status: http.StatusServiceUnavailable, Code: "auth_busy", Message: "Сервер сейчас проверяет слишком много паролей сразу. Повторите через несколько секунд.", Details: "retry-after=" + strconv.Itoa(busyRetry)}
 	case errors.As(err, &inv):
 		return &Error{Status: http.StatusBadRequest, Code: "invalid", Message: inv.Msg, Details: inv.Field}
 	case errors.Is(err, auth.ErrBadCredentials):
@@ -264,6 +270,7 @@ func (s *server) postSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	is, err := s.Auth.Setup(r.Context(), req.Token, req.Username, req.Password, s.meta(r))
 	if err != nil {
+		setRetryAfter(w, err)
 		s.fail(w, r, mapError(err))
 		return
 	}
@@ -282,15 +289,24 @@ func (s *server) postSession(w http.ResponseWriter, r *http.Request) {
 	}
 	is, err := s.Auth.Login(r.Context(), req.Username, req.Password, s.meta(r))
 	if err != nil {
-		var rl *auth.RateLimitedError
-		if errors.As(err, &rl) {
-			w.Header().Set("Retry-After", strconv.Itoa(max(int(rl.Wait/time.Second), 1)))
-		}
+		setRetryAfter(w, err)
 		s.fail(w, r, mapError(err))
 		return
 	}
 	s.setSessionCookie(w, r, is.Token, s.Auth.MaxAge)
 	writeJSON(w, http.StatusOK, sessionJSON{User: toUserJSON(is.User), CSRFToken: is.CSRF})
+}
+
+// setRetryAfter tells the client when to retry a refused login or setup.
+func setRetryAfter(w http.ResponseWriter, err error) {
+	var rl *auth.RateLimitedError
+	switch {
+	case errors.As(err, &rl):
+		// Rounded up: retrying a moment early would be refused again.
+		w.Header().Set("Retry-After", strconv.Itoa(max(int((rl.Wait+time.Second-1)/time.Second), 1)))
+	case errors.Is(err, auth.ErrBusy):
+		w.Header().Set("Retry-After", strconv.Itoa(busyRetry))
+	}
 }
 
 func (s *server) getSession(w http.ResponseWriter, r *http.Request) {

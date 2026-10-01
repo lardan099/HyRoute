@@ -205,8 +205,31 @@ func TestLoginErrorsAndRateLimit(t *testing.T) {
 	if rec.Header().Get("Retry-After") == "" {
 		t.Fatal("no Retry-After")
 	}
+	// The failures of one address do not lock the owner out elsewhere.
+	other := e.client()
+	other.ip = "127.0.0.2"
+	if rec := other.do("POST", "/api/v1/session", map[string]string{"username": "owner", "password": pass}, nil); rec.Code != http.StatusOK {
+		t.Fatalf("owner from another address: %d %s", rec.Code, rec.Body)
+	}
 	e.clock = e.clock.Add(10 * time.Minute)
 	e.login("owner")
+}
+
+// With every hashing slot taken a login gets 503 with Retry-After; a rate
+// limit rounds Retry-After up.
+func TestAuthRetryAfter(t *testing.T) {
+	rec := httptest.NewRecorder()
+	setRetryAfter(rec, auth.ErrBusy)
+	writeError(rec, mapError(auth.ErrBusy))
+	code(t, rec, http.StatusServiceUnavailable, "auth_busy")
+	if got := rec.Header().Get("Retry-After"); got != strconv.Itoa(busyRetry) {
+		t.Fatalf("Retry-After %q", got)
+	}
+	rec = httptest.NewRecorder()
+	setRetryAfter(rec, &auth.RateLimitedError{Wait: 1500 * time.Millisecond})
+	if got := rec.Header().Get("Retry-After"); got != "2" {
+		t.Fatalf("Retry-After %q", got)
+	}
 }
 
 func TestSessionRequired(t *testing.T) {
