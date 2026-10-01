@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -147,6 +148,14 @@ func ConfigSecrets(c *hyconfig.Server) []string {
 	if c.ACME != nil {
 		for _, v := range c.ACME.DNS.Config {
 			out = append(out, v)
+		}
+	}
+	for _, o := range c.Outbounds {
+		out = append(out, o.SOCKS5.Password)
+		if u, err := url.Parse(o.HTTP.URL); err == nil && u.User != nil {
+			if pw, ok := u.User.Password(); ok {
+				out = append(out, pw)
+			}
 		}
 	}
 	return out

@@ -29,10 +29,12 @@ type Submitter struct {
 var ErrConfigChanged = errors.New("deploy: the current config was not made by a deploy")
 
 // Submit queues a deploy of serverID. A server with a config keeps its
-// client passwords (of every auth type), so client links stay valid. A
-// config no deploy made is replaced only with Params.Overwrite, else
-// ErrConfigChanged. Bad params are a *model.FieldError.
-func (s *Submitter) Submit(ctx context.Context, serverID int64, p Params, actor int64) (model.Job, error) {
+// client passwords (of every auth type, unless Params.Auth changes it), so
+// client links stay valid. A config no deploy made is replaced only with
+// Params.Overwrite, else ErrConfigChanged. in are the secrets the admin
+// entered. Bad params and combinations of them are a *model.FieldError:
+// the config is built and checked before the job is queued.
+func (s *Submitter) Submit(ctx context.Context, serverID int64, p Params, in Input, actor int64) (model.Job, error) {
 	if err := p.Normalize(); err != nil {
 		return model.Job{}, &model.FieldError{Field: "params", Msg: sentence(err.Error())}
 	}
@@ -50,16 +52,20 @@ func (s *Submitter) Submit(ctx context.Context, serverID int64, p Params, actor 
 	if err != nil {
 		return model.Job{}, err
 	}
-	sec, err := NewSecrets(p, srv.Host, reuse)
+	sec, err := NewSecrets(p, srv.Host, reuse, in)
 	if err != nil {
-		return model.Job{}, err
+		return model.Job{}, &model.FieldError{Field: "params", Msg: sentence(err.Error())}
+	}
+	if _, err := BuildConfig(p, sec); err != nil {
+		return model.Job{}, &model.FieldError{Field: "params", Msg: "Конфиг из этих настроек не проходит проверку: " + sentence(err.Error())}
 	}
 	return s.Jobs.Submit(ctx, JobKind, serverID, p, sec, actor)
 }
 
 // CurrentSecrets are the secrets of the server's current config revision
-// a redeploy keeps: those of its auth section (AuthSecrets) and the
-// Salamander password; nil when it has no config.
+// a redeploy keeps: those of its auth section (AuthSecrets), the
+// Salamander password, the DNS provider's settings and the outbound
+// proxy's password; nil when it has no config.
 func CurrentSecrets(ctx context.Context, st store.Configs, keys *secrets.Keyring, serverID int64) (map[string]string, error) {
 	cur, err := st.CurrentConfig(ctx, serverID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -79,6 +85,7 @@ func CurrentSecrets(ctx context.Context, st store.Configs, keys *secrets.Keyring
 	if strings.EqualFold(c.Obfs.Type, "salamander") && c.Obfs.Salamander.Password != "" {
 		out[SecretObfs] = c.Obfs.Salamander.Password
 	}
+	reuseAdvanced(c, out)
 	return out, nil
 }
 

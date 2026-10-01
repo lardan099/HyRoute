@@ -395,7 +395,7 @@ func TestImportHyRouteDeployment(t *testing.T) {
 	if err := p.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	sec, err := deploy.NewSecrets(p, "192.0.2.30", nil)
+	sec, err := deploy.NewSecrets(p, "192.0.2.30", nil, deploy.Input{})
 	if err != nil {
 		t.Fatal(err)
 	}

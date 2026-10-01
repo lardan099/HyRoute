@@ -17,10 +17,11 @@ import (
 const Mask = "[REDACTED]"
 
 // secretKey matches names of fields that hold secrets: anything ending in
-// password, secret, token, passphrase, api key or private key (obfs-password,
-// ssh_password, csrfToken, bot_token…), and "auth" itself (the Hysteria
-// client's auth string).
-const secretKey = `(?:[a-z0-9_.-]*?(?:password|passwd|secret|token|passphrase|api[_-]?key|private[_-]?key)|auth)`
+// password, secret, token, passphrase, api key, secret key or private key
+// (obfs-password, ssh_password, csrfToken, bot_token,
+// porkbun_api_secret_key…), and "auth" itself (the Hysteria client's auth
+// string).
+const secretKey = `(?:[a-z0-9_.-]*?(?:password|passwd|secret|token|passphrase|api[_-]?key|secret[_-]?key|private[_-]?key)|auth)`
 
 var (
 	secretKeyRe = regexp.MustCompile(`(?i)^` + secretKey + `$`)

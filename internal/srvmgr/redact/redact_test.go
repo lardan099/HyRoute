@@ -38,6 +38,7 @@ func TestStringPatterns(t *testing.T) {
 		{"secret: '" + fakePass + "'", []string{fakePass}, nil},
 		{`csrfToken="` + fakePass + `"`, []string{fakePass}, nil},
 		{"api_key=" + fakePass, []string{fakePass}, nil},
+		{"porkbun_api_secret_key: " + fakePass, []string{fakePass}, nil},
 		{"passphrase: " + fakePass, []string{fakePass}, nil},
 		{"Authorization: Bearer " + fakePass, []string{fakePass}, []string{"Authorization: " + Mask}},
 		{"hysteria2://" + fakePass + "@203.0.113.1:443/?obfs=salamander&obfs-password=" + fakeObfs + "#name", []string{fakePass, fakeObfs, "203.0.113.1"}, []string{"hysteria2://" + Mask}},

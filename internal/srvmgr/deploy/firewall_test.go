@@ -53,7 +53,7 @@ func TestFirewallPortChange(t *testing.T) {
 	h := newHarness(t, s)
 	p := params()
 	p.HopPorts = "20000-50000"
-	sec, _ := NewSecrets(p, "192.0.2.10", nil)
+	sec, _ := NewSecrets(p, "192.0.2.10", nil, Input{})
 	if j := h.deploy(p, sec); j.State != model.JobCompleted {
 		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
 	}
@@ -63,7 +63,7 @@ func TestFirewallPortChange(t *testing.T) {
 
 	p2 := p
 	p2.Port, p2.HopPorts = 8443, ""
-	sec2, _ := NewSecrets(p2, "192.0.2.10", map[string]string{SecretAuth: sec[SecretAuth]})
+	sec2, _ := NewSecrets(p2, "192.0.2.10", map[string]string{SecretAuth: sec[SecretAuth]}, Input{})
 	j := h.deploy(p2, sec2)
 	if j.State != model.JobCompleted {
 		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
@@ -82,7 +82,7 @@ func TestFirewallPortChange(t *testing.T) {
 	// stays for later.
 	p3 := p2
 	p3.Port, p3.KeepFirewall = 9443, true
-	sec3, _ := NewSecrets(p3, "192.0.2.10", map[string]string{SecretAuth: sec[SecretAuth]})
+	sec3, _ := NewSecrets(p3, "192.0.2.10", map[string]string{SecretAuth: sec[SecretAuth]}, Input{})
 	if j := h.deploy(p3, sec3); j.State != model.JobCompleted {
 		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
 	}
@@ -112,7 +112,7 @@ func TestRestartMidFirewallClosesOpenedPort(t *testing.T) {
 			})
 		}
 	}
-	sec, _ := NewSecrets(params(), "192.0.2.10", nil)
+	sec, _ := NewSecrets(params(), "192.0.2.10", nil, Input{})
 	j, err := h.eng.Submit(context.Background(), JobKind, h.server, params(), sec, 0)
 	if err != nil {
 		t.Fatal(err)

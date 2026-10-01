@@ -152,3 +152,38 @@ func TestMaintainAPI(t *testing.T) {
 	}
 	code(t, owner.do("POST", "/api/v1/servers/"+id+"/maintain", upgrade, nil), http.StatusConflict, "server_busy")
 }
+
+// The secrets of a deploy travel beside its params and stay out of them;
+// ones that do not fit the params are refused.
+func TestDeployAPISecrets(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": "NL", "host": "nl.example.com", "authType": "password", "password": fakeSSHPass}, nil)
+	var srv serverJSON
+	json.Unmarshal(rec.Body.Bytes(), &srv)
+	id := strconv.FormatInt(srv.ID, 10)
+	e.db.SetHostKey(ctx, model.HostKey{ServerID: srv.ID, Type: "ssh-ed25519", Key: []byte("fake"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()})
+
+	const token, pass = "fake-dns-token-api-test", "fake-proxy-pass-api-test"
+	p := map[string]any{"tls": "acme", "domain": "vpn.example.com", "challenge": "dns", "dnsProvider": "cloudflare",
+		"outbound": map[string]any{"type": "socks5", "addr": "127.0.0.1:40000", "user": "warp"}}
+
+	p["secrets"] = map[string]any{"dns": map[string]string{"vultr_api_token": token}}
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/deploy", p, nil)
+	code(t, rec, http.StatusBadRequest, "invalid")
+	if msg := decodeError(t, rec).Message; !strings.Contains(msg, "vultr_api_token") || strings.Contains(msg, token) {
+		t.Fatalf("message: %q", msg)
+	}
+	p["secrets"] = map[string]any{"dns": map[string]string{"cloudflare_api_token": token}, "outPassword": pass}
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/deploy", p, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("deploy: %d %s", rec.Code, rec.Body)
+	}
+	var j jobJSON
+	json.Unmarshal(rec.Body.Bytes(), &j)
+	if strings.Contains(string(j.Params), token) || strings.Contains(string(j.Params), pass) || strings.Contains(string(j.Params), "secrets") ||
+		!strings.Contains(string(j.Params), `"dnsProvider":"cloudflare"`) || !strings.Contains(string(j.Params), `"user":"warp"`) {
+		t.Fatalf("params: %s", j.Params)
+	}
+}

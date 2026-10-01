@@ -15,7 +15,7 @@ var errHostKeyRequired = &Error{Status: http.StatusConflict, Code: "host_key_req
 
 // errConfigChanged: the deploy would replace a config no deploy made; the
 // UI asks and sends "overwrite": true.
-var errConfigChanged = &Error{Status: http.StatusConflict, Code: "config_changed", Message: "Текущий конфиг сервера сделан не развёртыванием: его изменили в редакторе, вернули из истории или импортировали. Развёртывание соберёт конфиг заново из параметров формы, и всё, чего в форме нет (ACL, outbounds, bandwidth и другие настройки), пропадёт; пароли клиентов сохранятся. Подтвердите замену конфига."}
+var errConfigChanged = &Error{Status: http.StatusConflict, Code: "config_changed", Message: "Текущий конфиг сервера сделан не развёртыванием: его изменили в редакторе, вернули из истории или импортировали. Развёртывание соберёт конфиг заново из параметров формы, и всё, чего в форме нет (ACL, resolver, дополнительные outbounds и другие настройки), пропадёт; пароли клиентов сохранятся. Подтвердите замену конфига."}
 
 func (s *server) startDeploy(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
@@ -23,8 +23,13 @@ func (s *server) startDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errNotFound)
 		return
 	}
-	var p deploy.Params
-	if err := readJSON(r, &p); err != nil {
+	// The params with the secrets the admin entered beside them: the job
+	// keeps the params in the clear and the secrets sealed.
+	var req struct {
+		deploy.Params
+		Secrets deploy.Input `json:"secrets"`
+	}
+	if err := readJSON(r, &req); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -38,7 +43,7 @@ func (s *server) startDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errHostKeyRequired)
 		return
 	}
-	j, err := s.Deploy.Submit(r.Context(), id, p, principal(r).User.ID)
+	j, err := s.Deploy.Submit(r.Context(), id, req.Params, req.Secrets, principal(r).User.ID)
 	if errors.Is(err, deploy.ErrConfigChanged) {
 		writeError(w, errConfigChanged)
 		return

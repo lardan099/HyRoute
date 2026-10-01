@@ -71,17 +71,34 @@ type Params struct {
 	TLS      string `json:"tls"`              // self-signed, acme
 	Domain   string `json:"domain,omitempty"` // acme
 	Email    string `json:"email,omitempty"`  // acme, optional
-	// Challenge is the ACME challenge: http (TCP 80, default) or tls (TCP
-	// 443).
+	// Challenge is the ACME challenge: http (TCP 80, default), tls (TCP
+	// 443) or dns (a TXT record through the DNSProvider's API; no port).
 	Challenge string `json:"challenge,omitempty"`
+	// DNSProvider (dns challenge): a name of DNSProviders; its settings
+	// are secrets (Input.DNS).
+	DNSProvider string `json:"dnsProvider,omitempty"`
 	// SNI is the name in the self-signed certificate and in client links;
 	// empty: the masquerade site's name, else none.
 	SNI  string `json:"sni,omitempty"`
 	Obfs bool   `json:"obfs,omitempty"` // Salamander
 	// Masquerade is the site shown to HTTP/3 visitors (reverse proxy);
-	// empty: "404 Not Found".
+	// empty: Masq says, by default "404 Not Found".
 	Masquerade string `json:"masquerade,omitempty"`
-	Source     string `json:"source,omitempty"` // auto (default), direct, relay
+	// Masq: the other kinds of masquerade and the answer on TCP.
+	Masq Masq `json:"masq,omitzero"`
+	// Auth: "" keeps the current config's auth section (a new server gets
+	// a password), password, or userpass with Users (each user gets a
+	// password and a link of their own).
+	Auth  string   `json:"auth,omitempty"`
+	Users []string `json:"users,omitempty"`
+	// The advanced settings (advanced.go); zero values leave Hysteria's
+	// defaults.
+	Bandwidth Bandwidth `json:"bandwidth,omitzero"`
+	QUIC      QUIC      `json:"quic,omitzero"`
+	UDP       UDP       `json:"udp,omitzero"`
+	Sniff     Sniff     `json:"sniff,omitzero"`
+	Outbound  Outbound  `json:"outbound,omitzero"`
+	Source    string    `json:"source,omitempty"` // auto (default), direct, relay
 	// KeepFirewall: do not open ports in ufw or firewalld.
 	KeepFirewall bool `json:"keepFirewall,omitempty"`
 	// Replace an installation HyRoute did not make (its files are kept
@@ -89,7 +106,7 @@ type Params struct {
 	Replace bool `json:"replace,omitempty"`
 	// Overwrite a current config that no deploy made (edited, rolled back
 	// or imported): the deploy builds the config from these params alone,
-	// and what they do not cover (ACL, outbounds, bandwidth…) is lost.
+	// and what they do not cover (ACL, resolver, extra outbounds…) is lost.
 	// Without it Submit refuses with ErrConfigChanged.
 	Overwrite bool `json:"overwrite,omitempty"`
 }
@@ -136,17 +153,14 @@ func (p *Params) Normalize() error {
 		if p.Challenge == "" {
 			p.Challenge = "http"
 		}
-		if p.Challenge != "http" && p.Challenge != "tls" {
+		if p.Challenge != "http" && p.Challenge != "tls" && p.Challenge != "dns" {
 			return fmt.Errorf("неизвестная проверка ACME %q", p.Challenge)
 		}
 	default:
 		return fmt.Errorf("неизвестный режим TLS %q", p.TLS)
 	}
-	if p.Masquerade != "" {
-		u, err := url.Parse(p.Masquerade)
-		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
-			return errors.New("сайт-маскировка: нужен адрес https://")
-		}
+	if err := p.normalizeAdvanced(); err != nil {
+		return err
 	}
 	if p.Source == "" {
 		p.Source = SourceAuto
@@ -181,12 +195,15 @@ func (p *Params) CertName() string {
 	return ""
 }
 
-// TCPPorts are the TCP ports the deploy needs free (ACME challenges).
+// TCPPorts are the TCP ports the deploy needs free and open: those of the
+// ACME challenge or of the masquerade site.
 func (p *Params) TCPPorts() []int {
-	if p.TLS != TLSACME {
+	switch {
+	case p.Masq.TCP && p.Masq.Type != "":
+		return []int{80, 443}
+	case p.TLS != TLSACME || p.Challenge == "dns":
 		return nil
-	}
-	if p.Challenge == "tls" {
+	case p.Challenge == "tls":
 		return []int{443}
 	}
 	return []int{80}
@@ -273,7 +290,11 @@ func authOf(s map[string]string) (hyconfig.Auth, error) {
 // name (a job's Env.Secret).
 func secretsOf(get func(string) string) map[string]string {
 	s := map[string]string{}
-	for _, k := range []string{SecretAuth, SecretUsers, SecretAuthHTTP, SecretAuthHTTPInsecure, SecretAuthCommand, SecretObfs} {
+	keys := []string{SecretAuth, SecretUsers, SecretAuthHTTP, SecretAuthHTTPInsecure, SecretAuthCommand, SecretObfs, SecretOutPassword}
+	for _, k := range dnsKeys() {
+		keys = append(keys, SecretDNSPrefix+k)
+	}
+	for _, k := range keys {
 		if v := get(k); v != "" {
 			s[k] = v
 		}
@@ -287,19 +308,15 @@ func secretsOf(get func(string) string) map[string]string {
 }
 
 // NewSecrets makes the passwords and, for a self-signed certificate, the
-// certificate for a deploy. host is the server's address (put in the
-// certificate too). The secrets of an existing installation (AuthSecrets
-// and the obfuscation password) are passed in reuse so client links stay
-// valid.
-func NewSecrets(p Params, host string, reuse map[string]string) (map[string]string, error) {
-	s := secretsOf(func(k string) string { return reuse[k] })
-	delete(s, SecretObfs)
-	var err error
-	if _, aerr := authOf(s); aerr != nil {
-		clear(s)
-		if s[SecretAuth], err = password(); err != nil {
-			return nil, err
-		}
+// certificate for a deploy (p normalized). host is the server's address
+// (put in the certificate too). The secrets of an existing installation
+// (CurrentSecrets) are passed in reuse so client links stay valid; in are
+// the secrets the admin entered. Input that does not fit the params is an
+// error.
+func NewSecrets(p Params, host string, reuse map[string]string, in Input) (map[string]string, error) {
+	s, err := authSecrets(p, reuse)
+	if err != nil {
+		return nil, err
 	}
 	if p.Obfs {
 		if s[SecretObfs] = reuse[SecretObfs]; s[SecretObfs] == "" {
@@ -307,6 +324,9 @@ func NewSecrets(p Params, host string, reuse map[string]string) (map[string]stri
 				return nil, err
 			}
 		}
+	}
+	if err := advancedSecrets(p, s, reuse, in); err != nil {
+		return nil, err
 	}
 	if p.TLS == TLSSelfSigned {
 		cert, key, err := SelfSigned(p.CertName(), host, time.Now())
@@ -316,6 +336,47 @@ func NewSecrets(p Params, host string, reuse map[string]string) (map[string]stri
 		s[SecretCert], s[SecretKey] = string(cert), string(key)
 	}
 	return s, nil
+}
+
+// authSecrets are the secrets of the auth section p asks for, with the
+// passwords of reuse where they are the same: a password for a password,
+// a user's for the same user.
+func authSecrets(p Params, reuse map[string]string) (map[string]string, error) {
+	cur := map[string]string{}
+	for k, v := range reuse {
+		if k == SecretAuth || k == SecretUsers || k == SecretAuthHTTP || k == SecretAuthHTTPInsecure || k == SecretAuthCommand || strings.HasPrefix(k, SecretUserPrefix) {
+			cur[k] = v
+		}
+	}
+	kept, kerr := authOf(cur)
+	s := map[string]string{}
+	var err error
+	switch p.Auth {
+	case "":
+		if kerr == nil {
+			return cur, nil
+		}
+		s[SecretAuth], err = password()
+	case AuthPassword:
+		if kerr == nil && kept.Type == AuthPassword {
+			s[SecretAuth] = kept.Password
+		} else {
+			s[SecretAuth], err = password()
+		}
+	case AuthUserPass:
+		b, _ := json.Marshal(p.Users)
+		s[SecretUsers] = string(b)
+		for _, u := range p.Users {
+			pw := kept.UserPass[u]
+			if kerr != nil || kept.Type != AuthUserPass || pw == "" {
+				if pw, err = password(); err != nil {
+					return nil, err
+				}
+			}
+			s[SecretUserPrefix+u] = pw
+		}
+	}
+	return s, err
 }
 
 // password is 24 random bytes, URL-safe base64 (32 characters): safe in
@@ -412,9 +473,7 @@ func BuildConfig(p Params, s map[string]string) (*hyconfig.Server, error) {
 	if p.Obfs {
 		c.Obfs = hyconfig.Obfs{Type: "salamander", Salamander: hyconfig.Salamander{Password: s[SecretObfs]}}
 	}
-	if p.Masquerade != "" {
-		c.Masquerade = hyconfig.Masquerade{Type: "proxy", Proxy: hyconfig.MasqueradeProxy{URL: p.Masquerade, RewriteHost: true}}
-	}
+	buildAdvanced(c, p, s)
 	for _, pr := range c.Validate() {
 		if !pr.Warning {
 			return nil, fmt.Errorf("%s: %s", pr.Field, pr.Message)

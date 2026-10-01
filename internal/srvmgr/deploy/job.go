@@ -189,6 +189,16 @@ func (x *deployer) preflight(ctx context.Context, env *jobs.Env, p Params) error
 	env.Set("github", strconv.FormatBool(r.GitHub))
 	env.Set("firewall", r.Firewall)
 
+	// The deploy does not put the site on the server: the folder must be
+	// there already.
+	if p.Masq.Type == MasqFile {
+		if ok, err := remote.PathExists(ctx, ex, p.Masq.Dir, sudo(env)); err != nil {
+			return err
+		} else if !ok {
+			return jobs.Fail(fmt.Sprintf("Папки сайта-маскировки %s на сервере нет. Создайте её, положите туда index.html и дайте пользователю hysteria право читать её.", p.Masq.Dir), nil)
+		}
+	}
+
 	if l.Hopping {
 		ok := false
 		for _, path := range []string{"/usr/sbin/nft", "/sbin/nft", "/usr/sbin/iptables", "/sbin/iptables"} {

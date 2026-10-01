@@ -20,7 +20,7 @@ func TestDeployedServerLinksParseInHyRoute(t *testing.T) {
 	if err := p.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	sec, _ := deploy.NewSecrets(p, srv.Host, nil)
+	sec, _ := deploy.NewSecrets(p, srv.Host, nil, deploy.Input{})
 	c, _ := deploy.BuildConfig(p, sec)
 	cfg, _ := c.Marshal()
 	pin, _ := deploy.Pin([]byte(sec[deploy.SecretCert]))

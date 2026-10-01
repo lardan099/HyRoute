@@ -136,7 +136,7 @@ func (h *harness) deploy(p Params, sec map[string]string) model.Job {
 	h.t.Helper()
 	if sec == nil {
 		var err error
-		if sec, err = NewSecrets(p, "192.0.2.10", nil); err != nil {
+		if sec, err = NewSecrets(p, "192.0.2.10", nil, Input{}); err != nil {
 			h.t.Fatal(err)
 		}
 	}
@@ -198,7 +198,7 @@ func TestFreshDeploy(t *testing.T) {
 	p := params()
 	p.Obfs = true
 	p.HopPorts = "20000-50000"
-	sec, _ := NewSecrets(p, "192.0.2.10", nil)
+	sec, _ := NewSecrets(p, "192.0.2.10", nil, Input{})
 	j := h.deploy(p, sec)
 	if j.State != model.JobCompleted {
 		t.Fatalf("%s: %s %s\n%s", j.State, j.ErrorMessage, j.ErrorDetails, h.log(j.ID))
@@ -339,7 +339,7 @@ func TestFailedUpgradeRestoresPrevious(t *testing.T) {
 	s := newSim()
 	h := newHarness(t, s)
 	p := params()
-	sec, _ := NewSecrets(p, "192.0.2.10", nil)
+	sec, _ := NewSecrets(p, "192.0.2.10", nil, Input{})
 	if j := h.deploy(p, sec); j.State != model.JobCompleted {
 		t.Fatalf("first: %s %s", j.ErrorMessage, h.log(j.ID))
 	}
@@ -350,7 +350,7 @@ func TestFailedUpgradeRestoresPrevious(t *testing.T) {
 	s.badConfig = func(cfg []byte) bool { return bytes.Contains(cfg, []byte("salamander")) }
 	p2 := p
 	p2.Obfs = true
-	sec2, _ := NewSecrets(p2, "192.0.2.10", map[string]string{SecretAuth: sec[SecretAuth]})
+	sec2, _ := NewSecrets(p2, "192.0.2.10", map[string]string{SecretAuth: sec[SecretAuth]}, Input{})
 	j := h.deploy(p2, sec2)
 	if j.State != model.JobFailed {
 		t.Fatalf("%s", j.State)
@@ -377,7 +377,7 @@ func TestRedeployChangesNothing(t *testing.T) {
 	s.ufw = true
 	h := newHarness(t, s)
 	p := params()
-	sec, _ := NewSecrets(p, "192.0.2.10", nil)
+	sec, _ := NewSecrets(p, "192.0.2.10", nil, Input{})
 	if j := h.deploy(p, sec); j.State != model.JobCompleted {
 		t.Fatal(j.ErrorMessage)
 	}
@@ -387,7 +387,7 @@ func TestRedeployChangesNothing(t *testing.T) {
 
 	// A second deploy with the same choices and passwords (a new
 	// certificate is generated, but the one in place is kept).
-	sec2, _ := NewSecrets(p, "192.0.2.10", map[string]string{SecretAuth: sec[SecretAuth]})
+	sec2, _ := NewSecrets(p, "192.0.2.10", map[string]string{SecretAuth: sec[SecretAuth]}, Input{})
 	j := h.deploy(p, sec2)
 	if j.State != model.JobCompleted {
 		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
@@ -513,7 +513,7 @@ func TestSelfSigned(t *testing.T) {
 	// A config built from these parses and validates.
 	p := params()
 	p.Normalize()
-	sec, _ := NewSecrets(p, "192.0.2.10", nil)
+	sec, _ := NewSecrets(p, "192.0.2.10", nil, Input{})
 	c, err := BuildConfig(p, sec)
 	if err != nil || hyconfig.HasErrors(c.Validate()) {
 		t.Fatal(err)
@@ -542,7 +542,7 @@ func TestControllerRestartMidDeploy(t *testing.T) {
 		}
 	}
 	p := params()
-	sec, _ := NewSecrets(p, "192.0.2.10", nil)
+	sec, _ := NewSecrets(p, "192.0.2.10", nil, Input{})
 	j, err := h.eng.Submit(context.Background(), JobKind, h.server, p, sec, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -571,7 +571,7 @@ func TestRestartMidStepKeepsRollbackRecord(t *testing.T) {
 	s := newSim()
 	h := newHarness(t, s)
 	p := params()
-	sec, _ := NewSecrets(p, "192.0.2.10", nil)
+	sec, _ := NewSecrets(p, "192.0.2.10", nil, Input{})
 	if j := h.deploy(p, sec); j.State != model.JobCompleted {
 		t.Fatalf("first: %s %s", j.ErrorMessage, h.log(j.ID))
 	}
@@ -591,7 +591,7 @@ func TestRestartMidStepKeepsRollbackRecord(t *testing.T) {
 	}
 	p2 := p
 	p2.Obfs = true
-	sec2, _ := NewSecrets(p2, "192.0.2.10", map[string]string{SecretAuth: sec[SecretAuth]})
+	sec2, _ := NewSecrets(p2, "192.0.2.10", map[string]string{SecretAuth: sec[SecretAuth]}, Input{})
 	j, err := h.eng.Submit(context.Background(), JobKind, h.server, p2, sec2, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -644,16 +644,16 @@ func TestSubmitterKeepsPasswords(t *testing.T) {
 	sub := &Submitter{Store: h.db, Keys: h.keys, Jobs: h.eng}
 	ctx := context.Background()
 
-	_, err := sub.Submit(ctx, h.server, Params{TLS: "none"}, 0)
+	_, err := sub.Submit(ctx, h.server, Params{TLS: "none"}, Input{}, 0)
 	var fe *model.FieldError
 	if !errors.As(err, &fe) || !strings.HasPrefix(fe.Msg, "Неизвестный режим TLS") || !strings.HasSuffix(fe.Msg, ".") {
 		t.Fatalf("bad params: %v", err)
 	}
-	if _, err := sub.Submit(ctx, 999, params(), 0); !errors.Is(err, store.ErrNotFound) {
+	if _, err := sub.Submit(ctx, 999, params(), Input{}, 0); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("missing server: %v", err)
 	}
 
-	j, err := sub.Submit(ctx, h.server, params(), 0)
+	j, err := sub.Submit(ctx, h.server, params(), Input{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,7 +665,7 @@ func TestSubmitterKeepsPasswords(t *testing.T) {
 
 	// The same deploy again: same passwords and certificate, nothing written.
 	s.reset()
-	j, _ = sub.Submit(ctx, h.server, params(), 0)
+	j, _ = sub.Submit(ctx, h.server, params(), Input{}, 0)
 	if j = h.wait(j.ID); j.State != model.JobCompleted {
 		t.Fatalf("redeploy: %s %s", j.State, j.ErrorMessage)
 	}
@@ -676,7 +676,7 @@ func TestSubmitterKeepsPasswords(t *testing.T) {
 	// Obfuscation added: the auth password and the pin stay.
 	p := params()
 	p.Obfs = true
-	j, _ = sub.Submit(ctx, h.server, p, 0)
+	j, _ = sub.Submit(ctx, h.server, p, Input{}, 0)
 	if j = h.wait(j.ID); j.State != model.JobCompleted {
 		t.Fatalf("obfs deploy: %s %s", j.State, j.ErrorMessage)
 	}
@@ -742,11 +742,11 @@ func TestDeployOverImport(t *testing.T) {
 	}
 	sub := &Submitter{Store: h.db, Keys: h.keys, Jobs: h.eng}
 	// The imported config is replaced by the form's only when confirmed.
-	if _, err := sub.Submit(ctx, h.server, p, 0); !errors.Is(err, ErrConfigChanged) {
+	if _, err := sub.Submit(ctx, h.server, p, Input{}, 0); !errors.Is(err, ErrConfigChanged) {
 		t.Fatalf("replace without overwrite: %v", err)
 	}
 	p.Overwrite = true
-	j, err := sub.Submit(ctx, h.server, p, 0)
+	j, err := sub.Submit(ctx, h.server, p, Input{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -771,7 +771,7 @@ func TestRedeployOverEditedConfig(t *testing.T) {
 	h := newHarness(t, s)
 	sub := &Submitter{Store: h.db, Keys: h.keys, Jobs: h.eng}
 	ctx := context.Background()
-	j, err := sub.Submit(ctx, h.server, params(), 0)
+	j, err := sub.Submit(ctx, h.server, params(), Input{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -798,7 +798,7 @@ func TestRedeployOverEditedConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := sub.Submit(ctx, h.server, params(), 0); !errors.Is(err, ErrConfigChanged) {
+	if _, err := sub.Submit(ctx, h.server, params(), Input{}, 0); !errors.Is(err, ErrConfigChanged) {
 		t.Fatalf("redeploy over the edit without confirmation: %v", err)
 	}
 	if js, _ := h.db.ListJobs(ctx, model.JobFilter{ServerID: h.server}); len(js) != 1 {
@@ -807,7 +807,7 @@ func TestRedeployOverEditedConfig(t *testing.T) {
 
 	p := params()
 	p.Overwrite = true
-	j, err = sub.Submit(ctx, h.server, p, 0)
+	j, err = sub.Submit(ctx, h.server, p, Input{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -836,7 +836,7 @@ func TestRedeployOverEditedConfig(t *testing.T) {
 	check("confirmed redeploy")
 
 	// The current config is a deploy's again: no question, same users.
-	j, err = sub.Submit(ctx, h.server, params(), 0)
+	j, err = sub.Submit(ctx, h.server, params(), Input{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -860,7 +860,7 @@ func TestAuthSecretsKept(t *testing.T) {
 		{Type: "http", HTTP: hyconfig.AuthHTTP{URL: "http://127.0.0.1:8080/auth"}},
 		{Type: "command", Command: "/etc/hysteria/auth.sh"},
 	} {
-		sec, err := NewSecrets(p, "192.0.2.10", AuthSecrets(a))
+		sec, err := NewSecrets(p, "192.0.2.10", AuthSecrets(a), Input{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -873,7 +873,7 @@ func TestAuthSecretsKept(t *testing.T) {
 		if s := AuthSecrets(a); len(s) != 0 {
 			t.Fatalf("%+v: %v", a, s)
 		}
-		sec, _ := NewSecrets(p, "192.0.2.10", AuthSecrets(a))
+		sec, _ := NewSecrets(p, "192.0.2.10", AuthSecrets(a), Input{})
 		if c, err := BuildConfig(p, sec); err != nil || c.Auth.Type != "password" || len(c.Auth.Password) != 32 {
 			t.Fatalf("%+v: %+v (%v)", a, c, err)
 		}

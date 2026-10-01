@@ -1219,3 +1219,30 @@ P1-09 (общий пакет ссылок).
   ревизии, права ключа, копии удалены, перезапуск, ключа нет в журнале),
   `TestRotateCertRollback` (Hysteria не стартует → прежние сертификат и
   ключ, ревизия прежняя), `TestRotateRefused`, `TestRotateAPI`.
+
+### P2-06a Расширенные параметры развёртывания
+
+- `deploy.Params`: `auth`/`users` (userpass), `bandwidth`, `quic`, `udp`,
+  `sniff`, `outbound` (direct/socks5/http), `masq` (proxy/file/string и
+  ответ по TCP 80/443), ACME `challenge: dns` с `dnsProvider`. Ключи
+  DNS-провайдеров сверены с исходником Hysteria 2.12.3.
+- Проверка значений и сочетаний в `Normalize`; `Submit` дополнительно
+  собирает конфиг и прогоняет `hyconfig.Validate`, ошибки — `FieldError`
+  с понятной причиной.
+- `deploy.Input` (токены DNS, пароль прокси) — отдельный объект `secrets`
+  в API; только в запечатанных секретах задания; повторное развёртывание
+  берёт их из текущего конфига для того же провайдера или пользователя.
+  Пароли пользователей userpass сохраняются по имени.
+- Preflight проверяет папку маскировки `file`; маскировка по TCP
+  проверяет и открывает TCP 80/443. `redact` маскирует `*_secret_key`,
+  сервисный журнал — пароли выходов.
+- Тесты: сборка конфига для каждой группы (`TestBuildDefaults`,
+  `TestBuildBandwidth`, `TestBuildQUICAndUDP`, `TestBuildSniff`,
+  `TestBuildOutbound`, `TestBuildMasquerade`, `TestBuildACMEDNS`,
+  `TestBuildUserPass`), 41 неверное значение или сочетание
+  (`TestAdvancedRefused`), секреты и их повторное использование
+  (`TestAdvancedSecrets`, `TestUserPassReuse`), задание на симуляторе
+  (`TestDeployAdvanced`: конфиг, правила 80/443 tcp, пароль прокси ни в
+  params, ни в журнале, повтор без пароля ничего не меняет;
+  `TestDeployMasqFolder`), `TestSubmitAdvancedRefused`,
+  `TestDeployAPISecrets`.
