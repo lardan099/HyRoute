@@ -21,6 +21,10 @@
   let logBox = $state<HTMLElement | null>(null);
   let follow = $state(true);
   let source: EventSource | null = null;
+  // A stream the server closed for good is opened again after backoff ms.
+  let backoff = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let gone = false;
   let report = $derived.by(() => {
     try {
       return job?.data?.report ? JSON.parse(job.data.report) : null;
@@ -39,53 +43,86 @@
   }
 
   function connect() {
+    clearTimeout(timer);
     source?.close();
     const last = logs.length ? logs[logs.length - 1].seq : 0;
-    source = new EventSource(jobEventsURL(id) + (last ? `?after=${last}` : ''));
-    live = true;
-    source.addEventListener('log', (e) => {
+    const es = new EventSource(jobEventsURL(id) + (last ? `?after=${last}` : ''));
+    source = es;
+    es.onopen = () => {
+      live = true;
+      backoff = 0;
+    };
+    es.addEventListener('log', (e) => {
       const l: JobLog = JSON.parse((e as MessageEvent).data);
       if (!logs.length || l.seq > logs[logs.length - 1].seq) {
         logs.push(l);
         scrollDown();
       }
     });
-    source.addEventListener('step', (e) => {
+    es.addEventListener('step', (e) => {
       const s: JobStep = JSON.parse((e as MessageEvent).data);
       if (job) job.steps[s.idx] = s;
     });
-    source.addEventListener('job', (e) => {
+    es.addEventListener('job', (e) => {
       const j: Job = JSON.parse((e as MessageEvent).data);
       if (job) Object.assign(job, j);
     });
-    source.addEventListener('end', async () => {
-      source?.close();
+    es.addEventListener('end', async () => {
+      es.close();
+      if (source === es) source = null;
       live = false;
       // The final word: steps, data (reports) and errors as stored.
       try {
         job = await api.job(id);
       } catch {}
     });
-    source.onerror = () => {
-      // The browser reconnects by itself with Last-Event-ID; a finished
-      // job closes the stream for good.
-      if (job && (job.state === 'completed' || job.state === 'failed')) {
-        source?.close();
-        live = false;
+    es.onerror = () => {
+      if (source !== es) return;
+      live = false;
+      // The stream of every job, finished ones too, closes with 'end'.
+      // After a dropped connection the browser reconnects by itself with
+      // Last-Event-ID. An answer other than the stream (502 while the
+      // controller restarts, 401 after the session expired) closes it for
+      // good: recover does what the browser will not.
+      if (es.readyState === EventSource.CLOSED) {
+        source = null;
+        recover();
       }
     };
+  }
+
+  // recover reads the job again (an expired session brings the login
+  // screen) and opens the stream again after a growing pause.
+  async function recover() {
+    try {
+      job = await api.job(id);
+    } catch (e) {
+      const err = asApiError(e);
+      // The session is gone (the login screen takes over) or the job is.
+      if (err.status >= 400 && err.status < 500) {
+        if (err.code !== 'unauthorized') error = err;
+        return;
+      }
+    }
+    if (gone) return;
+    backoff = Math.min(backoff ? backoff * 2 : 1000, 30000);
+    timer = setTimeout(connect, backoff);
   }
 
   onMount(() => {
     (async () => {
       try {
         job = await api.job(id);
-        connect();
+        if (!gone) connect();
       } catch (e) {
         error = asApiError(e);
       }
     })();
-    return () => source?.close();
+    return () => {
+      gone = true;
+      clearTimeout(timer);
+      source?.close();
+    };
   });
 
   // A deploy that found someone else's Hysteria offers the import.

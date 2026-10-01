@@ -324,6 +324,7 @@ export const ru = {
   'srv.resume': 'Продолжить',
   'srv.journalEmpty': 'Записей пока нет.',
   'srv.journalEnded': 'Поток журнала закрыт.',
+  'srv.journalReconnect': 'Поток журнала прервался, переподключение…',
   'srv.mb': '{n} МБ',
 
   'cfg.edit': 'Изменить конфиг',
