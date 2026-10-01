@@ -8,6 +8,7 @@
   import { go } from '../router.svelte';
   import { when } from './format';
   import Dialog from './Dialog.svelte';
+  import ChainNote from './ChainNote.svelte';
   import DiffView from './DiffView.svelte';
 
   let { server, writable, onclose }: { server: Server; writable: boolean; onclose: () => void } = $props();
@@ -148,6 +149,7 @@
 
 {#if confirming && selected}
   <Dialog title={t('hist.rollbackTitle', { n: selected.revision })} onclose={() => (confirming = false)}>
+    <ChainNote {server} />
     <p>{t('hist.rollbackText')}</p>
     {#if cmp?.secrets.length}<p class="small warn-text">{t('hist.rollbackSecrets')}</p>{/if}
     {#snippet actions()}

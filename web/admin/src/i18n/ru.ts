@@ -807,6 +807,9 @@ export const ru = {
   'cascades.when': 'Когда',
   'cascades.reason': 'Подробности',
   'cascades.target': 'Цель',
+  'cascades.serverNote': 'Сервер входит в каскад: после этого изменения связь каскада может понадобиться обновить (её состояние станет «устарел»), открыть:',
+  'cascades.check': 'Проверить сейчас',
+  'cascades.role': 'Роль',
 } as const;
 
 export type Key = keyof typeof ru;

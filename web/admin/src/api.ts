@@ -115,6 +115,8 @@ export interface Server {
   hostKey: HostKey | null;
   // hopInterval of the client links, seconds (0: the client's default).
   hopInterval: number;
+  // chains are the cascades the server is a node of.
+  chains: { id: number; name: string; state: LinkState }[];
 }
 
 // PortsInput changes the ports of a server (an apply job) and the hop
@@ -809,6 +811,7 @@ export const api = {
   deleteChain: (id: number) => request<void>('DELETE', `/chains/${id}`),
   linkChain: (id: number) => request<Job>('POST', `/chains/${id}/link`),
   unlinkChain: (id: number, del: boolean) => request<Job>('POST', `/chains/${id}/unlink`, { delete: del }),
+  checkChain: (id: number) => request<Chain>('POST', `/chains/${id}/check`),
   chainChecks: (id: number, idx = 0, limit = 100) => request<LinkCheck[]>('GET', `/chains/${id}/checks?idx=${idx}&limit=${limit}`),
   presetPreview: (serverId: number, p: PresetApply) => request<PresetCheck>('POST', `/servers/${serverId}/preset/preview`, p),
   presetApply: (serverId: number, p: PresetApply) => request<Job>('POST', `/servers/${serverId}/preset/apply`, p),

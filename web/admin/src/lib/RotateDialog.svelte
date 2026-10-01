@@ -6,6 +6,7 @@
   import { api, asApiError, type ApiError, type ClientSummary, type Job, type Server, type ServerConfig } from '../api';
   import { t } from '../i18n';
   import Dialog from './Dialog.svelte';
+  import ChainNote from './ChainNote.svelte';
 
   let { server, config, onclose, onstarted }: { server: Server; config: ServerConfig; onclose: () => void; onstarted: (j: Job) => void } = $props();
 
@@ -51,6 +52,7 @@
 </script>
 
 <Dialog title={t('rot.title', { name: server.name })} {onclose}>
+  <ChainNote {server} />
   {#if !summary && !error}
     <p class="muted">{t('rot.loading')}</p>
   {:else}

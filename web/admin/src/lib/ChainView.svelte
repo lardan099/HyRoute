@@ -26,6 +26,20 @@
   let writable = $derived(canWrite(session.user));
   let link = $derived(chain?.links[0] ?? null);
   let timer: ReturnType<typeof setInterval> | undefined;
+  let checking = $state(false);
+
+  async function checkNow() {
+    checking = true;
+    try {
+      chain = await api.checkChain(id);
+      checks = await api.chainChecks(id, 0, 50);
+      error = null;
+    } catch (e) {
+      error = asApiError(e);
+    } finally {
+      checking = false;
+    }
+  }
 
   async function load() {
     try {
@@ -88,6 +102,7 @@
     {#if writable}
       {#if !busy(chain)}
         <button class="primary" onclick={deploy}>{deployed(chain) ? t('cascades.refresh') : t('cascades.deploy')}</button>
+        {#if deployed(chain)}<button onclick={checkNow} disabled={checking}>{t('cascades.check')}</button>{/if}
         {#if deployed(chain)}<button onclick={() => (confirm = 'unlink')}>{t('cascades.unlink')}</button>{/if}
       {/if}
       <button onclick={edit}>{t('cascades.rename')}</button>

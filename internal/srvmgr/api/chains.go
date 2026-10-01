@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -343,4 +344,46 @@ func (s *server) chainChecks(w http.ResponseWriter, r *http.Request) {
 		out = append(out, toLinkCheckJSON(c))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// checkChain checks the chain's links now, from the entry, as the
+// monitor does each round, and returns the chain with the result.
+func (s *server) checkChain(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok || s.Connect == nil {
+		writeError(w, errNotFound)
+		return
+	}
+	c, err := s.Store.ChainByID(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	if st := topology.State(c); st == model.LinkLinking || st == model.LinkUnlinking {
+		s.fail(w, r, &Error{Status: http.StatusConflict, Code: "chain_busy", Message: "Задание каскада ещё идёт: проверка — после него."})
+		return
+	}
+	entry, err := s.Store.ServerByID(r.Context(), c.Entry())
+	if err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	ex, err := s.Connect.Connect(ctx, entry.ID)
+	if err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	defer ex.Close()
+	k := &cascade.Checker{Store: s.Store, Keys: s.Keys}
+	if _, err := k.CheckLinks(ctx, entry, ex); err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	if c, err = s.Store.ChainByID(r.Context(), id); err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	s.writeChain(w, r, http.StatusOK, topology.Of(s.sync(r, c)))
 }

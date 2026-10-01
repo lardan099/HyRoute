@@ -49,6 +49,13 @@ func TestChainsAPI(t *testing.T) {
 
 	// Roles show on the servers; a server of a chain is not deleted.
 	rec = owner.do("GET", "/api/v1/servers/"+strconv.FormatInt(ids[1], 10), nil, nil)
+	if !strings.Contains(rec.Body.String(), `"chains":[{"id":`+id+`,"name":"Через Германию","state":"new"}]`) {
+		t.Fatalf("server chains: %s", rec.Body)
+	}
+	if rec = owner.do("GET", "/api/v1/servers", nil, nil); !strings.Contains(rec.Body.String(), `"chains":[{"id":`+id+`,`) {
+		t.Fatalf("servers: %s", rec.Body)
+	}
+	rec = owner.do("GET", "/api/v1/servers/"+strconv.FormatInt(ids[1], 10), nil, nil)
 	if !strings.Contains(rec.Body.String(), `"role":"exit"`) {
 		t.Fatalf("exit role: %s", rec.Body)
 	}
@@ -101,6 +108,9 @@ func TestChainsAPI(t *testing.T) {
 	// Deployed: the job removes it (P3-02c), not DELETE.
 	c, _ := e.db.ChainByID(ctx, ch.ID)
 	l := c.Links[0]
+	l.State = model.LinkLinking
+	e.db.UpdateLink(ctx, l)
+	code(t, owner.do("POST", "/api/v1/chains/"+id+"/check", nil, nil), http.StatusConflict, "chain_busy")
 	l.State = model.LinkActive
 	e.db.UpdateLink(ctx, l)
 	code(t, owner.do("DELETE", "/api/v1/chains/"+id, nil, nil), http.StatusConflict, "chain_deployed")

@@ -8,6 +8,7 @@
   import { api, asApiError, type ApiError, type Job, type Server, type ServerConfig } from '../api';
   import { t } from '../i18n';
   import Dialog from './Dialog.svelte';
+  import ChainNote from './ChainNote.svelte';
 
   let { server, config, onclose, onstarted, onsaved }: {
     server: Server;
@@ -104,6 +105,7 @@
 </script>
 
 <Dialog title={t('ports.title', { name: server.name })} {onclose}>
+  <ChainNote {server} />
   <form id="ports-form" class="form" onsubmit={submit}>
     <p class="small">{t('ports.intro')}</p>
 

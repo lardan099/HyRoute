@@ -7,6 +7,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
+	"github.com/lardan099/hyroute/internal/srvmgr/topology"
 )
 
 // serverJSON is a server as the API returns it: which credentials are
@@ -32,6 +33,15 @@ type serverJSON struct {
 	HostKey          *hostKeyJSON      `json:"hostKey"`
 	// HopInterval of the client links, seconds (0: the client's default).
 	HopInterval int `json:"hopInterval"`
+	// Chains are the cascades the server is a node of.
+	Chains []serverChainJSON `json:"chains"`
+}
+
+// serverChainJSON is a cascade a server is in.
+type serverChainJSON struct {
+	ID    int64           `json:"id"`
+	Name  string          `json:"name"`
+	State model.LinkState `json:"state"`
 }
 
 func toServerJSON(in servers.Info) serverJSON {
@@ -45,6 +55,7 @@ func toServerJSON(in servers.Info) serverJSON {
 		Role: in.Role, Notes: in.Notes, State: in.State, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt,
 		HasPassword: in.HasPassword, HasKey: in.HasKey, HasKeyPassphrase: in.HasKeyPassphrase,
 		HostKey: toHostKeyJSON(in.HostKey), HopInterval: in.HopInterval,
+		Chains: []serverChainJSON{},
 	}
 }
 
@@ -84,9 +95,14 @@ func (s *server) listServers(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	chains := s.chainsByServer(r)
 	out := make([]serverJSON, 0, len(list))
 	for _, in := range list {
-		out = append(out, toServerJSON(in))
+		j := toServerJSON(in)
+		if cs := chains[in.ID]; cs != nil {
+			j.Chains = cs
+		}
+		out = append(out, j)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -102,7 +118,27 @@ func (s *server) getServer(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, mapError(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, toServerJSON(in))
+	j := toServerJSON(in)
+	if cs := s.chainsByServer(r)[in.ID]; cs != nil {
+		j.Chains = cs
+	}
+	writeJSON(w, http.StatusOK, j)
+}
+
+// chainsByServer are the cascades of each server (none when they cannot
+// be read: the server is shown all the same).
+func (s *server) chainsByServer(r *http.Request) map[int64][]serverChainJSON {
+	cs, err := s.Store.ListChains(r.Context())
+	if err != nil {
+		return nil
+	}
+	m := map[int64][]serverChainJSON{}
+	for _, c := range cs {
+		for _, n := range c.Nodes {
+			m[n] = append(m[n], serverChainJSON{ID: c.ID, Name: c.Name, State: topology.State(c)})
+		}
+	}
+	return m
 }
 
 func (s *server) createServer(w http.ResponseWriter, r *http.Request) {

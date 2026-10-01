@@ -135,6 +135,12 @@
       <div class="muted small sub">
         <span class="mono">{server.sshUser}@{server.host}{server.sshPort !== 22 ? ':' + server.sshPort : ''}</span>
         <span><span class="dot {stateTone(server.state)}"></span> {t(`state.${server.state}` as Key)}</span>
+        {#if server.chains?.length}
+          <span>
+            {t(`srvrole.${server.role}` as Key)}
+            {#each server.chains as c (c.id)} · <button class="chain-link" onclick={() => go('cascades', c.id)}>«{c.name}»</button>{/each}
+          </span>
+        {/if}
         {#if server.location}<span>{server.location}</span>{/if}
       </div>
     </div>
@@ -312,6 +318,7 @@
 {/if}
 
 <style>
+  .chain-link { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font: inherit; }
   .back { margin-bottom: 12px; }
   .head { margin-bottom: 14px; align-items: flex-start; }
   .sub { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-top: 4px; }

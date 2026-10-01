@@ -31,6 +31,7 @@
   } from '../api';
   import { t, type Key } from '../i18n';
   import Dialog from './Dialog.svelte';
+  import ChainNote from './ChainNote.svelte';
 
   let { server, onclose, onstarted }: { server: Server; onclose: () => void; onstarted: (j: Job) => void } = $props();
 
@@ -396,6 +397,7 @@
 </script>
 
 <Dialog title={t('deploy.title', { name: server.name })} {onclose}>
+  <ChainNote {server} />
   {#if loading}
     <p class="muted">{t('deploy.loading')}</p>
   {:else}

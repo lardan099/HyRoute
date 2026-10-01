@@ -929,7 +929,7 @@ API каскадов отдаёт у развёрнутой связи посл�
 | GET | `/api/v1/session` | любая | текущий пользователь, CSRF-токен |
 | DELETE | `/api/v1/session` | любая | выход |
 | GET/DELETE | `/api/v1/sessions[/{id}]` | owner/admin | список и отзыв сессий |
-| GET/POST | `/api/v1/servers` | читать: любая; создать: operator+ | инвентарь; роль сервера только для чтения (следует из каскадов) |
+| GET/POST | `/api/v1/servers` | читать: любая; создать: operator+ | инвентарь; роль сервера только для чтения (следует из каскадов), `chains` — каскады сервера (id, название, состояние) |
 | GET/PATCH/DELETE | `/api/v1/servers/{id}` | | удаление сервера из каскада — 409 `chain_member` |
 | GET | `/api/v1/chains`, `/api/v1/chains/{id}` | все | каскады: серверы по порядку с ролями, связи с параметрами и состоянием (секреты связей не отдаются) |
 | POST | `/api/v1/chains` | operator+ | `{name, notes, nodes: [entry, exit], link: {up, down, noUdp, checkTarget}}` — проверка (петли, роли, конфиги, auth exit, параметры) и сохранение; связь не разворачивается |
@@ -938,6 +938,7 @@ API каскадов отдаёт у развёрнутой связи посл�
 | POST | `/api/v1/chains/{id}/link` | operator+ | задание `link` на entry и exit (202, задание); 409 `no_config`, `no_installation`, `server_busy` |
 | POST | `/api/v1/chains/{id}/unlink` | operator+ | `{delete}` — задание `unlink` (202); 409 `not_deployed`, `server_busy` |
 | GET | `/api/v1/chains/{id}/checks` | все | `?idx=&limit=` — проверки связи, новые первыми (7 дней) |
+| POST | `/api/v1/chains/{id}/check` | operator+ | проверить связи каскада сейчас (с entry, как сборщик); 409 `chain_busy` во время задания |
 | POST | `/api/v1/servers/{id}/check` | operator+ | подключение и проверка прав (ничего не меняет) |
 | POST | `/api/v1/servers/{id}/host-key` | operator+ | TOFU / re-trust с отпечатком (`replace`) |
 | POST | `/api/v1/servers/{id}/preflight` | operator+ | job preflight |

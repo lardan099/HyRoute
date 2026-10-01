@@ -6,6 +6,7 @@
   import { t } from '../i18n';
   import { go } from '../router.svelte';
   import Dialog from './Dialog.svelte';
+  import ChainNote from './ChainNote.svelte';
   import DiffView from './DiffView.svelte';
 
   let { server, onclose }: { server: Server; onclose: () => void } = $props();
@@ -243,6 +244,7 @@
 
 {#if confirming}
   <Dialog title={t('cfg.applyTitle')} onclose={() => (confirming = false)}>
+    <ChainNote {server} />
     <p>{t('cfg.applyText')}</p>
     {#snippet actions()}
       <button onclick={() => (confirming = false)}>{t('common.cancel')}</button>
