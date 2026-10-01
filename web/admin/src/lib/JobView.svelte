@@ -9,6 +9,7 @@
   import DeployResult from './DeployResult.svelte';
   import DeployDialog from './DeployDialog.svelte';
   import ImportReport from './ImportReport.svelte';
+  import Dialog from './Dialog.svelte';
   import { go } from '../router.svelte';
 
   let { id, servers }: { id: number; servers: Record<number, Server> } = $props();
@@ -75,6 +76,7 @@
       try {
         job = await api.job(id);
       } catch {}
+      loadNewest();
     });
     es.onerror = () => {
       if (source !== es) return;
@@ -114,6 +116,7 @@
       try {
         job = await api.job(id);
         if (!gone) connect();
+        loadNewest();
       } catch (e) {
         error = asApiError(e);
       }
@@ -142,14 +145,36 @@
     }
   }
 
+  // newest is the latest job of the server (0: not known). A retry runs a
+  // job again with its own parameters: retrying an older one would put
+  // them back over what the later jobs changed, so it asks first (the
+  // controller may refuse it as well). Preflight only reads.
+  let newest = $state(0);
+  let confirmRetry = $state(false);
+  let stale = $derived(!!job && job.kind !== 'preflight' && newest > job.id);
+
+  async function loadNewest() {
+    if (!job?.serverId || job.state !== 'failed') return;
+    try {
+      newest = (await api.jobs(job.serverId, 1))[0]?.id ?? 0;
+    } catch {
+      newest = 0;
+    }
+  }
+
   async function retry() {
+    confirmRetry = false;
     retrying = true;
+    error = null;
     try {
       await api.retryJob(id);
       job = await api.job(id);
       connect();
     } catch (e) {
+      // A refusal (409: the server is busy, a newer job came after this
+      // one) says why in its message.
       error = asApiError(e);
+      loadNewest();
     } finally {
       retrying = false;
     }
@@ -167,7 +192,7 @@
     {/if}
     {#if job.state === 'failed' && canWrite(session.user)}
       {#if job.kind === 'deploy' && job.data.foreign === '1'}<button onclick={startImport}>{t('import.fromDeploy')}</button>{/if}
-      <button class="primary" disabled={retrying} onclick={retry}>{t('jobs.retry')}</button>
+      <button class="primary" disabled={retrying} onclick={() => (stale ? (confirmRetry = true) : retry())}>{t('jobs.retry')}</button>
     {/if}
   </div>
   <div class="meta muted small">
@@ -218,6 +243,17 @@
       </div>
     </section>
   </div>
+{/if}
+
+{#if confirmRetry && job}
+  <Dialog title={t('jobs.retryStaleTitle', { id: job.id })} onclose={() => (confirmRetry = false)}>
+    <p>{t('jobs.retryStale', { n: newest })}</p>
+    {#snippet actions()}
+      <button onclick={() => (confirmRetry = false)}>{t('common.cancel')}</button>
+      <button onclick={() => go('deployments', newest)}>{t('jobs.openNewest', { n: newest })}</button>
+      <button class="primary danger-bg" disabled={retrying} onclick={retry}>{t('jobs.retryAnyway')}</button>
+    {/snippet}
+  </Dialog>
 {/if}
 
 {#if deploying && job && servers[job.serverId]}

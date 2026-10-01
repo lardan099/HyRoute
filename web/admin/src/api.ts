@@ -520,7 +520,14 @@ export const api = {
   deleteServer: (id: number) => request<void>('DELETE', `/servers/${id}`),
   checkServer: (id: number) => request<CheckResult>('POST', `/servers/${id}/check`),
   trustHostKey: (id: number, fingerprint: string, replace: boolean) => request<HostKey>('POST', `/servers/${id}/host-key`, { fingerprint, replace }),
-  jobs: (serverId = 0) => request<Job[]>('GET', '/jobs' + (serverId ? `?server=${serverId}` : '')),
+  // jobs lists jobs, newest first (limit 0: the controller's default).
+  jobs: (serverId = 0, limit = 0) => {
+    const q = new URLSearchParams();
+    if (serverId) q.set('server', String(serverId));
+    if (limit) q.set('limit', String(limit));
+    const qs = q.toString();
+    return request<Job[]>('GET', '/jobs' + (qs ? '?' + qs : ''));
+  },
   job: (id: number) => request<JobDetail>('GET', `/jobs/${id}`),
   retryJob: (id: number) => request<Job>('POST', `/jobs/${id}/retry`),
   startDeploy: (serverId: number, p: DeployParams) => request<Job>('POST', `/servers/${serverId}/deploy`, p),
