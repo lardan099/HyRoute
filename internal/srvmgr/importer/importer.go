@@ -171,8 +171,11 @@ func findUnit(ctx context.Context, ex remote.Executor, sudo bool) (remote.System
 		return remote.SystemdUnit{}, nil, err
 	}
 	names = append(names, more...)
+	// Without ss (or one that cannot list) only the services named
+	// hysteria* are looked at.
 	ls, err := remote.Listeners(ctx, ex, sudo)
-	if err != nil {
+	var noSS *remote.ExitError
+	if err != nil && !errors.As(err, &noSS) {
 		return remote.SystemdUnit{}, nil, err
 	}
 	for _, l := range ls {
@@ -199,6 +202,9 @@ func findUnit(ctx context.Context, ex remote.Executor, sudo bool) (remote.System
 		if u.Exists() && u.ExecStart != "" {
 			found = append(found, u)
 		}
+	}
+	if len(found) == 0 && noSS != nil {
+		return remote.SystemdUnit{}, nil, &Error{"Hysteria на сервере не найдена: службы hysteria* нет, а службу с другим именем HyRoute ищет по процессу на порту, но на сервере нет ss (пакет iproute2). Установите iproute2 и повторите импорт или разверните Hysteria через HyRoute."}
 	}
 	if len(found) == 0 {
 		return remote.SystemdUnit{}, nil, &Error{"Hysteria на сервере не найдена: нет службы systemd с Hysteria. Разверните её через HyRoute."}

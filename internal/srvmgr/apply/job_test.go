@@ -54,6 +54,7 @@ type vps struct {
 	writes []remote.FileSpec
 	ufw    map[string]bool // ufw rules ("8443/udp"); nil: no ufw
 	bad    string          // a config containing it makes the service fail
+	noSS   bool            // no ss (iproute2) on the server
 }
 
 func newVPS() *vps {
@@ -133,6 +134,8 @@ func (v *vps) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 	case strings.HasPrefix(line, "systemctl stop"):
 		v.state, v.port = "inactive", 0
 		return res(""), nil
+	case a[0] == "ss" && v.noSS:
+		return remote.Result{ExitCode: 127, Stderr: []byte("env: 'ss': No such file or directory")}, nil
 	case a[0] == "ss":
 		if v.state == "active" {
 			return res(fmt.Sprintf("udp UNCONN 0 0 *:%d *:* users:((\"hysteria\",pid=4242,fd=7))\n", v.port)), nil
@@ -485,4 +488,41 @@ func TestApplyFirewall(t *testing.T) {
 	if fw := fwOf(); fw != (model.Firewall{Tool: "ufw"}) {
 		t.Fatalf("recorded %+v", fw)
 	}
+}
+
+// Without ss the port cannot be checked: a service that stays active is
+// trusted, as in the deploy, both for an edit and for a rollback to a
+// revision; a config Hysteria rejects is still rolled back.
+func TestApplyWithoutSS(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.v.mu.Lock()
+	h.v.noSS = true
+	h.v.mu.Unlock()
+	j, err := h.app.Submit(ctx, h.server, 1, h.edit(func(s string) string { return strings.Replace(s, "listen: :443", "listen: :8443", 1) }), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, log := h.wait(j)
+	if st, port := h.v.service(); j.State != model.JobCompleted || !strings.Contains(log, "нет ss") || st != "active" || port != 8443 {
+		t.Fatalf("%s: %s, service %s %d\n%s", j.State, j.ErrorMessage, st, port, log)
+	}
+
+	j, err = h.app.Rollback(ctx, h.server, 2, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j, log = h.wait(j); j.State != model.JobCompleted || h.v.file() != deployed {
+		t.Fatalf("rollback to revision 1: %s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+
+	j, err = h.app.Submit(ctx, h.server, 3, h.edit(func(s string) string { return s + "crash: true\n" }), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, log = h.wait(j)
+	if j.State != model.JobFailed || j.CurrentStep != "verify" {
+		t.Fatalf("a failing config passed: %s at %s\n%s", j.State, j.CurrentStep, log)
+	}
+	h.back(log)
 }

@@ -419,3 +419,23 @@ func TestImportHyRouteDeployment(t *testing.T) {
 		t.Fatalf("findings on HyRoute's own installation: %v", ids(f))
 	}
 }
+
+// Without ss the standard service is still found; a service with another
+// name cannot be, and the error says why.
+func TestImportWithoutSS(t *testing.T) {
+	m := official()
+	m.On("ss").Fail("env: 'ss': No such file or directory", 127)
+	f, _, err := discover(t, m)
+	if err != nil || f.Unit != "hysteria-server.service" || f.Config != "/etc/hysteria/config.yaml" {
+		t.Fatalf("%v %+v", err, f)
+	}
+
+	m = newMachine()
+	m.units["hy2.service"] = unit{load: "loaded", active: "active", fragment: "/etc/systemd/system/hy2.service",
+		exec: execStart("/opt/hy/hysteria-linux-amd64 -c server.yaml server"), wd: "/opt/hy", fileState: "enabled", restart: "always"}
+	m.On("ss").Fail("env: 'ss': No such file or directory", 127)
+	var ie *Error
+	if _, _, err := discover(t, m); !errors.As(err, &ie) || !strings.Contains(ie.Msg, "iproute2") {
+		t.Fatalf("%v", err)
+	}
+}

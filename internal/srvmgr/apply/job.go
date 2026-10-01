@@ -568,14 +568,28 @@ func (x *applier) verify(ctx context.Context, env *jobs.Env) error {
 		wait *= 3 // the certificate is issued first
 	}
 	deadline := time.Now().Add(wait)
+	steady := false // active at the last poll too, with no ss to look at the port
 	for {
 		st, err := remote.ActiveState(ctx, ex, in.Unit)
 		if err != nil {
 			return err
 		}
-		if st == "active" {
+		if st != "active" {
+			steady = false
+		} else {
 			ls, err := remote.Listeners(ctx, ex, sudo(env))
-			if err != nil {
+			var noSS *remote.ExitError
+			switch {
+			case errors.As(err, &noSS):
+				// ss is missing (or cannot list): systemd is trusted, as
+				// in the deploy, once the service stayed up for a poll; a
+				// config Hysteria rejects stops it right away.
+				if steady {
+					env.Logf("Служба %s работает с новым конфигом (порт проверить нечем: на сервере нет ss).", in.Unit)
+					return nil
+				}
+				steady = true
+			case err != nil:
 				return err
 			}
 			for _, s := range ls {
