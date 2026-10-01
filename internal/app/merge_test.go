@@ -189,6 +189,54 @@ func TestMergeKeepsLocalSettings(t *testing.T) {
 	}
 }
 
+// A hop interval in the link is the subscription's: it reaches servers
+// saved before, replaces the editor's and follows the panel's
+// corrections. A link without one, or with one the parser ignores, keeps
+// the server's.
+func TestMergeHopFromLink(t *testing.T) {
+	src := "sub:s1"
+	none := func(string) bool { return false }
+	link := "hysteria2://fake-a@h.example:443/?mport=20000-30000"
+	update := func(list []hysteria.Profile, query string) hysteria.Profile {
+		t.Helper()
+		l := ParseLinks(link + query + "#H")
+		if len(l.Profiles) != 1 {
+			t.Fatalf("%+v", l)
+		}
+		out, st := mergeSubscription(list, src, l.Profiles, none, newID)
+		if st != (MergeStats{Updated: 1}) || out[0].ID != "x" {
+			t.Fatalf("%+v %+v", st, out)
+		}
+		return out[0]
+	}
+	old, _, _ := hysteria.ParseURI(link)
+	old.ID, old.Source = "x", src
+	old.Hop = hysteria.Hop{MinInterval: "10s", MaxInterval: "60s"} // set in the editor
+	for _, c := range []struct {
+		query string
+		want  hysteria.Hop
+	}{
+		{"", old.Hop},
+		{"&mportHopInt=3", old.Hop},
+		{"&mportHopInt=99999999999", old.Hop},
+		{"&mportHopInt=20", hysteria.Hop{Interval: "20s"}},
+	} {
+		if got := update([]hysteria.Profile{old}, c.query); got.Hop != c.want {
+			t.Errorf("%q: %+v, want %+v", c.query, got.Hop, c.want)
+		}
+	}
+	p := update([]hysteria.Profile{old}, "&mportHopInt=20")
+	if p = update([]hysteria.Profile{p}, "&mportHopInt=40"); p.Hop != (hysteria.Hop{Interval: "40s"}) {
+		t.Fatalf("the panel's correction: %+v", p.Hop)
+	}
+	if p = update([]hysteria.Profile{p}, "&mportHopInt=1"); p.Hop != (hysteria.Hop{Interval: "40s"}) {
+		t.Fatalf("a bad value replaced a good one: %+v", p.Hop)
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // fillZero sets every zero field of the struct v to a non-zero value.
 func fillZero(t *testing.T, v reflect.Value) {
 	for i := 0; i < v.NumField(); i++ {

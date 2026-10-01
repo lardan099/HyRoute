@@ -470,9 +470,16 @@ func (cl *Client) Validate() []Problem {
 	if u.HopInterval != "" && (u.MinHopInterval != "" || u.MaxHopInterval != "") {
 		c.err("transport.udp", "hopInterval нельзя вместе с minHopInterval/maxHopInterval")
 	}
-	c.duration("transport.udp.hopInterval", u.HopInterval, 0, 0)
-	c.duration("transport.udp.minHopInterval", u.MinHopInterval, 0, 0)
-	c.duration("transport.udp.maxHopInterval", u.MaxHopInterval, 0, 0)
+	for _, h := range []struct {
+		field string
+		d     Duration
+	}{{"transport.udp.hopInterval", u.HopInterval}, {"transport.udp.minHopInterval", u.MinHopInterval}, {"transport.udp.maxHopInterval", u.MaxHopInterval}} {
+		c.duration(h.field, h.d, 0, 0)
+		// Hysteria refuses a shorter interval (0 is its default, 30s).
+		if v, err := parseDuration(h.d); err == nil && v != 0 && v < 5*time.Second {
+			c.err(h.field, "не меньше 5s: Hysteria не принимает интервал короче")
+		}
+	}
 	q := cl.QUIC
 	quicWindows(c, "quic", q.InitStreamReceiveWindow, q.MaxStreamReceiveWindow, q.InitConnReceiveWindow, q.MaxConnReceiveWindow)
 	c.duration("quic.maxIdleTimeout", q.MaxIdleTimeout, 4*time.Second, 120*time.Second)

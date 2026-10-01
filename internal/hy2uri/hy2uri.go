@@ -42,13 +42,24 @@ type Link struct {
 	DownMbps    int    // down (Mbps)
 }
 
+// MinHopInterval is the shortest port hopping interval Hysteria accepts.
+const MinHopInterval = 5 * time.Second
+
+// The mportHopInt values (seconds) a link may set: from MinHopInterval to
+// an hour. Anything else is a panel's mistake, not a setting: a shorter
+// one would stop the server from starting, a huge one overflows.
+const (
+	minLinkHop = int(MinHopInterval / time.Second)
+	maxLinkHop = 3600
+)
+
 // Parse parses hysteria2:// and hy2:// share links.
 //
 // Besides the official parameters (obfs, obfs-password, sni, insecure,
 // pinSHA256, ech) it accepts variants found in links produced by panels and
 // third-party clients (Xray, v2rayN, Throne, Incy): allowInsecure, peer (as
-// SNI), mport or ports (hopping ports), mportHopInt (hop interval in
-// seconds), up and down (Mbps), pcs (pinned certificate SHA-256), fm (Xray
+// SNI), mport or ports (hopping ports), mportHopInt (hop interval, 5 to
+// 3600 seconds), up and down (Mbps), pcs (pinned certificate SHA-256), fm (Xray
 // "finalmask" JSON carrying the salamander obfs) and obfs-password without
 // obfs (salamander is assumed). Guesses and unknown parameters are reported
 // in warnings; cosmetic client parameters are ignored silently.
@@ -115,10 +126,14 @@ func Parse(s string) (l Link, warnings []string, err error) {
 		l.Ports = mergePorts(l.Ports, m)
 	}
 	if v := get("mportHopInt"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			l.HopInterval = (time.Duration(n) * time.Second).String()
-		} else {
+		n, err := strconv.Atoi(v)
+		switch {
+		case err != nil:
 			warnings = append(warnings, "ignored mportHopInt "+strconv.Quote(v)+": not a number of seconds")
+		case n < minLinkHop || n > maxLinkHop:
+			warnings = append(warnings, fmt.Sprintf("ignored mportHopInt %q: not between %d and %d seconds", v, minLinkHop, maxLinkHop))
+		default:
+			l.HopInterval = (time.Duration(n) * time.Second).String()
 		}
 	}
 	l.UpMbps = mbps(get("up"), "up", &warnings)
@@ -308,7 +323,8 @@ func (l Link) String() string {
 // Compat is the link for importers that parse the authority with a URL
 // library (v2rayN and other System.Uri-based clients): the first port in
 // the authority, the whole port list in mport, and the hop interval in
-// mportHopInt, which Incy reads. For a single port it equals String.
+// mportHopInt, which Incy reads (only one Parse would take back). For a
+// single port it equals String.
 func (l Link) Compat() string {
 	q := l.query()
 	ports := strings.Join(strings.Fields(l.Ports), "")
@@ -317,8 +333,10 @@ func (l Link) Compat() string {
 		first, _, _ = strings.Cut(first, "-")
 		q.Set("mport", ports)
 		if l.HopInterval != "" {
-			if d, err := time.ParseDuration(l.HopInterval); err == nil && d >= time.Second {
-				q.Set("mportHopInt", strconv.Itoa(int(d/time.Second)))
+			if d, err := time.ParseDuration(l.HopInterval); err == nil {
+				if n := int(d / time.Second); n >= minLinkHop && n <= maxLinkHop {
+					q.Set("mportHopInt", strconv.Itoa(n))
+				}
 			}
 		}
 		ports = first

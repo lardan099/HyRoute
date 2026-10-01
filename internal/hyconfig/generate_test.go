@@ -150,4 +150,20 @@ func TestClientValidate(t *testing.T) {
 			t.Errorf("no error on %s: %v", f, c.Validate())
 		}
 	}
+
+	// Hysteria refuses hop intervals under 5s (a bare number is
+	// nanoseconds); 0 is its default.
+	c = &Client{Server: "vpn.example.com:443,20000-30000", Auth: "fake-auth-password", SOCKS5: &SOCKS5{Listen: "127.0.0.1:1080"}}
+	for _, u := range []TransportUDP{{HopInterval: "4s"}, {HopInterval: "30"}, {HopInterval: "-1m"}, {MinHopInterval: "1s", MaxHopInterval: "1m"}, {MinHopInterval: "10s", MaxHopInterval: "3s"}} {
+		c.Transport.UDP = u
+		if !HasErrors(c.Validate()) {
+			t.Errorf("%+v: no error", u)
+		}
+	}
+	for _, u := range []TransportUDP{{HopInterval: "5s"}, {HopInterval: "0s"}, {MinHopInterval: "5s", MaxHopInterval: "2h"}} {
+		c.Transport.UDP = u
+		if ps := c.Validate(); len(ps) != 0 {
+			t.Errorf("%+v: %v", u, ps)
+		}
+	}
 }

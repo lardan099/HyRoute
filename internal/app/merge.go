@@ -142,8 +142,17 @@ func mergeSubscription(list []hysteria.Profile, source string, fresh []hysteria.
 // congestion, QUIC, fast open, CA file and IP pinning are set by the user
 // in the editor, and an update must neither undo them nor restart the
 // server's Hysteria over them. The rest is the subscription's data.
+//
+// The hop interval is the link's when it carries one (mportHopInt, which
+// the parser takes only from 5 to 3600 seconds): the panel's value, and
+// its corrections, replace the intervals set in the editor. A link
+// without one keeps the server's, whoever set it.
 func keepLocal(fresh, old hysteria.Profile) hysteria.Profile {
-	fresh.Bandwidth, fresh.Hop, fresh.Congestion, fresh.QUIC = old.Bandwidth, old.Hop, old.Congestion, old.QUIC
+	hop := old.Hop
+	if fresh.Hop.Interval != "" {
+		hop = hysteria.Hop{Interval: fresh.Hop.Interval}
+	}
+	fresh.Bandwidth, fresh.Hop, fresh.Congestion, fresh.QUIC = old.Bandwidth, hop, old.Congestion, old.QUIC
 	fresh.FastOpen, fresh.PinServerIP, fresh.TLS.CA = old.FastOpen, old.PinServerIP, old.TLS.CA
 	if fresh.Obfs.Type == old.Obfs.Type {
 		fresh.Obfs.MinPacketSize, fresh.Obfs.MaxPacketSize = old.Obfs.MinPacketSize, old.Obfs.MaxPacketSize

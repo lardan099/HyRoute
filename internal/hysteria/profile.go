@@ -132,6 +132,12 @@ func (p *Profile) Validate() error {
 			return fmt.Errorf("bad duration %q", d)
 		}
 	}
+	// Hysteria refuses to start with a shorter one (0 is its default).
+	for _, d := range []string{p.Hop.Interval, p.Hop.MinInterval, p.Hop.MaxInterval} {
+		if v, _ := time.ParseDuration(d); v != 0 && v < hy2uri.MinHopInterval {
+			return fmt.Errorf("интервал port hopping %s: Hysteria принимает не меньше %s", d, hy2uri.MinHopInterval)
+		}
+	}
 	return nil
 }
 

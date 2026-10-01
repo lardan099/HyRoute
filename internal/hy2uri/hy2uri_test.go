@@ -64,6 +64,13 @@ func TestCompatFormat(t *testing.T) {
 	if back.Ports != "20000-50000,60000" || back.HopInterval != "45s" {
 		t.Fatalf("%+v", back)
 	}
+	// Only an interval Parse takes back goes into the link.
+	for _, d := range []string{"4s", "2h", "soon"} {
+		l.HopInterval = d
+		if s := l.Compat(); strings.Contains(s, "mportHopInt") {
+			t.Errorf("%s: %s", d, s)
+		}
+	}
 	// One port: nothing to add.
 	one := Link{Host: "vpn.example.com", Ports: "443"}
 	if one.Compat() != one.String() {
@@ -100,6 +107,21 @@ func TestParseForeign(t *testing.T) {
 		{"hy2://fake-password@vpn.example.com:443?obfs-password=fake-obfs&mportHopInt=soon&up=fast&foo=1&pinSHA256=abc",
 			Link{Auth: "fake-password", Host: "vpn.example.com", Ports: "443", ObfsType: "salamander", ObfsPassword: "fake-obfs", PinSHA256: "abc"},
 			[]string{`ignored mportHopInt "soon": not a number of seconds`, `ignored up "fast": not a number of Mbps`, "obfs-password without obfs: assuming obfs=salamander", "pinSHA256 is not a 64-digit hex SHA-256: the certificate will never match", "ignored parameter foo"}},
+		// Hop intervals Hysteria refuses (under 5s) or that overflow: the
+		// link still works with the default.
+		{"hy2://fake-password@vpn.example.com:443?mport=20000-30000&mportHopInt=4",
+			Link{Auth: "fake-password", Host: "vpn.example.com", Ports: "443,20000-30000"},
+			[]string{`ignored mportHopInt "4": not between 5 and 3600 seconds`}},
+		{"hy2://fake-password@vpn.example.com:443?mport=20000-30000&mportHopInt=9300000000",
+			Link{Auth: "fake-password", Host: "vpn.example.com", Ports: "443,20000-30000"},
+			[]string{`ignored mportHopInt "9300000000": not between 5 and 3600 seconds`}},
+		{"hy2://fake-password@vpn.example.com:443?mport=20000-30000&mportHopInt=0",
+			Link{Auth: "fake-password", Host: "vpn.example.com", Ports: "443,20000-30000"},
+			[]string{`ignored mportHopInt "0": not between 5 and 3600 seconds`}},
+		{"hy2://fake-password@vpn.example.com:443?mport=20000-30000&mportHopInt=5",
+			Link{Auth: "fake-password", Host: "vpn.example.com", Ports: "443,20000-30000", HopInterval: "5s"}, nil},
+		{"hy2://fake-password@vpn.example.com:443?mport=20000-30000&mportHopInt=3600",
+			Link{Auth: "fake-password", Host: "vpn.example.com", Ports: "443,20000-30000", HopInterval: "1h0m0s"}, nil},
 	}
 	for _, c := range cases {
 		got, w := parse(t, c.in)
