@@ -231,8 +231,13 @@ export interface MaintainParams {
   source?: DeploySource;
 }
 
-// DeployParams are the choices of a deploy; passwords and the certificate
-// are made by the controller (a redeploy keeps them).
+export type ACMEChallenge = 'http' | 'tls' | 'dns';
+export type MasqType = '' | 'proxy' | 'file' | 'string';
+export type OutboundType = '' | 'direct' | 'socks5' | 'http';
+
+// DeployParams are the choices of a deploy (deploy.Params); passwords and
+// the certificate are made by the controller (a redeploy keeps them). A
+// missing advanced value leaves Hysteria's default.
 export interface DeployParams {
   version?: string;
   port?: number;
@@ -240,10 +245,21 @@ export interface DeployParams {
   tls: TLSMode;
   domain?: string;
   email?: string;
-  challenge?: 'http' | 'tls';
+  challenge?: ACMEChallenge;
+  dnsProvider?: string;
   sni?: string;
   obfs?: boolean;
+  // masquerade: the site of the proxy masquerade.
   masquerade?: string;
+  masq?: { type?: MasqType; dir?: string; text?: string; status?: number; tcp?: boolean };
+  // auth: '' keeps the current config's (a new server: a password).
+  auth?: '' | 'password' | 'userpass';
+  users?: string[];
+  bandwidth?: { upMbps?: number; downMbps?: number; ignoreClient?: boolean };
+  quic?: { streamWindowMB?: number; connWindowMB?: number; idleTimeout?: number; maxStreams?: number; disableMTUDiscovery?: boolean };
+  udp?: { disable?: boolean; idleTimeout?: number };
+  sniff?: { enable?: boolean; timeout?: number; rewriteDomain?: boolean; tcpPorts?: string; udpPorts?: string };
+  outbound?: { type?: OutboundType; mode?: string; bindIPv4?: string; bindIPv6?: string; bindDevice?: string; addr?: string; user?: string };
   source?: DeploySource;
   keepFirewall?: boolean;
   replace?: boolean;
@@ -251,6 +267,37 @@ export interface DeployParams {
   // back, imported); without it the controller answers 409 config_changed.
   overwrite?: boolean;
 }
+
+// DeploySecrets are what only the admin knows (deploy.Input): sealed with
+// the job, never in its params. An empty value keeps the current one.
+export interface DeploySecrets {
+  dns?: Record<string, string>;
+  outPassword?: string;
+}
+
+// dnsProviders are the DNS providers Hysteria issues certificates with and
+// the keys of their settings (deploy.DNSProviders).
+export const dnsProviders: Record<string, { key: string; required: boolean }[]> = {
+  cloudflare: [{ key: 'cloudflare_api_token', required: true }],
+  duckdns: [
+    { key: 'duckdns_api_token', required: true },
+    { key: 'duckdns_override_domain', required: false },
+  ],
+  gandi: [{ key: 'gandi_api_token', required: true }],
+  godaddy: [{ key: 'godaddy_api_token', required: true }],
+  namecheap: [
+    { key: 'namecheap_api_user', required: true },
+    { key: 'namecheap_api_key', required: true },
+    { key: 'namecheap_api_endpoint', required: false },
+    { key: 'namecheap_client_ip', required: false },
+  ],
+  njalla: [{ key: 'njalla_api_token', required: true }],
+  porkbun: [
+    { key: 'porkbun_api_key', required: true },
+    { key: 'porkbun_api_secret_key', required: true },
+  ],
+  vultr: [{ key: 'vultr_api_token', required: true }],
+};
 
 export type ConfigSource = 'deploy' | 'import' | 'edit' | 'rollback' | 'rotate';
 
@@ -593,7 +640,8 @@ export const api = {
   },
   job: (id: number) => request<JobDetail>('GET', `/jobs/${id}`),
   retryJob: (id: number) => request<Job>('POST', `/jobs/${id}/retry`),
-  startDeploy: (serverId: number, p: DeployParams) => request<Job>('POST', `/servers/${serverId}/deploy`, p),
+  startDeploy: (serverId: number, p: DeployParams, secrets?: DeploySecrets) =>
+    request<Job>('POST', `/servers/${serverId}/deploy`, secrets ? { ...p, secrets } : p),
   startImport: (serverId: number) => request<Job>('POST', `/servers/${serverId}/import`),
   startMaintain: (serverId: number, p: MaintainParams) => request<Job>('POST', `/servers/${serverId}/maintain`, p),
   serviceStatus: (serverId: number) => request<ServiceStatus>('GET', `/servers/${serverId}/status`),
