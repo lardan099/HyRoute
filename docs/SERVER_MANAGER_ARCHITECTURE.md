@@ -763,6 +763,38 @@ UI: карточка «Трафик клиентов» на странице с�
   не удалась и откатилась, неудачное повторное развёртывание оставляет
   прежнее состояние (P3-02).
 
+### Связь Entry → Exit (P3-02)
+
+Пакет `cascade` собирает то, что связь кладёт на серверы (чистые
+функции; на серверы это пишет задание `link`):
+
+- Параметры связи (`cascade.Params`, `chain_links.params`, без
+  секретов): `localPort` — порт SOCKS5 клиента связи на loopback entry
+  (выбирается при первом развёртывании), `up`/`down` — скорость клиента
+  (обе или ни одной), `noUdp`, `checkTarget` — цель проверки связи
+  (host:port; пусто — адрес и SSH-порт exit). `CheckAddr` пропускает
+  только имя, IPv4 или IPv6 и порт: значение попадает в командную строку
+  `hysteria ping` и в запрос SOCKS5.
+- Секреты (`cascade.Secrets`, `chain_links.secrets`, контекст
+  `chain/<id>/link/<idx>`): пароль собственного пользователя связи на exit
+  с `userpass` и логин и пароль SOCKS5 клиента связи (клиенты entry могут
+  попасть на его `127.0.0.1` через `direct`). У exit с `password` связь
+  берёт пароль exit из его конфига при каждом развёртывании.
+- Exit: `ExitWith` добавляет пользователя `link-<chain>-<idx>` (exit с
+  `password` не меняется), `ExitWithout` убирает его; `HasUser` — чтобы не
+  отдать пароль связи чужому пользователю с таким именем.
+- Клиент связи: `ClientConfig` — клиент exit, как его ссылки
+  (`profile.ClientOptions`: адрес, порты, интервал смены порта, pin/SNI,
+  obfs), с учётными данными связи, SOCKS5 `127.0.0.1:<localPort>` с
+  паролем, без HTTP-прокси, `lazy` выключен (сломанная связь видна сразу).
+  Конфиг — рядом с конфигом сервера entry (`link-<chain>-<idx>.yaml`),
+  служба — `hyroute-link-<chain>-<idx>.service` (`UnitText`): бинарник и
+  пользователь службы entry, `--disable-update-check`, `Restart=always`.
+- Entry: `EntryWith` ставит outbound `cascade` (socks5 до клиента связи)
+  первым и заменяет outbound с этим именем, поставленный руками;
+  `EntryWithout` убирает его. Hysteria сравнивает имена outbound без
+  учёта регистра — HyRoute тоже.
+
 ## REST API v1
 
 Ошибки: `{"error": {"code": "host_key_unknown", "message": "понятный текст",
@@ -779,8 +811,8 @@ UI: карточка «Трафик клиентов» на странице с�
 | GET/DELETE | `/api/v1/sessions[/{id}]` | owner/admin | список и отзыв сессий |
 | GET/POST | `/api/v1/servers` | читать: любая; создать: operator+ | инвентарь; роль сервера только для чтения (следует из каскадов) |
 | GET/PATCH/DELETE | `/api/v1/servers/{id}` | | удаление сервера из каскада — 409 `chain_member` |
-| GET | `/api/v1/chains`, `/api/v1/chains/{id}` | все | каскады: серверы по порядку с ролями, связи и их состояние (без параметров и секретов связей) |
-| POST | `/api/v1/chains` | operator+ | `{name, notes, nodes: [entry, exit]}` — проверка (петли, роли, конфиги, auth exit) и сохранение; связь не разворачивается |
+| GET | `/api/v1/chains`, `/api/v1/chains/{id}` | все | каскады: серверы по порядку с ролями, связи с параметрами и состоянием (секреты связей не отдаются) |
+| POST | `/api/v1/chains` | operator+ | `{name, notes, nodes: [entry, exit], link: {up, down, noUdp, checkTarget}}` — проверка (петли, роли, конфиги, auth exit, параметры) и сохранение; связь не разворачивается |
 | PATCH | `/api/v1/chains/{id}` | operator+ | `{name, notes}` |
 | DELETE | `/api/v1/chains/{id}` | operator+ | только неразвёрнутый каскад (все связи new или failed), иначе 409 `chain_deployed` |
 | POST | `/api/v1/servers/{id}/check` | operator+ | подключение и проверка прав (ничего не меняет) |

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
 	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
@@ -79,6 +80,8 @@ func TestServiceCreate(t *testing.T) {
 	fieldMsg(t, err, "«SB» — выход каскада «Через Германию»")
 	_, err = s.Create(ctx, Input{Name: "  ", Nodes: []int64{e, b}}, 0)
 	fieldMsg(t, err, "Название каскада")
+	_, err = s.Create(ctx, Input{Name: "x", Nodes: []int64{e, b}, Link: cascade.Params{Up: "10 mbps"}}, 0)
+	fieldMsg(t, err, "обе скорости")
 
 	// A second entry to the same exit.
 	if _, err := s.Create(ctx, Input{Name: "second", Nodes: []int64{e, b}}, 0); err != nil {

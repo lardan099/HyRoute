@@ -51,7 +51,10 @@ type Profile struct {
 // command; the controller does not know them.
 var ErrExternalAuth = errors.New("внешняя проверка паролей")
 
-func options(srv model.Server, c *hyconfig.Server, meta model.ConfigMeta, user string) hyconfig.ClientOptions {
+// ClientOptions are what a client of srv needs beyond its config c: the
+// address and public ports, the hop interval, and how to check the
+// certificate. user picks the userpass user.
+func ClientOptions(srv model.Server, c *hyconfig.Server, meta model.ConfigMeta, user string) hyconfig.ClientOptions {
 	o := hyconfig.ClientOptions{Host: srv.Host, Ports: meta.Ports, User: user}
 	if srv.HopInterval > 0 {
 		// ClientFor uses it only for a union of ports.
@@ -78,7 +81,7 @@ func Summarize(srv model.Server, cfg []byte, meta model.ConfigMeta) (Summary, er
 			s.Ports = l.Ports
 		}
 	}
-	o := options(srv, c, meta, "")
+	o := ClientOptions(srv, c, meta, "")
 	s.SNI, s.PinSHA256, s.Insecure = o.SNI, o.PinSHA256, o.PinSHA256 != ""
 	if c.ACME != nil && len(c.ACME.Domains) > 0 && s.SNI == "" && !strings.EqualFold(c.ACME.Domains[0], srv.Host) {
 		s.SNI = c.ACME.Domains[0]
@@ -110,7 +113,7 @@ func Build(srv model.Server, cfg []byte, meta model.ConfigMeta, user string) (Pr
 		return Profile{}, ErrExternalAuth
 	}
 	c, _ := hyconfig.ParseServer(cfg)
-	cc, err := hyconfig.ClientFor(c, options(srv, c, meta, user))
+	cc, err := hyconfig.ClientFor(c, ClientOptions(srv, c, meta, user))
 	if err != nil {
 		return Profile{}, err
 	}

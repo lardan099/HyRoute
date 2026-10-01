@@ -5,12 +5,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/topology"
 )
 
 // chainJSON is a cascade: its servers in order (entry first) and the
-// links between them, without the links' settings and secrets.
+// links between them with their settings; the links' secrets never
+// leave the controller.
 type chainJSON struct {
 	ID        int64           `json:"id"`
 	Name      string          `json:"name"`
@@ -33,6 +35,7 @@ type chainLinkJSON struct {
 	From      int64           `json:"from"`
 	To        int64           `json:"to"`
 	State     model.LinkState `json:"state"`
+	Params    cascade.Params  `json:"params"`
 	UpdatedAt time.Time       `json:"updatedAt"`
 }
 
@@ -42,7 +45,8 @@ func toChainJSON(i topology.Info, names map[int64]string) chainJSON {
 		out.Nodes = append(out.Nodes, chainNodeJSON{ServerID: id, Name: names[id], Role: model.NodeRole(idx, len(i.Nodes))})
 	}
 	for _, l := range i.Links {
-		out.Links = append(out.Links, chainLinkJSON{Idx: l.Idx, From: l.From, To: l.To, State: l.State, UpdatedAt: l.UpdatedAt})
+		p, _ := cascade.ParseParams(l.Params)
+		out.Links = append(out.Links, chainLinkJSON{Idx: l.Idx, From: l.From, To: l.To, State: l.State, Params: p, UpdatedAt: l.UpdatedAt})
 	}
 	return out
 }
@@ -112,15 +116,16 @@ func (s *server) writeChain(w http.ResponseWriter, r *http.Request, status int, 
 
 func (s *server) createChain(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name  string  `json:"name"`
-		Notes string  `json:"notes"`
-		Nodes []int64 `json:"nodes"`
+		Name  string         `json:"name"`
+		Notes string         `json:"notes"`
+		Nodes []int64        `json:"nodes"`
+		Link  cascade.Params `json:"link"`
 	}
 	if err := readJSON(r, &in); err != nil {
 		writeError(w, err)
 		return
 	}
-	c, err := s.chains().Create(r.Context(), topology.Input{Name: in.Name, Notes: in.Notes, Nodes: in.Nodes}, principal(r).User.ID)
+	c, err := s.chains().Create(r.Context(), topology.Input{Name: in.Name, Notes: in.Notes, Nodes: in.Nodes, Link: in.Link}, principal(r).User.ID)
 	if err != nil {
 		s.fail(w, r, chainError(err))
 		return

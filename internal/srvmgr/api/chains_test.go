@@ -35,11 +35,13 @@ func TestChainsAPI(t *testing.T) {
 	code(t, owner.do("PATCH", "/api/v1/servers/"+strconv.FormatInt(ids[0], 10), map[string]any{"name": "Entry", "host": "192.0.2.90", "authType": "password", "role": "exit"}, nil), http.StatusBadRequest, "bad_request")
 
 	code(t, owner.do("POST", "/api/v1/chains", map[string]any{"name": "x", "nodes": []int64{ids[0]}}, nil), http.StatusBadRequest, "invalid")
-	rec := owner.do("POST", "/api/v1/chains", map[string]any{"name": "Через Германию", "notes": "n", "nodes": ids}, nil)
+	code(t, owner.do("POST", "/api/v1/chains", map[string]any{"name": "x", "nodes": ids, "link": map[string]any{"checkTarget": "a;b:22"}}, nil), http.StatusBadRequest, "invalid")
+	rec := owner.do("POST", "/api/v1/chains", map[string]any{"name": "Через Германию", "notes": "n", "nodes": ids, "link": map[string]any{"up": "50 mbps", "down": "100 mbps", "noUdp": true}}, nil)
 	var ch chainJSON
 	json.Unmarshal(rec.Body.Bytes(), &ch)
 	if rec.Code != http.StatusCreated || ch.State != model.LinkNew || len(ch.Nodes) != 2 || ch.Nodes[0].Name != "Entry" || ch.Nodes[0].Role != model.RoleEntry ||
-		ch.Nodes[1].Role != model.RoleExit || len(ch.Links) != 1 || ch.Links[0].From != ids[0] || ch.Links[0].To != ids[1] {
+		ch.Nodes[1].Role != model.RoleExit || len(ch.Links) != 1 || ch.Links[0].From != ids[0] || ch.Links[0].To != ids[1] ||
+		ch.Links[0].Params.Up != "50 mbps" || !ch.Links[0].Params.NoUDP {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 	id := strconv.FormatInt(ch.ID, 10)

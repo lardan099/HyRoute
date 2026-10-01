@@ -1462,3 +1462,40 @@ P1-09 (общий пакет ссылок).
   и неразвёрнутого; аудит), `TestChainsAPI` (роли в ответах, поле
   `role` при правке сервера отклоняется, 409 `chain_member` и
   `chain_deployed`, readonly).
+
+### P3-02a Связь: генерация конфигов и секреты
+
+- Пакет `cascade` (чистые функции): параметры связи (`localPort`, `up`
+  и `down` — обе или ни одной, `noUdp`, `checkTarget`) с проверкой;
+  `CheckAddr` пропускает только имя/IPv4/IPv6 и порт (цель попадёт в
+  командную строку `hysteria ping` и в SOCKS5). Секреты: пароль своего
+  пользователя на exit с `userpass`, логин и пароль SOCKS5 клиента связи;
+  запечатываются с контекстом связи, `OpenSecrets` другой связи не
+  открывается.
+- Exit: `ExitWith`/`ExitWithout` — пользователь `link-<chain>-<idx>` на
+  `userpass` (exit с `password` не меняется: связь берёт его пароль из
+  конфига при каждом развёртывании), `HasUser` — чтобы при первом
+  развёртывании не перезаписать чужого пользователя с таким именем.
+- Клиент связи: `ClientConfig` строится как клиентские ссылки exit
+  (`profile.ClientOptions` теперь экспортирована) — адрес, порты,
+  интервал смены порта, pin/SNI, obfs — с учётными данными связи, SOCKS5
+  на loopback с паролем, без HTTP-прокси и с `lazy: false`. Unit
+  `hyroute-link-<chain>-<idx>.service`: бинарник и пользователь службы
+  entry, `--disable-update-check`, `Restart=always`; конфиг рядом с
+  конфигом entry. Пути и пользователь с пробелами или кавычками
+  отклоняются (они идут в ExecStart).
+- Entry: `EntryWith` ставит outbound `cascade` первым (он default),
+  заменяя одноимённый outbound, сделанный руками (сравнение без учёта
+  регистра, как в Hysteria); `EntryWithout` убирает его.
+- Параметры связи задаются при создании каскада (`link` в
+  `POST /api/v1/chains`) и возвращаются в API у каждой связи.
+- Тесты: `TestParams`, `TestExitCredentials`, `TestClientConfig`
+  (password и userpass exit, pin, obfs, hop, скорость, UDP),
+  `TestEntryOutbound` (с YAML туда-обратно), `TestUnitText`,
+  `TestSecretsAndParams`, `TestNewSecrets`; параметры в
+  `TestServiceCreate` и `TestChainsAPI`.
+- Открыто (не каскады): на Linux `go test -race` изредка (1 из 5
+  прогонов) сообщает гонку внутри `modernc.org/sqlite` v1.60.1 —
+  аллокатор библиотеки при миграциях в `sqlite.Open` (`TestHealth`
+  пакета `api`), чтение и запись в одной горутине. Код HyRoute в отчёте
+  только вызывающий; CI с `-race` может от этого покраснеть.

@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
@@ -47,6 +48,8 @@ type Input struct {
 	Notes string
 	// Nodes are the server IDs, entry first and exit last.
 	Nodes []int64
+	// Link are the settings of every link of the chain.
+	Link cascade.Params
 }
 
 func (s *Service) now() time.Time {
@@ -93,6 +96,9 @@ func (s *Service) Create(ctx context.Context, in Input, actor int64) (Info, erro
 	if len(in.Nodes) < 2 {
 		return Info{}, nodesErr("Выберите сервер входа и сервер выхода.")
 	}
+	if err := in.Link.Validate(); err != nil {
+		return Info{}, err
+	}
 	names := map[int64]string{}
 	for _, id := range in.Nodes {
 		srv, err := s.Store.ServerByID(ctx, id)
@@ -123,6 +129,9 @@ func (s *Service) Create(ctx context.Context, in Input, actor int64) (Info, erro
 
 	now := s.now()
 	c := model.Chain{Name: name, Notes: in.Notes, Nodes: in.Nodes, Links: make([]model.ChainLink, len(in.Nodes)-1), CreatedBy: actor, CreatedAt: now, UpdatedAt: now}
+	for i := range c.Links {
+		c.Links[i].Params = in.Link.Raw()
+	}
 	name2 := func(id int64) string { return "«" + names[id] + "»" }
 	err = s.Store.CreateChain(ctx, &c, func(existing []model.Chain) error { return Check(c, existing, name2) })
 	if errors.Is(err, store.ErrConflict) {
