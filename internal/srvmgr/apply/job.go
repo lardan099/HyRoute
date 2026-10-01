@@ -16,6 +16,7 @@ import (
 	"github.com/lardan099/hyroute/internal/hyconfig"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
 	"github.com/lardan099/hyroute/internal/srvmgr/firewall"
+	"github.com/lardan099/hyroute/internal/srvmgr/hopping"
 	"github.com/lardan099/hyroute/internal/srvmgr/importer"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
@@ -243,6 +244,9 @@ func (x *applier) validate(ctx context.Context, env *jobs.Env, p Params) error {
 		return jobs.Fail("На сервере нет конфига "+in.Config+".", nil)
 	default:
 		return jobs.Fail("Конфиг на сервере изменили не через HyRoute после последнего сохранения. Импортируйте сервер заново, чтобы HyRoute увидел эти правки, и повторите.", nil)
+	}
+	if err := x.checkPorts(ctx, env, ex, c); err != nil {
+		return err
 	}
 	// Hysteria has no command that checks a config without running it:
 	// the restart is that check, with the rollback behind it.
@@ -557,6 +561,37 @@ func (x *applier) undoInstall(ctx context.Context, env *jobs.Env) error {
 	}
 	if !changed {
 		return jobs.ErrNothingToUndo
+	}
+	return nil
+}
+
+// checkPorts: when the candidate listens on other ports, the server can
+// take them (no other program on those UDP ports; for hopping, the
+// redirect tool for each address family).
+func (x *applier) checkPorts(ctx context.Context, env *jobs.Env, ex remote.Executor, c *hyconfig.Server) error {
+	if strings.Contains(c.Listen, "://") {
+		return nil // Realms: no ports of its own
+	}
+	if cur, err := x.current(ctx, env); err != nil {
+		return err
+	} else if cur != nil && cur.Listen == c.Listen {
+		return nil
+	}
+	spec, rs, err := hopping.FromListen(c.Listen)
+	if err != nil {
+		return jobs.Fail("Порты конфига: "+err.Error()+".", nil)
+	}
+	var he *hopping.Error
+	switch err := hopping.Check(ctx, ex, spec, rs, sudo(env)); {
+	case errors.As(err, &he):
+		return jobs.Fail(he.Msg, nil)
+	case errors.Is(err, hopping.ErrNoSS):
+		env.Warnf("Не проверено, свободны ли новые порты: на сервере нет ss.")
+	case err != nil:
+		return err
+	}
+	if hopping.Hopping(rs) {
+		env.Logf("Порты: Hysteria будет слушать UDP %d и перенаправлять на него остальные (%s, всего %d).", rs[0].From, hopping.Join(rs), hopping.Count(rs))
 	}
 	return nil
 }

@@ -11,13 +11,13 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
 
-const serverCols = `id, name, tags, country, location, host, ssh_port, ssh_user, auth_type, role, notes, state, created_at, updated_at`
+const serverCols = `id, name, tags, country, location, host, ssh_port, ssh_user, auth_type, role, notes, state, created_at, updated_at, hop_interval`
 
 func scanServer(r rowScanner) (model.Server, error) {
 	var s model.Server
 	var tags, auth, role, state string
 	var created, updated int64
-	err := r.Scan(&s.ID, &s.Name, &tags, &s.Country, &s.Location, &s.Host, &s.SSHPort, &s.SSHUser, &auth, &role, &s.Notes, &state, &created, &updated)
+	err := r.Scan(&s.ID, &s.Name, &tags, &s.Country, &s.Location, &s.Host, &s.SSHPort, &s.SSHUser, &auth, &role, &s.Notes, &state, &created, &updated, &s.HopInterval)
 	if err != nil {
 		return s, err
 	}
@@ -129,6 +129,17 @@ func (d *DB) UpdateServer(ctx context.Context, s *model.Server, seal store.SealF
 		}
 		return putCredentials(ctx, t, s.ID, func(int64) ([]model.Credential, error) { return creds, nil }, s.UpdatedAt)
 	})
+}
+
+func (d *DB) SetHopInterval(ctx context.Context, id int64, seconds int, at time.Time) error {
+	res, err := d.db.ExecContext(ctx, `UPDATE servers SET hop_interval = ?, updated_at = ? WHERE id = ?`, seconds, unixTime(at), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
 }
 
 func (d *DB) SetServerState(ctx context.Context, id int64, state model.ServerState, at time.Time) error {

@@ -2,11 +2,13 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
+	"github.com/lardan099/hyroute/internal/srvmgr/hopping"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 )
 
@@ -129,6 +131,66 @@ func (s *server) rotateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, toJobJSON(j))
+}
+
+// portsInput is the body of POST /servers/{id}/ports.
+type portsInput struct {
+	Base  int      `json:"base"`
+	Ports []string `json:"ports"`
+	Host  string   `json:"host"`
+	// HopInterval of the client links, seconds (0: the client's default).
+	HopInterval int `json:"hopInterval"`
+}
+
+// setPorts changes the ports of a server and the hop interval of its
+// client links. New ports go through an apply job (202 with the job);
+// the interval is the client's and is saved at once (200 without a job
+// when the ports stay).
+func (s *server) setPorts(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, errNotFound)
+		return
+	}
+	var in portsInput
+	if err := readJSON(r, &in); err != nil {
+		writeError(w, err)
+		return
+	}
+	if in.HopInterval != 0 && (in.HopInterval < hopping.MinInterval || in.HopInterval > hopping.MaxInterval) {
+		writeError(w, &Error{Status: http.StatusBadRequest, Code: "invalid", Message: fmt.Sprintf("Интервал смены портов: от %d до %d секунд.", hopping.MinInterval, hopping.MaxInterval), Details: "hopInterval"})
+		return
+	}
+	if _, err := s.installed(r, id); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	srv, err := s.Servers.Get(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	j, err := s.Apply.SetPorts(r.Context(), id, in.Base, hopping.Spec{Ports: in.Ports, Host: in.Host}, principal(r).User.ID)
+	same := errors.Is(err, apply.ErrSamePorts)
+	if err != nil && !same {
+		s.fail(w, r, jobError(configError(err)))
+		return
+	}
+	if srv.HopInterval != in.HopInterval {
+		if err := s.Store.SetHopInterval(r.Context(), id, in.HopInterval, time.Now()); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		s.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), UserID: principal(r).User.ID, Action: "server.hop_interval", Target: "server/" + strconv.FormatInt(id, 10), Details: strconv.Itoa(in.HopInterval)})
+	} else if same {
+		s.fail(w, r, jobError(configError(err)))
+		return
+	}
+	if same {
+		writeJSON(w, http.StatusOK, map[string]any{"job": nil})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"job": toJobJSON(j)})
 }
 
 // revisionJSON is a config revision in the history (no config text).

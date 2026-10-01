@@ -200,3 +200,59 @@ func TestRotateAPI(t *testing.T) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 }
+
+// The ports endpoint: the interval alone is saved at once; new ports
+// start an apply job; bad values are refused; read-only may not.
+func TestPortsAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": "S", "host": "s.example.com", "authType": "password", "password": fakeSSHPass}, nil)
+	var srv serverJSON
+	json.Unmarshal(rec.Body.Bytes(), &srv)
+	id := strconv.FormatInt(srv.ID, 10)
+	cfg := "listen: :443,20000-50000\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-ports-pass-1\n"
+	c := model.ServerConfig{ServerID: srv.ID, SHA256: "x", Source: model.ConfigDeploy, At: time.Now(), Meta: model.ConfigMeta{TLS: "acme"}}
+	e.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return e.keys.Seal([]byte(cfg), model.ConfigContext(srv.ID, rev)) })
+	same := map[string]any{"base": 1, "ports": []string{"443", "20000-50000"}, "hopInterval": 45}
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/ports", same, nil), http.StatusConflict, "no_installation")
+	e.db.SetInstallation(ctx, model.Installation{ServerID: srv.ID, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", At: time.Now()})
+	e.db.SetHostKey(ctx, model.HostKey{ServerID: srv.ID, Type: "ssh-ed25519", Key: []byte("fake"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()})
+
+	var u model.User
+	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
+	e.db.CreateUser(ctx, &u)
+	code(t, e.login("viewer").do("POST", "/api/v1/servers/"+id+"/ports", same, nil), http.StatusForbidden, "forbidden")
+
+	for _, bad := range []map[string]any{
+		{"base": 1, "ports": []string{"443"}, "hopInterval": 2},
+		{"base": 1, "ports": []string{"443", "400-500"}},
+		{"base": 1, "ports": []string{}},
+	} {
+		code(t, owner.do("POST", "/api/v1/servers/"+id+"/ports", bad, nil), http.StatusBadRequest, "invalid")
+	}
+	// The same ports and the same interval: nothing to do.
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/ports", map[string]any{"base": 1, "ports": []string{"443", "20000-50000"}}, nil), http.StatusBadRequest, "invalid")
+
+	// Only the interval: saved, no job.
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/ports", same, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"job":null`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	rec = owner.do("GET", "/api/v1/servers/"+id, nil, nil)
+	json.Unmarshal(rec.Body.Bytes(), &srv)
+	if srv.HopInterval != 45 {
+		t.Fatalf("interval %d", srv.HopInterval)
+	}
+
+	// New ports: an apply job.
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/ports", map[string]any{"base": 1, "ports": []string{"443", "30000-40000"}, "hopInterval": 45}, nil)
+	var out struct {
+		Job jobJSON `json:"job"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != http.StatusAccepted || out.Job.Kind != "apply" || strings.Contains(rec.Body.String(), "fake-ports") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}

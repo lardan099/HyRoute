@@ -60,6 +60,9 @@ type Server struct {
 	Role     ServerRole
 	Notes    string
 	State    ServerState
+	// HopInterval is the port hopping interval of the client links, in
+	// seconds (0: the client's default); used when the ports are a union.
+	HopInterval int
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

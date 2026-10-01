@@ -283,6 +283,8 @@ func TestAdvancedRefused(t *testing.T) {
 		{"user name", func(p *Params) { p.Auth, p.Users = AuthUserPass, []string{"al:ice"} }, "имя пользователя"},
 		{"same user", func(p *Params) { p.Auth, p.Users = AuthUserPass, []string{"alice", "Alice"} }, "указан дважды"},
 		{"auth type", func(p *Params) { p.Auth = "http" }, "неизвестный способ входа"},
+		{"port in range", func(p *Params) { p.HopPorts = "400-500" }, "400-500 и 443 пересекаются"},
+		{"ranges overlap", func(p *Params) { p.HopPorts = "20000-30000,25000-40000" }, "пересекаются"},
 	}
 	for _, c := range cases {
 		p := params()

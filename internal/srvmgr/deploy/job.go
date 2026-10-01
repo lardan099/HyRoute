@@ -15,6 +15,7 @@ import (
 	"github.com/lardan099/hyroute/internal/hy2uri"
 	"github.com/lardan099/hyroute/internal/hyconfig"
 	"github.com/lardan099/hyroute/internal/srvmgr/firewall"
+	"github.com/lardan099/hyroute/internal/srvmgr/hopping"
 	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
@@ -199,18 +200,18 @@ func (x *deployer) preflight(ctx context.Context, env *jobs.Env, p Params) error
 		}
 	}
 
+	// The other ports of a hopping list: free, and a redirect tool for
+	// each address family (preflight looked at the first).
 	if l.Hopping {
-		ok := false
-		for _, path := range []string{"/usr/sbin/nft", "/sbin/nft", "/usr/sbin/iptables", "/sbin/iptables"} {
-			if e, err := remote.PathExists(ctx, ex, path, false); err != nil {
-				return err
-			} else if e {
-				ok = true
-				break
-			}
+		spec, rs, err := hopping.FromListen(p.Listen())
+		if err != nil {
+			return err
 		}
-		if !ok {
-			return jobs.Fail("Для диапазона портов Hysteria нужен nftables или iptables, а на сервере нет ни того, ни другого.", nil)
+		var he *hopping.Error
+		if err := hopping.Check(ctx, ex, spec, rs, sudo(env)); errors.As(err, &he) {
+			return jobs.Fail(he.Msg, nil)
+		} else if err != nil && !errors.Is(err, hopping.ErrNoSS) {
+			return err
 		}
 	}
 

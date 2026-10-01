@@ -422,6 +422,36 @@ queued → connecting → preflight → downloading → installing → configuri
   отключаются), остальное объясняет ответ controller. Список
   DNS-провайдеров повторён в `api.ts` (`dnsProviders`).
 
+## Port hopping (P2-07)
+
+- Пакет `hopping`: порты сервера — список портов и диапазонов (`Spec`,
+  до 16 записей, без пересечений; соседние диапазоны допустимы) и адрес
+  прослушивания: все адреса (IPv4 и IPv6), только IPv4 (`0.0.0.0`) или
+  один адрес сервера. Hysteria слушает наименьший порт и на Linux сама
+  перенаправляет остальные на него (nftables, иначе iptables/ip6tables)
+  для каждого семейства адресов, на которых слушает; перенаправление
+  касается только UDP и только адресов самого сервера (`fib daddr type
+  local`), исходящие соединения сервера оно не трогает.
+- Проверка сервера (`hopping.Check`) перед установкой конфига с другими
+  портами — в задании `apply` (шаг `validate`, для любой правки `listen`,
+  в том числе из редактора) и в preflight развёртывания: ни одна другая
+  программа не слушает эти UDP-порты (по `ss`; иначе Hysteria не займёт
+  первый или заберёт пакеты остальных: WireGuard, локальный DNS) и, для
+  нескольких портов, есть nftables или iptables для IPv4 и ip6tables для
+  IPv6. Без `ss` порты не проверяются — предупреждение в журнале.
+- Смена портов — `apply.SetPorts` через typed model (меняется только
+  `listen`), дальше обычное задание `apply`: брандмауэр открывает новые
+  порты до перезапуска и закрывает свои старые после проверки (P1-16e).
+- Интервал смены портов — настройка клиента, а не сервера: хранится у
+  сервера (`servers.hop_interval`, миграция 0014, 5–3600 с, 0 — по
+  умолчанию клиента) и меняется без задания. Для нескольких портов он
+  попадает в клиентский конфиг (`transport.udp.hopInterval`) и в обе
+  ссылки как `mportHopInt` (официальный клиент параметр игнорирует,
+  HyRoute и Incy читают). Общий пакет ссылок `hy2uri` клиента не менялся.
+- `firewall.Ports` учитывает маскировку по TCP (`listenHTTP`,
+  `listenHTTPS`), иначе правка конфига закрыла бы порты, открытые
+  развёртыванием.
+
 ## Импорт (P1-11)
 
 Все команды — через `remote.ReadOnly`. Служба ищется среди стандартной
@@ -651,6 +681,7 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | POST | `/api/v1/servers/{id}/check` | operator+ | подключение и проверка прав (ничего не меняет) |
 | POST | `/api/v1/servers/{id}/host-key` | operator+ | TOFU / re-trust с отпечатком (`replace`) |
 | POST | `/api/v1/servers/{id}/preflight` | operator+ | job preflight |
+| POST | `/api/v1/servers/{id}/ports` | operator+ | `{base, ports, host, hopInterval}`: новые порты — задание `apply` (202, `{job}`); только интервал — сохраняется сразу (200, `{job: null}`) |
 | POST | `/api/v1/servers/{id}/deploy` | operator+ | job Quick Deploy: тело — `deploy.Params` и `secrets` (`dns`, `outPassword`; в params задания не попадают); нужен подтверждённый ключ SSH; пароли прежней ревизии (любой `auth`, если `auth` не меняется) сохраняются; текущий конфиг не из развёртывания (правка, возврат, импорт) заменяется только с `"overwrite": true`, иначе 409 `config_changed` |
 | POST | `/api/v1/servers/{id}/import` | operator+ | job импорта |
 | POST | `/api/v1/servers/{id}/maintain` | operator+ | `{op: upgrade\|reinstall, version, source}`: задание `maintain`; без установки 409 `no_installation`, переустановка импортированной — 409 `not_managed` |

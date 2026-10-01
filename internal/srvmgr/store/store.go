@@ -94,6 +94,9 @@ type Servers interface {
 	// server has an unfinished job; a new host or port forgets the trusted
 	// host key.
 	UpdateServer(ctx context.Context, s *model.Server, seal SealFunc, drop []model.CredKind) error
+	// SetHopInterval changes only the port hopping interval of the
+	// server's client links (seconds, 0: the client's default).
+	SetHopInterval(ctx context.Context, id int64, seconds int, at time.Time) error
 	// SetServerState changes only the state.
 	SetServerState(ctx context.Context, id int64, state model.ServerState, at time.Time) error
 	// SwapServerState sets state only while the server is in one of from,

@@ -28,6 +28,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/hy2uri"
 	"github.com/lardan099/hyroute/internal/hyconfig"
+	"github.com/lardan099/hyroute/internal/srvmgr/hopping"
 	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/preflight"
@@ -134,6 +135,9 @@ func (p *Params) Normalize() error {
 		return fmt.Errorf("порты: %w", err)
 	}
 	if _, err := hy2uri.ParsePorts(p.Ports()); err != nil {
+		return fmt.Errorf("порты: %w", err)
+	}
+	if _, err := (hopping.Spec{Ports: strings.Split(p.Ports(), ",")}).Parse(); err != nil {
 		return fmt.Errorf("порты: %w", err)
 	}
 	p.Domain = strings.ToLower(strings.TrimSpace(p.Domain))

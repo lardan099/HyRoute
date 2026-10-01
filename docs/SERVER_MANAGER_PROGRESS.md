@@ -1266,3 +1266,29 @@ P1-09 (общий пакет ссылок).
 - Проверено в браузере (Playwright, светлая и тёмная тема, ширина
   телефона): тело запроса содержит группы и `secrets`, без пустых
   значений.
+
+### Исправление: порты маскировки по TCP при правке конфига
+
+- `firewall.Ports` не учитывал `masquerade.listenHTTP/listenHTTPS`, и
+  `cleanup` задания `apply` после развёртывания с маскировкой по TCP
+  закрыл бы TCP 80 и 443. Тест `TestPorts` дополнен.
+
+### P2-07a Port hopping: проверки, смена портов, интервал в ссылках
+
+- Пакет `hopping`: разбор списка портов и диапазонов, пересечения,
+  лимит записей, адрес прослушивания (IPv4/IPv6), занятые порты по `ss`,
+  наличие nftables или iptables/ip6tables для нужных семейств адресов.
+- Задание `apply` проверяет сервер при любой смене `listen` (и из
+  редактора); preflight развёртывания — для всех портов диапазона;
+  параметры развёртывания отклоняют пересекающиеся порты.
+- `apply.SetPorts` и `POST /servers/{id}/ports`; интервал смены портов
+  хранится у сервера (миграция 0014) и попадает в клиентский конфиг и
+  в обе ссылки (`mportHopInt`).
+- Тесты: `TestParse`, `TestParseRefused`, `TestFromListen`,
+  `TestFamilies`, `TestCheckBusy` (WireGuard, локальный DNS; TCP и сама
+  Hysteria не мешают), `TestCheckTools`, `TestCheckNoSS`, `TestSetPorts`
+  (только `listen` меняется, правило ufw диапазона, назад к одному порту
+  IPv4 закрывает диапазон), `TestSetPortsBusy` (и правка в редакторе),
+  `TestSetPortsNoTool`, `TestSetPortsRefused`, `TestHopInterval` (обе
+  ссылки разбирает клиент HyRoute с интервалом 45 с; у одного порта
+  интервала нет), `TestPortsAPI`.

@@ -55,12 +55,14 @@ type vps struct {
 	ufw    map[string]bool // ufw rules ("8443/udp"); nil: no ufw
 	bad    string          // a config containing it makes the service fail
 	noSS   bool            // no ss (iproute2) on the server
+	others string          // ss lines of other programs
+	tools  map[string]bool // programs on the server (test -e)
 	// crash: the service fails with these files (locked).
 	crash func(files map[string][]byte) bool
 }
 
 func newVPS() *vps {
-	v := &vps{files: map[string][]byte{cfgPath: []byte(deployed)}, modes: map[string]string{cfgPath: "640 root hysteria"}}
+	v := &vps{files: map[string][]byte{cfgPath: []byte(deployed)}, modes: map[string]string{cfgPath: "640 root hysteria"}, tools: map[string]bool{"/usr/sbin/nft": true}}
 	v.start()
 	return v
 }
@@ -140,9 +142,14 @@ func (v *vps) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 		return remote.Result{ExitCode: 127, Stderr: []byte("env: 'ss': No such file or directory")}, nil
 	case a[0] == "ss":
 		if v.state == "active" {
-			return res(fmt.Sprintf("udp UNCONN 0 0 *:%d *:* users:((\"hysteria\",pid=4242,fd=7))\n", v.port)), nil
+			return res(fmt.Sprintf("udp UNCONN 0 0 *:%d *:* users:((\"hysteria\",pid=4242,fd=7))\n", v.port) + v.others), nil
 		}
-		return res(""), nil
+		return res(v.others), nil
+	case a[0] == "test" && a[1] == "-e":
+		if _, ok := v.files[last]; ok || v.tools[last] {
+			return res(""), nil
+		}
+		return remote.Result{ExitCode: 1}, nil
 	case a[0] == "sh" && last == "ufw" && v.ufw != nil:
 		return res(""), nil
 	case line == "ufw status" && v.ufw != nil:

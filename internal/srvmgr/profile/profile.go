@@ -6,6 +6,7 @@ package profile
 import (
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 
 	"rsc.io/qr"
@@ -52,6 +53,10 @@ var ErrExternalAuth = errors.New("внешняя проверка паролей
 
 func options(srv model.Server, c *hyconfig.Server, meta model.ConfigMeta, user string) hyconfig.ClientOptions {
 	o := hyconfig.ClientOptions{Host: srv.Host, Ports: meta.Ports, User: user}
+	if srv.HopInterval > 0 {
+		// ClientFor uses it only for a union of ports.
+		o.HopInterval = hyconfig.Duration(strconv.Itoa(srv.HopInterval) + "s")
+	}
 	switch meta.TLS {
 	case "self-signed":
 		o.PinSHA256, o.SNI = meta.PinSHA256, meta.SNI
@@ -116,6 +121,7 @@ func Build(srv model.Server, cfg []byte, meta model.ConfigMeta, user string) (Pr
 	l := hy2uri.Link{
 		Name: srv.Name, Auth: cc.Auth, Host: host, Ports: ports,
 		SNI: cc.TLS.SNI, Insecure: cc.TLS.Insecure, PinSHA256: cc.TLS.PinSHA256,
+		HopInterval: string(cc.Transport.UDP.HopInterval),
 	}
 	switch strings.ToLower(cc.Obfs.Type) {
 	case "salamander":
@@ -130,7 +136,7 @@ func Build(srv model.Server, cfg []byte, meta model.ConfigMeta, user string) (Pr
 	if err != nil {
 		return Profile{}, err
 	}
-	p := Profile{Summary: s, URI: l.String(), Compat: l.Compat(), Config: string(yml)}
+	p := Profile{Summary: s, URI: withHop(l.String(), srv.HopInterval, cc.Transport.UDP.HopInterval != ""), Compat: l.Compat(), Config: string(yml)}
 	if s.Auth == "userpass" {
 		p.User, _, _ = strings.Cut(cc.Auth, ":")
 	}
@@ -141,6 +147,25 @@ func Build(srv model.Server, cfg []byte, meta model.ConfigMeta, user string) (Pr
 		return Profile{}, err
 	}
 	return p, nil
+}
+
+// withHop adds the hop interval to an official link (hopping: the client
+// config has it). The scheme does not define it, and the Hysteria client
+// ignores it; HyRoute and Incy read mportHopInt, as Compat carries it.
+func withHop(uri string, seconds int, hopping bool) string {
+	if !hopping || seconds <= 0 {
+		return uri
+	}
+	base, frag, hasFrag := strings.Cut(uri, "#")
+	sep := "?"
+	if strings.Contains(base, "?") {
+		sep = "&"
+	}
+	base += sep + "mportHopInt=" + strconv.Itoa(seconds)
+	if hasFrag {
+		base += "#" + frag
+	}
+	return base
 }
 
 // QR is the QR code of text (error correction M) as rows of "0" and "1",

@@ -115,3 +115,49 @@ func TestExternalAuth(t *testing.T) {
 		t.Fatalf("%+v %v", s, err)
 	}
 }
+
+// The hop interval of the server reaches both links and the client config
+// of a hopping server, and the HyRoute client reads it from either link;
+// one port gets none.
+func TestHopInterval(t *testing.T) {
+	hop := srv
+	hop.HopInterval = 45
+	p := deploy.Params{TLS: deploy.TLSSelfSigned, HopPorts: "20000-50000"}
+	if err := p.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	sec, _ := deploy.NewSecrets(p, hop.Host, nil, deploy.Input{})
+	c, _ := deploy.BuildConfig(p, sec)
+	cfg, _ := c.Marshal()
+	pin, _ := deploy.Pin([]byte(sec[deploy.SecretCert]))
+	pr, err := Build(hop, cfg, deploy.Meta(p, pin), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range []string{pr.URI, pr.Compat} {
+		if !strings.Contains(link, "mportHopInt=45") {
+			t.Fatalf("no interval: %s", link)
+		}
+		hp, warns, err := hysteria.ParseURI(link)
+		if err != nil || len(warns) != 0 || hp.Ports != "443,20000-50000" || hp.Hop.Interval != "45s" {
+			t.Fatalf("%s → %+v %q %v", link, hp.Hop, warns, err)
+		}
+	}
+	if !strings.Contains(pr.URI, "@192.0.2.70:443,20000-50000/?") {
+		t.Fatal(pr.URI)
+	}
+	cc, _ := hyconfig.ParseClient([]byte(pr.Config))
+	if cc.Transport.UDP.HopInterval != "45s" {
+		t.Fatalf("%s", pr.Config)
+	}
+
+	one := deploy.Params{TLS: deploy.TLSSelfSigned}
+	one.Normalize()
+	sec, _ = deploy.NewSecrets(one, hop.Host, nil, deploy.Input{})
+	c, _ = deploy.BuildConfig(one, sec)
+	cfg, _ = c.Marshal()
+	pin, _ = deploy.Pin([]byte(sec[deploy.SecretCert]))
+	if pr, _ = Build(hop, cfg, deploy.Meta(one, pin), ""); strings.Contains(pr.URI+pr.Compat, "mportHopInt") || strings.Contains(pr.Config, "hopInterval") {
+		t.Fatalf("interval for one port:\n%s\n%s", pr.URI, pr.Config)
+	}
+}
