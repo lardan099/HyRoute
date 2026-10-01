@@ -4,6 +4,7 @@
   import Overview from './pages/Overview.svelte';
   import Soon from './pages/Soon.svelte';
   import Presets from './pages/Presets.svelte';
+  import Cascades from './pages/Cascades.svelte';
   import Auth from './pages/Auth.svelte';
   import Settings from './pages/Settings.svelte';
   import Servers from './pages/Servers.svelte';
@@ -67,6 +68,8 @@
         <Logs />
       {:else if route.page === 'presets'}
         <Presets />
+      {:else if route.page === 'cascades'}
+        <Cascades />
       {:else}
         <Soon title={title(route.page)} text={t(`soon.${route.page}` as Key)} />
       {/if}

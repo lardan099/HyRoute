@@ -53,7 +53,7 @@
             <tr class="click" onclick={() => go('deployments', j.id)}>
               <td class="mono">{j.id}</td>
               <td>{kindName(j.kind)}</td>
-              <td>{servers[j.serverId]?.name ?? (j.serverId ? '#' + j.serverId : '—')}</td>
+              <td>{j.serverId ? [j.serverId, ...(j.servers ?? [])].map((s) => servers[s]?.name ?? '#' + s).join(' → ') : '—'}</td>
               <td><span class="dot {jobTone(j.state)}"></span> {t(`jstate.${j.state}` as Key)}</td>
               <td>{when(j.startedAt ?? j.createdAt)}</td>
               <td>{duration(j.startedAt, j.finishedAt)}</td>

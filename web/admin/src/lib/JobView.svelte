@@ -34,7 +34,8 @@
     }
   });
 
-  const stepName = (n: string) => tOr(`step.${n}`, n);
+  // A kind may name a step its own way (step.<kind>.<step>).
+  const stepName = (n: string) => tOr(`step.${job?.kind}.${n}`, tOr(`step.${n}`, n));
   const kindName = (k: string) => tOr(`kind.${k}`, k);
 
   async function scrollDown() {
@@ -199,7 +200,7 @@
   </div>
   <div class="meta muted small">
     <span><span class="dot {jobTone(job.state)}"></span> {t(`jstate.${job.state}` as Key)}</span>
-    {#if job.serverId}<span>{servers[job.serverId]?.name ?? '#' + job.serverId}</span>{/if}
+    {#if job.serverId}<span>{[job.serverId, ...(job.servers ?? [])].map((s) => servers[s]?.name ?? '#' + s).join(' → ')}</span>{/if}
     <span>{when(job.startedAt ?? job.createdAt)}</span>
     <span>{duration(job.startedAt, job.finishedAt)}</span>
     {#if job.attempt > 1}<span>{t('jobs.attempt', { n: job.attempt })}</span>{/if}

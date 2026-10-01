@@ -587,6 +587,59 @@ export type PresetSection = 'ports' | 'obfs' | 'masquerade' | 'speed' | 'quic' |
 export const presetSections: PresetSection[] = ['ports', 'obfs', 'masquerade', 'speed', 'quic', 'udp', 'resolver', 'sniff', 'acl', 'outbounds'];
 export const deploySections: PresetSection[] = ['masquerade', 'speed', 'quic', 'udp', 'resolver', 'sniff', 'acl', 'outbounds'];
 
+// ==== cascades (Phase 3) ====
+
+export type LinkState = 'new' | 'linking' | 'active' | 'stale' | 'unlinking' | 'failed';
+
+// LinkParams are a link's settings (no secrets).
+export interface LinkParams {
+  localPort?: number;
+  up?: string;
+  down?: string;
+  noUdp?: boolean;
+  checkTarget?: string;
+}
+
+// LinkCheck is one check of a link from its entry.
+export interface LinkCheck {
+  at: string;
+  status: ServerState;
+  reason: string;
+  service: string;
+  handshakeMs: number;
+  tcpMs: number;
+}
+
+export interface ChainNode {
+  serverId: number;
+  name: string;
+  role: ServerRole;
+}
+
+export interface ChainLink {
+  idx: number;
+  from: number;
+  to: number;
+  state: LinkState;
+  params: LinkParams;
+  updatedAt: string;
+  check: LinkCheck | null;
+}
+
+// Chain is a cascade: servers in order, entry first, and the links.
+export interface Chain {
+  id: number;
+  name: string;
+  notes: string;
+  state: LinkState;
+  health: ServerState | '';
+  egress: string;
+  nodes: ChainNode[];
+  links: ChainLink[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 // Preset is a part of a server config without secrets and addresses.
 export interface Preset {
   id: number;
@@ -749,6 +802,14 @@ export const api = {
   deletePreset: (id: number) => request<void>('DELETE', `/presets/${id}`),
   exportPreset: (id: number) => request<unknown>('GET', `/presets/${id}/export`),
   importPreset: (file: unknown) => request<Preset>('POST', '/presets/import', file),
+  chains: () => request<Chain[]>('GET', '/chains'),
+  chain: (id: number) => request<Chain>('GET', `/chains/${id}`),
+  createChain: (input: { name: string; notes: string; nodes: number[]; link: LinkParams }) => request<Chain>('POST', '/chains', input),
+  updateChain: (id: number, name: string, notes: string) => request<Chain>('PATCH', `/chains/${id}`, { name, notes }),
+  deleteChain: (id: number) => request<void>('DELETE', `/chains/${id}`),
+  linkChain: (id: number) => request<Job>('POST', `/chains/${id}/link`),
+  unlinkChain: (id: number, del: boolean) => request<Job>('POST', `/chains/${id}/unlink`, { delete: del }),
+  chainChecks: (id: number, idx = 0, limit = 100) => request<LinkCheck[]>('GET', `/chains/${id}/checks?idx=${idx}&limit=${limit}`),
   presetPreview: (serverId: number, p: PresetApply) => request<PresetCheck>('POST', `/servers/${serverId}/preset/preview`, p),
   presetApply: (serverId: number, p: PresetApply) => request<Job>('POST', `/servers/${serverId}/preset/apply`, p),
   clientSummary: (serverId: number) => request<ClientSummary>('GET', `/servers/${serverId}/client`),
