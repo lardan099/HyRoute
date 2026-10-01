@@ -202,6 +202,8 @@
       </div>
       <label class="check"><input type="checkbox" bind:checked={fields.speedTest} onchange={field} /> {t('cfg.speedTest')}</label>
       <label class="check"><input type="checkbox" bind:checked={fields.disableUDP} onchange={field} /> {t('cfg.disableUDP')}</label>
+      <label class="check"><input type="checkbox" bind:checked={fields.trafficStats} onchange={field} /> {t('cfg.trafficStats')}</label>
+      <p class="small faint hint">{t('cfg.trafficStatsHint')}</p>
       <label class="short"><span>{t('cfg.udpIdle')}</span><input type="text" bind:value={fields.udpIdleTimeout} oninput={field} placeholder={t('cfg.udpIdlePh')} /></label>
     </div>
   {:else if tab === 'yaml'}

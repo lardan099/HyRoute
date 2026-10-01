@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"net"
+	"slices"
 	"strings"
 
 	"github.com/lardan099/hyroute/internal/hyconfig"
@@ -39,7 +41,13 @@ type Fields struct {
 	SpeedTest      bool   `json:"speedTest"`
 	DisableUDP     bool   `json:"disableUDP"`
 	UDPIdleTimeout string `json:"udpIdleTimeout"`
+	// TrafficStats turns on the stats API: on loopback only, always with
+	// a generated secret the editor never shows.
+	TrafficStats bool `json:"trafficStats"`
 }
+
+// StatsListen is where a stats API the editor turns on listens.
+const StatsListen = "127.0.0.1:25413"
 
 // FieldsOf reads the fields from a config (masked or not).
 func FieldsOf(c *hyconfig.Server) Fields {
@@ -49,7 +57,7 @@ func FieldsOf(c *hyconfig.Server) Fields {
 		Masquerade: strings.ToLower(c.Masquerade.Type), MasqueradeURL: c.Masquerade.Proxy.URL, RewriteHost: c.Masquerade.Proxy.RewriteHost,
 		BandwidthUp: c.Bandwidth.Up, BandwidthDown: c.Bandwidth.Down, IgnoreClientBW: c.IgnoreClientBandwidth,
 		SpeedTest: c.SpeedTest, DisableUDP: c.DisableUDP, UDPIdleTimeout: string(c.UDPIdleTimeout),
-		ACMEDomains: []string{},
+		ACMEDomains: []string{}, TrafficStats: c.TrafficStats.Listen != "",
 	}
 	switch {
 	case c.ACME != nil:
@@ -112,7 +120,41 @@ func SetFields(c *hyconfig.Server, f Fields) error {
 	c.Bandwidth.Up, c.Bandwidth.Down = strings.TrimSpace(f.BandwidthUp), strings.TrimSpace(f.BandwidthDown)
 	c.IgnoreClientBandwidth, c.SpeedTest, c.DisableUDP = f.IgnoreClientBW, f.SpeedTest, f.DisableUDP
 	c.UDPIdleTimeout = hyconfig.Duration(strings.TrimSpace(f.UDPIdleTimeout))
+	if !f.TrafficStats {
+		c.TrafficStats = hyconfig.TrafficStats{Unknown: c.TrafficStats.Unknown}
+		return nil
+	}
+	// A port of an API already there stays, its host becomes loopback.
+	if _, port, err := net.SplitHostPort(c.TrafficStats.Listen); err == nil && port != "" {
+		c.TrafficStats.Listen = net.JoinHostPort("127.0.0.1", port)
+	} else {
+		c.TrafficStats.Listen = StatsListen
+	}
+	if c.TrafficStats.Secret == "" {
+		c.TrafficStats.Secret = generated()
+	}
 	return nil
+}
+
+// policy are the rules of the panel beyond what Hysteria accepts: the
+// stats API shows every client and can kick them, so it listens on
+// loopback only (the panel reads it over SSH) and always has a secret.
+func policy(c *hyconfig.Server) []hyconfig.Problem {
+	ts := c.TrafficStats
+	if ts.Listen == "" {
+		return nil
+	}
+	var out []hyconfig.Problem
+	host, _, err := net.SplitHostPort(ts.Listen)
+	if ip := net.ParseIP(host); err == nil && (ip == nil || !ip.IsLoopback()) && host != "localhost" {
+		out = append(out, hyconfig.Problem{Field: "trafficStats.listen",
+			Message: "API статистики должен слушать только 127.0.0.1: через него видно клиентов и можно их отключать"})
+	}
+	if ts.Secret == "" {
+		out = append(out, hyconfig.Problem{Field: "trafficStats.secret",
+			Message: "API статистики без секрета: включите «Статистику трафика» в полях, и панель создаст секрет сама"})
+	}
+	return out
 }
 
 // generated is a new password: 24 random bytes, base64url.
@@ -157,6 +199,10 @@ func Build(current []byte, text string, fields *Fields) (Check, []byte, error) {
 			return ch, nil, err
 		}
 	}
+	b, err := fillStatsSecret(b, current)
+	if err != nil {
+		return ch, nil, &model.FieldError{Field: "yaml", Msg: "Конфиг не разобрать: " + err.Error()}
+	}
 	cand, err := Unmask(b, current)
 	var fe *model.FieldError
 	if errors.As(err, &fe) {
@@ -178,7 +224,14 @@ func Build(current []byte, text string, fields *Fields) (Check, []byte, error) {
 	}
 	mc, _ := hyconfig.ParseServer(masked)
 	ch.YAML, ch.Fields = string(masked), FieldsOf(mc)
-	ch.Problems = append(ch.Problems, c.Validate()...)
+	pol := policy(c)
+	for _, p := range c.Validate() {
+		// The policy's error replaces Hysteria's warning about it.
+		if !p.Warning || !slices.ContainsFunc(pol, func(q hyconfig.Problem) bool { return q.Field == p.Field }) {
+			ch.Problems = append(ch.Problems, p)
+		}
+	}
+	ch.Problems = append(ch.Problems, pol...)
 	ch.Unknown = append(ch.Unknown, hyconfig.UnknownFields(c)...)
 	ch.Diff = Diff(string(curMasked), string(masked))
 	ch.Secrets = append(ch.Secrets, ChangedSecrets(current, cand)...)

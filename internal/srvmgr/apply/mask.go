@@ -156,7 +156,35 @@ func MaskUnchanged(candidate, current []byte) ([]byte, error) {
 			hide(n)
 		}
 	}
+	// The stats secret is the panel's: never shown, even when new.
+	if n := lookup(cand, statsSecret); n != nil && n.Kind == yaml.ScalarNode && n.Value != "" {
+		hide(n)
+	}
 	maskComments(cand)
+	return encode(cand)
+}
+
+// statsSecret is the path of the stats API's secret.
+const statsSecret = "trafficstats.secret"
+
+// fillStatsSecret generates the stats secret a candidate keeps Hidden
+// when current has none: the editor never shows a new one, so the text it
+// sends back hides it too.
+func fillStatsSecret(candidate, current []byte) ([]byte, error) {
+	cand, err := parse(candidate)
+	if err != nil {
+		return nil, err
+	}
+	n := lookup(cand, statsSecret)
+	if n == nil || n.Kind != yaml.ScalarNode || n.Value != Hidden {
+		return candidate, nil
+	}
+	if cur, err := parse(current); err == nil {
+		if v := lookup(cur, statsSecret); v != nil && v.Kind == yaml.ScalarNode && v.Value != "" {
+			return candidate, nil // Unmask puts it back
+		}
+	}
+	n.Value, n.Tag, n.Style = generated(), "!!str", 0
 	return encode(cand)
 }
 

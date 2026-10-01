@@ -425,6 +425,7 @@ export interface ConfigFields {
   speedTest: boolean;
   disableUDP: boolean;
   udpIdleTimeout: string;
+  trafficStats: boolean;
 }
 
 export interface ConfigView {

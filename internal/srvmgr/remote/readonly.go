@@ -21,6 +21,9 @@ func ReadOnly(ex Executor) Executor { return readOnly{ex} }
 type readOnly struct{ ex Executor }
 
 func (r readOnly) check(cmd Cmd) error {
+	if slices.Equal(cmd.Args, curlStats) && !cmd.Sudo && statsStdin(cmd.Stdin) {
+		return nil // a GET of the stats API on loopback
+	}
 	if !reads(cmd.Args) {
 		return fmt.Errorf("%w: %s", ErrNotReadOnly, strings.Join(cmd.Args, " "))
 	}

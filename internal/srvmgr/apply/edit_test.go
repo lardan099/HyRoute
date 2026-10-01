@@ -283,3 +283,95 @@ func TestMaskFollowsAliasesURLsAndComments(t *testing.T) {
 		t.Fatalf("secret in the check:\n%s\n%v", ch.YAML, ch.Diff)
 	}
 }
+
+// The stats API: the field turns it on on loopback with a generated
+// secret the editor never shows; the panel refuses an API reachable from
+// the network or without a secret.
+func TestTrafficStats(t *testing.T) {
+	const bare = "listen: :443\ntls:\n  cert: /etc/hysteria/server.crt\n  key: /etc/hysteria/server.key\nauth:\n  type: password\n  password: fake-current-auth\n"
+	m, _, _ := Mask([]byte(bare))
+	f := FieldsOf(mustParse(t, m))
+	if f.TrafficStats {
+		t.Fatal("stats on in a config without them")
+	}
+	f.TrafficStats = true
+	ch, cand, err := Build([]byte(bare), string(m), &f)
+	if err != nil || !ch.OK {
+		t.Fatalf("%v %+v", err, ch.Problems)
+	}
+	c := mustParse(t, cand)
+	if c.TrafficStats.Listen != StatsListen || len(c.TrafficStats.Secret) < 32 {
+		t.Fatalf("%+v", c.TrafficStats)
+	}
+	if strings.Contains(ch.YAML, c.TrafficStats.Secret) || !ch.Fields.TrafficStats || !slices.Contains(ch.Secrets, "trafficstats.secret") {
+		t.Fatalf("secret shown or not listed: %q\n%s", ch.Secrets, ch.YAML)
+	}
+	// The text the editor sends back hides the new secret: apply
+	// generates it.
+	ch3, cand3, err := Build([]byte(bare), ch.YAML, nil)
+	if err != nil || !ch3.OK || len(mustParse(t, cand3).TrafficStats.Secret) < 32 || mustParse(t, cand3).TrafficStats.Secret == Hidden {
+		t.Fatalf("%v %+v\n%s", err, ch3.Problems, cand3)
+	}
+	// Saved, edited again: the secret stays.
+	ch2, cand2, err := Build(cand, ch.YAML, &ch.Fields)
+	if err != nil || mustParse(t, cand2).TrafficStats.Secret != c.TrafficStats.Secret || len(ch2.Secrets) != 0 {
+		t.Fatalf("%v %q", err, ch2.Secrets)
+	}
+
+	// An API on every interface: the field moves it to loopback, same port.
+	exposed := bare + "trafficStats:\n  listen: :9999\n  secret: fake-stats-secret\n"
+	m, _, _ = Mask([]byte(exposed))
+	ch, _, err = Build([]byte(exposed), string(m), nil)
+	if err != nil || ch.OK || !hasProblem(ch.Problems, "trafficStats.listen") {
+		t.Fatalf("exposed API accepted: %v %+v", err, ch.Problems)
+	}
+	f = FieldsOf(mustParse(t, m))
+	if !f.TrafficStats {
+		t.Fatal("stats off")
+	}
+	ch, cand, err = Build([]byte(exposed), string(m), &f)
+	if err != nil || !ch.OK || mustParse(t, cand).TrafficStats.Listen != "127.0.0.1:9999" || mustParse(t, cand).TrafficStats.Secret != "fake-stats-secret" {
+		t.Fatalf("%v %+v\n%s", err, ch.Problems, cand)
+	}
+
+	// Without a secret: an error, not Hysteria's warning as well.
+	open := bare + "trafficStats:\n  listen: 127.0.0.1:9999\n"
+	ch, _, err = Build([]byte(open), open, nil)
+	if err != nil || ch.OK || len(ch.Problems) != 1 || ch.Problems[0].Field != "trafficStats.secret" || ch.Problems[0].Warning {
+		t.Fatalf("%v %+v", err, ch.Problems)
+	}
+	for _, listen := range []string{"192.0.2.1:9999", "0.0.0.0:9999", "[::]:9999", "example.com:9999"} {
+		y := bare + "trafficStats:\n  listen: " + listen + "\n  secret: fake-stats-secret\n"
+		y = strings.Replace(y, "listen: [::]:9999", `listen: "[::]:9999"`, 1)
+		if ch, _, err := Build([]byte(y), y, nil); err != nil || ch.OK {
+			t.Errorf("%s accepted", listen)
+		}
+	}
+	for _, listen := range []string{"127.0.0.1:9999", "[::1]:9999", "localhost:9999"} {
+		y := bare + "trafficStats:\n  listen: " + listen + "\n  secret: fake-stats-secret\n"
+		y = strings.Replace(y, "listen: [::1]:9999", `listen: "[::1]:9999"`, 1)
+		if ch, _, _ := Build([]byte(y), y, nil); !ch.OK {
+			t.Errorf("%s refused: %+v", listen, ch.Problems)
+		}
+	}
+
+	// Off: the section goes.
+	f.TrafficStats = false
+	_, cand, _ = Build([]byte(exposed), string(m), &f)
+	if strings.Contains(string(cand), "trafficStats") || strings.Contains(string(cand), "fake-stats-secret") {
+		t.Fatalf("stats left:\n%s", cand)
+	}
+}
+
+func mustParse(t *testing.T, b []byte) *hyconfig.Server {
+	t.Helper()
+	c, err := hyconfig.ParseServer(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func hasProblem(ps []hyconfig.Problem, field string) bool {
+	return slices.ContainsFunc(ps, func(p hyconfig.Problem) bool { return p.Field == field && !p.Warning })
+}
