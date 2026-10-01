@@ -170,6 +170,8 @@ export interface Job {
   id: number;
   kind: string;
   serverId: number;
+  // The other servers the job changes (a cascade link: entry and exit).
+  servers: number[];
   state: JobState;
   currentStep: string;
   params: Record<string, unknown>;

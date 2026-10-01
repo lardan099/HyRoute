@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,14 +45,53 @@ func nullID(id int64) sql.NullInt64 { return sql.NullInt64{Int64: id, Valid: id 
 // unfinished lists the states of jobs that are not done.
 const unfinished = `state NOT IN ('completed', 'failed')`
 
+// touches matches the jobs that change a server (two arguments: the
+// server twice), as their first server or one of the others.
+const touches = `(server_id = ? OR id IN (SELECT job_id FROM job_servers WHERE server_id = ?))`
+
+// busyWith counts the unfinished jobs that change server id.
+func busyWith(ctx context.Context, t *sql.Tx, id int64) (bool, error) {
+	var n int
+	err := t.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE `+touches+` AND `+unfinished, id, id).Scan(&n)
+	return n > 0, err
+}
+
+// withServers fills in the other servers of the jobs.
+func withServers(ctx context.Context, q querier, js []model.Job) error {
+	if len(js) == 0 {
+		return nil
+	}
+	at := make(map[int64]int, len(js))
+	ids := make([]string, len(js))
+	for i, j := range js {
+		at[j.ID] = i
+		ids[i] = strconv.FormatInt(j.ID, 10)
+	}
+	rows, err := q.QueryContext(ctx, `SELECT job_id, server_id FROM job_servers WHERE job_id IN (`+strings.Join(ids, ",")+`) ORDER BY job_id, server_id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var job, server int64
+		if err := rows.Scan(&job, &server); err != nil {
+			return err
+		}
+		if i, ok := at[job]; ok {
+			js[i].Servers = append(js[i].Servers, server)
+		}
+	}
+	return rows.Err()
+}
+
 func (d *DB) CreateJob(ctx context.Context, j *model.Job, steps []model.JobStep, seal func(int64) ([]byte, error)) error {
 	return d.tx(ctx, func(t *sql.Tx) error {
-		if j.ServerID != 0 {
-			var n int
-			if err := t.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE server_id = ? AND `+unfinished, j.ServerID).Scan(&n); err != nil {
+		for _, s := range j.AllServers() {
+			busy, err := busyWith(ctx, t, s)
+			if err != nil {
 				return err
 			}
-			if n > 0 {
+			if busy {
 				return store.ErrConflict
 			}
 		}
@@ -77,6 +117,14 @@ func (d *DB) CreateJob(ctx context.Context, j *model.Job, steps []model.JobStep,
 				return err
 			}
 		}
+		for _, s := range j.Servers {
+			if s == j.ServerID {
+				continue
+			}
+			if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO job_servers (job_id, server_id) VALUES (?, ?)`, id, s); err != nil {
+				return err
+			}
+		}
 		for i, s := range steps {
 			if _, err := t.ExecContext(ctx, `INSERT INTO job_steps (job_id, idx, name, phase, state) VALUES (?, ?, ?, ?, ?)`, id, i, s.Name, string(s.Phase), string(model.StepPending)); err != nil {
 				return err
@@ -89,7 +137,12 @@ func (d *DB) CreateJob(ctx context.Context, j *model.Job, steps []model.JobStep,
 
 func (d *DB) JobByID(ctx context.Context, id int64) (model.Job, error) {
 	j, err := scanJob(d.db.QueryRowContext(ctx, `SELECT `+jobCols+` FROM jobs WHERE id = ?`, id))
-	return j, notFound(err)
+	if err != nil {
+		return j, notFound(err)
+	}
+	js := []model.Job{j}
+	err = withServers(ctx, d.db, js)
+	return js[0], err
 }
 
 func (d *DB) JobSecret(ctx context.Context, id int64) ([]byte, error) {
@@ -112,14 +165,18 @@ func (d *DB) queryJobs(ctx context.Context, q string, args ...any) ([]model.Job,
 		}
 		js = append(js, j)
 	}
-	return js, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	return js, withServers(ctx, d.db, js)
 }
 
 func (d *DB) ListJobs(ctx context.Context, f model.JobFilter) ([]model.Job, error) {
 	var where []string
 	var args []any
 	if f.ServerID != 0 {
-		where, args = append(where, "server_id = ?"), append(args, f.ServerID)
+		where, args = append(where, touches), append(args, f.ServerID, f.ServerID)
 	}
 	if f.BeforeID != 0 {
 		where, args = append(where, "id < ?"), append(args, f.BeforeID)

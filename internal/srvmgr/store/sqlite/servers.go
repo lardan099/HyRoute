@@ -77,11 +77,11 @@ func (d *DB) CreateServer(ctx context.Context, s *model.Server, seal store.SealF
 
 // busy fails with ErrBusy when the server has an unfinished job.
 func busy(ctx context.Context, t *sql.Tx, id int64) error {
-	var n int
-	if err := t.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE server_id = ? AND `+unfinished, id).Scan(&n); err != nil {
+	b, err := busyWith(ctx, t, id)
+	if err != nil {
 		return err
 	}
-	if n > 0 {
+	if b {
 		return store.ErrBusy
 	}
 	return nil

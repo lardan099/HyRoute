@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -87,8 +88,10 @@ func Fail(message string, err error) error { return &StepError{Message: message,
 
 // Env is what a step sees of its job.
 type Env struct {
-	JobID     int64
-	ServerID  int64
+	JobID    int64
+	ServerID int64
+	// Servers are the other servers of the job (model.Job.Servers).
+	Servers   []int64
 	CreatedBy int64 // user who started the job (0: the system)
 	Params    json.RawMessage
 
@@ -97,12 +100,18 @@ type Env struct {
 	mu       sync.Mutex
 	data     map[string]string
 	secrets  map[string]string
-	exec     *conn
 	setErr   error
 	rollback Rollback
-	// redial: the connection was given up (lost, or before a rollback),
-	// and the next Exec opens a new one once: if that fails, dialErr is
-	// what later calls get, without dialing again.
+	// links are the connections, one per server of the job.
+	links map[int64]*serverConn
+}
+
+// serverConn is the job's connection to one of its servers. redial: the
+// connection was given up (lost, or before a rollback), and the next
+// ExecOn opens a new one once: if that fails, dialErr is what later calls
+// get, without dialing again.
+type serverConn struct {
+	exec    *conn
 	redial  bool
 	dialErr error
 }
@@ -239,63 +248,92 @@ func (e *Env) Warnf(format string, args ...any) {
 	e.eng.log(e.JobID, "warn", e.step, fmt.Sprintf(format, args...))
 }
 
-// Exec is the connection to the job's server, opened on first use and
-// closed when the job ends. A lost connection is replaced by a new one,
-// once.
+// Exec is the connection to the job's server (ServerID), opened on first
+// use and closed when the job ends. A lost connection is replaced by a
+// new one, once.
 func (e *Env) Exec(ctx context.Context) (remote.Executor, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.exec != nil && !e.exec.lost.Load() {
-		return e.exec, nil
-	}
-	if e.exec != nil {
-		e.dropLocked()
-	}
-	if e.dialErr != nil {
-		return nil, e.dialErr
-	}
 	if e.ServerID == 0 {
 		return nil, errors.New("job has no server")
+	}
+	return e.ExecOn(ctx, e.ServerID)
+}
+
+// ExecOn is Exec for any server of the job: ServerID or one of Servers.
+// Each server has a connection of its own.
+func (e *Env) ExecOn(ctx context.Context, serverID int64) (remote.Executor, error) {
+	if serverID == 0 || (serverID != e.ServerID && !slices.Contains(e.Servers, serverID)) {
+		return nil, fmt.Errorf("server %d is not one of the job's", serverID)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.links == nil {
+		e.links = map[int64]*serverConn{}
+	}
+	l := e.links[serverID]
+	if l == nil {
+		l = &serverConn{}
+		e.links[serverID] = l
+	}
+	if l.exec != nil && !l.exec.lost.Load() {
+		return l.exec, nil
+	}
+	if l.exec != nil {
+		l.drop()
+	}
+	if l.dialErr != nil {
+		return nil, l.dialErr
 	}
 	if e.eng.Connect == nil {
 		return nil, errors.New("no connector")
 	}
-	ex, err := e.eng.Connect.Connect(ctx, e.ServerID)
+	ex, err := e.eng.Connect.Connect(ctx, serverID)
 	if err != nil {
-		if e.redial {
-			e.dialErr = err
+		if l.redial {
+			l.dialErr = err
 		}
 		return nil, err
 	}
-	e.exec, e.redial = &conn{Executor: ex}, false
-	return e.exec, nil
+	l.exec, l.redial = &conn{Executor: ex}, false
+	return l.exec, nil
 }
 
-// dropLocked gives up the connection: it is closed in the background (a
-// dead one may take long), and the next Exec dials again.
-func (e *Env) dropLocked() {
-	if e.exec != nil {
-		go e.exec.Close()
-		e.exec = nil
+// drop gives up the connection: it is closed in the background (a dead
+// one may take long), and the next ExecOn dials again.
+func (l *serverConn) drop() {
+	if l.exec != nil {
+		go l.exec.Close()
+		l.exec = nil
 	}
-	e.redial = true
+	l.redial = true
 }
 
-// reconnect makes the next Exec open a new connection, for the rollback:
-// the one the failed step used may be dead without anything having
-// noticed yet.
+// reconnect makes the next ExecOn of every server open a new connection,
+// for the rollback: the one the failed step used may be dead without
+// anything having noticed yet.
 func (e *Env) reconnect() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.dropLocked()
-	e.dialErr = nil
+	if e.links == nil {
+		e.links = map[int64]*serverConn{}
+	}
+	for _, id := range append([]int64{e.ServerID}, e.Servers...) {
+		if id != 0 && e.links[id] == nil {
+			e.links[id] = &serverConn{}
+		}
+	}
+	for _, l := range e.links {
+		l.drop()
+		l.dialErr = nil
+	}
 }
 
 func (e *Env) close() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.exec != nil {
-		e.exec.Close()
-		e.exec = nil
+	for _, l := range e.links {
+		if l.exec != nil {
+			l.exec.Close()
+			l.exec = nil
+		}
 	}
 }

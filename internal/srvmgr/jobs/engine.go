@@ -97,6 +97,17 @@ func secretContext(jobID int64) string { return fmt.Sprintf("job/%d/secret", job
 // Submit queues a job. secretParams are sealed and only reach steps
 // through Env.Secret.
 func (e *Engine) Submit(ctx context.Context, kind string, serverID int64, params any, secretParams map[string]string, actor int64) (model.Job, error) {
+	var servers []int64
+	if serverID != 0 {
+		servers = []int64{serverID}
+	}
+	return e.SubmitOn(ctx, kind, servers, params, secretParams, actor)
+}
+
+// SubmitOn queues a job that changes several servers: servers[0] is its
+// ServerID, the rest its Servers. It waits while any of them has another
+// job, and none of them gets another job until it ends (ErrBusy).
+func (e *Engine) SubmitOn(ctx context.Context, kind string, servers []int64, params any, secretParams map[string]string, actor int64) (model.Job, error) {
 	k, ok := e.kinds[kind]
 	if !ok {
 		return model.Job{}, fmt.Errorf("%w %q", ErrUnknownKind, kind)
@@ -113,7 +124,10 @@ func (e *Engine) Submit(ctx context.Context, kind string, serverID int64, params
 	for i, s := range steps {
 		rows[i] = model.JobStep{Idx: i, Name: s.Name, Phase: s.Phase}
 	}
-	j := model.Job{Kind: kind, ServerID: serverID, State: model.JobQueued, Params: raw, CreatedBy: actor, CreatedAt: e.Now()}
+	j := model.Job{Kind: kind, State: model.JobQueued, Params: raw, CreatedBy: actor, CreatedAt: e.Now()}
+	if len(servers) > 0 {
+		j.ServerID, j.Servers = servers[0], servers[1:]
+	}
 	var seal func(int64) ([]byte, error)
 	if len(secretParams) > 0 {
 		seal = func(id int64) ([]byte, error) {
@@ -155,14 +169,19 @@ func (e *Engine) Run(ctx context.Context) {
 		taken := map[int64]bool{}
 		mu.Lock()
 		for _, j := range js {
-			if j.ServerID != 0 && (j.State != model.JobQueued || busy[j.ID]) {
-				taken[j.ServerID] = true
+			if j.State != model.JobQueued || busy[j.ID] {
+				for _, s := range j.AllServers() {
+					taken[s] = true
+				}
 			}
 		}
 		mu.Unlock()
 		for _, j := range js {
 			mu.Lock()
-			skip := j.State != model.JobQueued || busy[j.ID] || taken[j.ServerID]
+			skip := j.State != model.JobQueued || busy[j.ID]
+			for _, s := range j.AllServers() {
+				skip = skip || taken[s]
+			}
 			mu.Unlock()
 			if skip {
 				continue
@@ -171,8 +190,8 @@ func (e *Engine) Run(ctx context.Context) {
 			if err != nil || !ok {
 				continue
 			}
-			if j.ServerID != 0 {
-				taken[j.ServerID] = true
+			for _, s := range j.AllServers() {
+				taken[s] = true
 			}
 			select {
 			case sem <- struct{}{}:
@@ -230,7 +249,7 @@ func (e *Engine) prepare(ctx context.Context, id int64) (model.Job, *Kind, []Ste
 			return j, k, nil, nil, nil, fmt.Errorf("%w: step %d is %q stored, %q in this controller", errStepsChanged, i, rows[i].Name, steps[i].Name)
 		}
 	}
-	env := &Env{JobID: j.ID, ServerID: j.ServerID, CreatedBy: j.CreatedBy, Params: j.Params, eng: e, data: map[string]string{}}
+	env := &Env{JobID: j.ID, ServerID: j.ServerID, Servers: j.Servers, CreatedBy: j.CreatedBy, Params: j.Params, eng: e, data: map[string]string{}}
 	for k, v := range j.Data {
 		env.data[k] = v
 	}
@@ -503,26 +522,35 @@ func (e *Engine) Retry(ctx context.Context, id, actor int64) (model.Job, error) 
 	return j, nil
 }
 
-// retryable checks the other jobs of the server of a failed job; the
-// caller holds e.queue.
+// retryable checks the other jobs of every server of a failed job: it is
+// the newest job of each, and none has another unfinished job. The caller
+// holds e.queue.
 func (e *Engine) retryable(ctx context.Context, j model.Job) error {
-	if j.ServerID == 0 {
+	servers := j.AllServers()
+	if len(servers) == 0 {
 		return nil
 	}
-	newest, err := e.Store.ListJobs(ctx, model.JobFilter{ServerID: j.ServerID, Limit: 1})
-	if err != nil {
-		return err
-	}
-	if len(newest) > 0 && newest[0].ID != j.ID {
-		return ErrStale
+	for _, s := range servers {
+		newest, err := e.Store.ListJobs(ctx, model.JobFilter{ServerID: s, Limit: 1})
+		if err != nil {
+			return err
+		}
+		if len(newest) > 0 && newest[0].ID != j.ID {
+			return ErrStale
+		}
 	}
 	open, err := e.Store.UnfinishedJobs(ctx)
 	if err != nil {
 		return err
 	}
 	for _, o := range open {
-		if o.ServerID == j.ServerID && o.ID != j.ID {
-			return ErrBusy
+		if o.ID == j.ID {
+			continue
+		}
+		for _, s := range servers {
+			if o.Touches(s) {
+				return ErrBusy
+			}
 		}
 	}
 	return nil

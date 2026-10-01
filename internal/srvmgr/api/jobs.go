@@ -14,9 +14,11 @@ import (
 )
 
 type jobJSON struct {
-	ID          int64           `json:"id"`
-	Kind        string          `json:"kind"`
-	ServerID    int64           `json:"serverId"`
+	ID       int64  `json:"id"`
+	Kind     string `json:"kind"`
+	ServerID int64  `json:"serverId"`
+	// Servers are the other servers the job changes (a cascade link).
+	Servers     []int64         `json:"servers"`
 	State       model.JobState  `json:"state"`
 	CurrentStep string          `json:"currentStep"`
 	Params      json.RawMessage `json:"params"`
@@ -46,7 +48,11 @@ func toJobJSON(j model.Job) jobJSON {
 	if data == nil {
 		data = map[string]string{}
 	}
-	return jobJSON{ID: j.ID, Kind: j.Kind, ServerID: j.ServerID, State: j.State, CurrentStep: j.CurrentStep, Params: params, Data: data,
+	servers := j.Servers
+	if servers == nil {
+		servers = []int64{}
+	}
+	return jobJSON{ID: j.ID, Kind: j.Kind, ServerID: j.ServerID, Servers: servers, State: j.State, CurrentStep: j.CurrentStep, Params: params, Data: data,
 		Attempt: j.Attempt, ErrorMessage: j.ErrorMessage, ErrorDetails: j.ErrorDetails, CreatedAt: j.CreatedAt,
 		StartedAt: optTime(j.StartedAt), FinishedAt: optTime(j.FinishedAt)}
 }

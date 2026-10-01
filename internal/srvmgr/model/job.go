@@ -33,11 +33,14 @@ var Phases = []JobState{JobConnecting, JobPreflight, JobDownloading, JobInstalli
 // Terminal reports a finished job.
 func (s JobState) Terminal() bool { return s == JobCompleted || s == JobFailed }
 
-// Job is one operation on a server (deploy, preflight, import…).
+// Job is one operation on a server (deploy, preflight, import…), or on
+// several (a cascade link: Servers).
 type Job struct {
-	ID          int64
-	Kind        string
-	ServerID    int64 // 0: not about a server
+	ID       int64
+	Kind     string
+	ServerID int64 // 0: not about a server
+	// Servers are the other servers the job changes besides ServerID.
+	Servers     []int64
 	State       JobState
 	CurrentStep string
 	// Params are the job's inputs (no secrets: those are sealed apart).
@@ -54,6 +57,25 @@ type Job struct {
 	FinishedAt   time.Time
 	LeaseOwner   string
 	LeaseUntil   time.Time
+}
+
+// AllServers are ServerID and Servers: every server the job changes.
+func (j Job) AllServers() []int64 {
+	var all []int64
+	if j.ServerID != 0 {
+		all = append(all, j.ServerID)
+	}
+	return append(all, j.Servers...)
+}
+
+// Touches reports whether the job changes server id.
+func (j Job) Touches(id int64) bool {
+	for _, s := range j.AllServers() {
+		if s == id {
+			return true
+		}
+	}
+	return false
 }
 
 // StepState is where a step is.
