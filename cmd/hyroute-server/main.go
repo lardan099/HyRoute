@@ -37,6 +37,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
 	"github.com/lardan099/hyroute/internal/srvmgr/service"
 	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
+	"github.com/lardan099/hyroute/internal/srvmgr/tuning"
 	admin "github.com/lardan099/hyroute/web/admin"
 )
 
@@ -135,6 +136,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	engine.Register(deploy.Maintenance(deployDeps))
 	engine.Register(importer.Kind(importer.Deps{Store: db, Keys: keys}))
 	engine.Register(service.Kind(service.Deps{Store: db, Keys: keys}))
+	engine.Register(tuning.Kind())
 	applier := apply.New(apply.Deps{Store: db, Keys: keys, Jobs: engine})
 	engine.Register(applier.Kind())
 	jobsCtx, stopJobs := context.WithCancel(context.WithoutCancel(ctx))

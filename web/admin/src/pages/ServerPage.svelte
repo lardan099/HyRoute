@@ -13,6 +13,7 @@
   import RotateDialog from '../lib/RotateDialog.svelte';
   import PortsDialog from '../lib/PortsDialog.svelte';
   import PresetApplyDialog from '../lib/PresetApplyDialog.svelte';
+  import TuningCard from '../lib/TuningCard.svelte';
   import JournalView from '../lib/JournalView.svelte';
   import ConfigEditor from '../lib/ConfigEditor.svelte';
   import ClientCard from '../lib/ClientCard.svelte';
@@ -258,6 +259,9 @@
 
   {#key id}<HealthCard serverId={id} />{/key}
   {#key id}<MetricsCard serverId={id} />{/key}
+  {#if status || (statusError && statusError.code !== 'no_installation')}
+    {#key id}<TuningCard serverId={id} {writable} onstarted={(j) => go('deployments', j.id)} />{/key}
+  {/if}
   {#key id}<TrafficCard serverId={id} {writable} />{/key}
 
   {#key config?.revision}<ClientCard serverId={id} serverName={server.name} />{/key}

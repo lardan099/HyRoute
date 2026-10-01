@@ -24,6 +24,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
 	"github.com/lardan099/hyroute/internal/srvmgr/service"
 	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
+	"github.com/lardan099/hyroute/internal/srvmgr/tuning"
 )
 
 const pass = "correct horse battery"
@@ -61,6 +62,7 @@ func newEnv(t *testing.T) *testEnv {
 	e.jobs.Register(deploy.Maintenance(dd))
 	e.jobs.Register(importer.Kind(importer.Deps{Store: db, Keys: keys}))
 	e.jobs.Register(service.Kind(service.Deps{Store: db, Keys: keys}))
+	e.jobs.Register(tuning.Kind())
 	e.apply = apply.New(apply.Deps{Store: db, Keys: keys, Jobs: e.jobs})
 	e.jobs.Register(e.apply.Kind())
 	e.keys = keys

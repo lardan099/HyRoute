@@ -492,6 +492,32 @@ queued → connecting → preflight → downloading → installing → configuri
   TCP-порты маскировки пресета проверяются и открываются, как у формы,
   и не сочетаются с проверкой Let's Encrypt по HTTP или TLS.
 
+## Системная настройка (P2-09)
+
+- Пакет `tuning`: `net.core.rmem_max` и `net.core.wmem_max` (буферы UDP
+  для QUIC: quic-go просит около 7 МиБ; HyRoute ставит 16 МиБ и никогда
+  не снижает больший предел), `net.core.default_qdisc = fq` и
+  `net.ipv4.tcp_congestion_control = bbr` (TCP самого сервера). BBR
+  предлагается, только если он загружен или у ядра есть модуль `tcp_bbr`
+  (`modinfo`), очередь fq — если есть `sch_fq`; иначе настройка видна с
+  причиной, а задание с ней отклоняется до изменений.
+- Typed operations `remote.SysctlRead` (`sysctl -e` ключей; в read-only
+  исполнителе разрешено только чтение ключей, без `key=value`),
+  `SysctlSet`, `SysctlLoad` (`sysctl -p` файла), `KernelModule`; ключи и
+  значения проверяются регулярными выражениями.
+- Задание `tuning`: `check` решает значения один раз (повтор шага берёт
+  те же), `sysctl` записывает `/etc/sysctl.d/90-hyroute.conf` (состояние
+  файла записано до изменения, копия `.hyroute-prev`), `load` записывает
+  прежние значения ядра и делает `sysctl -p`, `verify` сверяет значения,
+  `tidy` удаляет копию. Откат возвращает прежний файл (или убирает новый)
+  и прежние значения ядра. Повторное применение ничего не меняет: файл
+  тот же, значения на месте — ни записи, ни `sysctl`.
+- В UI три механизма разведены: TCP Linux (алгоритм ядра для TCP самого
+  сервера: сайты по TCP за клиентов, SSH, маскировка по TCP; на QUIC не
+  влияет), QUIC CC Hysteria (`congestion.type` в конфиге) и Brutal
+  (скорость от клиента, пределы `bandwidth`, `ignoreClientBandwidth`);
+  последние два — настройки конфига, карточка их только показывает.
+
 ## Импорт (P1-11)
 
 Все команды — через `remote.ReadOnly`. Служба ищется среди стандартной
@@ -728,6 +754,8 @@ Hysteria и клиент Hysteria до exit (outbound `socks5` на локаль
 | POST | `/api/v1/presets/import` | operator+ | тело — файл пресета; занятое название получает номер |
 | POST | `/api/v1/servers/{id}/preset/preview` | operator+ | `{base, preset, sections}`: проверка и diff конфига с разделами пресета |
 | POST | `/api/v1/servers/{id}/preset/apply` | operator+ | то же — задание `apply` |
+| GET | `/api/v1/servers/{id}/tuning` | все | параметры ядра по SSH (только чтение) и, рядом, congestion и bandwidth конфига |
+| POST | `/api/v1/servers/{id}/tuning` | operator+ | `{keys}` — задание `tuning` |
 | POST | `/api/v1/servers/{id}/ports` | operator+ | `{base, ports, host, hopInterval}`: новые порты — задание `apply` (202, `{job}`); только интервал — сохраняется сразу (200, `{job: null}`) |
 | POST | `/api/v1/servers/{id}/deploy` | operator+ | job Quick Deploy: тело — `deploy.Params` и `secrets` (`dns`, `outPassword`; в params задания не попадают); нужен подтверждённый ключ SSH; пароли прежней ревизии (любой `auth`, если `auth` не меняется) сохраняются; текущий конфиг не из развёртывания (правка, возврат, импорт) заменяется только с `"overwrite": true`, иначе 409 `config_changed` |
 | POST | `/api/v1/servers/{id}/import` | operator+ | job импорта |

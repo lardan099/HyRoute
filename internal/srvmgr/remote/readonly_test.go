@@ -36,6 +36,8 @@ func TestReadOnly(t *testing.T) {
 		{"getent", "passwd", "hysteria"},
 		{"df", "-Pk", "/"}, {"nproc"},
 		{"head", "-n", "200", "--", "/proc/stat", "/proc/meminfo"},
+		{"sysctl", "-e", "net.core.rmem_max", "net.ipv4.tcp_congestion_control"},
+		{"modinfo", "-F", "name", "tcp_bbr"},
 	}
 	for _, a := range allowed {
 		if _, err := ex.Run(ctx, remote.Cmd{Args: a, Sudo: true}); err != nil {
@@ -53,6 +55,8 @@ func TestReadOnly(t *testing.T) {
 		{"hysteria", "version"}, {"/usr/local/bin/hysteria", "server"}, {"/tmp/x", "version"},
 		{"stat", "--printf=%n", "/"}, {"ufw", "allow", "443/udp"}, {},
 		{"getent", "hosts", "example.com"}, {"getent", "passwd", "-s", "x"},
+		{"sysctl", "-w", "net.core.rmem_max=1"}, {"sysctl", "net.core.rmem_max=1"}, {"sysctl", "-p", "/etc/sysctl.d/x.conf"},
+		{"sysctl", "--system"}, {"modinfo", "tcp_bbr"}, {"modprobe", "tcp_bbr"},
 	}
 	for _, a := range refused {
 		if _, err := ex.Run(ctx, remote.Cmd{Args: a}); !errors.Is(err, remote.ErrNotReadOnly) {

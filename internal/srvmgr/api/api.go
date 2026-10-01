@@ -101,6 +101,8 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/servers/{id}/config/rollback", s.authed(anyRole, s.rollbackConfig))
 	mux.HandleFunc("POST /api/v1/servers/{id}/config/rotate", s.authed(anyRole, s.rotateConfig))
 	mux.HandleFunc("POST /api/v1/servers/{id}/ports", s.authed(anyRole, s.setPorts))
+	mux.HandleFunc("GET /api/v1/servers/{id}/tuning", s.authed(anyRole, s.getTuning))
+	mux.HandleFunc("POST /api/v1/servers/{id}/tuning", s.authed(anyRole, s.startTuning))
 	mux.HandleFunc("GET /api/v1/presets", s.authed(anyRole, s.listPresets))
 	mux.HandleFunc("POST /api/v1/presets", s.authed(anyRole, s.createPreset))
 	mux.HandleFunc("POST /api/v1/presets/import", s.authed(anyRole, s.importPreset))

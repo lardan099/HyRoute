@@ -606,6 +606,30 @@ export interface PresetApply {
   sections: PresetSection[];
 }
 
+// TuningSetting is a kernel parameter HyRoute offers to set.
+export interface TuningSetting {
+  key: string;
+  group: 'udp' | 'tcp';
+  current: string;
+  want: string;
+  done: boolean;
+  supported: boolean;
+  why?: string;
+  inFile: boolean;
+}
+
+// TuningState is the kernel's settings for Hysteria and, beside them, the
+// congestion settings of Hysteria's config (not the kernel's).
+export interface TuningState {
+  kernel: string;
+  available: string[];
+  bbr: boolean;
+  file: string;
+  settings: TuningSetting[];
+  quic: { type: string; profile: string };
+  brutal: { up: string; down: string; ignoreClient: boolean };
+}
+
 export interface ConfigInput {
   revision: number;
   yaml: string;
@@ -715,6 +739,8 @@ export const api = {
     request<Job>('POST', `/servers/${serverId}/config/rollback`, { base, revision }),
   rotateConfig: (serverId: number, base: number, r: Rotation) => request<Job>('POST', `/servers/${serverId}/config/rotate`, { base, ...r }),
   setPorts: (serverId: number, p: PortsInput) => request<{ job: Job | null }>('POST', `/servers/${serverId}/ports`, p),
+  tuning: (serverId: number) => request<TuningState>('GET', `/servers/${serverId}/tuning`),
+  startTuning: (serverId: number, keys: string[]) => request<Job>('POST', `/servers/${serverId}/tuning`, { keys }),
   presets: () => request<Preset[]>('GET', '/presets'),
   createPreset: (name: string, from: { serverId?: number; from?: number }) => request<Preset>('POST', '/presets', { name, ...from }),
   renamePreset: (id: number, name: string) => request<Preset>('PATCH', `/presets/${id}`, { name }),
