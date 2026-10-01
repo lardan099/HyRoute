@@ -21,6 +21,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/remote"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
+	"github.com/lardan099/hyroute/internal/srvmgr/store"
 	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
 )
 
@@ -205,6 +206,21 @@ func (v *vps) file() string {
 	return string(v.files[cfgPath])
 }
 
+// service is the state of the service and the port Hysteria listens on.
+func (v *vps) service() (string, int) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.state, v.port
+}
+
+// has reports whether the server has the file.
+func (v *vps) has(p string) bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	_, ok := v.files[p]
+	return ok
+}
+
 type conn struct{ v *vps }
 
 func (c conn) Connect(context.Context, int64) (remote.Executor, error) { return c.v, nil }
@@ -214,6 +230,7 @@ type harness struct {
 	db     *sqlite.DB
 	keys   *secrets.Keyring
 	app    *Applier
+	stop   func() // stops the controller of app
 	v      *vps
 	server int64
 }
@@ -234,15 +251,29 @@ func newHarness(t *testing.T) *harness {
 	db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return keys.Seal([]byte(deployed), model.ConfigContext(srv.ID, rev)) })
 
 	v := newVPS()
-	eng := jobs.New(db, keys, redact.New(), conn{v}, nil)
+	h := &harness{t: t, db: db, keys: keys, v: v, server: srv.ID}
+	h.app, h.stop = h.controller(db, conn{v})
+	return h
+}
+
+// controller starts a controller process on the harness's database (st
+// is how it sees the database) with connections from c. stop ends it as
+// a dying process: the running step sees its context cancelled.
+func (h *harness) controller(st interface {
+	Store
+	store.Jobs
+}, c jobs.Connector) (app *Applier, stop func()) {
+	eng := jobs.New(st, h.keys, redact.New(), c, nil)
 	eng.Poll = 10 * time.Millisecond
-	app := New(Deps{Store: db, Keys: keys, Jobs: eng, VerifyTimeout: 200 * time.Millisecond, Poll: 10 * time.Millisecond})
+	app = New(Deps{Store: st, Keys: h.keys, Jobs: eng, VerifyTimeout: 200 * time.Millisecond, Poll: 10 * time.Millisecond})
 	eng.Register(app.Kind())
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { eng.Run(ctx); close(done) }()
-	t.Cleanup(func() { cancel(); <-done })
-	return &harness{t: t, db: db, keys: keys, app: app, v: v, server: srv.ID}
+	var once sync.Once
+	stop = func() { once.Do(func() { cancel(); <-done }) }
+	h.t.Cleanup(stop)
+	return app, stop
 }
 
 // edit is the editor's text: the current config masked, changed by fn.

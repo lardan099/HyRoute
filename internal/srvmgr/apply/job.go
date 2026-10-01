@@ -123,9 +123,6 @@ func (a *Applier) Kind() *jobs.Kind {
 				{Name: "connect", Phase: model.JobConnecting, Safe: true, Run: x.connect},
 				{Name: "validate", Phase: model.JobPreflight, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.validate(ctx, env, p) }},
 				{Name: "prepare", Phase: model.JobConfiguring, Safe: true, Run: x.prepare, Undo: x.undoPrepare},
-				{Name: "backup", Phase: model.JobConfiguring, Safe: true,
-					Done: func(ctx context.Context, env *jobs.Env) (bool, error) { return x.installed(ctx, env, p) },
-					Run:  x.backup},
 				{Name: "install", Phase: model.JobConfiguring, Safe: true,
 					Done: func(ctx context.Context, env *jobs.Env) (bool, error) { return x.installed(ctx, env, p) },
 					Run:  func(ctx context.Context, env *jobs.Env) error { return x.install(ctx, env, p) },
@@ -305,22 +302,17 @@ func (x *applier) installed(ctx context.Context, env *jobs.Env, p Params) (bool,
 }
 
 // backup records the state of the config (its SHA-256) before anything
-// changes it, then keeps a copy; a run again keeps the first record.
-func (x *applier) backup(ctx context.Context, env *jobs.Env) error {
-	in, err := x.installation(ctx, env)
-	if err != nil {
-		return err
-	}
-	ex, err := exec(ctx, env)
-	if err != nil {
-		return err
-	}
+// changes it, then keeps a copy. A run again keeps the first record, and
+// copies again while the config is in that state: a rollback in between
+// took the earlier copy back. A config in another state is this job's
+// already, and the copy is the original.
+func (x *applier) backup(ctx context.Context, env *jobs.Env, ex remote.Executor, in model.Installation) error {
 	state, err := remote.FileState(ctx, ex, in.Config, sudo(env))
 	if err != nil {
 		return err
 	}
 	if prev := env.Get("configState"); prev != "" && prev != state {
-		return nil // the config is this job's already; the copy is the original
+		return nil
 	}
 	if err := env.Set("configState", state); err != nil {
 		return err
@@ -328,11 +320,12 @@ func (x *applier) backup(ctx context.Context, env *jobs.Env) error {
 	if err := remote.CopyFile(ctx, ex, in.Config, in.Config+Backup, sudo(env)); err != nil {
 		return jobs.Fail("Не удалось сохранить копию конфига.", err)
 	}
-	env.Set("backup", "1")
 	env.Logf("Копия прежнего конфига: %s%s.", in.Config, Backup)
 	return nil
 }
 
+// install writes the candidate, with a copy of the config it replaces
+// made right before (also when a retry starts here after a rollback).
 func (x *applier) install(ctx context.Context, env *jobs.Env, p Params) error {
 	b, _, err := candidate(env)
 	if err != nil {
@@ -344,6 +337,9 @@ func (x *applier) install(ctx context.Context, env *jobs.Env, p Params) error {
 	}
 	ex, err := exec(ctx, env)
 	if err != nil {
+		return err
+	}
+	if err := x.backup(ctx, env, ex, in); err != nil {
 		return err
 	}
 	// The new file gets the rights of the old one (0640 root:hysteria

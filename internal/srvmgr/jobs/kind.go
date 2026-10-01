@@ -53,7 +53,8 @@ type Kind struct {
 	// for the same params (a restarted controller rebuilds it).
 	Steps func(params json.RawMessage) ([]Step, error)
 	// Recover inspects the server after a restart interrupted the job.
-	// Nil: interrupted jobs fail with an explanation.
+	// Nil: interrupted jobs fail with an explanation. A job interrupted
+	// in its rollback is not asked about: the rollback is finished.
 	Recover func(ctx context.Context, env *Env) (Resolution, error)
 	// Finished runs once the job has completed or failed (not when the
 	// controller stops in the middle), e.g. to record the server's state.

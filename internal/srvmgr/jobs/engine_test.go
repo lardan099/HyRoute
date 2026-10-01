@@ -505,3 +505,65 @@ func TestUnreadableSecretFailsJob(t *testing.T) {
 		t.Fatalf("ran %v: %s", ran.Load(), j.ErrorDetails)
 	}
 }
+
+// A controller restart in the middle of a rollback: the next process
+// finishes the rollback and fails the job. It neither asks the recovery
+// check nor goes forward again.
+func TestRecoveryFinishesRollback(t *testing.T) {
+	var c counters
+	var recovered atomic.Int32
+	k := &Kind{
+		Name: "demo",
+		Steps: func(json.RawMessage) ([]Step, error) {
+			return []Step{
+				{Name: "prepare", Phase: model.JobConfiguring, Safe: true,
+					Run:  func(context.Context, *Env) error { c.inc("prepare"); return nil },
+					Undo: func(context.Context, *Env) error { c.inc("undo prepare"); return nil }},
+				{Name: "install", Phase: model.JobInstalling, Safe: true,
+					Run:  func(context.Context, *Env) error { c.inc("install"); return nil },
+					Undo: func(context.Context, *Env) error { c.inc("undo install"); return nil }},
+				{Name: "start", Phase: model.JobStarting, Safe: true, Run: func(context.Context, *Env) error { c.inc("start"); return nil }},
+			}, nil
+		},
+		Recover: func(context.Context, *Env) (Resolution, error) { recovered.Add(1); return ResolveRetry, nil },
+	}
+	h := newHarness(t, nil, k)
+	ctx := context.Background()
+	j, err := h.eng.Submit(ctx, "demo", 0, nil, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What the dead process left: start failed, install is rolled back,
+	// prepare is not yet.
+	rows, _ := h.db.JobSteps(ctx, j.ID)
+	for i, st := range []model.StepState{model.StepDone, model.StepRolledBack, model.StepFailed} {
+		rows[i].State = st
+		if st == model.StepFailed {
+			rows[i].Error = "Сервис не запустился. (exit 1)"
+		}
+		if err := h.db.UpdateJobStep(ctx, rows[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	j.State, j.CurrentStep, j.LeaseOwner, j.LeaseUntil = model.JobRollingBack, "start", "dead-process", time.Now().Add(time.Minute)
+	if err := h.db.UpdateJob(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	h.start()
+	j = h.wait(j.ID, model.JobFailed)
+	if recovered.Load() != 0 || c.get("prepare") != 0 || c.get("install") != 0 || c.get("start") != 0 {
+		t.Fatalf("the job went forward: recovered %d, runs %v", recovered.Load(), c.m)
+	}
+	if c.get("undo prepare") != 1 || c.get("undo install") != 0 {
+		t.Fatalf("undone %v", c.m)
+	}
+	if got := h.steps(j.ID); got[0] != model.StepRolledBack || got[1] != model.StepRolledBack || got[2] != model.StepFailed {
+		t.Fatalf("steps %v", got)
+	}
+	if !strings.Contains(j.ErrorMessage, "«start»") || !strings.Contains(j.ErrorDetails, "exit 1") || j.LeaseOwner != "" {
+		t.Fatalf("%+v", j)
+	}
+	if log := h.logText(j.ID); !strings.Contains(log, "Откат продолжается") {
+		t.Fatalf("log: %s", log)
+	}
+}

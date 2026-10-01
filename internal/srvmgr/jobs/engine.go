@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -359,18 +360,25 @@ func (e *Engine) stepFailed(ctx context.Context, j *model.Job, env *Env, steps [
 	row.State, row.FinishedAt, row.Error = model.StepFailed, e.Now(), e.Redact.String(err.Error())
 	rows[i] = row
 	e.saveStep(ctx, row)
+	e.rollback(ctx, j, env, steps, rows, i)
+	e.fail(ctx, j, env, err)
+}
 
+// rollback undoes the failed step i and the steps before it, newest
+// first, and records how it went for the Finished hook. Steps rolled back
+// already (before a restart) are not undone again.
+func (e *Engine) rollback(ctx context.Context, j *model.Job, env *Env, steps []Step, rows []model.JobStep, i int) {
 	// The failed step itself may have changed part of what it does (a
 	// certificate written, its key not): its Undo goes first. Undo acts on
 	// what a step recorded (Env.Set) before changing anything, so it is
 	// safe for a step that changed nothing.
 	var undo []int
-	if steps[i].Undo != nil {
+	if i < len(steps) && steps[i].Undo != nil {
 		undo = append(undo, i)
 	}
 	// Skipped steps too: after a restart a step finds its own effect in
 	// place and is skipped, yet its record is there to undo.
-	for k := i - 1; k >= 0; k-- {
+	for k := min(i, len(steps)) - 1; k >= 0; k-- {
 		if (rows[k].State == model.StepDone || rows[k].State == model.StepSkipped) && steps[k].Undo != nil {
 			undo = append(undo, k)
 		}
@@ -379,7 +387,7 @@ func (e *Engine) stepFailed(ctx context.Context, j *model.Job, env *Env, steps [
 	if len(undo) > 0 {
 		j.State = model.JobRollingBack
 		e.save(ctx, j, env)
-		e.log(j.ID, "warn", steps[i].Name, "Откат изменений этого задания.")
+		e.log(j.ID, "warn", j.CurrentStep, "Откат изменений этого задания.")
 		for _, k := range undo {
 			env.step = steps[k].Name
 			uerr := steps[k].Undo(context.WithoutCancel(ctx), env)
@@ -404,7 +412,26 @@ func (e *Engine) stepFailed(ctx context.Context, j *model.Job, env *Env, steps [
 	env.mu.Lock()
 	env.rollback = result
 	env.mu.Unlock()
-	e.fail(ctx, j, env, err)
+}
+
+// finishRollback completes a rollback a controller restart interrupted.
+// The job failed already: it never goes forward again (a retry is the
+// admin's decision). Each Undo acts on its own records, so one that ran
+// before the restart finds nothing left to do.
+func (e *Engine) finishRollback(ctx context.Context, j *model.Job, env *Env, steps []Step, rows []model.JobStep) {
+	i := slices.IndexFunc(rows, func(r model.JobStep) bool { return r.State == model.StepFailed })
+	name, cause := j.CurrentStep, errors.New("interrupted")
+	if i < 0 {
+		i = len(rows)
+	} else {
+		name = rows[i].Name
+		if rows[i].Error != "" {
+			cause = errors.New(rows[i].Error)
+		}
+	}
+	e.log(j.ID, "warn", name, "Controller был перезапущен во время отката изменений. Откат продолжается.")
+	e.rollback(ctx, j, env, steps, rows, i)
+	e.fail(ctx, j, env, Fail("Задание не выполнено на шаге «"+name+"». Controller перезапускался во время отката; после перезапуска откат продолжен.", cause))
 }
 
 func (e *Engine) heartbeat(ctx context.Context, id int64) {
@@ -488,7 +515,7 @@ func (e *Engine) recoverJob(ctx context.Context, id int64) {
 		return
 	}
 	defer env.close()
-	was := j.CurrentStep
+	was, rollingBack := j.CurrentStep, j.State == model.JobRollingBack
 	for i := range rows {
 		if rows[i].State == model.StepRunning {
 			rows[i].State, rows[i].Error = model.StepFailed, "interrupted by a controller restart"
@@ -497,6 +524,10 @@ func (e *Engine) recoverJob(ctx context.Context, id int64) {
 	}
 	j.State = model.JobRecovering
 	e.save(ctx, &j, env)
+	if rollingBack {
+		e.finishRollback(ctx, &j, env, steps, rows)
+		return
+	}
 	e.log(j.ID, "warn", was, "Controller был перезапущен во время шага «"+was+"». Проверка фактического состояния сервера.")
 	if k.Recover == nil {
 		e.fail(ctx, &j, env, Fail("Задание прервано перезапуском controller. Проверьте состояние сервера и повторите.", errors.New("interrupted")))
