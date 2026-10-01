@@ -52,7 +52,6 @@ type Input struct {
 	SSHPort  int
 	SSHUser  string
 	AuthType model.AuthType
-	Role     model.ServerRole
 	Notes    string
 
 	Password      *string
@@ -130,12 +129,6 @@ func normalize(in *Input) error {
 	}
 	if utf8.RuneCountInString(in.Notes) > 4000 {
 		return fieldErr("notes", "Заметки: до 4000 символов.")
-	}
-	if in.Role == "" {
-		in.Role = model.RoleStandalone
-	}
-	if !in.Role.Valid() {
-		return fieldErr("role", "Роль: standalone, entry, relay или exit.")
 	}
 	switch in.AuthType {
 	case model.AuthPassword, model.AuthKey:
@@ -244,7 +237,7 @@ func (s *Service) Create(ctx context.Context, actor int64, in Input) (Info, erro
 		}
 	}
 	now := s.Now()
-	srv := model.Server{Name: in.Name, Tags: in.Tags, Country: in.Country, Location: in.Location, Host: in.Host, SSHPort: in.SSHPort, SSHUser: in.SSHUser, AuthType: in.AuthType, Role: in.Role, Notes: in.Notes, State: model.StateNew, CreatedAt: now, UpdatedAt: now}
+	srv := model.Server{Name: in.Name, Tags: in.Tags, Country: in.Country, Location: in.Location, Host: in.Host, SSHPort: in.SSHPort, SSHUser: in.SSHUser, AuthType: in.AuthType, Role: model.RoleStandalone, Notes: in.Notes, State: model.StateNew, CreatedAt: now, UpdatedAt: now}
 	if err := s.Store.CreateServer(ctx, &srv, s.seal(creds)); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return Info{}, fieldErr("name", "Сервер с таким названием уже есть.")
@@ -309,7 +302,7 @@ func (s *Service) Update(ctx context.Context, actor, id int64, in Input) (Info, 
 	srv := cur.Server
 	srv.Name, srv.Tags, srv.Country, srv.Location = in.Name, in.Tags, in.Country, in.Location
 	srv.Host, srv.SSHPort, srv.SSHUser, srv.AuthType = in.Host, in.SSHPort, in.SSHUser, in.AuthType
-	srv.Role, srv.Notes, srv.UpdatedAt = in.Role, in.Notes, s.Now()
+	srv.Notes, srv.UpdatedAt = in.Notes, s.Now()
 	if err := s.Store.UpdateServer(ctx, &srv, s.seal(creds), drop); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return Info{}, fieldErr("name", "Сервер с таким названием уже есть.")

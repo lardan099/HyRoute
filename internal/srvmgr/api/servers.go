@@ -51,25 +51,24 @@ func toServerJSON(in servers.Info) serverJSON {
 // serverInput is the body of POST and PATCH. Credentials are optional on
 // PATCH: absent keeps the stored value.
 type serverInput struct {
-	Name          string           `json:"name"`
-	Tags          []string         `json:"tags"`
-	Country       string           `json:"country"`
-	Location      string           `json:"location"`
-	Host          string           `json:"host"`
-	SSHPort       int              `json:"sshPort"`
-	SSHUser       string           `json:"sshUser"`
-	AuthType      model.AuthType   `json:"authType"`
-	Role          model.ServerRole `json:"role"`
-	Notes         string           `json:"notes"`
-	Password      *string          `json:"password,omitempty"`
-	Key           *string          `json:"key,omitempty"`
-	KeyPassphrase *string          `json:"keyPassphrase,omitempty"`
+	Name          string         `json:"name"`
+	Tags          []string       `json:"tags"`
+	Country       string         `json:"country"`
+	Location      string         `json:"location"`
+	Host          string         `json:"host"`
+	SSHPort       int            `json:"sshPort"`
+	SSHUser       string         `json:"sshUser"`
+	AuthType      model.AuthType `json:"authType"`
+	Notes         string         `json:"notes"`
+	Password      *string        `json:"password,omitempty"`
+	Key           *string        `json:"key,omitempty"`
+	KeyPassphrase *string        `json:"keyPassphrase,omitempty"`
 }
 
 func (in serverInput) toInput() servers.Input {
 	return servers.Input{
 		Name: in.Name, Tags: in.Tags, Country: in.Country, Location: in.Location, Host: in.Host,
-		SSHPort: in.SSHPort, SSHUser: in.SSHUser, AuthType: in.AuthType, Role: in.Role, Notes: in.Notes,
+		SSHPort: in.SSHPort, SSHUser: in.SSHUser, AuthType: in.AuthType, Notes: in.Notes,
 		Password: in.Password, Key: in.Key, KeyPassphrase: in.KeyPassphrase,
 	}
 }

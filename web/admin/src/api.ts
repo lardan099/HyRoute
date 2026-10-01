@@ -663,6 +663,7 @@ export const journalURL = (serverId: number, lines = 200) => `/api/v1/servers/${
 export const jobEventsURL = (id: number) => `/api/v1/jobs/${id}/events`;
 
 // ServerInput: credentials left undefined keep the stored ones on update.
+// The role is not entered: it follows the server's place in cascades.
 export interface ServerInput {
   name: string;
   tags: string[];
@@ -672,7 +673,6 @@ export interface ServerInput {
   sshPort: number;
   sshUser: string;
   authType: AuthType;
-  role: ServerRole;
   notes: string;
   password?: string;
   key?: string;

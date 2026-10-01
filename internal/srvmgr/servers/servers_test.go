@@ -100,7 +100,6 @@ func TestCreateDefaultsAndValidation(t *testing.T) {
 		"sshPort":  func(in *Input) { in.SSHPort = 70000 },
 		"sshUser":  func(in *Input) { in.SSHUser = "root; rm -rf /" },
 		"country":  func(in *Input) { in.Country = "Germany" },
-		"role":     func(in *Input) { in.Role = "boss" },
 		"authType": func(in *Input) { in.AuthType = "telnet" },
 		"password": func(in *Input) { in.Password = nil },
 		"key":      func(in *Input) { in.AuthType, in.Password, in.Key = model.AuthKey, nil, ptr("not a key") },

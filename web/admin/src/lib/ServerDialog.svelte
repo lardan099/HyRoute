@@ -2,8 +2,8 @@
   // Add or edit a server. Stored credentials are never shown: on edit the
   // fields are empty and an empty field keeps what is stored.
   import { untrack } from 'svelte';
-  import { api, asApiError, type ApiError, type AuthType, type Server, type ServerRole } from '../api';
-  import { t, type Key } from '../i18n';
+  import { api, asApiError, type ApiError, type AuthType, type Server } from '../api';
+  import { t } from '../i18n';
   import Dialog from './Dialog.svelte';
 
   // onsaved gets deploy = true when a new server was added with "Добавить
@@ -23,14 +23,12 @@
   let country = $state(s?.country ?? '');
   let location = $state(s?.location ?? '');
   let tags = $state((s?.tags ?? []).join(', '));
-  let role = $state<ServerRole>(s?.role ?? 'standalone');
   let notes = $state(s?.notes ?? '');
 
   let busy = $state(false);
   let error = $state<ApiError | null>(null);
   let errField = $derived(error?.code === 'invalid' ? error.details : '');
 
-  const roles: ServerRole[] = ['standalone', 'entry', 'relay', 'exit'];
   const stored = (kind: AuthType) => (kind === 'password' ? !!s?.hasPassword : !!s?.hasKey);
 
   async function save(e: SubmitEvent) {
@@ -46,7 +44,6 @@
       authType,
       country,
       location,
-      role,
       notes,
       tags: tags.split(',').map((x) => x.trim()).filter(Boolean),
       password: authType === 'password' && password !== '' ? password : undefined,
@@ -116,12 +113,6 @@
       <span>{t('servers.tags')}</span>
       <input type="text" bind:value={tags} placeholder={t('servers.tagsPh')} />
     </label>
-    <label class:bad={errField === 'role'}>
-      <span>{t('servers.role')}</span>
-      <select bind:value={role}>
-        {#each roles as r (r)}<option value={r}>{t(`srvrole.${r}` as Key)}</option>{/each}
-      </select>
-    </label>
     <label class:bad={errField === 'notes'}>
       <span>{t('servers.notes')}</span>
       <textarea rows="2" bind:value={notes} class="plain"></textarea>
@@ -139,7 +130,7 @@
   .form { display: flex; flex-direction: column; gap: 12px; }
   label { display: flex; flex-direction: column; gap: 5px; }
   label span { color: var(--muted); font-size: 12.5px; }
-  label.bad input, label.bad textarea, label.bad select { border-color: var(--block); }
+  label.bad input, label.bad textarea { border-color: var(--block); }
   .two { display: flex; gap: 10px; }
   .port { width: 110px; }
   .country { width: 90px; }

@@ -21,7 +21,9 @@ const (
 	LinkStale LinkState = "stale"
 	// LinkUnlinking: a job is removing it.
 	LinkUnlinking LinkState = "unlinking"
-	// LinkFailed: its last job failed; the servers were rolled back.
+	// LinkFailed: its first deployment failed and was rolled back, so
+	// nothing of it is on the servers. A failed redeployment rolls back
+	// to the link as it was and keeps its state (active or stale).
 	LinkFailed LinkState = "failed"
 )
 

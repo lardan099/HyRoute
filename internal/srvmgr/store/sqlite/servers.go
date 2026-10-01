@@ -59,7 +59,7 @@ func (d *DB) CreateServer(ctx context.Context, s *model.Server, seal store.SealF
 	return d.tx(ctx, func(t *sql.Tx) error {
 		res, err := t.ExecContext(ctx, `INSERT INTO servers (name, tags, country, location, host, ssh_port, ssh_user, auth_type, role, notes, state, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			s.Name, tagsJSON(s.Tags), s.Country, s.Location, s.Host, s.SSHPort, s.SSHUser, string(s.AuthType), string(s.Role), s.Notes, string(s.State), unixTime(s.CreatedAt), unixTime(s.UpdatedAt))
+			s.Name, tagsJSON(s.Tags), s.Country, s.Location, s.Host, s.SSHPort, s.SSHUser, string(s.AuthType), string(model.RoleStandalone), s.Notes, string(s.State), unixTime(s.CreatedAt), unixTime(s.UpdatedAt))
 		if err != nil {
 			return conflict(err)
 		}
@@ -70,7 +70,7 @@ func (d *DB) CreateServer(ctx context.Context, s *model.Server, seal store.SealF
 		if err := putCredentials(ctx, t, id, seal, s.UpdatedAt); err != nil {
 			return err
 		}
-		s.ID = id
+		s.ID, s.Role = id, model.RoleStandalone
 		return nil
 	})
 }
@@ -107,8 +107,8 @@ func (d *DB) UpdateServer(ctx context.Context, s *model.Server, seal store.SealF
 				return err
 			}
 		}
-		res, err := t.ExecContext(ctx, `UPDATE servers SET name = ?, tags = ?, country = ?, location = ?, host = ?, ssh_port = ?, ssh_user = ?, auth_type = ?, role = ?, notes = ?, state = ?, updated_at = ? WHERE id = ?`,
-			s.Name, tagsJSON(s.Tags), s.Country, s.Location, s.Host, s.SSHPort, s.SSHUser, string(s.AuthType), string(s.Role), s.Notes, string(s.State), unixTime(s.UpdatedAt), s.ID)
+		res, err := t.ExecContext(ctx, `UPDATE servers SET name = ?, tags = ?, country = ?, location = ?, host = ?, ssh_port = ?, ssh_user = ?, auth_type = ?, notes = ?, state = ?, updated_at = ? WHERE id = ?`,
+			s.Name, tagsJSON(s.Tags), s.Country, s.Location, s.Host, s.SSHPort, s.SSHUser, string(s.AuthType), s.Notes, string(s.State), unixTime(s.UpdatedAt), s.ID)
 		if err != nil {
 			return conflict(err)
 		}

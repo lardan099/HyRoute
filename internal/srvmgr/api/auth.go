@@ -66,6 +66,8 @@ func mapError(err error) error {
 		return errNotFound
 	case errors.Is(err, store.ErrBusy):
 		return &Error{Status: http.StatusConflict, Code: "server_busy", Message: "На сервере выполняется задание: пока оно не закончится, сервер нельзя удалить, а его адрес, пользователя и данные для входа — изменить (откату задания нужно подключение)."}
+	case errors.Is(err, store.ErrInChain):
+		return &Error{Status: http.StatusConflict, Code: "chain_member", Message: "Сервер входит в каскад: сначала удалите каскад (страница «Каскады»)."}
 	}
 	return remoteError(err)
 }

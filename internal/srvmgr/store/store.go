@@ -130,9 +130,11 @@ type SealFunc func(serverID int64) ([]model.Credential, error)
 // Servers stores the server inventory. Names are unique case-insensitively.
 type Servers interface {
 	// CreateServer inserts s (setting s.ID) and the credentials seal
-	// returns, atomically; ErrConflict if the name is taken.
+	// returns, atomically; ErrConflict if the name is taken. A new server
+	// is standalone whatever s.Role says: roles come from the chains.
 	CreateServer(ctx context.Context, s *model.Server, seal SealFunc) error
-	// UpdateServer replaces the fields of s, stores the credentials seal
+	// UpdateServer replaces the fields of s but its role (Chains keeps
+	// it), stores the credentials seal
 	// returns (seal may be nil) and deletes the kinds in drop, atomically.
 	// A change of how the controller reaches the server (host, SSH port,
 	// user, auth type or new credentials) fails with ErrBusy while the
