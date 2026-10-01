@@ -23,6 +23,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -99,6 +100,22 @@ var _ remote.Executor = (*Client)(nil)
 // errClosed: the caller closed the connection.
 var errClosed = errors.New("connection closed")
 
+// errPasswordRefused ends the login once the server refused the password:
+// keyboard-interactive would only ask for the same password again and add
+// a second failure to the server's log for one attempt (fail2ban bans the
+// controller after a few).
+var errPasswordRefused = fmt.Errorf("%w: the server refused the password", remote.ErrAuthFailed)
+
+// onePassword stops the login after a failed "password" method. A server
+// that does not offer that method still gets the password by
+// keyboard-interactive.
+func onePassword(c *ssh.ClientAuthContext) (ssh.AuthMethod, error) {
+	if slices.Contains(c.TriedMethods, "password") {
+		return nil, errPasswordRefused
+	}
+	return nil, nil
+}
+
 // Dial connects and authenticates.
 func Dial(ctx context.Context, t Target, a Auth, o Options) (*Client, error) {
 	if o.HostKey == nil {
@@ -138,8 +155,9 @@ func Dial(ctx context.Context, t Target, a Auth, o Options) (*Client, error) {
 		return nil, errors.New("sshexec: no credentials")
 	}
 	cfg := &ssh.ClientConfig{
-		User: t.User,
-		Auth: methods,
+		User:         t.User,
+		Auth:         methods,
+		AuthCallback: onePassword,
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
 			return o.HostKey(key)
 		},
@@ -224,7 +242,7 @@ func classify(err error) error {
 	var unknown *remote.HostKeyUnknownError
 	var changed *remote.HostKeyChangedError
 	switch {
-	case errors.As(err, &unknown), errors.As(err, &changed):
+	case errors.As(err, &unknown), errors.As(err, &changed), errors.Is(err, remote.ErrAuthFailed):
 		return err
 	case strings.Contains(err.Error(), "unable to authenticate"):
 		return fmt.Errorf("%w: %v", remote.ErrAuthFailed, err)

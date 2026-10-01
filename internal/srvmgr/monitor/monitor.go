@@ -7,7 +7,10 @@ package monitor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -22,6 +25,7 @@ import (
 // Store is what the collector reads and writes.
 type Store interface {
 	ListServers(ctx context.Context) ([]model.Server, error)
+	ServerCredentials(ctx context.Context, id int64) ([]model.Credential, error)
 	HostKey(ctx context.Context, serverID int64) (model.HostKey, error)
 	SwapServerState(ctx context.Context, id int64, from []model.ServerState, state model.ServerState, at time.Time) (bool, error)
 	Installation(ctx context.Context, serverID int64) (model.Installation, error)
@@ -58,12 +62,85 @@ type Collector struct {
 
 	mu          sync.Mutex
 	prev        map[int64]last
+	refused     map[int64]refusal
 	lastCompact time.Time
 }
 
 type last struct {
 	s  remote.Sample
 	at time.Time
+}
+
+// After a server refuses the SSH login the collector stops logging in to
+// it: fail2ban and the like ban an address after a few failures, and the
+// admin may share that address with the controller. It tries again as
+// soon as the login data changes, otherwise after a pause that doubles
+// with each refusal in a row, from authPause up to authPauseMax.
+const (
+	authPause    = 15 * time.Minute
+	authPauseMax = 6 * time.Hour
+)
+
+// refusal is a server that refused the SSH login.
+type refusal struct {
+	login string    // the refused login data (loginKey)
+	n     int       // refusals in a row
+	until time.Time // no login before
+}
+
+// loginKey identifies a server's login data: the address, the user and
+// the sealed credentials, sealed anew whenever the admin saves them. ""
+// when they cannot be read.
+func (c *Collector) loginKey(ctx context.Context, srv model.Server) string {
+	creds, err := c.Store.ServerCredentials(ctx, srv.ID)
+	if err != nil {
+		return ""
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%d\x00%s\x00%s\x00", srv.Host, srv.SSHPort, srv.SSHUser, srv.AuthType)
+	for _, cr := range creds {
+		fmt.Fprintf(h, "%s\x00%x\x00", cr.Kind, cr.Sealed)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// paused reports whether the server refused the login data it has now and
+// the pause after that has not run out.
+func (c *Collector) paused(id int64, login string, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	r, ok := c.refused[id]
+	if !ok {
+		return false
+	}
+	if login != "" && login != r.login {
+		delete(c.refused, id) // new login data: try it
+		return false
+	}
+	return now.Before(r.until)
+}
+
+// refuse records a refused login and returns the pause before the next
+// attempt.
+func (c *Collector) refuse(id int64, login string, now time.Time) time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	r := c.refused[id]
+	if login != r.login {
+		r = refusal{login: login}
+	}
+	pause := min(authPause<<min(r.n, 8), authPauseMax)
+	r.n++
+	r.until = now.Add(pause)
+	c.refused[id] = r
+	return pause
+}
+
+// loggedIn forgets a server's refusals.
+func (c *Collector) loggedIn(id int64) {
+	c.mu.Lock()
+	delete(c.refused, id)
+	c.mu.Unlock()
 }
 
 func (c *Collector) defaults() {
@@ -96,6 +173,9 @@ func (c *Collector) defaults() {
 	}
 	if c.prev == nil {
 		c.prev = map[int64]last{}
+	}
+	if c.refused == nil {
+		c.refused = map[int64]refusal{}
 	}
 }
 
@@ -145,11 +225,15 @@ func (c *Collector) Round(ctx context.Context) {
 		if _, err := c.Store.HostKey(ctx, srv.ID); err != nil {
 			continue // not trusted yet: no connection
 		}
+		login := c.loginKey(ctx, srv)
+		if c.paused(srv.ID, login, c.Now()) {
+			continue // it refused this login: no new attempt yet
+		}
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
-			c.collect(ctx, srv, busy[srv.ID])
+			c.collect(ctx, srv, busy[srv.ID], login)
 		}()
 	}
 	wg.Wait()
@@ -174,7 +258,8 @@ func (c *Collector) Round(ctx context.Context) {
 // others belong to jobs and the admin.
 var up = []model.ServerState{model.StateHealthy, model.StateDegraded}
 
-func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool) {
+// collect samples one server; login is its loginKey.
+func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool, login string) {
 	cctx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()
 	// Servers with Hysteria get a health check; the UDP probe runs while
@@ -190,21 +275,28 @@ func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool) {
 		if ctx.Err() != nil {
 			return
 		}
+		refused := errors.Is(err, remote.ErrAuthFailed)
+		if refused {
+			pause := c.refuse(srv.ID, login, c.Now())
+			c.Log.Warn("monitor: the server refused the SSH login; next attempt when the login data changes or after a pause", "server", srv.Name, "pause", pause, "err", err)
+		}
 		var unreachable *remote.UnreachableError
 		down := errors.As(err, &unreachable)
 		if hc != nil {
 			c.finish(ctx, srv, hc.sshFailed(err, down))
 			return
 		}
-		if down {
+		switch {
+		case down:
 			if ok, _ := c.Store.SwapServerState(ctx, srv.ID, up, model.StateOffline, c.Now()); ok {
 				c.Log.Warn("monitor: server unreachable", "server", srv.Name, "err", err)
 			}
-		} else {
+		case !refused:
 			c.Log.Warn("monitor: connect", "server", srv.Name, "err", err)
 		}
 		return
 	}
+	c.loggedIn(srv.ID)
 	defer ex.Close()
 	// The timeout closes the connection too: a server that went silent
 	// mid-command must not hold up the round, and with it every server.

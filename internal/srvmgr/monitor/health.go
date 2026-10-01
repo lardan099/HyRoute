@@ -111,9 +111,13 @@ func (hc *check) waitUDP() udpResult {
 func (hc *check) sshFailed(err error, unreachable bool) model.Health {
 	u := hc.waitUDP()
 	hc.h.UDP, hc.h.UDPMillis = u.state, int(u.rtt.Milliseconds())
+	refused := errors.Is(err, remote.ErrAuthFailed)
 	why := "Не удалось войти по SSH: " + err.Error()
-	if unreachable {
+	switch {
+	case unreachable:
 		why = "SSH не отвечает"
+	case refused:
+		why = "Сервер отклонил вход по SSH"
 	}
 	switch {
 	case u.state == model.UDPOK:
@@ -122,6 +126,9 @@ func (hc *check) sshFailed(err error, unreachable bool) model.Health {
 		hc.h.Status, hc.h.Reason = model.StateOffline, why+hc.udpWhy(u)
 	default:
 		hc.h.Status, hc.h.Reason = model.StateDegraded, why+hc.udpWhy(u)
+	}
+	if refused {
+		hc.h.Reason += fmt.Sprintf(" Проверьте пользователя, пароль или ключ. Пока данные входа не изменятся, мониторинг входит всё реже (до раза в %d ч), чтобы сервер не заблокировал адрес controller.", int(authPauseMax.Hours()))
 	}
 	return hc.h
 }
