@@ -85,7 +85,8 @@ kill switch при входе.
 `%ProgramData%\HyRoute` (SYSTEM и Administrators — запись, Users — чтение):
 `runtime\` — проверенные копии `hysteria.exe` и WinDivert, `core\` —
 обновлённые ядра Hysteria, `updates\` и `update-journal.json` — обновление
-HyRoute, `webview\` — данные WebView2.
+HyRoute. Данные WebView2 лежат не здесь, а в `%LOCALAPPDATA%\HyRoute\webview`
+пользователя: WebView2 работает без прав администратора.
 
 ## Пакеты
 

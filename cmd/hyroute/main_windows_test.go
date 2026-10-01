@@ -58,34 +58,41 @@ func TestWaitProcess(t *testing.T) {
 	}
 }
 
-// WebView2's data are kept out of the user's profile, in HyRoute's
-// protected folder, one folder per Windows user. (Tests do not run under
-// Administrator protection: this process is its own limited user.)
+// WebView2's data are in the %LOCALAPPDATA% of the user it runs as (the
+// desktop shell's), never in HyRoute's folder that only administrators may
+// write to.
 func TestWebviewDataDir(t *testing.T) {
-	dir, protect, err := webviewDataDir()
-	if err != nil {
-		t.Fatal(err)
-	}
 	u, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(core.DefaultDir("webview"), u.User.Sid.String()); !strings.EqualFold(dir, want) || !protect {
-		t.Fatalf("WebView2 data in %s (protected %v), want %s protected", dir, protect, want)
+	st, err := shellToken()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if deElevatedLocalAppData(u.User.Sid) != "" {
-		t.Fatal("a process without a separate admin account counts as de-elevated")
+	if st != 0 {
+		su, err := st.GetTokenUser()
+		st.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !su.User.Sid.Equals(u.User.Sid) {
+			t.Skipf("the desktop shell runs as %s, this test as %s", su.User.Sid, u.User.Sid)
+		}
 	}
-}
-
-// Administrator protection elevates as another account (WebView2 then
-// runs as the limited user); plain UAC elevates the same account.
-func TestProfileSeparated(t *testing.T) {
-	user, _ := windows.StringToSid("S-1-5-21-1-2-3-1000")
-	same, _ := windows.StringToSid("S-1-5-21-1-2-3-1000")
-	admin, _ := windows.StringToSid("S-1-5-21-1-2-3-1002")
-	if profileSeparated(user, same) || !profileSeparated(admin, user) {
-		t.Fatal("wrong account comparison")
+	dir, err := webviewDataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := windows.KnownFolderPath(windows.FOLDERID_LocalAppData, windows.KF_FLAG_DONT_VERIFY)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(local, "HyRoute", "webview"); !strings.EqualFold(dir, want) {
+		t.Fatalf("WebView2 data in %s, want %s", dir, want)
+	}
+	if strings.HasPrefix(strings.ToLower(dir), strings.ToLower(core.DefaultDir(""))) {
+		t.Fatalf("WebView2 data in HyRoute's protected folder: %s", dir)
 	}
 }
 
