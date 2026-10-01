@@ -18,23 +18,23 @@
   let streams = $state<TrafficStreams | null>(null);
   let streamsError = $state<ApiError | null>(null);
   let showStreams = $state(false);
-  let loadingStreams = $state(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onlineTimer: ReturnType<typeof setTimeout> | undefined;
+  let streamsTimer: ReturnType<typeof setTimeout> | undefined;
 
   async function load() {
     clearTimeout(timer);
     try {
       data = await api.serverTraffic(serverId, period);
     } catch {}
-    timer = setTimeout(load, 5 * 60e3);
+    timer = setTimeout(load, 60e3); // the monitor counts once a minute
   }
   $effect(() => {
     period;
     load();
   });
 
-  // Who is online: asked over SSH every 30 s while stats are on.
+  // Who is online: asked over SSH every 15 s while stats are on.
   async function loadOnline() {
     clearTimeout(onlineTimer);
     try {
@@ -44,7 +44,7 @@
       online = null;
       onlineError = asApiError(e);
     }
-    onlineTimer = setTimeout(loadOnline, 30e3);
+    onlineTimer = setTimeout(loadOnline, 15e3);
   }
   let enabled = $derived(!!data?.enabled);
   $effect(() => {
@@ -54,24 +54,39 @@
   onDestroy(() => {
     clearTimeout(timer);
     clearTimeout(onlineTimer);
+    clearTimeout(streamsTimer);
+    document.removeEventListener('visibilitychange', visible);
   });
 
+  // The open connections: every 5 s while shown and the tab is visible
+  // (each read is an SSH login), slower after an error.
   async function loadStreams() {
-    loadingStreams = true;
+    clearTimeout(streamsTimer);
+    if (!showStreams || document.hidden) return;
+    let ok = true;
     try {
-      streams = await api.trafficStreams(serverId);
+      const s = await api.trafficStreams(serverId);
+      if (showStreams) streams = s;
       streamsError = null;
     } catch (e) {
+      ok = false;
       streams = null;
       streamsError = asApiError(e);
-    } finally {
-      loadingStreams = false;
     }
+    clearTimeout(streamsTimer); // a read started before a hide and show
+    if (showStreams) streamsTimer = setTimeout(loadStreams, ok ? 5e3 : 15e3);
   }
+  function visible() {
+    if (!document.hidden) loadStreams();
+  }
+  document.addEventListener('visibilitychange', visible);
   function toggleStreams() {
     showStreams = !showStreams;
     if (showStreams) loadStreams();
-    else streams = null; // where clients go is not kept, not even here
+    else {
+      clearTimeout(streamsTimer);
+      streams = null; // where clients go is not kept, not even here
+    }
   }
 
   // Every hour of the period, zero where nothing was counted.
@@ -177,7 +192,6 @@
     {#if writable && data.enabled}
       <div class="row streams-head">
         <h3 class="grow">{t('tr.streams')}</h3>
-        {#if showStreams}<button class="ghost" disabled={loadingStreams} onclick={loadStreams}>{t('tr.refresh')}</button>{/if}
         <button class="ghost" onclick={toggleStreams}>{showStreams ? t('tr.hideStreams') : t('tr.showStreams')}</button>
       </div>
       {#if showStreams}
