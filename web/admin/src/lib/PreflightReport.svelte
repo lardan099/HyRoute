@@ -15,7 +15,7 @@
     {report.os || '—'} · {report.arch} · {t('preflight.cpu', { n: report.cpus })} · {report.memoryMiB} МБ · {t('preflight.disk', { n: report.diskFreeMiB })}
   </p>
   <ul>
-    {#each report.checks as c (c.id + c.title)}
+    {#each report.checks as c, i (i)}
       <li class={c.level}>
         <span class="ic" aria-hidden="true">{icon[c.level]}</span>
         <div>

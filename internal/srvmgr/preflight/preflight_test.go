@@ -176,6 +176,35 @@ func TestBusyPort(t *testing.T) {
 	}
 }
 
+// A program listening on IPv4 and IPv6 (nginx: listen 80; listen [::]:80;)
+// is one check, not two identical ones.
+func TestBusyPortDualStack(t *testing.T) {
+	ss := "tcp LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=700,fd=6))\n" +
+		"tcp LISTEN 0 511 [::]:80 [::]:* users:((\"nginx\",pid=700,fd=7))\n" +
+		"udp UNCONN 0 0 0.0.0.0:443 0.0.0.0:* users:((\"caddy\",pid=812,fd=9))\n" +
+		"udp UNCONN 0 0 [::]:443 [::]:* users:((\"caddy\",pid=812,fd=10))\n" +
+		"udp UNCONN 0 0 [::1]:443 [::]:* users:((\"unbound\",pid=900,fd=4))\n"
+	r, err := Run(context.Background(), server{os: osDebian12, github: "200", ss: ss}.fake(), rootProbe, Options{UDPPort: 443, TCPPorts: []int{80}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var titles []string
+	seen := map[string]bool{}
+	for _, c := range r.Checks {
+		if c.ID != "port" {
+			continue
+		}
+		if seen[c.Title] {
+			t.Fatalf("duplicate check %q: %+v", c.Title, r.Checks)
+		}
+		seen[c.Title] = true
+		titles = append(titles, c.Title)
+	}
+	if !r.Blocked || len(titles) != 3 || len(r.Ports) != 3 {
+		t.Fatalf("%q %+v", titles, r.Ports)
+	}
+}
+
 func TestNoGitHub(t *testing.T) {
 	r, err := Run(context.Background(), server{os: osDebian12, github: "000"}.fake(), rootProbe, Options{})
 	if err != nil {

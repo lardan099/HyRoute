@@ -308,6 +308,9 @@ func (r *Report) inspectHysteria(ctx context.Context, ex remote.Executor) error 
 
 func (r *Report) checkPorts(ls []remote.Listener, opt Options) {
 	used := false
+	// ss lists a program once per socket: IPv4 and IPv6 listeners of one
+	// port (nginx: listen 80; listen [::]:80;) are one check.
+	seen := map[PortUse]bool{}
 	for _, l := range ls {
 		want := (l.Proto == "udp" && l.Port == opt.UDPPort)
 		for _, p := range opt.TCPPorts {
@@ -317,7 +320,12 @@ func (r *Report) checkPorts(ls []remote.Listener, opt Options) {
 			continue
 		}
 		used = true
-		r.Ports = append(r.Ports, PortUse{Proto: l.Proto, Port: l.Port, Process: l.Process})
+		u := PortUse{Proto: l.Proto, Port: l.Port, Process: l.Process}
+		if seen[u] {
+			continue
+		}
+		seen[u] = true
+		r.Ports = append(r.Ports, u)
 		title := fmt.Sprintf("Порт %s %d занят", strings.ToUpper(l.Proto), l.Port)
 		if l.Process == "hysteria" {
 			r.add("port", Warn, title+" Hysteria", "Это уже установленная Hysteria.")
