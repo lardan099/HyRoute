@@ -3,6 +3,7 @@
   import { route, go, pages, type Page } from './router.svelte';
   import Overview from './pages/Overview.svelte';
   import Soon from './pages/Soon.svelte';
+  import Presets from './pages/Presets.svelte';
   import Auth from './pages/Auth.svelte';
   import Settings from './pages/Settings.svelte';
   import Servers from './pages/Servers.svelte';
@@ -64,6 +65,8 @@
         <Deployments />
       {:else if route.page === 'logs'}
         <Logs />
+      {:else if route.page === 'presets'}
+        <Presets />
       {:else}
         <Soon title={title(route.page)} text={t(`soon.${route.page}` as Key)} />
       {/if}

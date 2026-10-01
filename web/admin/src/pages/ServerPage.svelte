@@ -12,6 +12,7 @@
   import MaintainDialog from '../lib/MaintainDialog.svelte';
   import RotateDialog from '../lib/RotateDialog.svelte';
   import PortsDialog from '../lib/PortsDialog.svelte';
+  import PresetApplyDialog from '../lib/PresetApplyDialog.svelte';
   import JournalView from '../lib/JournalView.svelte';
   import ConfigEditor from '../lib/ConfigEditor.svelte';
   import ClientCard from '../lib/ClientCard.svelte';
@@ -33,6 +34,7 @@
   let maintaining = $state(false);
   let rotating = $state(false);
   let porting = $state(false);
+  let presetting = $state(false);
   let editing = $state(false);
   let history = $state(false);
   let action = $state<{ name: ServiceAction; job: Job; done: boolean; ok: boolean } | null>(null);
@@ -227,6 +229,7 @@
         <div class="row">
           <h2 class="grow">{t('srv.config')}</h2>
           {#if config}<button class="ghost" onclick={() => (history = true)}>{t('hist.open')}</button>{/if}
+          {#if config && writable}<button class="ghost" onclick={() => (presetting = true)}>{t('papply.open')}</button>{/if}
           {#if config && writable}<button class="ghost" onclick={() => (porting = true)}>{t('ports.open')}</button>{/if}
           {#if config && writable}<button class="ghost" onclick={() => (rotating = true)}>{t('rot.open')}</button>{/if}
           {#if config && writable}<button class="ghost" onclick={() => (editing = true)}>{t('cfg.edit')}</button>{/if}
@@ -285,6 +288,10 @@
         load();
       }}
     />
+  {/if}
+
+  {#if presetting && config}
+    <PresetApplyDialog {server} onclose={() => (presetting = false)} onstarted={(j) => go('deployments', j.id)} />
   {/if}
 
   {#if rotating && config}

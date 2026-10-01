@@ -273,6 +273,8 @@ export interface DeployParams {
   udp?: { disable?: boolean; idleTimeout?: number };
   sniff?: { enable?: boolean; timeout?: number; rewriteDomain?: boolean; tcpPorts?: string; udpPorts?: string };
   outbound?: { type?: OutboundType; mode?: string; bindIPv4?: string; bindIPv6?: string; bindDevice?: string; addr?: string; user?: string };
+  // preset: sections of a preset laid over the config (not ports, obfs).
+  preset?: { id: number; sections: PresetSection[] };
   source?: DeploySource;
   keepFirewall?: boolean;
   replace?: boolean;
@@ -576,6 +578,34 @@ export interface ConfigCheck {
   ok: boolean;
 }
 
+export type PresetSection = 'ports' | 'obfs' | 'masquerade' | 'speed' | 'quic' | 'udp' | 'resolver' | 'sniff' | 'acl' | 'outbounds';
+
+// presetSections in config order; deploySections are those a deploy takes
+// (the form sets the ports and the obfuscation).
+export const presetSections: PresetSection[] = ['ports', 'obfs', 'masquerade', 'speed', 'quic', 'udp', 'resolver', 'sniff', 'acl', 'outbounds'];
+export const deploySections: PresetSection[] = ['masquerade', 'speed', 'quic', 'udp', 'resolver', 'sniff', 'acl', 'outbounds'];
+
+// Preset is a part of a server config without secrets and addresses.
+export interface Preset {
+  id: number;
+  name: string;
+  sections: PresetSection[];
+  notes: string[];
+  config: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PresetCheck extends ConfigCheck {
+  newObfs: boolean;
+}
+
+export interface PresetApply {
+  base: number;
+  preset: number;
+  sections: PresetSection[];
+}
+
 export interface ConfigInput {
   revision: number;
   yaml: string;
@@ -685,6 +715,14 @@ export const api = {
     request<Job>('POST', `/servers/${serverId}/config/rollback`, { base, revision }),
   rotateConfig: (serverId: number, base: number, r: Rotation) => request<Job>('POST', `/servers/${serverId}/config/rotate`, { base, ...r }),
   setPorts: (serverId: number, p: PortsInput) => request<{ job: Job | null }>('POST', `/servers/${serverId}/ports`, p),
+  presets: () => request<Preset[]>('GET', '/presets'),
+  createPreset: (name: string, from: { serverId?: number; from?: number }) => request<Preset>('POST', '/presets', { name, ...from }),
+  renamePreset: (id: number, name: string) => request<Preset>('PATCH', `/presets/${id}`, { name }),
+  deletePreset: (id: number) => request<void>('DELETE', `/presets/${id}`),
+  exportPreset: (id: number) => request<unknown>('GET', `/presets/${id}/export`),
+  importPreset: (file: unknown) => request<Preset>('POST', '/presets/import', file),
+  presetPreview: (serverId: number, p: PresetApply) => request<PresetCheck>('POST', `/servers/${serverId}/preset/preview`, p),
+  presetApply: (serverId: number, p: PresetApply) => request<Job>('POST', `/servers/${serverId}/preset/apply`, p),
   clientSummary: (serverId: number) => request<ClientSummary>('GET', `/servers/${serverId}/client`),
   clientProfile: (serverId: number, user = '') =>
     request<ClientProfile>('POST', `/servers/${serverId}/client/reveal`, { user }),

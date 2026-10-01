@@ -25,6 +25,9 @@
     type Server,
     type ServerConfig,
     type TLSMode,
+    type Preset,
+    type PresetSection,
+    deploySections,
   } from '../api';
   import { t, type Key } from '../i18n';
   import Dialog from './Dialog.svelte';
@@ -82,6 +85,13 @@
   let outAddr = $state('');
   let outUser = $state('');
   let outPass = $state('');
+  // A preset's sections laid over the config (not ports, obfuscation).
+  let presets = $state<Preset[]>([]);
+  let presetId = $state(0);
+  let presetChosen = $state<Record<string, boolean>>({});
+  let preset = $derived(presets.find((p) => p.id === presetId) ?? null);
+  let presetOffer = $derived((preset?.sections ?? []).filter((s) => deploySections.includes(s)));
+  let fromPreset = $derived((s: PresetSection) => !!preset && presetOffer.includes(s) && !!presetChosen[s]);
 
   let loading = $state(true);
   // cfg is the server's current config revision (null: none).
@@ -186,6 +196,10 @@
     sniffRewrite = !!p.sniff?.rewriteDomain;
     sniffTCP = p.sniff?.tcpPorts ?? '';
     sniffUDP = p.sniff?.udpPorts ?? '';
+    if (p.preset) {
+      presetId = p.preset.id;
+      presetChosen = Object.fromEntries(p.preset.sections.map((s) => [s, true]));
+    }
     const o = p.outbound ?? {};
     outType = o.type ?? '';
     outMode = o.mode ?? '';
@@ -227,6 +241,9 @@
   }
 
   onMount(async () => {
+    try {
+      presets = await api.presets();
+    } catch {}
     try {
       cfg = await api.serverConfig(server.id);
     } catch {
@@ -340,6 +357,23 @@
       p.outbound = compact({ type: outType, addr: outAddr.trim(), user: outUser.trim() });
       if (outPass) secrets.outPassword = outPass;
     }
+    const taken = presetOffer.filter((s) => presetChosen[s]);
+    if (preset && taken.length) {
+      p.preset = { id: preset.id, sections: taken };
+      // A section comes from the preset or from the form, not both.
+      if (taken.includes('masquerade')) {
+        p.masquerade = undefined;
+        p.masq = undefined;
+      }
+      if (taken.includes('speed')) p.bandwidth = undefined;
+      if (taken.includes('quic')) p.quic = undefined;
+      if (taken.includes('udp')) p.udp = undefined;
+      if (taken.includes('sniff')) p.sniff = undefined;
+      if (taken.includes('outbounds')) {
+        p.outbound = undefined;
+        delete secrets.outPassword;
+      }
+    }
     try {
       onstarted(await api.startDeploy(server.id, p, Object.keys(secrets).length ? secrets : undefined));
     } catch (err) {
@@ -447,6 +481,33 @@
         </div>
       </div>
 
+      {#if presets.length}
+        <div class="field">
+          <label>
+            <span>{t('deploy.preset')}</span>
+            <select bind:value={presetId}>
+              <option value={0}>{t('deploy.presetNone')}</option>
+              {#each presets as pr (pr.id)}<option value={pr.id}>{pr.name}</option>{/each}
+            </select>
+          </label>
+          {#if preset}
+            {#if presetOffer.length}
+              <div class="secs">
+                {#each presetOffer as sec (sec)}
+                  <label class="check"><input type="checkbox" bind:checked={presetChosen[sec]} /> {t(`psec.${sec}` as Key)}</label>
+                {/each}
+              </div>
+              <span class="hint">{t('deploy.presetHint')}</span>
+            {:else}
+              <span class="hint">{t('deploy.presetNothing')}</span>
+            {/if}
+          {/if}
+        </div>
+      {/if}
+
+      {#if fromPreset('masquerade')}
+        <p class="hint">{t('deploy.masqFromPreset')}</p>
+      {:else}
       <div class="field">
         <label>
           <span>{t('deploy.masquerade')}</span>
@@ -492,6 +553,8 @@
         </div>
       {/if}
 
+      {/if}
+
       <div class="field">
         <label class="check"><input type="checkbox" bind:checked={obfs} /> {t('deploy.obfs')}</label>
         <span class="hint">{t('deploy.obfsHint')}</span>
@@ -528,8 +591,8 @@
           <p class="hint">{t('deploy.advancedHint')}</p>
 
           <details class="grp">
-            <summary>{t('deploy.grpSpeed')}{#if setSpeed}<span class="set">{t('deploy.set')}</span>{/if}</summary>
-            <div class="form inner">
+            <summary>{t('deploy.grpSpeed')}{#if setSpeed}<span class="set">{t('deploy.set')}</span>{/if}{#if fromPreset('speed')}<span class="set">{t('deploy.fromPreset')}</span>{/if}</summary>
+            <fieldset class="form inner" disabled={fromPreset('speed')}>
               <div class="two">
                 <label class="grow">
                   <span>{t('deploy.up')}</span>
@@ -545,12 +608,12 @@
                 <label class="check"><input type="checkbox" checked={ignoreClient} onchange={(e) => setIgnore(e.currentTarget.checked)} /> {t('deploy.ignoreClient')}</label>
                 <span class="hint">{t('deploy.ignoreClientHint')}</span>
               </div>
-            </div>
+            </fieldset>
           </details>
 
           <details class="grp">
-            <summary>{t('deploy.grpQUIC')}{#if setQUIC}<span class="set">{t('deploy.set')}</span>{/if}</summary>
-            <div class="form inner">
+            <summary>{t('deploy.grpQUIC')}{#if setQUIC}<span class="set">{t('deploy.set')}</span>{/if}{#if fromPreset('quic')}<span class="set">{t('deploy.fromPreset')}</span>{/if}</summary>
+            <fieldset class="form inner" disabled={fromPreset('quic')}>
               <div class="two">
                 <label class="grow">
                   <span>{t('deploy.streamWin')}</span>
@@ -578,12 +641,12 @@
                 <label class="check"><input type="checkbox" bind:checked={noMTU} /> {t('deploy.noMTU')}</label>
                 <span class="hint">{t('deploy.noMTUHint')}</span>
               </div>
-            </div>
+            </fieldset>
           </details>
 
           <details class="grp">
-            <summary>{t('deploy.grpUDP')}{#if setUDP}<span class="set">{t('deploy.set')}</span>{/if}</summary>
-            <div class="form inner">
+            <summary>{t('deploy.grpUDP')}{#if setUDP}<span class="set">{t('deploy.set')}</span>{/if}{#if fromPreset('udp')}<span class="set">{t('deploy.fromPreset')}</span>{/if}</summary>
+            <fieldset class="form inner" disabled={fromPreset('udp')}>
               <div class="field">
                 <label class="check"><input type="checkbox" checked={udpOff} onchange={(e) => setUDPOff(e.currentTarget.checked)} /> {t('deploy.udpOff')}</label>
                 <span class="hint">{t('deploy.udpOffHint')}</span>
@@ -593,12 +656,12 @@
                 <input type="number" min="2" max="600" bind:value={udpIdle} disabled={udpOff} placeholder="60" />
               </label>
               <span class="hint">{t('deploy.udpIdleHint')}</span>
-            </div>
+            </fieldset>
           </details>
 
           <details class="grp">
-            <summary>{t('deploy.grpSniff')}{#if sniffOn}<span class="set">{t('deploy.set')}</span>{/if}</summary>
-            <div class="form inner">
+            <summary>{t('deploy.grpSniff')}{#if sniffOn}<span class="set">{t('deploy.set')}</span>{/if}{#if fromPreset('sniff')}<span class="set">{t('deploy.fromPreset')}</span>{/if}</summary>
+            <fieldset class="form inner" disabled={fromPreset('sniff')}>
               <div class="field">
                 <label class="check"><input type="checkbox" bind:checked={sniffOn} /> {t('deploy.sniff')}</label>
                 <span class="hint">{t('deploy.sniffHint')}</span>
@@ -621,12 +684,12 @@
                 <span class="hint">{t('deploy.sniffPortsHint')}</span>
                 <label class="check"><input type="checkbox" bind:checked={sniffRewrite} /> {t('deploy.sniffRewrite')}</label>
               {/if}
-            </div>
+            </fieldset>
           </details>
 
           <details class="grp">
-            <summary>{t('deploy.grpOut')}{#if setOut}<span class="set">{t('deploy.set')}</span>{/if}</summary>
-            <div class="form inner">
+            <summary>{t('deploy.grpOut')}{#if setOut}<span class="set">{t('deploy.set')}</span>{/if}{#if fromPreset('outbounds')}<span class="set">{t('deploy.fromPreset')}</span>{/if}</summary>
+            <fieldset class="form inner" disabled={fromPreset('outbounds')}>
               <label>
                 <span>{t('deploy.outType')}</span>
                 <select bind:value={outType}>
@@ -684,7 +747,7 @@
                 </div>
                 <span class="hint">{t('deploy.outPassHint')}</span>
               {/if}
-            </div>
+            </fieldset>
           </details>
 
           <details class="grp">
@@ -754,6 +817,9 @@
   .grp .inner { gap: 10px; }
   .set { margin-left: 8px; font-weight: 400; font-size: 12px; color: var(--accent); }
   .bad { color: var(--block); }
+  fieldset { border: 0; padding: 0; margin: 12px 0 0; min-width: 0; }
+  fieldset:disabled { opacity: 0.55; }
+  .secs { display: flex; flex-wrap: wrap; gap: 6px 16px; }
   textarea { resize: vertical; font-family: var(--mono, monospace); font-size: 12.5px; }
   .note { margin: 0; }
   .changed { display: flex; flex-direction: column; gap: 10px; }
