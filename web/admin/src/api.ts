@@ -113,6 +113,19 @@ export interface Server {
   hasKey: boolean;
   hasKeyPassphrase: boolean;
   hostKey: HostKey | null;
+  // hopInterval of the client links, seconds (0: the client's default).
+  hopInterval: number;
+}
+
+// PortsInput changes the ports of a server (an apply job) and the hop
+// interval of its client links (saved at once).
+export interface PortsInput {
+  base: number;
+  ports: string[];
+  // host: '' every address (IPv4 and IPv6), '0.0.0.0' IPv4 only, or an
+  // address of the server.
+  host: string;
+  hopInterval: number;
 }
 
 export interface HostKey {
@@ -671,6 +684,7 @@ export const api = {
   rollbackConfig: (serverId: number, base: number, revision: number) =>
     request<Job>('POST', `/servers/${serverId}/config/rollback`, { base, revision }),
   rotateConfig: (serverId: number, base: number, r: Rotation) => request<Job>('POST', `/servers/${serverId}/config/rotate`, { base, ...r }),
+  setPorts: (serverId: number, p: PortsInput) => request<{ job: Job | null }>('POST', `/servers/${serverId}/ports`, p),
   clientSummary: (serverId: number) => request<ClientSummary>('GET', `/servers/${serverId}/client`),
   clientProfile: (serverId: number, user = '') =>
     request<ClientProfile>('POST', `/servers/${serverId}/client/reveal`, { user }),

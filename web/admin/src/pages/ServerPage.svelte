@@ -11,6 +11,7 @@
   import DeployDialog from '../lib/DeployDialog.svelte';
   import MaintainDialog from '../lib/MaintainDialog.svelte';
   import RotateDialog from '../lib/RotateDialog.svelte';
+  import PortsDialog from '../lib/PortsDialog.svelte';
   import JournalView from '../lib/JournalView.svelte';
   import ConfigEditor from '../lib/ConfigEditor.svelte';
   import ClientCard from '../lib/ClientCard.svelte';
@@ -31,6 +32,7 @@
   let deploying = $state(false);
   let maintaining = $state(false);
   let rotating = $state(false);
+  let porting = $state(false);
   let editing = $state(false);
   let history = $state(false);
   let action = $state<{ name: ServiceAction; job: Job; done: boolean; ok: boolean } | null>(null);
@@ -225,13 +227,14 @@
         <div class="row">
           <h2 class="grow">{t('srv.config')}</h2>
           {#if config}<button class="ghost" onclick={() => (history = true)}>{t('hist.open')}</button>{/if}
+          {#if config && writable}<button class="ghost" onclick={() => (porting = true)}>{t('ports.open')}</button>{/if}
           {#if config && writable}<button class="ghost" onclick={() => (rotating = true)}>{t('rot.open')}</button>{/if}
           {#if config && writable}<button class="ghost" onclick={() => (editing = true)}>{t('cfg.edit')}</button>{/if}
         </div>
         {#if config}
           <dl>
             <dt>{t('deploy.ports')}</dt>
-            <dd class="mono">UDP {config.meta.ports || '443'}</dd>
+            <dd class="mono">UDP {config.meta.ports || '443'}{#if server.hopInterval && (config.meta.ports ?? '').match(/[-,]/)}<span class="muted"> · {t('ports.every', { n: server.hopInterval })}</span>{/if}</dd>
             <dt>{t('deploy.tls')}</dt>
             <dd>{config.meta.tls || '—'}{config.meta.sni ? ` · ${config.meta.sni}` : ''}</dd>
             {#if config.meta.pinSHA256}
@@ -269,6 +272,19 @@
         <button class="primary {confirming === 'stop' ? 'danger-bg' : ''}" onclick={() => run(confirming!)}>{actionName(confirming!)}</button>
       {/snippet}
     </Dialog>
+  {/if}
+
+  {#if porting && config}
+    <PortsDialog
+      {server}
+      {config}
+      onclose={() => (porting = false)}
+      onstarted={(j) => go('deployments', j.id)}
+      onsaved={() => {
+        porting = false;
+        load();
+      }}
+    />
   {/if}
 
   {#if rotating && config}
