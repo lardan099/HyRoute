@@ -13,9 +13,11 @@ func TestPorts(t *testing.T) {
 		"listen: 0.0.0.0:8443\n":                        "8443/udp",
 		"acme:\n  domains: [a.example]\n":               "443/udp, 80/tcp, 443/tcp",
 		"acme:\n  domains: [a.example]\n  type: http\n": "443/udp, 80/tcp",
-		"acme:\n  domains: [a.example]\n  type: tls\n  tls:\n    altPort: 8444\n": "443/udp, 8444/tcp",
-		"acme:\n  domains: [a.example]\n  type: dns\n":                            "443/udp",
-		"acme:\n  domains: [a.example]\n  disableHTTP: true\n":                    "443/udp, 443/tcp",
+		"acme:\n  domains: [a.example]\n  type: tls\n  tls:\n    altPort: 8444\n":                "443/udp, 8444/tcp",
+		"acme:\n  domains: [a.example]\n  type: dns\n":                                           "443/udp",
+		"acme:\n  domains: [a.example]\n  disableHTTP: true\n":                                   "443/udp, 443/tcp",
+		"masquerade:\n  listenHTTP: :80\n  listenHTTPS: :443\n":                                  "443/udp, 80/tcp, 443/tcp",
+		"acme:\n  domains: [a.example]\n  type: dns\nmasquerade:\n  listenHTTPS: 0.0.0.0:8443\n": "443/udp, 8443/tcp",
 	} {
 		c, err := hyconfig.ParseServer([]byte(yaml))
 		if err != nil {

@@ -13,7 +13,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/lardan099/hyroute/internal/hy2uri"
@@ -33,7 +35,8 @@ const (
 func Managed(tool string) bool { return tool == "ufw" || tool == "firewalld" }
 
 // Ports are the ports a config needs reachable: the UDP ports Hysteria
-// listens on and the TCP port of its ACME challenge.
+// listens on, the TCP port of its ACME challenge and those of the
+// masquerade site on TCP.
 func Ports(c *hyconfig.Server) ([]remote.PortSpec, error) {
 	l, err := hyconfig.ParseListen(c.Listen)
 	if err != nil {
@@ -67,6 +70,20 @@ func Ports(c *hyconfig.Server) ([]remote.PortSpec, error) {
 			if !a.DisableTLSALPN {
 				tcp(a.AltTLSALPNPort, 443)
 			}
+		}
+	}
+	for _, addr := range []string{c.Masquerade.ListenHTTP, c.Masquerade.ListenHTTPS} {
+		if addr == "" {
+			continue
+		}
+		_, port, err := net.SplitHostPort(addr)
+		n, perr := strconv.Atoi(port)
+		if err != nil || perr != nil || n < 1 || n > 65535 {
+			return nil, fmt.Errorf("masquerade: bad address %q", addr)
+		}
+		ps := remote.PortSpec{From: n, To: n, Proto: "tcp"}
+		if !slices.Contains(out, ps) {
+			out = append(out, ps)
 		}
 	}
 	return out, nil
