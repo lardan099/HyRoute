@@ -206,6 +206,10 @@ func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool) {
 		return
 	}
 	defer ex.Close()
+	// The timeout closes the connection too: a server that went silent
+	// mid-command must not hold up the round, and with it every server.
+	stop := context.AfterFunc(cctx, func() { ex.Close() })
+	defer stop()
 	ro := remote.ReadOnly(ex)
 	if hc != nil {
 		defer func() { c.finish(ctx, srv, hc.onServer(cctx, ro, sshTook)) }()

@@ -56,6 +56,74 @@ func (c *conn) Connect(_ context.Context, id int64) (remote.Executor, error) {
 	return ex, nil
 }
 
+// silent is a connection to a server that stopped answering mid-session:
+// commands ignore their context and return only when it is closed.
+type silent struct {
+	*fake.Executor
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (s *silent) Run(context.Context, remote.Cmd) (remote.Result, error) {
+	<-s.closed
+	return remote.Result{}, errors.New("connection closed")
+}
+
+func (s *silent) Close() error {
+	s.once.Do(func() { close(s.closed) })
+	return nil
+}
+
+// hung is conn with one server whose connection hangs.
+type hung struct {
+	*conn
+	id int64
+}
+
+func (h hung) Connect(ctx context.Context, id int64) (remote.Executor, error) {
+	if id == h.id {
+		return &silent{Executor: fake.New(), closed: make(chan struct{})}, nil
+	}
+	return h.conn.Connect(ctx, id)
+}
+
+// A server that hangs mid-session is cut off at the timeout: the round
+// ends and the other servers are sampled.
+func TestCollectorHungServer(t *testing.T) {
+	ctx := context.Background()
+	db, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	var ids []int64
+	for _, name := range []string{"stuck", "fine"} {
+		s := model.Server{Name: name, Host: name + ".example.com", SSHPort: 22, SSHUser: "root", AuthType: model.AuthPassword, Role: model.RoleStandalone, State: model.StateHealthy}
+		if err := db.CreateServer(ctx, &s, nil); err != nil {
+			t.Fatal(err)
+		}
+		db.SetHostKey(ctx, model.HostKey{ServerID: s.ID, Type: "ssh-ed25519", Key: []byte("fake"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()})
+		ids = append(ids, s.ID)
+	}
+	cn := &conn{out: map[int64]string{}, down: map[int64]bool{}}
+	cn.set(ids[1], sample(1000, 9000, 1, 1, 100), false)
+	now := time.Now()
+	c := &Collector{Store: db, Conn: hung{cn, ids[0]}, Now: func() time.Time { return now }, Timeout: 300 * time.Millisecond}
+	done := make(chan struct{})
+	go func() {
+		c.Round(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a hung server stalled the round")
+	}
+	if pts, _ := db.Metrics(ctx, ids[1], 0, now.Add(-time.Hour), now.Add(time.Hour)); len(pts) != 1 {
+		t.Fatalf("the other server: %d points", len(pts))
+	}
+}
+
 func (c *conn) set(id int64, out string, down bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

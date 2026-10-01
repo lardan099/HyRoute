@@ -4,6 +4,12 @@
 // The host key is checked by the caller's HostKey function before any
 // credential is sent: an unknown or changed key aborts the handshake, so a
 // man in the middle never sees the password.
+//
+// A server can vanish mid-session (a dropped route, a frozen VPS): nothing
+// answers, and TCP gives up only after many minutes. Keepalives with a
+// deadline find such a connection and close it, and a cancelled operation
+// that the server does not wind down within cancelGrace closes the whole
+// connection, so everything waiting on it returns.
 package sshexec
 
 import (
@@ -20,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -49,9 +56,21 @@ type Options struct {
 	HostKey func(key ssh.PublicKey) error
 	// Timeout bounds the TCP connect and the handshake (default 15 s).
 	Timeout time.Duration
-	// Keepalive is the interval of keepalive requests (default 30 s).
+	// Keepalive is the interval of keepalive requests (default 30 s). A
+	// request still unanswered at the next tick is a miss; keepaliveMisses
+	// misses in a row close the connection as dead.
 	Keepalive time.Duration
 }
+
+// keepaliveMisses unanswered keepalive intervals in a row mean the server
+// is gone (as OpenSSH's ServerAliveCountMax).
+const keepaliveMisses = 3
+
+// cancelGrace is how long a cancelled operation may take to wind down: the
+// server confirms the closed channel in a round trip. Past it the whole
+// connection is closed, as on a dead link nothing else ends the wait (a
+// variable for tests).
+var cancelGrace = 3 * time.Second
 
 // maxOutput bounds what Run keeps of stdout and stderr.
 const maxOutput = 32 << 20
@@ -62,14 +81,23 @@ var maxFile = maxOutput
 
 // Client is a connected remote.Executor.
 type Client struct {
-	ssh    *ssh.Client
-	done   chan struct{}
+	ssh  *ssh.Client
+	done chan struct{} // closed by Close: stops the keepalive
+
+	// sftpMu serializes opening the SFTP session, which takes round trips;
+	// mu guards the fields below and is never held across the network, so
+	// Close never waits for a silent server.
+	sftpMu sync.Mutex
 	mu     sync.Mutex
 	sftp   *sftp.Client
 	closed bool
+	down   error // why the connection ended; nil while it works
 }
 
 var _ remote.Executor = (*Client)(nil)
+
+// errClosed: the caller closed the connection.
+var errClosed = errors.New("connection closed")
 
 // Dial connects and authenticates.
 func Dial(ctx context.Context, t Target, a Auth, o Options) (*Client, error) {
@@ -126,13 +154,28 @@ func Dial(ctx context.Context, t Target, a Auth, o Options) (*Client, error) {
 		return nil, &remote.UnreachableError{Err: err}
 	}
 	conn.SetDeadline(time.Now().Add(o.Timeout))
+	// The caller's ctx ends the handshake as well.
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	c, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
+	if !stop() {
+		if err == nil {
+			c.Close()
+		}
+		return nil, &remote.UnreachableError{Err: ctx.Err()}
+	}
 	if err != nil {
 		conn.Close()
 		return nil, classify(err)
 	}
 	conn.SetDeadline(time.Time{})
 	cl := &Client{ssh: ssh.NewClient(c, chans, reqs), done: make(chan struct{})}
+	go func() {
+		err := cl.ssh.Wait()
+		if err == nil {
+			err = errors.New("the server closed the connection")
+		}
+		cl.setDown(err)
+	}()
 	go cl.keepalive(o.Keepalive)
 	return cl, nil
 }
@@ -193,35 +236,128 @@ func classify(err error) error {
 	return fmt.Errorf("ssh handshake: %w", err)
 }
 
+// keepalive sends a request each interval; one still unanswered at the
+// next tick is a miss, and keepaliveMisses misses in a row close the
+// connection (SendRequest itself would wait for the answer forever).
 func (c *Client) keepalive(every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
+	answer := make(chan error, 1)
+	waiting, missed := false, 0
 	for {
 		select {
 		case <-c.done:
 			return
+		case err := <-answer:
+			waiting, missed = false, 0
+			if err != nil {
+				c.abort(fmt.Errorf("keepalive: %w", err))
+				return
+			}
 		case <-t.C:
-			if _, _, err := c.ssh.SendRequest("keepalive@openssh.com", true, nil); err != nil {
-				c.ssh.Close()
+			if !waiting {
+				waiting = true
+				go func() {
+					_, _, err := c.ssh.SendRequest("keepalive@openssh.com", true, nil)
+					answer <- err
+				}()
+				continue
+			}
+			if missed++; missed >= keepaliveMisses {
+				c.abort(fmt.Errorf("no answer to keepalives for %v", time.Duration(missed)*every))
 				return
 			}
 		}
 	}
 }
 
-// Close ends the connection.
-func (c *Client) Close() error {
+// setDown records why the connection ended (the first reason stays).
+func (c *Client) setDown(err error) {
+	c.mu.Lock()
+	if c.down == nil {
+		c.down = err
+	}
+	c.mu.Unlock()
+}
+
+// abort closes a connection that stopped answering: every operation
+// waiting on it fails.
+func (c *Client) abort(err error) {
+	c.setDown(err)
+	c.ssh.Close()
+}
+
+// alive fails when the connection has ended.
+func (c *Client) alive() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.down != nil {
+		return &remote.UnreachableError{Err: c.down}
+	}
+	return nil
+}
+
+// failed is what an operation that failed with err returns: the context's
+// error when it ended, UnreachableError when the connection is gone.
+func (c *Client) failed(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if d := c.alive(); d != nil {
+		return d
+	}
+	return err
+}
+
+// guard ends an operation that ctx cancels: interrupt (when set) asks the
+// server to stop it, and if the operation has not finished cancelGrace
+// later the whole connection is closed. The returned function marks the
+// operation finished.
+func (c *Client) guard(ctx context.Context, interrupt func()) (finished func()) {
+	end := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		if interrupt != nil {
+			go interrupt() // it writes, which a full send buffer blocks
+		}
+		t := time.NewTimer(cancelGrace)
+		defer t.Stop()
+		select {
+		case <-end:
+		case <-t.C:
+			c.abort(fmt.Errorf("no answer from the server %v after cancelling: %w", cancelGrace, context.Cause(ctx)))
+		}
+	})
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			stop()
+			close(end)
+		})
+	}
+}
+
+// Close ends the connection. It never waits for the server.
+func (c *Client) Close() error {
+	c.mu.Lock()
 	if c.closed {
+		c.mu.Unlock()
 		return nil
 	}
 	c.closed = true
-	close(c.done)
-	if c.sftp != nil {
-		c.sftp.Close()
+	if c.down == nil {
+		c.down = errClosed
 	}
-	return c.ssh.Close()
+	close(c.done)
+	sc := c.sftp
+	c.mu.Unlock()
+	err := c.ssh.Close()
+	if sc != nil {
+		sc.Close() // returns at once: the connection is gone
+	}
+	if errors.Is(err, net.ErrClosed) {
+		err = nil // already closed after a failure
+	}
+	return err
 }
 
 // limitedBuffer keeps the first max bytes; over says more came. The
@@ -246,16 +382,38 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 func (b *limitedBuffer) Bytes() []byte  { return b.buf.Bytes() }
 func (b *limitedBuffer) String() string { return b.buf.String() }
 
-// start opens a session and starts cmd; stop is closed-over cleanup that
-// kills the program when ctx ends first.
+// start opens a session and starts cmd. Until the returned function is
+// called, a cancelled ctx kills the program and, if the server does not
+// close the session within cancelGrace, closes the connection.
 func (c *Client) start(ctx context.Context, cmd remote.Cmd, stdout, stderr io.Writer) (*ssh.Session, func(), error) {
 	line, err := remote.CommandLine(cmd)
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := c.alive(); err != nil {
+		return nil, nil, err
+	}
+	var sess atomic.Pointer[ssh.Session]
+	finished := c.guard(ctx, func() {
+		if s := sess.Load(); s != nil {
+			s.Signal(ssh.SIGKILL)
+			s.Close()
+		}
+	})
 	s, err := c.ssh.NewSession()
 	if err != nil {
+		finished()
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
 		return nil, nil, &remote.UnreachableError{Err: err}
+	}
+	sess.Store(s)
+	if ctx.Err() != nil {
+		// Cancelled before the session was stored: the guard missed it.
+		s.Close()
+		finished()
+		return nil, nil, ctx.Err()
 	}
 	if cmd.Stdin != nil {
 		s.Stdin = bytes.NewReader(cmd.Stdin)
@@ -263,18 +421,10 @@ func (c *Client) start(ctx context.Context, cmd remote.Cmd, stdout, stderr io.Wr
 	s.Stdout, s.Stderr = stdout, stderr
 	if err := s.Start(line); err != nil {
 		s.Close()
-		return nil, nil, err
+		finished()
+		return nil, nil, c.failed(ctx, err)
 	}
-	stop := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			s.Signal(ssh.SIGKILL)
-			s.Close()
-		case <-stop:
-		}
-	}()
-	return s, func() { close(stop); s.Close() }, nil
+	return s, func() { s.Close(); finished() }, nil
 }
 
 func exitCode(err error) (int, error) {
@@ -310,7 +460,7 @@ func (c *Client) run(ctx context.Context, cmd remote.Cmd, limit int) (res remote
 	}
 	code, err := exitCode(werr)
 	if err != nil {
-		return remote.Result{}, false, err
+		return remote.Result{}, false, c.failed(ctx, err)
 	}
 	return remote.Result{Stdout: out.Bytes(), Stderr: errb.Bytes(), ExitCode: code}, out.over, nil
 }
@@ -342,7 +492,7 @@ func (c *Client) Stream(ctx context.Context, cmd remote.Cmd, line func(string)) 
 	}
 	code, err := exitCode(werr)
 	if err != nil {
-		return err
+		return c.failed(ctx, err)
 	}
 	if code != 0 {
 		return &remote.ExitError{Op: cmd.Args[0], Code: code, Stderr: strings.TrimSpace(errb.String())}
@@ -350,17 +500,35 @@ func (c *Client) Stream(ctx context.Context, cmd remote.Cmd, line func(string)) 
 	return nil
 }
 
-func (c *Client) sftpClient() (*sftp.Client, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.sftp == nil {
-		s, err := sftp.NewClient(c.ssh)
-		if err != nil {
-			return nil, fmt.Errorf("sftp: %w", err)
-		}
-		c.sftp = s
+// sftpClient opens the SFTP session on first use. Opening takes round
+// trips, so it holds sftpMu, not mu: Close does not wait for it.
+func (c *Client) sftpClient(ctx context.Context) (*sftp.Client, error) {
+	c.sftpMu.Lock()
+	defer c.sftpMu.Unlock()
+	if err := c.alive(); err != nil {
+		return nil, err
 	}
-	return c.sftp, nil
+	c.mu.Lock()
+	sc := c.sftp
+	c.mu.Unlock()
+	if sc != nil {
+		return sc, nil
+	}
+	finished := c.guard(ctx, nil)
+	sc, err := sftp.NewClient(c.ssh)
+	finished()
+	if err != nil {
+		return nil, c.failed(ctx, fmt.Errorf("sftp: %w", err))
+	}
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		sc.Close()
+		return nil, &remote.UnreachableError{Err: errClosed}
+	}
+	c.sftp = sc
+	c.mu.Unlock()
+	return sc, nil
 }
 
 // ReadFile implements remote.Executor: SFTP as the SSH user, cat through
@@ -385,20 +553,26 @@ func (c *Client) ReadFile(ctx context.Context, p string, sudo bool) ([]byte, err
 		}
 		return res.Stdout, nil
 	}
-	sc, err := c.sftpClient()
+	sc, err := c.sftpClient(ctx)
 	if err != nil {
 		return nil, err
 	}
+	// SFTP calls take no context: the guard ends them.
+	finished := c.guard(ctx, nil)
+	defer finished()
 	f, err := sc.Open(p)
 	if err != nil {
-		return nil, err
+		return nil, c.failed(ctx, err)
 	}
 	defer f.Close()
 	b, err := io.ReadAll(io.LimitReader(f, int64(maxFile)+1))
-	if err == nil && len(b) > maxFile {
+	if err != nil {
+		return nil, c.failed(ctx, err)
+	}
+	if len(b) > maxFile {
 		return nil, tooLarge(p)
 	}
-	return b, err
+	return b, nil
 }
 
 func tooLarge(p string) error {
@@ -422,21 +596,9 @@ func (c *Client) WriteFile(ctx context.Context, p string, data []byte, f remote.
 	}
 	defer c.Run(context.WithoutCancel(ctx), remote.Cmd{Args: []string{"rm", "-rf", "--", dir}})
 
-	sc, err := c.sftpClient()
-	if err != nil {
-		return err
-	}
 	tmp := path.Join(dir, "upload")
-	w, err := sc.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
-	if err != nil {
-		return fmt.Errorf("sftp create: %w", err)
-	}
-	if _, err := w.Write(data); err != nil {
-		w.Close()
-		return fmt.Errorf("sftp write: %w", err)
-	}
-	if err := w.Close(); err != nil {
-		return fmt.Errorf("sftp close: %w", err)
+	if err := c.upload(ctx, tmp, data); err != nil {
+		return err
 	}
 
 	staged := path.Join(path.Dir(p), "."+path.Base(p)+".hyroute-new")
@@ -454,6 +616,28 @@ func (c *Client) WriteFile(ctx context.Context, p string, data []byte, f remote.
 	if _, err := c.output(ctx, "mv", remote.Cmd{Args: []string{"mv", "-f", "--", staged, p}, Sudo: f.Sudo}); err != nil {
 		c.Run(context.WithoutCancel(ctx), remote.Cmd{Args: []string{"rm", "-f", "--", staged}, Sudo: f.Sudo})
 		return err
+	}
+	return nil
+}
+
+// upload writes data into a new file by SFTP.
+func (c *Client) upload(ctx context.Context, p string, data []byte) error {
+	sc, err := c.sftpClient(ctx)
+	if err != nil {
+		return err
+	}
+	finished := c.guard(ctx, nil)
+	defer finished()
+	w, err := sc.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
+	if err != nil {
+		return c.failed(ctx, fmt.Errorf("sftp create: %w", err))
+	}
+	if _, err := w.Write(data); err != nil {
+		w.Close()
+		return c.failed(ctx, fmt.Errorf("sftp write: %w", err))
+	}
+	if err := w.Close(); err != nil {
+		return c.failed(ctx, fmt.Errorf("sftp close: %w", err))
 	}
 	return nil
 }
