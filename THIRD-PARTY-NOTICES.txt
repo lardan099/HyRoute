@@ -38,6 +38,13 @@ Rule databases (geosite.dat, geoip.dat) are not part of HyRoute. They are
 downloaded on use from the sources chosen in the settings and keep the
 licenses of their projects.
 
+hyroute-server (the server manager, built from the same source) also
+contains a copy of Hysteria's ACL package (third_party/hysteria-acl, MIT,
+see the Hysteria license below), modernc.org/sqlite and
+google.golang.org/protobuf (BSD-3-Clause), github.com/pkg/sftp
+(BSD-2-Clause) and github.com/hashicorp/golang-lru/v2 (MPL-2.0,
+unmodified; its source is at https://github.com/hashicorp/golang-lru).
+
 
 ------------------------------------------------------------------------------
 Hysteria license

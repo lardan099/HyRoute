@@ -7,12 +7,14 @@ toolchain go1.27.1
 require (
 	fyne.io/systray v1.12.2
 	github.com/go-ole/go-ole v1.3.0
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/pkg/sftp v1.13.11
 	github.com/tailscale/wf v0.0.0-20240214030419-6fbb0a674ee6
 	github.com/wailsapp/wails/v2 v2.12.0
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.59.0
 	golang.org/x/sys v0.48.0
+	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.60.1
 	rsc.io/qr v0.2.0
