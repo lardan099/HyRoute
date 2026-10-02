@@ -1078,6 +1078,15 @@ routing`, ревизия с источником «правка»).
 - Маскирование кандидата скрывает и секрет, который есть в текущем
   конфиге под другим путём: пароль переименованного outbound не
   показывается как новый.
+- Шаблоны правил (`routing.Builtins`, `routing.FromPreset`): «Блок
+  локальных сетей» (`reject` восьми сетей, без баз geo), «Блок рекламы»
+  (`reject(geosite:category-ads-all)`), «RU напрямую» (`direct` для
+  `suffix:ru`, `suffix:рф`, `suffix:su`, затем `geoip:ru` — домены до
+  geoip; без категорий geosite, которых может не быть в базе) и пресеты с
+  правилами. Каждое правило шаблона — в своей группе. Интерфейс кладёт
+  шаблон в черновик: в начало, в конец или вместо правил, с outbounds,
+  которых нет у сервера (без паролей); дальше — обычные превью и
+  применение.
 - Экспорт: JSON `{format: "hyroute-routing", version: 1, acl,
   outbounds, resolver}` без паролей и без outbound каскада, или текст
   правил. Импорт читает такой JSON (версия не новее своей) или текст ACL,
@@ -1124,6 +1133,7 @@ routing`, ревизия с источником «правка»).
 | POST | `/api/v1/servers/{id}/routing/check` | operator+ | `{acl, outbounds, request}` → правило, outbound, подмена, объяснение |
 | GET | `/api/v1/servers/{id}/routing/export` | operator+ | `format=json` (по умолчанию: правила, outbounds без паролей и каскада, resolver) или `text` (правила как читает Hysteria) |
 | GET | `/api/v1/servers/{id}/routing/file` | operator+ | acl.file с сервера по SSH (до 1 МБ, полный путь): `{path, acl, problems}` |
+| GET | `/api/v1/routing/templates` | любая | шаблоны правил: встроенные (`builtin:local`, `builtin:ads`, `builtin:ru`) и пресеты с `acl.inline` (`preset:<id>`, outbounds без паролей) |
 | POST | `/api/v1/routing/import` | operator+ | `{data}` — экспорт HyRoute или текст ACL → черновик для редактора, без паролей; ничего не сохраняется |
 | GET | `/api/v1/geo` | любая | базы geo controller: релиз, файлы (SHA-256, размер, URL), когда скачаны и проверены |
 | POST | `/api/v1/geo/update` | operator+ | скачать последний релиз (3 мин), `{info, changed}`; не скачалось — 502 `geo_download` |

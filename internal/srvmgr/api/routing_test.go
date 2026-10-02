@@ -94,6 +94,13 @@ func TestRoutingAPI(t *testing.T) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 
+	rec = owner.do("GET", "/api/v1/routing/templates", nil, nil)
+	var tps []routing.Template
+	json.Unmarshal(rec.Body.Bytes(), &tps)
+	if rec.Code != 200 || len(tps) != 3 || tps[0].ID != "builtin:local" {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+
 	// Read-only users see neither the routing nor the editor's checks.
 	var u model.User
 	u.Username, u.Role = "viewer", model.RoleReadOnly

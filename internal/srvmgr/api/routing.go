@@ -187,3 +187,20 @@ func (s *server) routingFile(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, f)
 }
+
+// routingTemplates are the built-in rule templates and the presets with
+// rules.
+func (s *server) routingTemplates(w http.ResponseWriter, r *http.Request) {
+	ps, err := s.Store.ListPresets(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	out := routing.Builtins()
+	for _, p := range ps {
+		if t, ok := routing.FromPreset(p); ok {
+			out = append(out, t)
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}

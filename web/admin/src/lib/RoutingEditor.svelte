@@ -16,18 +16,20 @@
     type RoutingOutbound,
     type RoutingPreview,
     type RoutingResolver,
+    type RoutingTemplate,
     type RoutingView,
     type Server,
   } from '../api';
   import { t, type Key } from '../i18n';
   import { go } from '../router.svelte';
-  import { bad, builtIn, kindOf, kinds, protoPort, valueOf, type AddrKind } from './acl';
+  import { bad, builtIn, kindOf, kinds, merge, protoPort, valueOf, type AddrKind, type TemplateMode } from './acl';
   import ChainNote from './ChainNote.svelte';
   import Dialog from './Dialog.svelte';
   import DiffView from './DiffView.svelte';
   import OutboundDialog from './OutboundDialog.svelte';
   import RoutingCheck from './RoutingCheck.svelte';
   import RuleDialog from './RuleDialog.svelte';
+  import TemplateDialog from './TemplateDialog.svelte';
 
   let { server, onclose }: { server: Server; onclose: () => void } = $props();
 
@@ -42,6 +44,8 @@
   let extra = $state('');
   let highlight = $state<number | null>(null);
   let obEditing = $state<{ index: number | null; o: RoutingOutbound | null } | null>(null);
+  let tplOpen = $state<{ list: RoutingTemplate[]; title: string } | null>(null);
+  let fileInput = $state<HTMLInputElement | null>(null);
   let tail = $state<string[] | undefined>(undefined);
   let keepFile = $state(false);
   let fileRows = $state<Row[] | null>(null);
@@ -272,6 +276,58 @@
     changedRules();
   }
 
+  async function openTemplates() {
+    try {
+      tplOpen = { list: await api.routingTemplates(), title: t('tpl.title') };
+    } catch (e) {
+      error = asApiError(e);
+    }
+  }
+
+  // importFile reads a routing export or a Hysteria ACL as a template.
+  async function importFile(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const f = input.files?.[0];
+    input.value = '';
+    if (!f) return;
+    try {
+      const x = await api.routingImport(await f.text());
+      tplOpen = { list: [{ id: 'import', name: f.name, acl: x.acl, outbounds: x.outbounds }], title: t('tpl.importTitle', { name: f.name }) };
+    } catch (err) {
+      error = asApiError(err);
+    }
+  }
+
+  function applyTemplate(tpl: RoutingTemplate, mode: TemplateMode, withOutbounds: boolean) {
+    const m = merge(
+      rows.map((r) => r.rule),
+      obs,
+      tpl,
+      mode,
+      withOutbounds,
+    );
+    rows = rowsOf(m.rules);
+    obs = m.outbounds;
+    selected.clear();
+    tplOpen = null;
+    changedRules();
+  }
+
+  // exportAs saves what the server has now (not the draft).
+  async function exportAs(format: 'json' | 'text') {
+    try {
+      const text = await api.routingExport(server.id, format);
+      const url = URL.createObjectURL(new Blob([text], { type: format === 'json' ? 'application/json' : 'text/plain' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `routing-${server.name.replace(/[^\p{L}\p{N}._-]+/gu, '-')}.${format === 'json' ? 'json' : 'acl'}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      error = asApiError(e);
+    }
+  }
+
   async function openFile() {
     try {
       const f = await api.routingFile(server.id);
@@ -359,6 +415,11 @@
           {#each kinds as k (k)}<option value={k}>{t(`rt.kind.${k}` as Key)}</option>{/each}
         </select>
         <span class="grow"></span>
+        <button class="ghost" onclick={openTemplates}>{t('tpl.open')}</button>
+        <button class="ghost" onclick={() => fileInput?.click()}>{t('tpl.import')}</button>
+        <button class="ghost" onclick={() => exportAs('json')} title={t('tpl.exportHint')}>{t('tpl.exportJSON')}</button>
+        <button class="ghost" onclick={() => exportAs('text')} title={t('tpl.exportHint')}>{t('tpl.exportText')}</button>
+        <input type="file" accept=".json,.acl,.txt,text/plain,application/json" class="hidden" bind:this={fileInput} onchange={importFile} />
         <button class="primary" onclick={() => (editing = { key: null, rule: null })}>{t('rt.add')}</button>
       </div>
 
@@ -567,6 +628,10 @@
   </section>
 {/if}
 
+{#if tplOpen}
+  <TemplateDialog templates={tplOpen.list} title={tplOpen.title} onapply={applyTemplate} onclose={() => (tplOpen = null)} />
+{/if}
+
 {#if obEditing}
   <OutboundDialog
     outbound={obEditing.o}
@@ -620,6 +685,7 @@
   .lint { display: flex; align-items: center; gap: 10px; }
   .tools { margin: 14px 0 8px; gap: 8px; flex-wrap: wrap; }
   .search { min-width: 220px; }
+  .hidden { display: none; }
   .bulk { gap: 6px; padding: 6px 8px; background: var(--surface-2); border-radius: var(--radius-sm); margin-bottom: 8px; flex-wrap: wrap; }
   .table { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; }

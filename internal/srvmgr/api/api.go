@@ -127,6 +127,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/servers/{id}/routing/export", s.authed(writers, s.exportRouting))
 	mux.HandleFunc("GET /api/v1/servers/{id}/routing/file", s.authed(writers, s.routingFile))
 	mux.HandleFunc("POST /api/v1/routing/import", s.authed(anyRole, s.importRouting))
+	mux.HandleFunc("GET /api/v1/routing/templates", s.authed(anyRole, s.routingTemplates))
 	mux.HandleFunc("GET /api/v1/geo", s.authed(anyRole, s.geoInfo))
 	mux.HandleFunc("POST /api/v1/geo/update", s.authed(anyRole, s.geoUpdate))
 	mux.HandleFunc("GET /api/v1/geo/categories", s.authed(anyRole, s.geoCategories))

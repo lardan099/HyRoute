@@ -2,7 +2,7 @@
 // tells them apart (acl.KindOf on the controller), an address from a kind
 // and a value, and the checks the rule dialog makes before the controller
 // does.
-import type { AclRule } from '../api';
+import type { AclRule, RoutingOutbound, RoutingTemplate } from '../api';
 
 export type AddrKind = 'all' | 'domain' | 'suffix' | 'wildcard' | 'geosite' | 'ip' | 'cidr' | 'geoip';
 
@@ -91,3 +91,21 @@ export function portOK(s: string): boolean {
 }
 
 export const outboundOK = (s: string) => /^\w+$/.test(s);
+
+// TemplateMode is where a template's rules go.
+export type TemplateMode = 'top' | 'bottom' | 'replace';
+
+// merge puts a template into rules and outbounds: its rules at the top,
+// at the end or instead; its outbounds the list lacks (by name, without
+// passwords) at the end.
+export function merge(rules: AclRule[], obs: RoutingOutbound[], tpl: RoutingTemplate, mode: TemplateMode, withOutbounds: boolean) {
+  const add = (tpl.acl.rules ?? []).map((r) => ({ ...r }));
+  const out = mode === 'top' ? [...add, ...rules] : mode === 'bottom' ? [...rules, ...add] : add;
+  const outbounds = [...obs];
+  if (withOutbounds) {
+    for (const o of tpl.outbounds ?? []) {
+      if (!outbounds.some((x) => x.name.toLowerCase() === o.name.toLowerCase())) outbounds.push({ ...o, from: undefined, locked: undefined });
+    }
+  }
+  return { rules: out, outbounds };
+}

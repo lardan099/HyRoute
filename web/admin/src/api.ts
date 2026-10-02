@@ -58,6 +58,21 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T;
 }
 
+// requestText is a GET whose answer is text (a file to save).
+async function requestText(path: string): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetch('/api/v1' + path, { credentials: 'same-origin' });
+  } catch (e) {
+    throw new ApiError(0, 'network', t('error.network'), String(e));
+  }
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null))?.error;
+    throw new ApiError(res.status, err?.code ?? 'unknown', err?.message ?? t('error.unknown'), err?.details ?? '', err?.data ?? {});
+  }
+  return res.text();
+}
+
 export interface Health {
   status: string;
   version: string;
@@ -689,6 +704,17 @@ export interface RoutingFile {
   problems: AclProblem[];
 }
 
+// RoutingTemplate is a set of rules (and outbounds without passwords) to
+// put at the top, at the end or instead of a server's rules.
+export interface RoutingTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  acl: AclDocument;
+  outbounds?: RoutingOutbound[];
+  builtin?: boolean;
+}
+
 export interface GeoInfo {
   release: string;
   files: { name: string; sha256: string; size: number; url: string }[];
@@ -938,6 +964,9 @@ export const api = {
   routingApply: (serverId: number, input: RoutingInput) => request<Job>('POST', `/servers/${serverId}/routing/apply`, input),
   routingCheck: (serverId: number, input: { acl: AclDocument; outbounds: string[]; request: AclRequest }) =>
     request<AclVerdict>('POST', `/servers/${serverId}/routing/check`, input),
+  routingTemplates: () => request<RoutingTemplate[]>('GET', '/routing/templates'),
+  routingImport: (data: string) => request<{ acl: AclDocument; outbounds?: RoutingOutbound[]; resolver?: RoutingResolver }>('POST', '/routing/import', { data }),
+  routingExport: (serverId: number, format: 'json' | 'text') => requestText(`/servers/${serverId}/routing/export?format=${format}`),
   routingFile: (serverId: number) => request<RoutingFile>('GET', `/servers/${serverId}/routing/file`),
   geoInfo: () => request<GeoInfo>('GET', '/geo'),
   geoUpdate: () => request<{ info: GeoInfo; changed: boolean }>('POST', '/geo/update'),
