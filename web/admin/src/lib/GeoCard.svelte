@@ -15,6 +15,9 @@
   let error = $state<ApiError | null>(null);
   let busy = $state(false);
   let source = $state<DeploySource>('auto');
+  // job: the geo job just queued (shown here: the routing draft beside it
+  // stays).
+  let job = $state<number | null>(null);
   let via = $state(0);
 
   onMount(async () => {
@@ -41,10 +44,11 @@
   async function install() {
     busy = true;
     try {
-      const j = await api.installGeo(serverId, source, source === 'node' ? via : undefined);
-      go('deployments', j.id);
+      job = (await api.installGeo(serverId, source, source === 'node' ? via : undefined)).id;
+      error = null;
     } catch (e) {
       error = asApiError(e);
+    } finally {
       busy = false;
     }
   }
@@ -63,11 +67,12 @@
     {#if geo.release && geo.latest}<span class="pill direct small">{t('geo.latest')}</span>{/if}
   </p>
   <p class="small muted">{geo.paths ? t('geo.paths') : geo.rules ? t('geo.noPaths') : t('geo.noRules')}</p>
-  {#if writable && info?.release && !(geo.latest && geo.paths)}
+  {#if writable && info?.release && !(geo.latest && geo.paths) && !job}
     <div class="src"><SourcePicker {serverId} bind:source bind:via /></div>
     <button class="primary" disabled={busy || (source === 'node' && !via)} onclick={install}>{t('geo.install')}</button>
   {/if}
 {/if}
+{#if job}<div class="note info small">{t('geo.queued')} <button class="link" onclick={() => go('deployments', job!)}>{t('geo.openJob', { id: job })}</button></div>{/if}
 {#if error}<div class="note error small">{error.message}</div>{/if}
 
 <style>

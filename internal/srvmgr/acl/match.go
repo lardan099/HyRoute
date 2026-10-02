@@ -33,6 +33,9 @@ type Verdict struct {
 	// names it (default is the first outbound, reject refuses it).
 	Outbound string `json:"outbound"`
 	Hijack   string `json:"hijack,omitempty"`
+	// Builtin: Outbound is Hysteria's own (direct, reject), not one of
+	// the config's of that name.
+	Builtin bool `json:"builtin,omitempty"`
 	// Reason says why.
 	Reason string `json:"reason"`
 	// Unknown are enabled rules above it that were not tried: they have
@@ -136,25 +139,27 @@ func (s *Set) verdict(d Document, env Env, q Request, h hacl.HostInfo, proto hac
 			v.Unknown = append(v.Unknown, j)
 		}
 	}
+	// Hysteria puts the ACL in front whenever acl.inline has a line.
+	hasACL := d.Text() != ""
 	if i < 0 {
-		v.Outbound = defaultOutbound(env)
-		v.Reason = "Ни одно правило не подошло: соединение уходит в первый outbound «" + v.Outbound + "»."
+		v.Outbound, v.Builtin = defaultOutbound(env, hasACL)
+		v.Reason = "Ни одно правило не подошло: соединение уходит в outbound по умолчанию «" + v.Outbound + "»."
 		if len(env.Outbounds) == 0 {
 			v.Reason = "Ни одно правило не подошло: outbounds нет, соединение идёт напрямую."
 		}
 		return v
 	}
 	r := d.Rules[i]
-	v.Outbound = outboundName(r.Outbound, env)
+	v.Outbound, v.Builtin = outboundName(r.Outbound, env, hasACL)
 	if hijack != nil {
 		v.Hijack = hijack.String()
 	}
 	v.Reason = fmt.Sprintf("Правило %d: %s.", i+1, why(r, q, h))
 	switch {
-	case v.Outbound == "reject":
+	case v.Builtin && v.Outbound == "reject":
 		v.Reason += " Соединение отклоняется."
-	case strings.EqualFold(r.Outbound, "default"):
-		v.Reason += " default — первый outbound «" + v.Outbound + "»."
+	case strings.EqualFold(r.Outbound, "default") && !strings.EqualFold(v.Outbound, "default"):
+		v.Reason += " default — outbound по умолчанию «" + v.Outbound + "»."
 	}
 	if v.Hijack != "" {
 		v.Reason += " Соединение уходит на " + v.Hijack + " вместо запрошенного адреса."
@@ -203,26 +208,35 @@ func why(r Rule, q Request, h hacl.HostInfo) string {
 }
 
 // outboundName is the outbound a rule's name stands for, as the config
-// names it.
-func outboundName(name string, env Env) string {
+// names it, and whether it is one of Hysteria's built-in ones (an outbound
+// of the config with the same name overrides it).
+func outboundName(name string, env Env, hasACL bool) (string, bool) {
 	for _, o := range env.Outbounds {
 		if strings.EqualFold(o, name) {
-			return o
+			return o, false
 		}
 	}
 	if strings.EqualFold(name, "default") {
-		return defaultOutbound(env)
+		return defaultOutbound(env, hasACL)
 	}
-	return strings.ToLower(name)
+	return strings.ToLower(name), true
 }
 
-// defaultOutbound is where unmatched connections go: the first outbound,
-// direct without outbounds.
-func defaultOutbound(env Env) string {
-	if len(env.Outbounds) > 0 {
-		return env.Outbounds[0]
+// defaultOutbound is where unmatched connections go: with rules, the
+// config's outbound named default if there is one; else the first
+// outbound; direct without outbounds.
+func defaultOutbound(env Env, hasACL bool) (string, bool) {
+	if hasACL {
+		for _, o := range env.Outbounds {
+			if strings.EqualFold(o, "default") {
+				return o, false
+			}
+		}
 	}
-	return "direct"
+	if len(env.Outbounds) > 0 {
+		return env.Outbounds[0], false
+	}
+	return "direct", true
 }
 
 // Change is a request an edit sends elsewhere.
@@ -275,7 +289,7 @@ func DryRun(before, after Document, envBefore, envAfter Env, extra []Request) ([
 		}
 		b := sb.verdict(before, envBefore, q, h, proto, port)
 		a := sa.verdict(after, envAfter, q, h, proto, port)
-		if !strings.EqualFold(b.Outbound, a.Outbound) || b.Hijack != a.Hijack {
+		if !strings.EqualFold(b.Outbound, a.Outbound) || b.Builtin != a.Builtin || b.Hijack != a.Hijack {
 			out = append(out, Change{Request: q, Before: b, After: a})
 		}
 	}

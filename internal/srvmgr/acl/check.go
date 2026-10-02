@@ -76,7 +76,16 @@ func (d Document) compile(env Env) (ps []Problem, valid []bool, at []int) {
 		ps = append(ps, p)
 	}
 	valid = make([]bool, len(d.Rules))
+	notComment := Problem{Level: Error, Code: "line", Message: "Строка рядом с правилом — не комментарий: Hysteria прочтёт её как правило без проверки или не примет конфиг."}
+	if !all(d.Tail, commentLine) {
+		p := notComment
+		p.Rule = -1
+		ps = append(ps, p)
+	}
 	for i, r := range d.Rules {
+		if !all(r.Before, commentLine) {
+			add(i, notComment)
+		}
 		if r.Bad() {
 			add(i, Problem{Level: Error, Code: "syntax", Message: "Hysteria не прочтёт эту строку: правило пишется как выход(адрес), выход(адрес, протокол/порт) или выход(адрес, протокол/порт, подмена)."})
 			continue
@@ -101,8 +110,11 @@ func (d Document) compile(env Env) (ps []Problem, valid []bool, at []int) {
 // or line break inside a field) and the outbound is a name Hysteria
 // accepts.
 func (r Rule) fields(line string) (Problem, bool) {
-	if strings.ContainsAny(r.Group, "\r\n") {
-		return Problem{Level: Error, Code: "chars", Message: "В имени группы не может быть перевода строки."}, true
+	// A line break would put a line nobody checked into the ACL.
+	for _, f := range []string{r.Outbound, r.Address, r.Proto, r.Port, r.Hijack, r.Comment, r.Group} {
+		if strings.ContainsAny(f, "\r\n") {
+			return Problem{Level: Error, Code: "chars", Message: "В полях правила, комментарии и группе не может быть перевода строки."}, true
+		}
 	}
 	if !wordRe(r.Outbound) {
 		return Problem{Level: Error, Code: "outbound_name", Message: fmt.Sprintf("Hysteria не примет выход %q: в имени только латинские буквы, цифры и _.", r.Outbound)}, true
@@ -111,6 +123,17 @@ func (r Rule) fields(line string) (Problem, bool) {
 		return Problem{Level: Error, Code: "chars", Message: "В поле правила недопустимый символ: запятая, #, скобка или перевод строки."}, true
 	}
 	return Problem{}, false
+}
+
+// commentLine: a line around rules is blank or a comment (a CRLF file
+// keeps its \r at the end).
+func commentLine(l string) bool {
+	l = strings.TrimSuffix(l, "\r")
+	if strings.ContainsAny(l, "\r\n") {
+		return false
+	}
+	t := strings.TrimSpace(l)
+	return t == "" || strings.HasPrefix(t, "#")
 }
 
 func wordRe(s string) bool {
@@ -292,4 +315,13 @@ func hostOf(host string) hacl.HostInfo {
 		}
 	}
 	return h
+}
+
+func all(ls []string, ok func(string) bool) bool {
+	for _, l := range ls {
+		if !ok(l) {
+			return false
+		}
+	}
+	return true
 }

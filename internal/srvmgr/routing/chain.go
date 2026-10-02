@@ -34,10 +34,13 @@ type ChainTemplate struct {
 	Entry *ChainEntry `json:"entry,omitempty"`
 }
 
-// ChainEntry is the entry's part of a chain template.
+// ChainEntry is the entry's part of a chain template: its rules, the
+// outbounds they may name (without passwords; not the cascade's, the link
+// makes it) and its resolver.
 type ChainEntry struct {
-	ACL      acl.Document `json:"acl"`
-	Resolver *Resolver    `json:"resolver,omitempty"`
+	ACL       acl.Document `json:"acl"`
+	Outbounds []Outbound   `json:"outbounds,omitempty"`
+	Resolver  *Resolver    `json:"resolver,omitempty"`
 }
 
 // EncryptedResolver is the resolver "RU direct" gives the entry: DoH by
@@ -71,9 +74,13 @@ func ChainBuiltins() []ChainTemplate {
 }
 
 // ChainOf is the template of a cascade: its link's settings and the
-// entry's current routing (a resolver other than the system one).
+// entry's current routing (a resolver other than the system one). Rules
+// kept in an acl.file are not in the view: such an entry is refused.
 func ChainOf(c model.Chain, entry View) (ChainTemplate, error) {
 	t := ChainTemplate{Format: ChainFormat, Version: ChainVersion, Name: c.Name, Description: c.Notes}
+	if entry.File != "" {
+		return t, &model.FieldError{Field: "acl.file", Msg: "Правила входа в файле " + entry.File + ": шаблон их не возьмёт. Перенесите их в конфиг (маршрутизация входа), потом сохраните шаблон."}
+	}
 	if len(c.Links) > 0 {
 		p, err := cascade.ParseParams(c.Links[0].Params)
 		if err != nil {
@@ -84,6 +91,11 @@ func ChainOf(c model.Chain, entry View) (ChainTemplate, error) {
 	}
 	if len(entry.ACL.Rules) > 0 || entry.Resolver.Type != "system" {
 		e := &ChainEntry{ACL: entry.ACL}
+		for _, o := range entry.Outbounds {
+			if !o.Locked {
+				e.Outbounds = append(e.Outbounds, o.public())
+			}
+		}
 		if entry.Resolver.Type != "system" {
 			r := entry.Resolver
 			e.Resolver = &r
@@ -109,6 +121,11 @@ func ImportChain(data []byte) (ChainTemplate, error) {
 		return ChainTemplate{}, &model.FieldError{Field: "file", Msg: fmt.Sprintf("Файл версии %d: эта версия HyRoute читает версию %d.", t.Version, ChainVersion)}
 	}
 	t.ID, t.Builtin, t.Link.LocalPort = "", false, 0
+	if t.Entry != nil {
+		for i, o := range t.Entry.Outbounds {
+			t.Entry.Outbounds[i] = o.public()
+		}
+	}
 	if err := t.Link.Validate(); err != nil {
 		return ChainTemplate{}, err
 	}

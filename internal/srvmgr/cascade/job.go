@@ -964,9 +964,17 @@ func (x *linker) commit(ctx context.Context, env *jobs.Env, p jobParams) error {
 
 // cleanup removes the copies the job kept; it never fails the job.
 func (x *linker) cleanup(ctx context.Context, env *jobs.Env, p jobParams) error {
+	// The link is committed: a failure here must not roll it back.
+	warn := func(err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		env.Warnf("Копии прежних файлов (%s) остались на серверах: %v", Backup, err)
+		return nil
+	}
 	pl, err := x.plan(ctx, p)
 	if err != nil {
-		return err
+		return warn(err)
 	}
 	for _, f := range []struct {
 		server int64
@@ -978,7 +986,7 @@ func (x *linker) cleanup(ctx context.Context, env *jobs.Env, p jobParams) error 
 		}
 		ex, err := execOn(ctx, env, f.server)
 		if err != nil {
-			return err
+			return warn(err)
 		}
 		if err := remote.RemoveFile(ctx, ex, f.path+Backup, sudo(env, f.server)); err != nil {
 			if ctx.Err() != nil {

@@ -112,7 +112,7 @@
     onclose={() => (creating = false)}
     oncreated={(c, job, linkError, tpl) => {
       creating = false;
-      if (tpl?.entry) pendingEntry.set(c.id, { id: 'chain:' + c.id, name: tpl.name, description: t('ctpl.entryOffer'), acl: tpl.entry.acl, resolver: tpl.entry.resolver });
+      if (tpl?.entry) pendingEntry.set(c.id, { id: 'chain:' + c.id, name: tpl.name, description: t('ctpl.entryOffer'), acl: tpl.entry.acl, outbounds: tpl.entry.outbounds, resolver: tpl.entry.resolver });
       if (job) go('deployments', job.id);
       else {
         notice = linkError;

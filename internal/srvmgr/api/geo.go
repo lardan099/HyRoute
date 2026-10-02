@@ -41,7 +41,10 @@ func (s *server) geoUpdate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
 	i, changed, err := s.Geo.Update(ctx)
-	if err != nil {
+	if errors.Is(err, geo.ErrBusy) {
+		s.fail(w, r, &Error{Status: http.StatusConflict, Code: "geo_busy", Message: geo.ErrBusy.Error() + ": дождитесь конца."})
+		return
+	} else if err != nil {
 		s.fail(w, r, &Error{Status: http.StatusBadGateway, Code: "geo_download", Message: "Базы geo не скачались: " + err.Error()})
 		return
 	}

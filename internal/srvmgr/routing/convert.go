@@ -2,6 +2,7 @@ package routing
 
 import (
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/lardan099/hyroute/internal/hyconfig"
@@ -86,7 +87,7 @@ func outboundOf(o hyconfig.Outbound) Outbound {
 		v.SOCKS5 = &SOCKS5{Addr: o.SOCKS5.Addr, Username: o.SOCKS5.Username, Password: hidden(o.SOCKS5.Password)}
 	case "http":
 		u, pw := splitURL(o.HTTP.URL)
-		v.HTTP = &HTTP{URL: u, Password: hidden(pw), Insecure: o.HTTP.Insecure}
+		v.HTTP = &HTTP{URL: redact.String(u), Password: hidden(pw), Insecure: o.HTTP.Insecure}
 	}
 	return v
 }
@@ -120,6 +121,14 @@ func outbounds(cur []hyconfig.Outbound, in []Outbound, ref *ChainRef) (out []hyc
 			renames[strings.ToLower(o.From)] = c.Name
 		}
 		out = append(out, c)
+	}
+	// A rule follows a rename only while its name is free: a rule naming
+	// an outbound that now has the old name (or that the editor renamed
+	// itself) stays.
+	for old := range renames {
+		if slices.ContainsFunc(out, func(c hyconfig.Outbound) bool { return strings.EqualFold(c.Name, old) }) {
+			delete(renames, old)
+		}
 	}
 	if lock != nil && (len(out) == 0 || out[0].Name != lock.Name) {
 		return nil, nil, &model.FieldError{Field: "outbounds", Msg: "Outbound «" + lock.Name + "» ведёт в каскад «" + ref.Name + "»: он остаётся первым и без изменений. Чтобы убрать его, снимите связь на странице каскада."}
@@ -181,13 +190,15 @@ func (o Outbound) config(cur []hyconfig.Outbound) (hyconfig.Outbound, error) {
 			h = *o.HTTP
 		}
 		raw := h.URL
-		if strings.Contains(raw, redact.Mask) {
-			// A URL the view redacted whole: the current one.
-			if was.HTTP.URL == "" {
-				return c, &model.FieldError{Field: "outbounds.http.url", Msg: "Адрес HTTP-прокси outbound «" + name + "» не задан."}
-			}
+		viewURL, viewPw := splitURL(was.HTTP.URL)
+		switch {
+		case was.HTTP.URL != "" && raw == redact.String(viewURL) && (h.Password == apply.Hidden || h.Password == "" && viewPw == ""):
+			// As the view gave it: the current URL byte for byte (built
+			// again it may differ, and show the password as new).
 			raw = was.HTTP.URL
-		} else {
+		case strings.Contains(raw, redact.Mask):
+			return c, &model.FieldError{Field: "outbounds.http.url", Msg: "В адресе HTTP-прокси outbound «" + name + "» скрытая часть: введите адрес целиком."}
+		default:
 			_, curPw := splitURL(was.HTTP.URL)
 			pw, err := keep("outbounds.http.password", h.Password, curPw)
 			if err != nil {

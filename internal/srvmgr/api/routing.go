@@ -160,7 +160,7 @@ func (s *server) importRouting(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Data string `json:"data"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 2*routing.MaxImport+1024)
+	r.Body = http.MaxBytesReader(w, r.Body, 4*routing.MaxImport)
 	if err := readJSON(r, &in); err != nil {
 		writeError(w, err)
 		return
@@ -218,7 +218,7 @@ func (s *server) importChainTemplate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Data string `json:"data"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 2*routing.MaxImport+1024)
+	r.Body = http.MaxBytesReader(w, r.Body, 4*routing.MaxImport)
 	if err := readJSON(r, &in); err != nil {
 		writeError(w, err)
 		return

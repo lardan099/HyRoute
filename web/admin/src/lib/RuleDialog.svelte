@@ -43,7 +43,9 @@
     if (!portOK(port)) p.port = 'rt.errPort';
     if (!outboundOK(outbound)) p.outbound = 'rt.errOutbound';
     if (hijack.trim() && !isIP(hijack.trim())) p.hijack = 'rt.errHijack';
-    if ([value, port, hijack, comment, group].some((s) => badChars.test(s)) || /[\r\n]/.test(group)) p.text = 'rt.errChars';
+    // Hysteria cuts the line at the first #: a comment or group may hold
+    // commas and brackets, only no line break.
+    if ([value, port, hijack].some((s) => badChars.test(s)) || /[\r\n]/.test(comment + group)) p.text = 'rt.errChars';
     return p;
   });
   let valid = $derived(Object.keys(problems).length === 0);

@@ -45,6 +45,13 @@ const maxFile = 64 << 20
 // ErrNone: the controller has no databases yet.
 var ErrNone = errors.New("у controller ещё нет баз geo: скачайте их")
 
+// ErrBusy: another update is running.
+var ErrBusy = errors.New("базы geo уже обновляются")
+
+// defaultClient bounds a whole download (a stalled one must not hold the
+// updates for ever).
+var defaultClient = &http.Client{Timeout: 5 * time.Minute}
+
 // File is a database the controller has.
 type File struct {
 	Name   string `json:"name"`
@@ -103,11 +110,15 @@ func (s *Store) now() time.Time {
 	return s.Now()
 }
 
-func (s *Store) client() *http.Client {
-	c := http.DefaultClient
+func (s *Store) httpClient() *http.Client {
 	if s.HTTP != nil {
-		c = s.HTTP
+		return s.HTTP
 	}
+	return defaultClient
+}
+
+func (s *Store) client() *http.Client {
+	c := s.httpClient()
 	// The latest release is where /latest redirects.
 	nc := *c
 	nc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -146,13 +157,31 @@ func replace(p string, b []byte) error {
 	return os.Rename(tmp, p)
 }
 
-var tagRe = regexp.MustCompile(`^[0-9A-Za-z._-]{1,64}$`)
+// tagRe is a release tag: it names a directory, so it starts with a
+// letter or digit ("." and ".." never pass).
+var tagRe = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`)
+
+// healthy: the files of info are there and match it.
+func (s *Store) healthy(i Info) bool {
+	for _, name := range Names {
+		if _, _, err := s.open(i, name); err != nil {
+			return false
+		}
+	}
+	return len(i.Files) == len(Names)
+}
 
 // Update looks for a newer release and downloads its databases, each
-// checked against its .sha256sum and read as a database before it
-// replaces the old one. It reports whether the files changed.
+// checked against its .sha256sum and read as a database. A release's
+// files go into a directory of their own and become current with one
+// rename of info.json, so a reader never sees half of an update; the
+// previous release stays for readers that opened it. The same release
+// is downloaded again only when its files are damaged. It reports
+// whether the files changed; another update running is ErrBusy.
 func (s *Store) Update(ctx context.Context) (Info, bool, error) {
-	s.updates.Lock()
+	if !s.updates.TryLock() {
+		return Info{}, false, ErrBusy
+	}
 	defer s.updates.Unlock()
 	cur, err := s.Info()
 	if err != nil {
@@ -163,30 +192,46 @@ func (s *Store) Update(ctx context.Context) (Info, bool, error) {
 		return cur, false, err
 	}
 	cur.CheckedAt = s.now()
-	if tag == cur.Release && len(cur.Files) == len(Names) {
+	if tag == cur.Release && s.healthy(cur) {
 		return cur, false, s.writeInfo(cur)
 	}
-	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+	dir := filepath.Join(s.Dir, tag)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return cur, false, err
 	}
 	next := Info{Release: tag, At: s.now(), CheckedAt: cur.CheckedAt}
-	data := map[string][]byte{}
 	for _, name := range Names {
 		f, b, err := s.download(ctx, tag, name)
 		if err != nil {
 			return cur, false, err
 		}
-		next.Files, data[name] = append(next.Files, f), b
-	}
-	for _, name := range Names {
-		if err := replace(filepath.Join(s.Dir, name), data[name]); err != nil {
+		if err := replace(filepath.Join(dir, name), b); err != nil {
 			return cur, false, err
 		}
+		next.Files = append(next.Files, f)
 	}
 	if err := s.writeInfo(next); err != nil {
 		return cur, false, err
 	}
+	s.prune(next.Release, cur.Release)
 	return next, true, nil
+}
+
+// prune removes the directories of releases other than keep, and the
+// files of the first layout (beside info.json).
+func (s *Store) prune(keep ...string) {
+	entries, err := os.ReadDir(s.Dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		switch {
+		case e.IsDir() && !slices.Contains(keep, e.Name()):
+			os.RemoveAll(filepath.Join(s.Dir, e.Name()))
+		case !e.IsDir() && slices.Contains(Names, e.Name()):
+			os.Remove(filepath.Join(s.Dir, e.Name()))
+		}
+	}
 }
 
 // latest is the tag of the latest release.
@@ -215,7 +260,11 @@ func (s *Store) download(ctx context.Context, tag, name string) (File, []byte, e
 	if err != nil {
 		return File{}, nil, err
 	}
-	want := strings.ToLower(strings.Fields(string(sumText) + " ")[0])
+	fields := strings.Fields(string(sumText))
+	if len(fields) == 0 {
+		return File{}, nil, fmt.Errorf("в %s.sha256sum нет хеша", name)
+	}
+	want := strings.ToLower(fields[0])
 	if len(want) != 64 || strings.Trim(want, "0123456789abcdef") != "" {
 		return File{}, nil, fmt.Errorf("в %s.sha256sum нет хеша", name)
 	}
@@ -238,11 +287,7 @@ func (s *Store) get(ctx context.Context, url string, limit int64) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	c := http.DefaultClient
-	if s.HTTP != nil {
-		c = s.HTTP
-	}
-	resp, err := c.Do(req)
+	resp, err := s.httpClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("не удалось скачать %s: %w", path.Base(url), err)
 	}
@@ -255,7 +300,7 @@ func (s *Store) get(ctx context.Context, url string, limit int64) ([]byte, error
 		return nil, fmt.Errorf("не удалось скачать %s: %w", path.Base(url), err)
 	}
 	if int64(len(b)) > limit {
-		return nil, fmt.Errorf("%s больше %d МБ", path.Base(url), limit>>20)
+		return nil, fmt.Errorf("%s больше %d байт", path.Base(url), limit)
 	}
 	return b, nil
 }
@@ -303,11 +348,15 @@ func (s *Store) Open(name string) ([]byte, File, error) {
 	if err != nil {
 		return nil, File{}, err
 	}
+	return s.open(i, name)
+}
+
+func (s *Store) open(i Info, name string) ([]byte, File, error) {
 	f, ok := i.File(name)
-	if !ok {
+	if !ok || !tagRe.MatchString(i.Release) {
 		return nil, File{}, ErrNone
 	}
-	b, err := os.ReadFile(filepath.Join(s.Dir, name))
+	b, err := os.ReadFile(filepath.Join(s.Dir, i.Release, name))
 	if err != nil {
 		return nil, f, err
 	}

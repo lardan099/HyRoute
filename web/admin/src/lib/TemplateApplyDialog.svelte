@@ -19,30 +19,40 @@
   let preview = $state<RoutingPreview | null>(null);
   let error = $state<ApiError | null>(null);
   let busy = $state(false);
+  // checked is the server the preview is of; seq drops late answers.
+  let checked = $state(0);
+  let seq = 0;
   let ruleErrors = $derived(preview?.rules.filter((p) => p.level === 'error') ?? []);
   let warnings = $derived(preview?.rules.filter((p) => p.level === 'warn' && p.rule < 0) ?? []);
 
   function reset() {
+    seq++;
     input = preview = null;
     error = null;
+    busy = false;
   }
 
   async function check() {
-    busy = true;
     reset();
+    const my = seq;
+    const [id, where, outbounds] = [serverId, mode, withOutbounds];
+    busy = true;
     try {
-      const v = await api.routing(serverId);
+      const v = await api.routing(id);
+      if (my !== seq) return;
       if (v.file) {
         error = { message: t('rules.fileNote', { path: v.file }) } as ApiError;
         return;
       }
-      const m = merge(v.acl.rules ?? [], v.outbounds, tpl, mode, withOutbounds);
-      input = { base: v.revision, acl: { rules: m.rules, tail: v.acl.tail }, outbounds: m.outbounds, resolver: m.resolver ?? v.resolver };
-      preview = await api.routingPreview(serverId, input);
+      const m = merge(v.acl.rules ?? [], v.outbounds, tpl, where, outbounds);
+      const draft = { base: v.revision, acl: { rules: m.rules, tail: v.acl.tail }, outbounds: m.outbounds, resolver: m.resolver ?? v.resolver };
+      const p = await api.routingPreview(id, draft);
+      if (my !== seq) return;
+      [input, preview, checked] = [draft, p, id];
     } catch (e) {
-      error = asApiError(e);
+      if (my === seq) error = asApiError(e);
     } finally {
-      busy = false;
+      if (my === seq) busy = false;
     }
   }
 
@@ -50,7 +60,7 @@
     if (!input) return;
     busy = true;
     try {
-      const j = await api.routingApply(serverId, input);
+      const j = await api.routingApply(checked, input);
       onapplied?.();
       go('deployments', j.id);
     } catch (e) {
@@ -65,22 +75,22 @@
     <div class="two">
       <label class="grow">
         <span>{t('rules.server')}</span>
-        <select bind:value={serverId} onchange={reset}>
+        <select bind:value={serverId} onchange={reset} disabled={busy}>
           {#each servers as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
         </select>
       </label>
       <div class="field">
         <span class="lbl">{t('tpl.where')}</span>
         <div class="seg" role="radiogroup" aria-label={t('tpl.where')}>
-          <button type="button" class:on={mode === 'top'} onclick={() => ((mode = 'top'), reset())}>{t('tpl.top')}</button>
-          <button type="button" class:on={mode === 'bottom'} onclick={() => ((mode = 'bottom'), reset())}>{t('tpl.bottom')}</button>
-          <button type="button" class:on={mode === 'replace'} onclick={() => ((mode = 'replace'), reset())}>{t('tpl.replace')}</button>
+          <button type="button" class:on={mode === 'top'} disabled={busy} onclick={() => ((mode = 'top'), reset())}>{t('tpl.top')}</button>
+          <button type="button" class:on={mode === 'bottom'} disabled={busy} onclick={() => ((mode = 'bottom'), reset())}>{t('tpl.bottom')}</button>
+          <button type="button" class:on={mode === 'replace'} disabled={busy} onclick={() => ((mode = 'replace'), reset())}>{t('tpl.replace')}</button>
         </div>
       </div>
     </div>
     {#if tpl.resolver}<p class="small muted">{t('tpl.resolver', { addr: tpl.resolver.addr ?? tpl.resolver.type })}</p>{/if}
     {#if tpl.outbounds?.length}
-      <label class="check"><input type="checkbox" bind:checked={withOutbounds} onchange={reset} /> {t('tpl.outbounds', { list: tpl.outbounds.map((o) => o.name).join(', ') })}</label>
+      <label class="check"><input type="checkbox" bind:checked={withOutbounds} onchange={reset} disabled={busy} /> {t('tpl.outbounds', { list: tpl.outbounds.map((o) => o.name).join(', ') })}</label>
     {/if}
 
     {#if error}<div class="note error small">{error.message}</div>{/if}

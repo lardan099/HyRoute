@@ -53,12 +53,14 @@ func TestChainExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := json.Marshal(tp)
-	for _, s := range []string{"fake-", "localPort", "127.0.0.1", "192.0.2.", "203.0.113.", redactMask()} {
+	// The entry's own outbounds come along (its rules name them), without
+	// passwords and without the cascade's.
+	for _, s := range []string{"fake-", "localPort", "127.0.0.1", "192.0.2.", redactMask(), `"cascade"`} {
 		if strings.Contains(string(b), s) {
 			t.Errorf("%q in %s", s, b)
 		}
 	}
-	if tp.Link.Up != "100 mbps" || !tp.Link.NoUDP || tp.Entry == nil || len(tp.Entry.ACL.Rules) != 3 || tp.Entry.Resolver.Type != "udp" || tp.Description != "мой каскад" {
+	if tp.Link.Up != "100 mbps" || !tp.Link.NoUDP || tp.Entry == nil || len(tp.Entry.ACL.Rules) != 3 || tp.Entry.Resolver.Type != "udp" || tp.Description != "мой каскад" || len(tp.Entry.Outbounds) != 3 {
 		t.Fatalf("%+v", tp)
 	}
 	back, err := ImportChain(b)

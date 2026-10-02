@@ -12,7 +12,8 @@ const ChangeRouting = "routing"
 
 // Candidate is the current config (base must still be it) as change
 // leaves it, checked as the editor checks a text. change gets the config
-// with its secrets.
+// with its secrets. Its text is for showing only (HideCurrent): a
+// password that moved with its outbound stays hidden.
 func (e *Editor) Candidate(ctx context.Context, serverID int64, base int, change func(c *hyconfig.Server) error) (Check, []byte, model.ServerConfig, error) {
 	cur, b, err := e.Current(ctx, serverID)
 	if err != nil {
@@ -33,6 +34,9 @@ func (e *Editor) Candidate(ctx context.Context, serverID int64, base int, change
 		return Check{}, nil, cur, err
 	}
 	ch, cand, err := Build(b, string(cand), nil)
+	if err == nil {
+		err = HideCurrent(&ch, b)
+	}
 	return ch, cand, cur, err
 }
 

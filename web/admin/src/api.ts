@@ -726,7 +726,7 @@ export interface ChainTemplate {
   description?: string;
   builtin?: boolean;
   link: LinkParams;
-  entry?: { acl: AclDocument; resolver?: RoutingResolver };
+  entry?: { acl: AclDocument; outbounds?: RoutingOutbound[]; resolver?: RoutingResolver };
 }
 
 export interface GeoInfo {

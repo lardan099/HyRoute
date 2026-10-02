@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -322,6 +323,11 @@ func (x *deployer) undoPrepare(ctx context.Context, env *jobs.Env) error {
 func (x *deployer) asset(ctx context.Context, env *jobs.Env, version string) (hyrelease.Asset, error) {
 	a, err := x.Resolver.Resolve(ctx, version, env.Get("arch"))
 	if err != nil {
+		if v := cmp.Or(version, hyrelease.DefaultVersion); !hyrelease.Pinned(v) {
+			// The hashes come from GitHub, through the controller only: a
+			// node or the server itself is not trusted with them.
+			return a, jobs.Fail(fmt.Sprintf("Controller не получил хеши релиза Hysteria %s с GitHub: такой версии нет или GitHub недоступен. Без доступа controller к GitHub ставится только версия %s — её хеши встроены в HyRoute.", v, hyrelease.DefaultVersion), err)
+		}
 		return a, jobs.Fail("Не удалось найти сборку Hysteria для сервера.", err)
 	}
 	return a, nil

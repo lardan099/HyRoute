@@ -1,5 +1,12 @@
 package hyrelease
 
+// Pinned reports whether HyRoute knows the hashes of a version without
+// downloading them.
+func Pinned(version string) bool {
+	_, ok := pinned[version]
+	return ok
+}
+
 // pinned are the SHA-256 of the Linux binaries of versions HyRoute knows,
 // copied from each release's hashes.txt: a replaced release file does not
 // pass for the real one.

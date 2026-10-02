@@ -89,14 +89,15 @@ func (s *Scheduler) Round(ctx context.Context) []int64 {
 		interval = DefaultInterval
 	}
 	if s.now().Sub(info.CheckedAt) >= interval {
-		next, changed, err := s.Files.Update(ctx)
-		if err != nil {
-			s.log().Warn("geo databases: no update", "err", err)
-		} else {
+		// ErrBusy: the admin is updating them right now.
+		switch next, changed, err := s.Files.Update(ctx); {
+		case err == nil:
 			info = next
 			if changed {
 				s.log().Info("geo databases updated", "release", info.Release)
 			}
+		case !errors.Is(err, ErrBusy):
+			s.log().Warn("geo databases: no update", "err", err)
 		}
 	}
 	due, err := s.Due(ctx, info.Release)

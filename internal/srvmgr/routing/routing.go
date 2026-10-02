@@ -74,14 +74,14 @@ func (s *Service) Open(ctx context.Context, serverID int64) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	v := View{Revision: cur.Revision, ACL: acl.ParseInline(c.ACL.Inline), File: c.ACL.File, Resolver: resolverOf(c.Resolver), Cascade: ref, Outbounds: []Outbound{}, Problems: []acl.Problem{}}
+	v := View{Revision: cur.Revision, ACL: hiddenDoc(acl.ParseInline(c.ACL.Inline)), File: c.ACL.File, Resolver: resolverOf(c.Resolver), Cascade: ref, Outbounds: []Outbound{}, Problems: []acl.Problem{}}
 	for _, o := range c.Outbounds {
 		ov := outboundOf(o)
 		ov.Locked = ref != nil && strings.EqualFold(o.Name, cascade.OutboundName)
 		v.Outbounds = append(v.Outbounds, ov)
 	}
 	if v.File == "" {
-		v.Problems = append(v.Problems, acl.Check(v.ACL, s.env(c, ref))...)
+		v.Problems = append(v.Problems, acl.Check(acl.ParseInline(c.ACL.Inline), s.env(c, ref))...)
 	}
 	return v, nil
 }
@@ -181,9 +181,12 @@ func (s *Service) candidate(ctx context.Context, serverID int64, in Input) (Prev
 		if err != nil {
 			return err
 		}
+		if file && in.KeepFile && (len(renames) > 0 || removed(c.Outbounds, in.Outbounds)) {
+			return &model.FieldError{Field: "outbounds", Msg: "Правила сервера в файле " + c.ACL.File + ": outbound, на который они могут ссылаться, нельзя переименовать или удалить — Hysteria не запустится. Сначала перенесите правила в конфиг."}
+		}
 		c.Outbounds = obs
 		in.Resolver.set(&c.Resolver)
-		after = renamed(in.ACL, renames)
+		after = renamed(restoreDoc(in.ACL, before), renames)
 		if !in.KeepFile || !file {
 			lines := after.Inline()
 			// A file's last line break is no rule.
@@ -199,7 +202,7 @@ func (s *Service) candidate(ctx context.Context, serverID int64, in Input) (Prev
 	if err != nil {
 		return Preview{}, nil, cur, err
 	}
-	p := Preview{Check: ch, ACL: after, Rules: []acl.Problem{}, Changes: []acl.Change{}, Same: same}
+	p := Preview{Check: ch, ACL: hiddenDoc(after), Rules: []acl.Problem{}, Changes: []acl.Change{}, Same: same}
 	if !in.KeepFile || !file {
 		p.Rules = append(p.Rules, acl.Check(after, envAfter)...)
 	}
@@ -222,6 +225,16 @@ func routingOf(c *hyconfig.Server) []byte {
 		Resolver  hyconfig.Resolver
 	}{c.ACL, c.Outbounds, c.Resolver})
 	return b
+}
+
+// removed: an outbound of the config is not in the editor's list.
+func removed(cur []hyconfig.Outbound, in []Outbound) bool {
+	for _, c := range cur {
+		if !slices.ContainsFunc(in, func(o Outbound) bool { return strings.EqualFold(o.From, c.Name) }) {
+			return true
+		}
+	}
+	return false
 }
 
 // renamed is doc with the rules of renamed outbounds (lower-case old name
@@ -299,7 +312,7 @@ func (s *Service) File(ctx context.Context, serverID int64) (FileView, error) {
 	if bad > 0 && bad*2 > len(doc.Rules) {
 		return f, &model.FieldError{Field: "acl.file", Msg: fmt.Sprintf("%s не похож на файл правил Hysteria: редактор его не показывает.", f.Path)}
 	}
-	f.ACL = doc
-	f.Problems = append(f.Problems, acl.Check(f.ACL, s.env(c, ref))...)
+	f.ACL = hiddenDoc(doc)
+	f.Problems = append(f.Problems, acl.Check(doc, s.env(c, ref))...)
 	return f, nil
 }

@@ -145,14 +145,11 @@ func MaskUnchanged(candidate, current []byte) ([]byte, error) {
 		return nil, err
 	}
 	// The secrets of either side: a value that was a secret through an
-	// alias in current is a plain copy after the typed model. A current
-	// secret anywhere else (a renamed outbound) is not new either.
-	known := map[string]bool{}
-	for _, s := range secretsOf(cur) {
-		known[s.node.Value] = true
-	}
+	// alias in current is a plain copy after the typed model. By path
+	// only: the editor sends this text back, and Unmask restores a hidden
+	// value from the same path.
 	for _, s := range secretsOf(cand) {
-		if v := lookup(cur, s.path); known[s.node.Value] || v != nil && v.Kind == yaml.ScalarNode && v.Value == s.node.Value {
+		if v := lookup(cur, s.path); v != nil && v.Kind == yaml.ScalarNode && v.Value == s.node.Value {
 			hide(s.node)
 		}
 	}
@@ -167,6 +164,40 @@ func MaskUnchanged(candidate, current []byte) ([]byte, error) {
 	}
 	maskComments(cand)
 	return encode(cand)
+}
+
+// HideCurrent hides in a check's text every secret equal to a secret of
+// current anywhere (a renamed list item keeps its password) and diffs it
+// again. Only for checks whose text never comes back as a candidate: a
+// hidden value there would be restored from its own path.
+func HideCurrent(ch *Check, current []byte) error {
+	doc, err := parse([]byte(ch.YAML))
+	if err != nil {
+		return err
+	}
+	cur, err := parse(current)
+	if err != nil {
+		return err
+	}
+	known := map[string]bool{}
+	for _, s := range secretsOf(cur) {
+		known[s.node.Value] = true
+	}
+	for _, s := range secretsOf(doc) {
+		if known[s.node.Value] {
+			hide(s.node)
+		}
+	}
+	out, err := encode(doc)
+	if err != nil {
+		return err
+	}
+	curMasked, _, err := Mask(current)
+	if err != nil {
+		return err
+	}
+	ch.YAML, ch.Diff = string(out), Diff(string(curMasked), string(out))
+	return nil
 }
 
 // statsSecret is the path of the stats API's secret.

@@ -404,3 +404,86 @@ func reflectEqual(a, b Export) bool {
 	y, _ := json.Marshal(b)
 	return string(x) == string(y)
 }
+
+// A rule follows a rename only while its old name is free: a new outbound
+// taking the old name keeps the rules naming it.
+func TestRenameOldNameTaken(t *testing.T) {
+	e := newEnv(t, config, true)
+	in := e.input()
+	in.Outbounds[1].Name = "proxy_old"
+	in.Outbounds = append(in.Outbounds, Outbound{Name: "proxy", Type: "socks5", SOCKS5: &SOCKS5{Addr: "203.0.113.9:1080"}})
+	p, _, _, err := e.svc.candidate(context.Background(), e.server, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ACL.Rules[1].Outbound != "proxy" {
+		t.Fatalf("the rule went to %s", p.ACL.Rules[1].Outbound)
+	}
+	// Without the new one the rule follows the rename.
+	in = e.input()
+	in.Outbounds[1].Name = "proxy_old"
+	if p, _, _, _ = e.svc.candidate(context.Background(), e.server, in); p.ACL.Rules[1].Outbound != "proxy_old" {
+		t.Fatalf("the rule stayed on %s", p.ACL.Rules[1].Outbound)
+	}
+}
+
+// A proxy URL is kept byte for byte when the editor sends it back: built
+// again it would show the password as new.
+func TestHTTPURLKept(t *testing.T) {
+	cfg := strings.Replace(config, "http://alice:fake-http-pass@203.0.113.6:3128", "HTTP://alice:fake-pa!ss@203.0.113.6:3128/?token=fake-tok", 1)
+	e := newEnv(t, cfg, true)
+	v, _ := e.svc.Open(context.Background(), e.server)
+	if b, _ := json.Marshal(v); strings.Contains(string(b), "fake-") {
+		t.Fatalf("view: %s", b)
+	}
+	p, cand, _, err := e.svc.candidate(context.Background(), e.server, e.input())
+	if err != nil || !p.Same || !strings.Contains(string(cand), "HTTP://alice:fake-pa!ss@203.0.113.6:3128/?token=fake-tok") || strings.Contains(p.YAML, "fake-pa") {
+		t.Fatalf("%v same=%v\n%s", err, p.Same, p.YAML)
+	}
+}
+
+// A secret in a comment of the rules is redacted in the view and the
+// export, and kept in the config when the editor sends the rules back.
+func TestRuleSecretsHidden(t *testing.T) {
+	cfg := strings.Replace(config, "    - web(all, tcp/80)\n", "    - 'web(all, tcp/80) # via socks5://u:fake-comment-pw@203.0.113.8:1080'\n", 1)
+	e := newEnv(t, cfg, true)
+	v, _ := e.svc.Open(context.Background(), e.server)
+	b, _ := json.Marshal(v)
+	x, _ := json.Marshal(v.Export())
+	if strings.Contains(string(b), "fake-comment-pw") || strings.Contains(string(x), "fake-comment-pw") {
+		t.Fatalf("view or export: %s", b)
+	}
+	in := e.input()
+	in.ACL.Rules = append(in.ACL.Rules, acl.Rule{Outbound: "direct", Address: "suffix:ru"})
+	p, cand, _, err := e.svc.candidate(context.Background(), e.server, in)
+	if err != nil || !strings.Contains(string(cand), "fake-comment-pw") {
+		t.Fatalf("%v\n%s", err, cand)
+	}
+	if pb, _ := json.Marshal(p); strings.Contains(string(pb), "fake-comment-pw") {
+		t.Fatalf("preview: %s", pb)
+	}
+}
+
+// With the rules in acl.file, outbounds they may name keep their names.
+func TestKeepFileOutbounds(t *testing.T) {
+	cfg := fileConfig + "outbounds:\n  - name: proxy\n    type: socks5\n    socks5:\n      addr: 203.0.113.5:1080\n"
+	e := newEnv(t, cfg, false)
+	var fe *model.FieldError
+	for name, change := range map[string]func(in *Input){
+		"rename": func(in *Input) { in.Outbounds[0].Name = "nl" },
+		"remove": func(in *Input) { in.Outbounds = nil },
+	} {
+		in := e.input()
+		in.KeepFile = true
+		change(&in)
+		if _, err := e.svc.Preview(context.Background(), e.server, in); !errors.As(err, &fe) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	in := e.input()
+	in.KeepFile = true
+	in.Outbounds = append(in.Outbounds, Outbound{Name: "extra", Type: "direct"})
+	if _, err := e.svc.Preview(context.Background(), e.server, in); err != nil {
+		t.Fatalf("adding one: %v", err)
+	}
+}

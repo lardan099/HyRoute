@@ -28,10 +28,10 @@ func (e *testEnv) putGeo() {
 	e.t.Helper()
 	ip, _ := proto.Marshal(&v2geo.GeoIPList{Entry: []*v2geo.GeoIP{{CountryCode: "RU", Cidr: []*v2geo.CIDR{{Ip: net.IPv4(5, 0, 0, 0).To4(), Prefix: 8}}}}})
 	site, _ := proto.Marshal(&v2geo.GeoSiteList{Entry: []*v2geo.GeoSite{{CountryCode: "GOOGLE", Domain: []*v2geo.Domain{{Type: v2geo.Domain_RootDomain, Value: "google.com"}}}}})
-	os.MkdirAll(e.geo.Dir, 0o700)
+	os.MkdirAll(filepath.Join(e.geo.Dir, "202610010000"), 0o700)
 	i := geo.Info{Release: "202610010000", At: time.Now()}
 	for name, b := range map[string][]byte{geo.GeoIP: ip, geo.GeoSite: site} {
-		os.WriteFile(filepath.Join(e.geo.Dir, name), b, 0o600)
+		os.WriteFile(filepath.Join(e.geo.Dir, "202610010000", name), b, 0o600)
 		s := sha256.Sum256(b)
 		i.Files = append(i.Files, geo.File{Name: name, SHA256: hex.EncodeToString(s[:]), Size: int64(len(b))})
 	}

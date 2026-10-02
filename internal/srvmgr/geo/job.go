@@ -284,29 +284,16 @@ func sourceText(p Params) string {
 	return "сервер скачивает сам, если не выйдет — через controller"
 }
 
-// prepare records whether the service runs; its undo restarts it with
-// what the rollback put back.
-func (x *installer) prepare(ctx context.Context, env *jobs.Env) error {
-	if env.Get("wasActive") != "" {
-		return nil
-	}
-	_, _, in, err := x.base(ctx, env)
-	if err != nil {
-		return err
-	}
-	ex, err := exec(ctx, env)
-	if err != nil {
-		return err
-	}
-	st, err := remote.ActiveState(ctx, ex, in.Unit)
-	if err != nil {
-		return err
-	}
-	return env.Set("wasActive", strconv.FormatBool(st == "active"))
-}
+// prepare holds the undo that restarts the service with what the rest of
+// the rollback put back (the steps after it undo first).
+func (x *installer) prepare(context.Context, *jobs.Env) error { return nil }
+
+// committed: the controller recorded the new config; the server keeps
+// what it runs, a rollback would part them.
+func committedRevision(env *jobs.Env) bool { return env.Get("committed") == "1" }
 
 func (x *installer) undoPrepare(ctx context.Context, env *jobs.Env) error {
-	if env.Get("restarted") != "1" {
+	if env.Get("restarted") != "1" || committedRevision(env) {
 		return jobs.ErrNothingToUndo
 	}
 	_, _, in, err := x.base(ctx, env)
@@ -321,6 +308,12 @@ func (x *installer) undoPrepare(ctx context.Context, env *jobs.Env) error {
 		return err
 	}
 	env.Logf("Служба %s перезапущена с прежними базами и конфигом.", in.Unit)
+	// A retry starts from what is on the server now.
+	for _, k := range []string{"restarted", "changed"} {
+		if err := env.Set(k, ""); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -478,6 +471,9 @@ func (u uploaded) Fetch(ctx context.Context, ex remote.Executor, a hyrelease.Ass
 }
 
 func (x *installer) undoFiles(ctx context.Context, env *jobs.Env, p Params) error {
+	if committedRevision(env) {
+		return jobs.ErrNothingToUndo
+	}
 	ex, err := exec(ctx, env)
 	if err != nil {
 		return err
@@ -487,10 +483,11 @@ func (x *installer) undoFiles(ctx context.Context, env *jobs.Env, p Params) erro
 		if env.Get("file:"+f.Name) == "" {
 			continue
 		}
-		if _, err := restore(ctx, env, ex, ServerDir+"/"+f.Name, "file:"+f.Name, sudo(env)); err != nil {
+		changed, err := restore(ctx, env, ex, ServerDir+"/"+f.Name, "file:"+f.Name, sudo(env))
+		if err != nil {
 			return err
 		}
-		undone = true
+		undone = undone || changed
 	}
 	if !undone {
 		return jobs.ErrNothingToUndo
@@ -559,7 +556,7 @@ func (x *installer) config(ctx context.Context, env *jobs.Env) error {
 }
 
 func (x *installer) undoConfig(ctx context.Context, env *jobs.Env) error {
-	if env.Get("configState") == "" {
+	if env.Get("configState") == "" || committedRevision(env) {
 		return jobs.ErrNothingToUndo
 	}
 	_, _, in, err := x.base(ctx, env)
@@ -570,8 +567,12 @@ func (x *installer) undoConfig(ctx context.Context, env *jobs.Env) error {
 	if err != nil {
 		return err
 	}
-	if _, err := restore(ctx, env, ex, in.Config, "configState", sudo(env)); err != nil {
+	changed, err := restore(ctx, env, ex, in.Config, "configState", sudo(env))
+	if err != nil {
 		return err
+	}
+	if !changed {
+		return jobs.ErrNothingToUndo
 	}
 	env.Logf("Прежний конфиг возвращён.")
 	return nil
@@ -585,13 +586,18 @@ func (x *installer) restart(ctx context.Context, env *jobs.Env) error {
 	if err != nil {
 		return err
 	}
-	if env.Get("wasActive") != "true" {
-		env.Logf("Служба %s остановлена: новые базы она прочтёт при запуске.", in.Unit)
-		return nil
-	}
 	ex, err := exec(ctx, env)
 	if err != nil {
 		return err
+	}
+	// The service as it is now: one the admin stopped stays stopped.
+	st, err := remote.ActiveState(ctx, ex, in.Unit)
+	if err != nil {
+		return err
+	}
+	if st != "active" {
+		env.Logf("Служба %s не запущена (%s): новые базы она прочтёт при запуске.", in.Unit, st)
+		return nil
 	}
 	if err := env.Set("restarted", "1"); err != nil {
 		return err
@@ -708,6 +714,9 @@ func (x *installer) commit(ctx context.Context, env *jobs.Env, p Params) error {
 			if err := x.DB.AddConfig(ctx, &rev, func(r int) ([]byte, error) { return x.Keys.Seal(w, model.ConfigContext(env.ServerID, r)) }); err != nil {
 				return err
 			}
+			if err := env.Set("committed", "1"); err != nil {
+				return err
+			}
 			env.Logf("Конфиг сохранён в controller как ревизия %d.", rev.Revision)
 		}
 	}
@@ -726,16 +735,26 @@ func (x *installer) commit(ctx context.Context, env *jobs.Env, p Params) error {
 	return nil
 }
 
-// cleanup removes the copies the job kept; it never fails the job.
+// cleanup removes the copies the job kept; it never fails the job (the
+// change is committed: a rollback now would part server and controller).
 func (x *installer) cleanup(ctx context.Context, env *jobs.Env, p Params) error {
 	_, _, in, err := x.base(ctx, env)
-	if err != nil {
-		return err
+	if err == nil {
+		var ex remote.Executor
+		if ex, err = exec(ctx, env); err == nil {
+			x.removeCopies(ctx, env, ex, in, p)
+		}
 	}
-	ex, err := exec(ctx, env)
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		env.Warnf("Копии прежних файлов (%s) остались на сервере: %v", Backup, err)
 	}
+	return nil
+}
+
+func (x *installer) removeCopies(ctx context.Context, env *jobs.Env, ex remote.Executor, in model.Installation, p Params) {
 	paths := map[string]string{"configState": in.Config}
 	for _, f := range p.Files {
 		paths["file:"+f.Name] = ServerDir + "/" + f.Name
@@ -745,13 +764,9 @@ func (x *installer) cleanup(ctx context.Context, env *jobs.Env, p Params) error 
 			continue
 		}
 		if err := remote.RemoveFile(ctx, ex, path+Backup, sudo(env)); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
 			env.Warnf("Копия %s%s осталась на сервере.", path, Backup)
 		}
 	}
-	return nil
 }
 
 // finished: a server whose rollback did not finish needs attention.

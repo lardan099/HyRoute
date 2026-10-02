@@ -102,11 +102,11 @@ func newHarness(t *testing.T) *harness {
 // them too.
 func (h *harness) put(release string, files map[string][]byte) {
 	h.t.Helper()
-	os.MkdirAll(h.files.Dir, 0o700)
+	os.MkdirAll(filepath.Join(h.files.Dir, release), 0o700)
 	i := Info{Release: release, At: time.Now()}
 	for _, name := range Names {
 		b := files[name]
-		os.WriteFile(filepath.Join(h.files.Dir, name), b, 0o600)
+		os.WriteFile(filepath.Join(h.files.Dir, release, name), b, 0o600)
 		url := "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/" + release + "/" + name
 		i.Files = append(i.Files, File{Name: name, SHA256: sha(b), Size: int64(len(b)), URL: url})
 		h.v.mu.Lock()

@@ -35,7 +35,7 @@
     if (!f) return;
     try {
       const x = await api.routingImport(await f.text());
-      imported = [{ id: 'import:' + f.name + ':' + imported.length, name: f.name, description: t('rules.importedNote'), acl: x.acl, outbounds: x.outbounds }, ...imported];
+      imported = [{ id: 'import:' + f.name + ':' + imported.length, name: f.name, description: t('rules.importedNote'), acl: x.acl, outbounds: x.outbounds, resolver: x.resolver }, ...imported];
       error = null;
     } catch (err) {
       error = asApiError(err);
@@ -44,7 +44,7 @@
 
   // save writes a template as a routing file (no passwords in it).
   function save(tp: RoutingTemplate) {
-    const data = { format: 'hyroute-routing', version: 1, acl: tp.acl, outbounds: tp.outbounds };
+    const data = { format: 'hyroute-routing', version: 1, acl: tp.acl, outbounds: tp.outbounds, resolver: tp.resolver };
     const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
     const a = document.createElement('a');
     a.href = url;

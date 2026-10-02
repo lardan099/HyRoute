@@ -187,6 +187,7 @@
 
   function changedRules() {
     busy = true;
+    seq++; // a preview on its way is of an older draft
     clearTimeout(timer);
     timer = setTimeout(check, 400);
   }
@@ -293,7 +294,7 @@
     if (!f) return;
     try {
       const x = await api.routingImport(await f.text());
-      tplOpen = { list: [{ id: 'import', name: f.name, acl: x.acl, outbounds: x.outbounds }], title: t('tpl.importTitle', { name: f.name }) };
+      tplOpen = { list: [{ id: 'import', name: f.name, acl: x.acl, outbounds: x.outbounds, resolver: x.resolver }], title: t('tpl.importTitle', { name: f.name }) };
     } catch (err) {
       error = asApiError(err);
     }
@@ -520,8 +521,9 @@
       {/if}
     {/if}
 
-    {#if error}<div class="note error" role="alert">{error.message}</div>{/if}
   {/if}
+  {#if error}<div class="note error" role="alert">{error.message}</div>{/if}
+  {#if !preview}<div class="row actions"><span class="grow"></span><button onclick={onclose}>{t('cfg.cancel')}</button></div>{/if}
 </section>
 
 {#if view}
@@ -535,21 +537,21 @@
         <p class="muted small">{t('ob.none')}</p>
       {:else}
         <ol class="obs">
-          {#each obs as o, i (o.from ?? o.name + i)}
+          {#each obs as o, i (i)}
             <li>
               <span class="grow">
                 {#if o.locked}<span aria-label={t('ob.locked')} title={t('ob.locked')}>🔒</span>{/if}
                 <b>{o.name}</b>
                 <span class="small muted">{o.type}{o.socks5 ? ' · ' + o.socks5.addr : o.http ? ' · ' + o.http.url : o.direct?.bindDevice ? ' · ' + o.direct.bindDevice : ''}</span>
                 {#if i === 0}<span class="pill direct small">{t('ob.default')}</span>{/if}
-                {#if o.locked && view.cascade}<button class="link small" onclick={() => go('cascades', view!.cascade!.id)}>{t('ob.chain', { name: view.cascade.name })}</button>{/if}
+                {#if o.locked && view.cascade}<span class="small muted">{t('ob.chain', { name: view.cascade.name })}</span>{/if}
               </span>
               {#if !o.locked}
                 <span class="acts">
                   <button class="ghost" disabled={i === 0 || obs[i - 1].locked} onclick={() => moveOutbound(i, i - 1)} aria-label={t('rt.up')}>↑</button>
                   <button class="ghost" disabled={i === obs.length - 1} onclick={() => moveOutbound(i, i + 1)} aria-label={t('rt.down')}>↓</button>
                   <button class="ghost" onclick={() => (obEditing = { index: i, o })}>{t('rt.edit')}</button>
-                  <button class="ghost danger" onclick={() => removeOutbound(i)} aria-label={t('rt.delete')}>✕</button>
+                  {#if !(keepFile && o.from)}<button class="ghost danger" onclick={() => removeOutbound(i)} aria-label={t('rt.delete')}>✕</button>{/if}
                 </span>
               {/if}
             </li>
@@ -557,6 +559,7 @@
         </ol>
       {/if}
       <p class="small faint">{t('ob.hint')}</p>
+      {#if keepFile}<p class="small faint">{t('ob.fileNote')}</p>{/if}
 
       <div class="rform">
         <h3>{t('rs.title')}</h3>
@@ -586,10 +589,10 @@
     </section>
 
     <div class="col">
-      <section class="card">
+      {#if !keepFile}<section class="card">
         <h2>{t('rc.title')}</h2>
         <RoutingCheck serverId={server.id} acl={() => ({ rules: rows.map((r) => r.rule), tail })} outbounds={obs.map((o) => o.name)} onrule={(i) => (highlight = i)} />
-      </section>
+      </section>{/if}
       <section class="card"><GeoCard serverId={server.id} writable={true} /></section>
     </div>
   </div>
@@ -641,6 +644,7 @@
   <OutboundDialog
     outbound={obEditing.o}
     taken={obs.filter((_, i) => i !== obEditing!.index).map((o) => o.name)}
+    fixedName={keepFile && !!obEditing.o?.from}
     onsave={saveOutbound}
     onclose={() => (obEditing = null)}
   />

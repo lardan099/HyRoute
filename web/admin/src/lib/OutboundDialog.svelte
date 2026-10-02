@@ -12,9 +12,10 @@
   let {
     outbound,
     taken,
+    fixedName = false,
     onsave,
     onclose,
-  }: { outbound: RoutingOutbound | null; taken: string[]; onsave: (o: RoutingOutbound) => void; onclose: () => void } = $props();
+  }: { outbound: RoutingOutbound | null; taken: string[]; fixedName?: boolean; onsave: (o: RoutingOutbound) => void; onclose: () => void } = $props();
 
   // The form starts from the outbound as it was when the dialog opened.
   const o = untrack(() => outbound);
@@ -65,7 +66,7 @@
     <div class="two">
       <label class="grow">
         <span>{t('ob.name')}</span>
-        <input type="text" bind:value={name} spellcheck="false" autocomplete="off" />
+        <input type="text" bind:value={name} spellcheck="false" autocomplete="off" readonly={fixedName} />
         {#if nameError && name}<span class="err">{t(nameError as 'ob.errName')}</span>{/if}
       </label>
       <label>

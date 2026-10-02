@@ -169,9 +169,26 @@ func TestUpdate(t *testing.T) {
 	}
 
 	// A file changed on the controller's disk is refused.
-	os.WriteFile(filepath.Join(s.Dir, GeoIP), []byte("x"), 0o600)
+	os.WriteFile(filepath.Join(s.Dir, "202610030000", GeoIP), []byte("x"), 0o600)
 	if _, _, err := s.Open(GeoIP); err == nil || !strings.Contains(err.Error(), "повреждён") {
 		t.Fatalf("%v", err)
+	}
+	// Downloading again heals it, though the release is the same.
+	if i, changed, err := s.Update(ctx); err != nil || !changed || i.Release != "202610030000" {
+		t.Fatalf("heal: %v %v %+v", err, changed, i)
+	}
+	if _, _, err := s.Open(GeoIP); err != nil {
+		t.Fatal(err)
+	}
+
+	// An empty checksum file is an error, not a crash.
+	r.latest, r.files["202610040000"] = "202610040000", testDB(t, "three")
+	r.sums[GeoIP] = " "
+	if _, _, err := s.Update(ctx); err == nil || !strings.Contains(err.Error(), "нет хеша") {
+		t.Fatalf("empty sum: %v", err)
+	}
+	if i, _ := s.Info(); i.Release != "202610030000" {
+		t.Fatalf("replaced: %+v", i)
 	}
 }
 
@@ -185,6 +202,12 @@ func TestLatestRefused(t *testing.T) {
 	r.latest = "../../etc"
 	if _, _, err := s.Update(context.Background()); err == nil {
 		t.Fatal("a bad tag passed")
+	}
+	// Tags name directories.
+	for _, bad := range []string{".", "..", "-x", "a/b", ""} {
+		if tagRe.MatchString(bad) {
+			t.Errorf("tag %q passed", bad)
+		}
 	}
 	var nilStore *Store
 	if nilStore.Loader() != nil {
