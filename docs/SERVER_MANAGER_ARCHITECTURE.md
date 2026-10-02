@@ -1002,6 +1002,40 @@ Dry-run (`DryRun`): запросы админа и образцы правил �
 после правки — те, у которых меняется outbound (без учёта регистра) или
 подмена.
 
+Редактор маршрутизации (пакет `routing`) отдаёт правила, outbounds и
+resolver сервера в типах и собирает из них кандидата поверх текущего
+конфига (`apply.Editor.Candidate`): проверка и diff — как у редактора
+конфига, установка — тем же заданием `apply` (`Params.Change =
+routing`, ревизия с источником «правка»).
+- Outbounds: `direct` (mode, bind, fastOpen), `socks5`, `http` (пароль
+  отдельно от URL). Пароли отдаются скрытыми (`apply.Hidden`); скрытый
+  пароль при сохранении берётся у outbound с прежним именем (`from`),
+  неизвестные поля outbound остаются. Переименование (`from` ≠ `name`)
+  переименовывает outbound и в правилах — это делает controller, не
+  интерфейс. Outbound `cascade` у входа развёрнутого каскада заблокирован:
+  первый и без изменений (иначе связь станет «устарел»); снять его можно
+  только снятием связи.
+- Resolver: `system`, `udp`, `tcp`, `tls`, `https` (адрес, timeout, SNI,
+  insecure); не изменённый сохраняет написание (`tcp-tls`, пустой тип),
+  разделы других типов остаются.
+- Правила идут в `acl.inline`, `acl.file` снимается; `keepFile`
+  оставляет файл как есть. Файл читается с сервера по SSH (до 1 МБ, только
+  полный путь) для просмотра и «перенести в inline» — последняя пустая
+  строка файла правилом не становится.
+- Превью: проверка конфига, проблемы правил с outbounds кандидата,
+  dry-run против текущих правил (не для acl.file), `same` — правила,
+  outbounds и resolver те же, что на сервере (diff может показывать
+  только переформатирование импортированного конфига). Применение
+  отказывает при ошибке в правилах и при `same`.
+- Маскирование кандидата скрывает и секрет, который есть в текущем
+  конфиге под другим путём: пароль переименованного outbound не
+  показывается как новый.
+- Экспорт: JSON `{format: "hyroute-routing", version: 1, acl,
+  outbounds, resolver}` без паролей и без outbound каскада, или текст
+  правил. Импорт читает такой JSON (версия не новее своей) или текст ACL,
+  пароли из файла отбрасывает и ничего не сохраняет: результат — черновик
+  редактора.
+
 ## REST API v1
 
 Ошибки: `{"error": {"code": "host_key_unknown", "message": "понятный текст",
@@ -1036,6 +1070,13 @@ Dry-run (`DryRun`): запросы админа и образцы правил �
 | POST | `/api/v1/presets/import` | operator+ | тело — файл пресета; занятое название получает номер |
 | POST | `/api/v1/servers/{id}/preset/preview` | operator+ | `{base, preset, sections}`: проверка и diff конфига с разделами пресета |
 | POST | `/api/v1/servers/{id}/preset/apply` | operator+ | то же — задание `apply` |
+| GET | `/api/v1/servers/{id}/routing` | operator+ | правила (`acl`), outbounds и resolver без паролей, `file` (acl.file), `cascade` (вход развёрнутого каскада), проверки правил |
+| POST | `/api/v1/servers/{id}/routing/preview` | operator+ | `{base, acl, keepFile, outbounds, resolver, requests}` → проверка и diff конфига, правила после переименований, проблемы правил, dry-run (`changes`), `ok`, `same` |
+| POST | `/api/v1/servers/{id}/routing/apply` | operator+ | то же — задание `apply` (`change: routing`); ошибка в правилах или без изменений — 400 `invalid` |
+| POST | `/api/v1/servers/{id}/routing/check` | operator+ | `{acl, outbounds, request}` → правило, outbound, подмена, объяснение |
+| GET | `/api/v1/servers/{id}/routing/export` | operator+ | `format=json` (по умолчанию: правила, outbounds без паролей и каскада, resolver) или `text` (правила как читает Hysteria) |
+| GET | `/api/v1/servers/{id}/routing/file` | operator+ | acl.file с сервера по SSH (до 1 МБ, полный путь): `{path, acl, problems}` |
+| POST | `/api/v1/routing/import` | operator+ | `{data}` — экспорт HyRoute или текст ACL → черновик для редактора, без паролей; ничего не сохраняется |
 | GET | `/api/v1/servers/{id}/tuning` | все | параметры ядра по SSH (только чтение) и, рядом, congestion и bandwidth конфига |
 | POST | `/api/v1/servers/{id}/tuning` | operator+ | `{keys}` — задание `tuning` |
 | POST | `/api/v1/servers/{id}/ports` | operator+ | `{base, ports, host, hopInterval}`: новые порты — задание `apply` (202, `{job}`); только интервал — сохраняется сразу (200, `{job: null}`) |

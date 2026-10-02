@@ -145,9 +145,14 @@ func MaskUnchanged(candidate, current []byte) ([]byte, error) {
 		return nil, err
 	}
 	// The secrets of either side: a value that was a secret through an
-	// alias in current is a plain copy after the typed model.
+	// alias in current is a plain copy after the typed model. A current
+	// secret anywhere else (a renamed outbound) is not new either.
+	known := map[string]bool{}
+	for _, s := range secretsOf(cur) {
+		known[s.node.Value] = true
+	}
 	for _, s := range secretsOf(cand) {
-		if v := lookup(cur, s.path); v != nil && v.Kind == yaml.ScalarNode && v.Value == s.node.Value {
+		if v := lookup(cur, s.path); known[s.node.Value] || v != nil && v.Kind == yaml.ScalarNode && v.Value == s.node.Value {
 			hide(s.node)
 		}
 	}

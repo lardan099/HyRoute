@@ -91,9 +91,14 @@ func Parse(text string) Document {
 	return d
 }
 
-// ParseInline reads acl.inline. A YAML entry with line breaks is several
-// lines for Hysteria too.
-func ParseInline(lines []string) Document { return Parse(strings.Join(lines, "\n")) }
+// ParseInline reads acl.inline (none: an empty document). A YAML entry
+// with line breaks is several lines for Hysteria too.
+func ParseInline(lines []string) Document {
+	if len(lines) == 0 {
+		return Document{}
+	}
+	return Parse(strings.Join(lines, "\n"))
+}
 
 // Text is the ACL as Hysteria reads it.
 func (d Document) Text() string {

@@ -55,6 +55,8 @@ type Params struct {
 	// the config (for the log and the job page).
 	Preset   string   `json:"preset,omitempty"`
 	Sections []string `json:"sections,omitempty"`
+	// Change names an edit made by a part of the panel (ChangeRouting).
+	Change string `json:"change,omitempty"`
 }
 
 // Store is what applying keeps in the controller's database.
@@ -900,6 +902,8 @@ func (x *applier) commit(ctx context.Context, env *jobs.Env, p Params) error {
 		env.Logf("Возвращена версия %d; в controller она сохранена как ревизия %d.", p.From, rev.Revision)
 	case p.Preset != "":
 		env.Logf("Разделы пресета «%s» (%s) применены; конфиг сохранён в controller как ревизия %d.", p.Preset, strings.Join(p.Sections, ", "), rev.Revision)
+	case p.Change == ChangeRouting:
+		env.Logf("Маршрутизация изменена; конфиг сохранён в controller как ревизия %d.", rev.Revision)
 	default:
 		env.Logf("Конфиг сохранён в controller как ревизия %d.", rev.Revision)
 	}
