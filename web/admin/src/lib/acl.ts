@@ -107,5 +107,5 @@ export function merge(rules: AclRule[], obs: RoutingOutbound[], tpl: RoutingTemp
       if (!outbounds.some((x) => x.name.toLowerCase() === o.name.toLowerCase())) outbounds.push({ ...o, from: undefined, locked: undefined });
     }
   }
-  return { rules: out, outbounds };
+  return { rules: out, outbounds, resolver: tpl.resolver ? { ...tpl.resolver } : undefined };
 }

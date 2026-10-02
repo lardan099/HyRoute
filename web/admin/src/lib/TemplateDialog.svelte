@@ -43,6 +43,7 @@
           <li class:off={r.off}>{bad(r) ? r.text : `${r.outbound}(${r.address}${protoPort(r) ? ', ' + protoPort(r) : ''}${r.hijack ? ', ' + r.hijack : ''})`}{#if r.comment}<span class="faint"> # {r.comment}</span>{/if}</li>
         {/each}
       </ol>
+      {#if tpl.resolver}<p class="small muted">{t('tpl.resolver', { addr: tpl.resolver.addr ?? tpl.resolver.type })}</p>{/if}
       {#if tpl.outbounds?.length}
         <label class="check"><input type="checkbox" bind:checked={withOutbounds} /> {t('tpl.outbounds', { list: tpl.outbounds.map((o) => o.name).join(', ') })}</label>
       {/if}

@@ -17,8 +17,12 @@ type Template struct {
 	Description string       `json:"description,omitempty"`
 	ACL         acl.Document `json:"acl"`
 	Outbounds   []Outbound   `json:"outbounds,omitempty"`
-	Builtin     bool         `json:"builtin,omitempty"`
+	// Resolver, if set, replaces the server's.
+	Resolver *Resolver `json:"resolver,omitempty"`
+	Builtin  bool      `json:"builtin,omitempty"`
 }
+
+func copyOf(r Resolver) *Resolver { return &r }
 
 func rules(group string, rs ...acl.Rule) acl.Document {
 	for i := range rs {
@@ -46,7 +50,8 @@ func Builtins() []Template {
 		},
 		{
 			ID: "builtin:ru", Name: "RU напрямую", Builtin: true,
-			Description: "Для входа каскада в России: российские сайты (домены .ru, .рф, .su и адреса России по geoip) выходят прямо со входа, остальное — в outbound по умолчанию (каскад). Нужны базы geo на сервере; домены — до geoip.",
+			Description: "Для входа каскада в России: российские сайты (домены .ru, .рф, .su и адреса России по geoip) выходят прямо со входа, остальное — в outbound по умолчанию (каскад). Домены — до geoip; DNS over HTTPS, чтобы провайдер входа не видел, какие сайты открывают клиенты. Нужны базы geo на сервере.",
+			Resolver:    copyOf(EncryptedResolver),
 			ACL: rules("RU напрямую",
 				acl.Rule{Outbound: "direct", Address: "suffix:ru"},
 				acl.Rule{Outbound: "direct", Address: "suffix:рф"},

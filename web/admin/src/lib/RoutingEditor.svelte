@@ -308,6 +308,7 @@
     );
     rows = rowsOf(m.rules);
     obs = m.outbounds;
+    if (m.resolver) resolver = m.resolver;
     selected.clear();
     tplOpen = null;
     changedRules();

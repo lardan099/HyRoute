@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/acl"
+	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/remote"
 	"github.com/lardan099/hyroute/internal/srvmgr/routing"
 )
@@ -203,4 +205,64 @@ func (s *server) routingTemplates(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// chainTemplates are the built-in cascade templates.
+func (s *server) chainTemplates(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, routing.ChainBuiltins())
+}
+
+// importChainTemplate reads a cascade template file (data); nothing is
+// stored.
+func (s *server) importChainTemplate(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Data string `json:"data"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 2*routing.MaxImport+1024)
+	if err := readJSON(r, &in); err != nil {
+		writeError(w, err)
+		return
+	}
+	t, err := routing.ImportChain([]byte(in.Data))
+	if err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
+}
+
+// chainTemplate is a cascade as a template file: the link's settings and
+// the entry's routing, no servers and no secrets.
+func (s *server) chainTemplate(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, errNotFound)
+		return
+	}
+	c, err := s.Store.ChainByID(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	v, err := s.routing().Open(r.Context(), c.Entry())
+	if errors.Is(err, apply.ErrNoConfig) {
+		v = routing.View{Resolver: routing.Resolver{Type: "system"}}
+	} else if err != nil {
+		s.fail(w, r, configError(err))
+		return
+	}
+	t, err := routing.ChainOf(c, v)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	b, err := json.MarshalIndent(t, "", "  ")
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", `attachment; filename="chain-`+strconv.FormatInt(id, 10)+`.json"`)
+	w.WriteHeader(http.StatusOK)
+	w.Write(b)
 }

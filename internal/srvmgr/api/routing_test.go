@@ -111,3 +111,23 @@ func TestRoutingAPI(t *testing.T) {
 	code(t, ro.do("POST", base+"/preview", in, nil), http.StatusForbidden, "forbidden")
 	code(t, ro.do("GET", base+"/export", nil, nil), http.StatusForbidden, "forbidden")
 }
+
+func TestChainTemplatesAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	rec := owner.do("GET", "/api/v1/chain-templates", nil, nil)
+	var ts []routing.ChainTemplate
+	json.Unmarshal(rec.Body.Bytes(), &ts)
+	if rec.Code != 200 || len(ts) != 2 || ts[1].Entry == nil || ts[1].Entry.Resolver.Type != "https" {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	b, _ := json.Marshal(ts[1])
+	rec = owner.do("POST", "/api/v1/chain-templates/import", map[string]string{"data": string(b)}, nil)
+	var back routing.ChainTemplate
+	json.Unmarshal(rec.Body.Bytes(), &back)
+	if rec.Code != 200 || back.Builtin || back.ID != "" || back.Name != ts[1].Name || len(back.Entry.ACL.Rules) != len(ts[1].Entry.ACL.Rules) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	code(t, owner.do("POST", "/api/v1/chain-templates/import", map[string]string{"data": `{"format":"x"}`}, nil), http.StatusBadRequest, "invalid")
+	code(t, owner.do("GET", "/api/v1/chains/999/template", nil, nil), http.StatusNotFound, "not_found")
+}

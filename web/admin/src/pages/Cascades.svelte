@@ -8,7 +8,7 @@
   import { canWrite, session } from '../session.svelte';
   import { go, route } from '../router.svelte';
   import { flag, stateTone } from '../lib/format';
-  import { busy, deployed, linkStateText, linkTone } from '../lib/chain';
+  import { busy, deployed, linkStateText, linkTone, pendingEntry } from '../lib/chain';
   import ChainCreate from '../lib/ChainCreate.svelte';
   import ChainConfirm from '../lib/ChainConfirm.svelte';
   import ChainView from '../lib/ChainView.svelte';
@@ -110,8 +110,9 @@
   <ChainCreate
     {servers}
     onclose={() => (creating = false)}
-    oncreated={(c, job, linkError) => {
+    oncreated={(c, job, linkError, tpl) => {
       creating = false;
+      if (tpl?.entry) pendingEntry.set(c.id, { id: 'chain:' + c.id, name: tpl.name, description: t('ctpl.entryOffer'), acl: tpl.entry.acl, resolver: tpl.entry.resolver });
       if (job) go('deployments', job.id);
       else {
         notice = linkError;

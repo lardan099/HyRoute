@@ -712,7 +712,21 @@ export interface RoutingTemplate {
   description?: string;
   acl: AclDocument;
   outbounds?: RoutingOutbound[];
+  resolver?: RoutingResolver;
   builtin?: boolean;
+}
+
+// ChainTemplate is a cascade without servers and secrets: the link's
+// settings and, optionally, the entry's rules and resolver.
+export interface ChainTemplate {
+  format: string;
+  version: number;
+  id?: string;
+  name: string;
+  description?: string;
+  builtin?: boolean;
+  link: LinkParams;
+  entry?: { acl: AclDocument; resolver?: RoutingResolver };
 }
 
 export interface GeoInfo {
@@ -964,6 +978,9 @@ export const api = {
   routingApply: (serverId: number, input: RoutingInput) => request<Job>('POST', `/servers/${serverId}/routing/apply`, input),
   routingCheck: (serverId: number, input: { acl: AclDocument; outbounds: string[]; request: AclRequest }) =>
     request<AclVerdict>('POST', `/servers/${serverId}/routing/check`, input),
+  chainTemplates: () => request<ChainTemplate[]>('GET', '/chain-templates'),
+  importChainTemplate: (data: string) => request<ChainTemplate>('POST', '/chain-templates/import', { data }),
+  chainTemplate: (id: number) => request<ChainTemplate>('GET', `/chains/${id}/template`),
   routingTemplates: () => request<RoutingTemplate[]>('GET', '/routing/templates'),
   routingImport: (data: string) => request<{ acl: AclDocument; outbounds?: RoutingOutbound[]; resolver?: RoutingResolver }>('POST', '/routing/import', { data }),
   routingExport: (serverId: number, format: 'json' | 'text') => requestText(`/servers/${serverId}/routing/export?format=${format}`),

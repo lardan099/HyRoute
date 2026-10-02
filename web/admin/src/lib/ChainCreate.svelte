@@ -1,7 +1,8 @@
 <script lang="ts">
   // A new cascade: entry and exit, the link's settings, and (by default)
   // the job that deploys the link right away.
-  import { api, asApiError, type ApiError, type Chain, type Job, type Server } from '../api';
+  import { onMount } from 'svelte';
+  import { api, asApiError, type ApiError, type Chain, type ChainTemplate, type Job, type Server } from '../api';
   import { t } from '../i18n';
   import { flag } from './format';
   import Dialog from './Dialog.svelte';
@@ -10,7 +11,11 @@
     servers,
     onclose,
     oncreated,
-  }: { servers: Server[]; onclose: () => void; oncreated: (c: Chain, job: Job | null, linkError: ApiError | null) => void } = $props();
+  }: {
+    servers: Server[];
+    onclose: () => void;
+    oncreated: (c: Chain, job: Job | null, linkError: ApiError | null, tpl: ChainTemplate | null) => void;
+  } = $props();
 
   let name = $state('');
   let entry = $state(0);
@@ -21,6 +26,41 @@
   let noUdp = $state(false);
   let checkTarget = $state('');
   let deployNow = $state(true);
+  let templates = $state<ChainTemplate[]>([]);
+  let tplIndex = $state(-1);
+  let tpl = $derived(templates[tplIndex] ?? null);
+  let fileInput = $state<HTMLInputElement | null>(null);
+
+  onMount(async () => {
+    try {
+      templates = await api.chainTemplates();
+    } catch {}
+  });
+
+  // pick fills the link's settings from a template.
+  function pick(i: number) {
+    tplIndex = i;
+    const l = templates[i]?.link ?? {};
+    up = l.up ?? '';
+    down = l.down ?? '';
+    noUdp = !!l.noUdp;
+    checkTarget = l.checkTarget ?? '';
+  }
+
+  async function importFile(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const f = input.files?.[0];
+    input.value = '';
+    if (!f) return;
+    try {
+      const x = await api.importChainTemplate(await f.text());
+      templates = [...templates, x];
+      pick(templates.length - 1);
+      error = null;
+    } catch (err) {
+      error = asApiError(err);
+    }
+  }
   let busy = $state(false);
   let error = $state<ApiError | null>(null);
   let errField = $derived(error?.code === 'invalid' ? error.details : '');
@@ -52,7 +92,7 @@
           linkError = asApiError(err);
         }
       }
-      oncreated(c, job, linkError);
+      oncreated(c, job, linkError, tpl);
     } catch (err) {
       error = asApiError(err);
     } finally {
@@ -63,6 +103,19 @@
 
 <Dialog title={t('cascades.createTitle')} {onclose}>
   <form id="chain-create" class="form" onsubmit={save}>
+    <div class="tpl">
+      <label class="grow">
+        <span>{t('ctpl.template')}</span>
+        <select value={tplIndex} onchange={(e) => pick(Number(e.currentTarget.value))}>
+          <option value={-1}>{t('ctpl.none')}</option>
+          {#each templates as x, i (i)}<option value={i}>{x.name}{x.builtin ? '' : ' · ' + t('ctpl.file')}</option>{/each}
+        </select>
+      </label>
+      <button type="button" class="ghost" onclick={() => fileInput?.click()}>{t('ctpl.load')}</button>
+      <input type="file" accept=".json,application/json" class="hidden" bind:this={fileInput} onchange={importFile} />
+    </div>
+    {#if tpl?.description}<p class="small muted desc">{tpl.description}</p>{/if}
+    {#if tpl?.entry}<p class="small faint desc">{t('ctpl.entryNote')}</p>{/if}
     <label class:bad={errField === 'name'}>
       <span>{t('cascades.name')}</span>
       <input type="text" maxlength="64" bind:value={name} required />
@@ -131,4 +184,8 @@
   summary { cursor: pointer; color: var(--muted); font-size: 13px; }
   textarea.plain { font-family: var(--font); font-size: 14px; }
   .note { margin: 0; }
+  .tpl { display: flex; align-items: flex-end; gap: 8px; }
+  .grow { flex: 1; min-width: 0; }
+  .desc { margin: -4px 0 0; }
+  .hidden { display: none; }
 </style>

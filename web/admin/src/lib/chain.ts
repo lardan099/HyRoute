@@ -1,4 +1,4 @@
-import type { Chain, LinkState } from '../api';
+import type { Chain, LinkState, RoutingTemplate } from '../api';
 import { t, type Key } from '../i18n';
 
 // deployed: some link may be in effect on the servers, so the chain is
@@ -28,3 +28,7 @@ export function linkTone(s: LinkState): string {
   }
   return 'wait';
 }
+
+// pendingEntry are the entry rules of the template a cascade was just
+// made from (by cascade ID), offered on its page for this session.
+export const pendingEntry = new Map<number, RoutingTemplate>();

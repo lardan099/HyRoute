@@ -10,7 +10,7 @@
   import Dialog from './Dialog.svelte';
   import DiffView from './DiffView.svelte';
 
-  let { tpl, servers, onclose }: { tpl: RoutingTemplate; servers: Server[]; onclose: () => void } = $props();
+  let { tpl, servers, onclose, onapplied }: { tpl: RoutingTemplate; servers: Server[]; onclose: () => void; onapplied?: () => void } = $props();
 
   let serverId = $state(untrack(() => servers[0]?.id ?? 0));
   let mode = $state<TemplateMode>('top');
@@ -37,7 +37,7 @@
         return;
       }
       const m = merge(v.acl.rules ?? [], v.outbounds, tpl, mode, withOutbounds);
-      input = { base: v.revision, acl: { rules: m.rules, tail: v.acl.tail }, outbounds: m.outbounds, resolver: v.resolver };
+      input = { base: v.revision, acl: { rules: m.rules, tail: v.acl.tail }, outbounds: m.outbounds, resolver: m.resolver ?? v.resolver };
       preview = await api.routingPreview(serverId, input);
     } catch (e) {
       error = asApiError(e);
@@ -51,6 +51,7 @@
     busy = true;
     try {
       const j = await api.routingApply(serverId, input);
+      onapplied?.();
       go('deployments', j.id);
     } catch (e) {
       error = asApiError(e);
@@ -77,6 +78,7 @@
         </div>
       </div>
     </div>
+    {#if tpl.resolver}<p class="small muted">{t('tpl.resolver', { addr: tpl.resolver.addr ?? tpl.resolver.type })}</p>{/if}
     {#if tpl.outbounds?.length}
       <label class="check"><input type="checkbox" bind:checked={withOutbounds} onchange={reset} /> {t('tpl.outbounds', { list: tpl.outbounds.map((o) => o.name).join(', ') })}</label>
     {/if}

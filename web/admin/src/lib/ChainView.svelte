@@ -3,14 +3,15 @@
   // them (state, latest check, latency), the egress address, the check
   // history and what can be done with it.
   import { onDestroy, onMount } from 'svelte';
-  import { api, asApiError, type ApiError, type Chain, type LinkCheck, type Server } from '../api';
+  import { api, asApiError, type ApiError, type Chain, type LinkCheck, type RoutingTemplate, type Server } from '../api';
   import { t, type Key } from '../i18n';
   import { canWrite, session } from '../session.svelte';
   import { go } from '../router.svelte';
   import { flag, stateTone, when } from './format';
-  import { busy, deployed, linkStateText, linkTone } from './chain';
+  import { busy, deployed, linkStateText, linkTone, pendingEntry } from './chain';
   import ChainConfirm from './ChainConfirm.svelte';
   import Dialog from './Dialog.svelte';
+  import TemplateApplyDialog from './TemplateApplyDialog.svelte';
 
   let { id, notice = null }: { id: number; notice?: ApiError | null } = $props();
 
@@ -27,6 +28,25 @@
   let link = $derived(chain?.links[0] ?? null);
   let timer: ReturnType<typeof setInterval> | undefined;
   let checking = $state(false);
+  // offer: the entry rules of the template the cascade was made from.
+  let offer = $state<RoutingTemplate | null>(null);
+  let offering = $state(false);
+
+  // saveTemplate saves the cascade as a template file: the link's
+  // settings and the entry's rules, no servers and no secrets.
+  async function saveTemplate() {
+    try {
+      const data = await api.chainTemplate(id);
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `chain-${(chain?.name ?? String(id)).replace(/[^\p{L}\p{N}._-]+/gu, '-')}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      error = asApiError(e);
+    }
+  }
 
   async function checkNow() {
     checking = true;
@@ -51,6 +71,7 @@
     }
   }
   onMount(async () => {
+    offer = pendingEntry.get(id) ?? null;
     await load();
     try {
       servers = Object.fromEntries((await api.servers()).map((s) => [s.id, s]));
@@ -106,10 +127,18 @@
         {#if deployed(chain)}<button onclick={() => (confirm = 'unlink')}>{t('cascades.unlink')}</button>{/if}
       {/if}
       <button onclick={edit}>{t('cascades.rename')}</button>
+      <button onclick={saveTemplate}>{t('ctpl.save')}</button>
       {#if !busy(chain)}<button class="danger" onclick={() => (confirm = 'delete')}>{t('cascades.delete')}</button>{/if}
     {/if}
   </div>
   {#if link?.state === 'stale'}<div class="note warn">{t('cascades.staleNote')}</div>{/if}
+  {#if offer && writable}
+    <div class="note info row offer">
+      <span class="grow">{t('ctpl.offer', { name: offer.name })}</span>
+      <button class="primary" onclick={() => (offering = true)}>{t('ctpl.apply')}</button>
+      <button class="ghost" onclick={() => (pendingEntry.delete(id), (offer = null))}>{t('ctpl.dismiss')}</button>
+    </div>
+  {/if}
 
   <div class="card schema">
     {#each chain.nodes as n, i (n.serverId)}
@@ -179,6 +208,10 @@
   {/if}
 {/if}
 
+{#if offering && offer && chain && srv(chain.nodes[0].serverId)}
+  <TemplateApplyDialog tpl={offer} servers={[srv(chain.nodes[0].serverId)]} onclose={() => (offering = false)} onapplied={() => pendingEntry.delete(id)} />
+{/if}
+
 {#if confirm && chain}
   <ChainConfirm
     {chain}
@@ -235,4 +268,5 @@
   .form label { display: flex; flex-direction: column; gap: 5px; }
   .form label span { color: var(--muted); font-size: 12.5px; }
   .note { margin: 0 0 12px; }
+  .offer { gap: 8px; }
 </style>
