@@ -41,7 +41,9 @@ type MaintainParams struct {
 	// Version: upgrade, the version to install ("" = DefaultVersion);
 	// reinstall, the installed one (Submit fills it in).
 	Version string `json:"version,omitempty"`
-	Source  string `json:"source,omitempty"` // auto (default), direct, relay
+	Source  string `json:"source,omitempty"` // auto (default), direct, relay, node
+	// Via is the server that provides the binary (source node).
+	Via int64 `json:"via,omitempty"`
 }
 
 // Normalize fills the defaults and checks the params.
@@ -58,15 +60,7 @@ func (p *MaintainParams) Normalize() error {
 	if err := hyrelease.CheckVersion(p.Version); err != nil {
 		return err
 	}
-	if p.Source == "" {
-		p.Source = SourceAuto
-	}
-	switch p.Source {
-	case SourceAuto, SourceDirect, SourceRelay:
-	default:
-		return fmt.Errorf("неизвестный источник %q", p.Source)
-	}
-	return nil
+	return normalizeSource(&p.Source, &p.Via)
 }
 
 var (
@@ -98,6 +92,9 @@ func (s *Submitter) Maintain(ctx context.Context, serverID int64, p MaintainPara
 	}
 	if err := p.Normalize(); err != nil {
 		return model.Job{}, &model.FieldError{Field: "params", Msg: sentence(err.Error())}
+	}
+	if err := s.checkVia(ctx, serverID, p.Source, p.Via); err != nil {
+		return model.Job{}, err
 	}
 	return s.Jobs.Submit(ctx, MaintainKind, serverID, p, nil, actor)
 }
@@ -143,7 +140,7 @@ func (x *deployer) maintainSteps(p MaintainParams) []jobs.Step {
 				if err != nil {
 					return err
 				}
-				return x.binary(ctx, env, p.Version, p.Source, in.Binary)
+				return x.binary(ctx, env, p.Version, p.Source, p.Via, in.Binary)
 			},
 			Undo: func(ctx context.Context, env *jobs.Env) error {
 				in, err := x.installed(ctx, env)

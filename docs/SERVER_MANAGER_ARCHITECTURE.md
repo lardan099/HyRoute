@@ -58,7 +58,7 @@ Scheme, Port Hopping, Traffic Stats API, ACL) и исходниками
 | 10 | ACL routing | P1-08 (модель `acl`, `outbounds`), P1-13 (raw-редактор), Phase 3 (редактор правил) | `acl.inline` — список строк правил Hysteria |
 | 11 | Генерация `hysteria2://` | P1-09, P1-14 | `internal/hy2uri` |
 | 12 | Параметры для HApp/Incy/Shadowrocket | P1-09 | Только параметры официальной схемы (`obfs`, `obfs-password`, `sni`, `insecure`, `pinSHA256`), `hysteria2://`, multi-port в хосте, имя во фрагменте |
-| 13 | Релей-загрузка, если у сервера нет доступа к GitHub | P1-10 (через controller), Phase 3 (через другой узел) | Интерфейс `hyrelease.Source` |
+| 13 | Релей-загрузка, если у сервера нет доступа к GitHub | P1-10 (через controller), P3-05 (через другой узел) | Интерфейс `hyrelease.Source` |
 | 14 | Управление правилами | P1-13 (raw), Phase 3 (структурный редактор, «Проверить правило») | Через typed-модель, не regex |
 
 ## Снимок сервера
@@ -92,7 +92,7 @@ internal/srvmgr/
   remote/fake, remote/sshtest fake executor и in-process SSH-сервер для тестов
   jobs                        job engine: шаги, Done/Run/Undo, откат, recovery, журнал, SSE
   preflight                   проверки сервера перед развёртыванием (задание preflight)
-  hyrelease                   релизы Hysteria: ассет, SHA-256, источники direct и relay
+  hyrelease                   релизы Hysteria: ассет, SHA-256, источники direct, relay и node
   deploy                      Quick Deploy (задание deploy) и запуск с секретами
   importer                    импорт установленного сервера (задание import, только чтение)
   service                     статус, start/stop/restart (задание service), journal
@@ -365,7 +365,18 @@ queued → connecting → preflight → downloading → installing → configuri
   SHA-256 сверяется с `hashes.txt` того же релиза. Источник
   (`hyrelease.Source`): **direct** — сервер скачивает сам, controller
   сверяет хеш на сервере; **relay** — controller скачивает и сверяет
-  сам, заливает по SFTP. Phase 3 добавит источник «через другой узел».
+  сам, заливает по SFTP; **node** (P3-05, `source: node`, `via` — другой
+  сервер) — для сервера, которому GitHub недоступен, когда и controller
+  до него не достаёт. Узел отдаёт свой установленный бинарник, если его
+  SHA-256 равен хешу релиза (та же версия и архитектура), иначе сам
+  скачивает ассет во временный каталог и сверяет хеш; controller читает
+  файл с узла в память (не больше 200 МБ, хеш ещё раз) и пишет на сервер
+  по SFTP, сервер сверяет хеш в третий раз. Хеш всегда от controller
+  (закреплённые хеши `DefaultVersion` или `hashes.txt` релиза), не от
+  узла: подменённый узел не установит чужой файл на другие серверы.
+  Submit проверяет `via`: другой и существующий сервер (`invalid`,
+  поле `via`). Если `auto` выбрал relay, а controller не скачал файл,
+  ошибка задания предлагает загрузку через другой сервер.
 - TLS: самоподписанный сертификат (ECDSA P-256, 10 лет) генерирует
   controller; ключ и конфиг на сервере — 0640 root:hysteria (служба
   читает, остальные нет), клиенту выдаётся pin; или
@@ -587,7 +598,7 @@ Phase 4.
 ## Обслуживание (P2-05)
 
 Задание `maintain` (пакет `deploy`, общие с развёртыванием шаги и
-`Deps`): `{op: upgrade|reinstall, version, source}`. Submit требует
+`Deps`): `{op: upgrade|reinstall, version, source, via}`. Submit требует
 записанной установки; `reinstall` — только своей (`Managed`, стандартные
 пути) и всегда с записанной версией (`DefaultVersion`, если она
 неизвестна). Шаги: connect → check (архитектура по `uname -m`, сборка
@@ -954,7 +965,7 @@ API каскадов отдаёт у развёрнутой связи посл�
 | POST | `/api/v1/servers/{id}/ports` | operator+ | `{base, ports, host, hopInterval}`: новые порты — задание `apply` (202, `{job}`); только интервал — сохраняется сразу (200, `{job: null}`) |
 | POST | `/api/v1/servers/{id}/deploy` | operator+ | job Quick Deploy: тело — `deploy.Params` и `secrets` (`dns`, `outPassword`; в params задания не попадают); нужен подтверждённый ключ SSH; пароли прежней ревизии (любой `auth`, если `auth` не меняется) сохраняются; текущий конфиг не из развёртывания (правка, возврат, импорт) заменяется только с `"overwrite": true`, иначе 409 `config_changed` |
 | POST | `/api/v1/servers/{id}/import` | operator+ | job импорта |
-| POST | `/api/v1/servers/{id}/maintain` | operator+ | `{op: upgrade\|reinstall, version, source}`: задание `maintain`; без установки 409 `no_installation`, переустановка импортированной — 409 `not_managed` |
+| POST | `/api/v1/servers/{id}/maintain` | operator+ | `{op: upgrade\|reinstall, version, source, via}`: задание `maintain`; без установки 409 `no_installation`, переустановка импортированной — 409 `not_managed` |
 | GET | `/api/v1/servers/{id}/status` | любая | статус сервиса |
 | POST | `/api/v1/servers/{id}/service/{start,stop,restart}` | operator+ | с подтверждением в UI |
 | GET | `/api/v1/servers/{id}/journal` | любая | журнал Hysteria через redaction (шаблоны + пароли текущего конфига): JSON последних записей или SSE с `?follow=1` |

@@ -174,6 +174,106 @@ func TestUpgradeRelay(t *testing.T) {
 	}
 }
 
+// Neither the server nor the controller reach GitHub: another managed
+// server downloads the release (its own Hysteria is another build), the
+// controller carries the file over, the server checks it again.
+func TestUpgradeNode(t *testing.T) {
+	ctx := context.Background()
+	s := newSim()
+	h := deployed(t, s)
+	s.github = false
+	n := newSim()
+	n.files[BinaryPath] = fakeBinary
+	n.AddDownload(h.res.URL(newVersion, "hysteria-linux-amd64"), newBinary)
+	via := h.node("nl-1", n)
+	h.db.SetInstallation(ctx, model.Installation{ServerID: via, Binary: BinaryPath, Config: ConfigPath, Unit: Unit, Version: testVersion, Managed: true, At: time.Now()})
+	h.mu.Lock()
+	h.noBinary = true
+	h.mu.Unlock()
+
+	j := h.maintain(MaintainParams{Op: OpUpgrade, Version: newVersion, Source: SourceNode, Via: via})
+	if b, _ := s.file(BinaryPath); j.State != model.JobCompleted || !bytes.Equal(b, newBinary) {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
+	}
+	if l := h.log(j.ID); !strings.Contains(l, "через сервер «nl-1»") || !strings.Contains(l, "SHA-256 совпал") {
+		t.Fatalf("log:\n%s", l)
+	}
+	if !n.ran("curl -fsSL") || !n.ran("sha256sum") || !s.ran("sha256sum") {
+		t.Fatalf("node %q\nserver %q", n.cmds, s.cmds)
+	}
+	// The node is as it was: its binary, no temporary directory left.
+	if b, _ := n.file(BinaryPath); !bytes.Equal(b, fakeBinary) || !n.ran("rm -rf") {
+		t.Fatalf("node binary %q, commands %q", b, n.cmds)
+	}
+}
+
+// The node runs this very build: its binary is copied, nothing is
+// downloaded anywhere.
+func TestUpgradeNodeInstalled(t *testing.T) {
+	ctx := context.Background()
+	s := newSim()
+	h := deployed(t, s)
+	s.github = false
+	n := newSim()
+	n.github = false
+	n.files["/opt/hy/hysteria"] = newBinary
+	via := h.node("nl-1", n)
+	h.db.SetInstallation(ctx, model.Installation{ServerID: via, Binary: "/opt/hy/hysteria", Config: ConfigPath, Unit: Unit, Version: newVersion, At: time.Now()})
+
+	j := h.maintain(MaintainParams{Op: OpUpgrade, Version: newVersion, Source: SourceNode, Via: via})
+	if b, _ := s.file(BinaryPath); j.State != model.JobCompleted || !bytes.Equal(b, newBinary) {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
+	}
+	if n.ran("curl") || n.ran("mktemp") || len(n.writes) != 0 {
+		t.Fatalf("node %q, writes %q", n.cmds, n.writes)
+	}
+}
+
+// What the node downloads does not match the release hash, or the node
+// does not answer: the server is not changed, the error says why.
+func TestUpgradeNodeFails(t *testing.T) {
+	s := newSim()
+	h := deployed(t, s)
+	n := newSim()
+	n.AddDownload(h.res.URL(newVersion, "hysteria-linux-amd64"), []byte("tampered"))
+	bad := h.node("nl-1", n)
+	gone := h.node("nl-2", nil)
+	for _, c := range []struct {
+		via  int64
+		want string
+	}{
+		{bad, "не совпадает с хешем"},
+		{gone, "нет подключения к серверу «nl-2»"},
+	} {
+		s.reset()
+		j := h.maintain(MaintainParams{Op: OpUpgrade, Version: newVersion, Source: SourceNode, Via: c.via})
+		if j.State != model.JobFailed || !strings.Contains(j.ErrorMessage+h.log(j.ID), c.want) {
+			t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
+		}
+		if b, _ := s.file(BinaryPath); !bytes.Equal(b, fakeBinary) || s.ran("systemctl restart") || len(s.writes) != 0 {
+			t.Fatalf("server changed: %q %q", b, s.writes)
+		}
+		if h.state() != model.StateHealthy {
+			t.Fatalf("state %s", h.state())
+		}
+	}
+}
+
+// Automatic choice, and neither the server nor the controller can
+// download: the error offers another server.
+func TestUpgradeNoGitHub(t *testing.T) {
+	s := newSim()
+	h := deployed(t, s)
+	s.github = false
+	h.mu.Lock()
+	h.noBinary = true
+	h.mu.Unlock()
+	j := h.maintain(MaintainParams{Op: OpUpgrade, Version: newVersion})
+	if j.State != model.JobFailed || !strings.Contains(j.ErrorMessage, "через другой сервер") {
+		t.Fatalf("%s: %s", j.State, j.ErrorMessage)
+	}
+}
+
 func TestReinstall(t *testing.T) {
 	s := newSim()
 	h := deployed(t, s)
@@ -252,7 +352,11 @@ func TestMaintainRefused(t *testing.T) {
 		t.Fatalf("imported: %v", err)
 	}
 	var fe *model.FieldError
-	for _, p := range []MaintainParams{{Op: "rm"}, {Op: OpUpgrade, Version: "latest"}, {Op: OpUpgrade, Source: "ftp"}} {
+	for _, p := range []MaintainParams{
+		{Op: "rm"}, {Op: OpUpgrade, Version: "latest"}, {Op: OpUpgrade, Source: "ftp"},
+		// Through another server: which one, not itself, a known one.
+		{Op: OpUpgrade, Source: SourceNode}, {Op: OpUpgrade, Source: SourceNode, Via: h.server}, {Op: OpUpgrade, Source: SourceNode, Via: 999},
+	} {
 		if _, err := sub.Maintain(ctx, h.server, p, 0); !errors.As(err, &fe) {
 			t.Errorf("%+v: %v", p, err)
 		}

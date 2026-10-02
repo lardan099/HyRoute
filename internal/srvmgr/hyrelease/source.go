@@ -12,10 +12,10 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/remote"
 )
 
-// A Source puts a verified binary on the server. Phase 3 adds a source
-// through another managed node; the deploy only sees this interface.
+// A Source puts a verified binary on the server; the deploy only sees
+// this interface.
 type Source interface {
-	// Name is how the log calls the source ("direct", "relay").
+	// Name is how the log calls the source ("direct", "relay", "node").
 	Name() string
 	// Fetch leaves the asset at path (inside a temporary directory the
 	// caller made), checked against a.SHA256 on the server.

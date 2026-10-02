@@ -60,6 +60,8 @@ const (
 	SourceAuto   = "auto"
 	SourceDirect = "direct"
 	SourceRelay  = "relay"
+	// SourceNode: another managed server (Params.Via) provides the binary.
+	SourceNode = "node"
 )
 
 // Params are the choices of a deploy (no secrets).
@@ -102,7 +104,9 @@ type Params struct {
 	// Preset: sections of a preset laid over the config the params make
 	// (presets.go).
 	Preset *Preset `json:"preset,omitempty"`
-	Source string  `json:"source,omitempty"` // auto (default), direct, relay
+	Source string  `json:"source,omitempty"` // auto (default), direct, relay, node
+	// Via is the server that provides the binary (source node).
+	Via int64 `json:"via,omitempty"`
 	// KeepFirewall: do not open ports in ufw or firewalld.
 	KeepFirewall bool `json:"keepFirewall,omitempty"`
 	// Replace an installation HyRoute did not make (its files are kept
@@ -172,13 +176,23 @@ func (p *Params) Normalize() error {
 	if err := p.normalizePreset(); err != nil {
 		return err
 	}
-	if p.Source == "" {
-		p.Source = SourceAuto
+	return normalizeSource(&p.Source, &p.Via)
+}
+
+// normalizeSource checks a download source and its node.
+func normalizeSource(source *string, via *int64) error {
+	if *source == "" {
+		*source = SourceAuto
 	}
-	switch p.Source {
+	switch *source {
 	case SourceAuto, SourceDirect, SourceRelay:
+		*via = 0
+	case SourceNode:
+		if *via <= 0 {
+			return errors.New("выберите сервер, через который загружать Hysteria")
+		}
 	default:
-		return fmt.Errorf("неизвестный источник загрузки %q", p.Source)
+		return fmt.Errorf("неизвестный источник загрузки %q", *source)
 	}
 	return nil
 }

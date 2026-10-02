@@ -5,12 +5,14 @@
   import { api, asApiError, defaultHysteria, type ApiError, type DeploySource, type Job, type MaintainOp, type Server, type ServiceStatus } from '../api';
   import { t } from '../i18n';
   import Dialog from './Dialog.svelte';
+  import SourcePicker from './SourcePicker.svelte';
 
   let { server, status, onclose, onstarted }: { server: Server; status: ServiceStatus; onclose: () => void; onstarted: (j: Job) => void } = $props();
 
   let op = $state<MaintainOp>('upgrade');
   let version = $state(defaultHysteria);
   let source = $state<DeploySource>('auto');
+  let via = $state(0);
   let busy = $state(false);
   let error = $state<ApiError | null>(null);
 
@@ -21,7 +23,7 @@
     busy = true;
     error = null;
     try {
-      onstarted(await api.startMaintain(server.id, { op, version: op === 'upgrade' ? version.trim() : undefined, source }));
+      onstarted(await api.startMaintain(server.id, { op, version: op === 'upgrade' ? version.trim() : undefined, source, via: source === 'node' ? via : undefined }));
     } catch (err) {
       error = asApiError(err);
     } finally {
@@ -50,14 +52,7 @@
     {/if}
     {#if !status.managed}<p class="hint">{t('maint.imported')}</p>{/if}
 
-    <label>
-      <span>{t('deploy.source')}</span>
-      <select bind:value={source}>
-        <option value="auto">{t('deploy.sourceAuto')}</option>
-        <option value="direct">{t('deploy.sourceDirect')}</option>
-        <option value="relay">{t('deploy.sourceRelay')}</option>
-      </select>
-    </label>
+    <SourcePicker serverId={server.id} bind:source bind:via />
     <div class="note info small">{t('maint.restartNote')}</div>
 
     {#if error}

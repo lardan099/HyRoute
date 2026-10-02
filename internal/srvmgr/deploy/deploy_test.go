@@ -47,6 +47,11 @@ type harness struct {
 
 	mu   sync.Mutex
 	bins map[string][]byte // the fake releases: version → binary
+	// noBinary: the release server gives hashes.txt but not the binary
+	// (the controller cannot download it).
+	noBinary bool
+	// nodes are the other managed servers (source node): ID → simulator.
+	nodes map[int64]*sim
 }
 
 // release publishes a fake release of version with binary b: its
@@ -62,6 +67,30 @@ func (h *harness) release(version string, b []byte) {
 type conn struct{ s *sim }
 
 func (c conn) Connect(context.Context, int64) (remote.Executor, error) { return c.s, nil }
+
+// node adds another managed server, simulated by n (source node).
+func (h *harness) node(name string, n *sim) int64 {
+	h.t.Helper()
+	srv := model.Server{Name: name, Host: "192.0.2.11", SSHPort: 22, SSHUser: "root", AuthType: model.AuthPassword, Role: model.RoleStandalone, State: model.StateHealthy}
+	if err := h.db.CreateServer(context.Background(), &srv, nil); err != nil {
+		h.t.Fatal(err)
+	}
+	h.mu.Lock()
+	h.nodes[srv.ID] = n
+	h.mu.Unlock()
+	return srv.ID
+}
+
+// connectNode connects to a node (Deps.Nodes); a server without a
+// simulator does not answer.
+func (h *harness) connectNode(_ context.Context, id int64) (remote.Executor, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if n := h.nodes[id]; n != nil {
+		return n, nil
+	}
+	return nil, errors.New("dial tcp 192.0.2.12:22: i/o timeout")
+}
 
 func sum(b []byte) string {
 	s := sha256.Sum256(b)
@@ -81,19 +110,20 @@ func newHarness(t *testing.T, s *sim) *harness {
 	if err := db.CreateServer(ctx, &srv, nil); err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, db: db, keys: keys, sim: s, server: srv.ID, bins: map[string][]byte{}}
+	h := &harness{t: t, db: db, keys: keys, sim: s, server: srv.ID, bins: map[string][]byte{}, nodes: map[int64]*sim{}}
 	h.rel = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// /app/<version>/<file>
 		f := strings.Split(r.URL.Path, "/")
 		h.mu.Lock()
 		b, found := h.bins[f[len(f)-2]]
+		noBinary := h.noBinary
 		h.mu.Unlock()
 		switch {
 		case !found:
 			http.NotFound(w, r)
 		case f[len(f)-1] == "hashes.txt":
 			w.Write([]byte(sum(b) + "  build/hysteria-linux-amd64\n"))
-		case f[len(f)-1] == "hysteria-linux-amd64":
+		case f[len(f)-1] == "hysteria-linux-amd64" && !noBinary:
 			w.Write(b)
 		default:
 			http.NotFound(w, r)
@@ -111,7 +141,7 @@ func newHarness(t *testing.T, s *sim) *harness {
 func (h *harness) startEngine() {
 	h.eng = jobs.New(h.db, h.keys, redact.New(), conn{h.sim}, nil)
 	h.eng.Poll = 10 * time.Millisecond
-	d := Deps{Store: h.db, Keys: h.keys, Resolver: h.res, VerifyTimeout: 200 * time.Millisecond, Poll: 10 * time.Millisecond}
+	d := Deps{Store: h.db, Keys: h.keys, Resolver: h.res, Nodes: h.connectNode, VerifyTimeout: 200 * time.Millisecond, Poll: 10 * time.Millisecond}
 	h.eng.Register(Kind(d))
 	h.eng.Register(Maintenance(d))
 	ctx, cancel := context.WithCancel(context.Background())

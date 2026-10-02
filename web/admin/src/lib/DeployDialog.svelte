@@ -32,6 +32,7 @@
   import { t, type Key } from '../i18n';
   import Dialog from './Dialog.svelte';
   import ChainNote from './ChainNote.svelte';
+  import SourcePicker from './SourcePicker.svelte';
 
   let { server, onclose, onstarted }: { server: Server; onclose: () => void; onstarted: (j: Job) => void } = $props();
 
@@ -60,6 +61,7 @@
   let sni = $state('');
   let version = $state(defaultVersion);
   let source = $state<DeploySource>('auto');
+  let via = $state(0);
   let keepFirewall = $state(false);
   let replace = $state(false);
 
@@ -182,6 +184,7 @@
     sni = p.sni ?? '';
     version = p.version || defaultVersion;
     source = p.source ?? 'auto';
+    via = p.via ?? 0;
     keepFirewall = !!p.keepFirewall;
     up = p.bandwidth?.upMbps ?? null;
     down = p.bandwidth?.downMbps ?? null;
@@ -313,6 +316,7 @@
       hopPorts: hopping ? hopPorts.trim() : undefined,
       obfs,
       source,
+      via: source === 'node' ? via : undefined,
       keepFirewall,
       // An imported installation is replaced together with its config.
       replace: replace || (changed && overwrite && cfg?.source === 'import'),
@@ -768,14 +772,7 @@
                   <span>{t('deploy.version')}</span>
                   <input type="text" required bind:value={version} spellcheck="false" />
                 </label>
-                <label class="grow">
-                  <span>{t('deploy.source')}</span>
-                  <select bind:value={source}>
-                    <option value="auto">{t('deploy.sourceAuto')}</option>
-                    <option value="direct">{t('deploy.sourceDirect')}</option>
-                    <option value="relay">{t('deploy.sourceRelay')}</option>
-                  </select>
-                </label>
+                <div class="grow"><SourcePicker serverId={server.id} bind:source bind:via /></div>
               </div>
               <label class="check"><input type="checkbox" bind:checked={keepFirewall} /> {t('deploy.keepFirewall')}</label>
               <div class="field">

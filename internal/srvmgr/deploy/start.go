@@ -42,6 +42,9 @@ func (s *Submitter) Submit(ctx context.Context, serverID int64, p Params, in Inp
 	if err := p.Normalize(); err != nil {
 		return model.Job{}, &model.FieldError{Field: "params", Msg: sentence(err.Error())}
 	}
+	if err := s.checkVia(ctx, serverID, p.Source, p.Via); err != nil {
+		return model.Job{}, err
+	}
 	if err := s.loadPreset(ctx, &p); err != nil {
 		return model.Job{}, err
 	}
@@ -104,4 +107,21 @@ func sentence(s string) string {
 		s += "."
 	}
 	return s
+}
+
+// checkVia: the node of a download through another server is another
+// known server.
+func (s *Submitter) checkVia(ctx context.Context, serverID int64, source string, via int64) error {
+	if source != SourceNode {
+		return nil
+	}
+	if via == serverID {
+		return &model.FieldError{Field: "via", Msg: "Сервер не может загружать Hysteria через себя: выберите другой."}
+	}
+	if _, err := s.Store.ServerByID(ctx, via); errors.Is(err, store.ErrNotFound) {
+		return &model.FieldError{Field: "via", Msg: "Сервер, через который загружать Hysteria, не найден."}
+	} else if err != nil {
+		return err
+	}
+	return nil
 }

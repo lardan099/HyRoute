@@ -44,7 +44,10 @@ type Deps struct {
 	Resolver *hyrelease.Resolver
 	Direct   hyrelease.Source
 	Relay    hyrelease.Source
-	Now      func() time.Time
+	// Nodes connects to another managed server that provides the binary
+	// (source node; connect.Connector.Connect).
+	Nodes func(ctx context.Context, serverID int64) (remote.Executor, error)
+	Now   func() time.Time
 	// VerifyTimeout bounds the wait for a started service (ACME waits
 	// three times as long: the certificate is issued first).
 	VerifyTimeout time.Duration
@@ -105,7 +108,7 @@ func (x *deployer) steps(p Params) []jobs.Step {
 				return x.binaryDone(ctx, env, p.Version, BinaryPath)
 			},
 			Run: func(ctx context.Context, env *jobs.Env) error {
-				return x.binary(ctx, env, p.Version, p.Source, BinaryPath)
+				return x.binary(ctx, env, p.Version, p.Source, p.Via, BinaryPath)
 			},
 			Undo: x.restoreFile(BinaryPath, "binaryBackup")},
 		{Name: "user", Phase: model.JobInstalling, Safe: true, Done: x.userDone, Run: x.user},
@@ -348,7 +351,7 @@ func (x *deployer) binaryDone(ctx context.Context, env *jobs.Env, version, path 
 // binary puts the release binary of version at path: downloaded from
 // source, checked against the release hash, with a copy of the file it
 // replaces (restoreFile(path, "binaryBackup") undoes it).
-func (x *deployer) binary(ctx context.Context, env *jobs.Env, version, source, path string) error {
+func (x *deployer) binary(ctx context.Context, env *jobs.Env, version, source string, via int64, path string) error {
 	a, err := x.asset(ctx, env, version)
 	if err != nil {
 		return err
@@ -358,8 +361,16 @@ func (x *deployer) binary(ctx context.Context, env *jobs.Env, version, source, p
 		return err
 	}
 	src := x.Relay
-	if source == SourceDirect || ((source == SourceAuto || source == "") && env.Get("github") == "true") {
-		src = x.Direct
+	how := "через controller"
+	switch {
+	case source == SourceNode:
+		n, err := x.node(ctx, via)
+		if err != nil {
+			return err
+		}
+		src, how = n, "через сервер «"+n.Server+"»"
+	case source == SourceDirect || ((source == SourceAuto || source == "") && env.Get("github") == "true"):
+		src, how = x.Direct, "сервер скачивает сам"
 	}
 	su := sudo(env)
 	dir, err := remote.TempDir(ctx, ex, su)
@@ -368,11 +379,13 @@ func (x *deployer) binary(ctx context.Context, env *jobs.Env, version, source, p
 	}
 	defer remote.RemoveTempDir(context.WithoutCancel(ctx), ex, dir, su)
 	tmp := dir + "/hysteria"
-	how := map[string]string{"direct": "сервер скачивает сам", "relay": "через controller"}[src.Name()]
 	env.Logf("Загрузка Hysteria %s (%s, %s).", a.Version, a.Name, how)
 	if err := src.Fetch(ctx, ex, a, tmp, su); err != nil {
 		if errors.Is(err, hyrelease.ErrChecksum) {
 			return jobs.Fail("Скачанный файл Hysteria не совпадает с хешем релиза; установка отменена.", err)
+		}
+		if source != SourceNode && source != SourceDirect && env.Get("github") != "true" {
+			return jobs.Fail("Ни сервер, ни controller не скачали Hysteria. Выберите загрузку через другой сервер, которому GitHub доступен.", err)
 		}
 		return jobs.Fail("Не удалось загрузить Hysteria на сервер.", err)
 	}
@@ -929,4 +942,35 @@ func (x *deployer) finished(ctx context.Context, env *jobs.Env, j model.Job) {
 		}
 	}
 	x.Store.SetServerState(ctx, env.ServerID, state, x.Now())
+}
+
+// node is the source that takes the binary from managed server via: its
+// installed Hysteria when that is the release's file, else a download of
+// its own.
+func (x *deployer) node(ctx context.Context, via int64) (*hyrelease.Node, error) {
+	if x.Nodes == nil {
+		return nil, jobs.Fail("Загрузка через другой сервер здесь недоступна.", nil)
+	}
+	srv, err := x.Store.ServerByID(ctx, via)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, jobs.Fail("Сервера, через который загружать Hysteria, больше нет.", nil)
+	} else if err != nil {
+		return nil, err
+	}
+	n := &hyrelease.Node{Server: srv.Name, Open: func(ctx context.Context) (remote.Executor, bool, error) {
+		ex, err := x.Nodes(ctx, via)
+		if err != nil {
+			return nil, false, err
+		}
+		p, err := remote.RunProbe(ctx, ex)
+		if err != nil {
+			ex.Close()
+			return nil, false, err
+		}
+		return ex, !p.Root, nil
+	}}
+	if in, err := x.Store.Installation(ctx, via); err == nil {
+		n.Installed = in.Binary
+	}
+	return n, nil
 }

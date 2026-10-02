@@ -234,7 +234,7 @@ export interface PreflightReport {
 }
 
 export type TLSMode = 'self-signed' | 'acme';
-export type DeploySource = 'auto' | 'direct' | 'relay';
+export type DeploySource = 'auto' | 'direct' | 'relay' | 'node';
 
 // The Hysteria version HyRoute deploys unless asked otherwise (its hashes
 // are pinned in hyrelease).
@@ -246,6 +246,8 @@ export interface MaintainParams {
   op: MaintainOp;
   version?: string;
   source?: DeploySource;
+  // via: the server that provides the binary (source 'node').
+  via?: number;
 }
 
 export type ACMEChallenge = 'http' | 'tls' | 'dns';
@@ -280,6 +282,7 @@ export interface DeployParams {
   // preset: sections of a preset laid over the config (not ports, obfs).
   preset?: { id: number; sections: PresetSection[] };
   source?: DeploySource;
+  via?: number;
   keepFirewall?: boolean;
   replace?: boolean;
   // overwrite: replace a current config no deploy made (edited, rolled
