@@ -6,13 +6,27 @@
   // the text of untouched rules as it was.
   import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { api, asApiError, type AclProblem, type AclRule, type ApiError, type RoutingPreview, type RoutingView, type Server } from '../api';
+  import {
+    api,
+    asApiError,
+    type AclProblem,
+    type AclRequest,
+    type AclRule,
+    type ApiError,
+    type RoutingOutbound,
+    type RoutingPreview,
+    type RoutingResolver,
+    type RoutingView,
+    type Server,
+  } from '../api';
   import { t, type Key } from '../i18n';
   import { go } from '../router.svelte';
   import { bad, builtIn, kindOf, kinds, protoPort, valueOf, type AddrKind } from './acl';
   import ChainNote from './ChainNote.svelte';
   import Dialog from './Dialog.svelte';
   import DiffView from './DiffView.svelte';
+  import OutboundDialog from './OutboundDialog.svelte';
+  import RoutingCheck from './RoutingCheck.svelte';
   import RuleDialog from './RuleDialog.svelte';
 
   let { server, onclose }: { server: Server; onclose: () => void } = $props();
@@ -23,6 +37,11 @@
 
   let view = $state<RoutingView | null>(null);
   let rows = $state<Row[]>([]);
+  let obs = $state<RoutingOutbound[]>([]);
+  let resolver = $state<RoutingResolver>({ type: 'system' });
+  let extra = $state('');
+  let highlight = $state<number | null>(null);
+  let obEditing = $state<{ index: number | null; o: RoutingOutbound | null } | null>(null);
   let tail = $state<string[] | undefined>(undefined);
   let keepFile = $state(false);
   let fileRows = $state<Row[] | null>(null);
@@ -48,7 +67,7 @@
   // outbounds a rule can name: the config's, then the built-in ones it
   // does not override.
   let outbounds = $derived.by(() => {
-    const names = (view?.outbounds ?? []).map((o) => o.name);
+    const names = obs.map((o) => o.name);
     return [...names, ...builtIn.filter((b) => !names.some((n) => n.toLowerCase() === b))];
   });
   let groups = $derived([...new Set(rows.map((r) => r.rule.group ?? '').filter(Boolean))]);
@@ -80,6 +99,8 @@
       view = await api.routing(server.id);
       rows = rowsOf(view.acl.rules);
       tail = view.acl.tail;
+      obs = view.outbounds.map((o) => ({ ...o }));
+      resolver = { ...view.resolver };
       keepFile = !!view.file;
       await check();
     } catch (e) {
@@ -94,9 +115,51 @@
       base: view!.revision,
       acl: { rules: rows.map((r) => r.rule), tail },
       keepFile,
-      outbounds: view!.outbounds,
-      resolver: view!.resolver,
+      outbounds: obs,
+      resolver,
+      requests: requests(),
     };
+  }
+
+  // requests are the admin's addresses for the dry run: host, host:port,
+  // [IPv6]:port (TCP 443 when no port).
+  function requests(): AclRequest[] {
+    const out: AclRequest[] = [];
+    for (const tok of extra.split(/[\s,]+/).filter(Boolean)) {
+      let host = tok;
+      let port = 443;
+      const v6 = tok.match(/^\[([^\]]+)\](?::(\d+))?$/);
+      if (v6) [host, port] = [v6[1], Number(v6[2] ?? 443)];
+      else if ((tok.match(/:/g) ?? []).length === 1) [host, port] = [tok.split(':')[0], Number(tok.split(':')[1]) || 443];
+      out.push({ host, port });
+    }
+    return out;
+  }
+
+  // Outbounds: the cascade's stays first; a rename follows in the rules.
+  function saveOutbound(o: RoutingOutbound) {
+    if (!obEditing) return;
+    if (obEditing.index === null) obs.push(o);
+    else {
+      const old = obs[obEditing.index].name;
+      obs[obEditing.index] = o;
+      if (old !== o.name) for (const r of rows) if (r.rule.outbound.toLowerCase() === old.toLowerCase()) r.rule = { ...r.rule, outbound: o.name };
+    }
+    obEditing = null;
+    changedRules();
+  }
+
+  function moveOutbound(i: number, to: number) {
+    if (to < 0 || to >= obs.length || obs[i].locked || obs[to].locked) return;
+    const [o] = obs.splice(i, 1);
+    obs.splice(to, 0, o);
+    changedRules();
+  }
+
+  function removeOutbound(i: number) {
+    if (obs[i].locked) return;
+    obs.splice(i, 1);
+    changedRules();
   }
 
   // check asks the controller about the draft.
@@ -345,6 +408,7 @@
                     class:off={r.rule.off}
                     class:grouped={!!r.rule.group}
                     class:over={overKey === r.key && dragKey !== r.key}
+                    class:hl={highlight === r.i}
                     draggable={!filtering}
                     ondragstart={(e) => {
                       dragKey = r.key;
@@ -397,6 +461,74 @@
   {/if}
 </section>
 
+{#if view}
+  <div class="side">
+    <section class="card">
+      <div class="row">
+        <h2 class="grow">{t('ob.title')}</h2>
+        <button class="ghost" onclick={() => (obEditing = { index: null, o: null })}>{t('ob.add')}</button>
+      </div>
+      {#if obs.length === 0}
+        <p class="muted small">{t('ob.none')}</p>
+      {:else}
+        <ol class="obs">
+          {#each obs as o, i (o.from ?? o.name + i)}
+            <li>
+              <span class="grow">
+                {#if o.locked}<span aria-label={t('ob.locked')} title={t('ob.locked')}>🔒</span>{/if}
+                <b>{o.name}</b>
+                <span class="small muted">{o.type}{o.socks5 ? ' · ' + o.socks5.addr : o.http ? ' · ' + o.http.url : o.direct?.bindDevice ? ' · ' + o.direct.bindDevice : ''}</span>
+                {#if i === 0}<span class="pill direct small">{t('ob.default')}</span>{/if}
+                {#if o.locked && view.cascade}<button class="link small" onclick={() => go('cascades', view!.cascade!.id)}>{t('ob.chain', { name: view.cascade.name })}</button>{/if}
+              </span>
+              {#if !o.locked}
+                <span class="acts">
+                  <button class="ghost" disabled={i === 0 || obs[i - 1].locked} onclick={() => moveOutbound(i, i - 1)} aria-label={t('rt.up')}>↑</button>
+                  <button class="ghost" disabled={i === obs.length - 1} onclick={() => moveOutbound(i, i + 1)} aria-label={t('rt.down')}>↓</button>
+                  <button class="ghost" onclick={() => (obEditing = { index: i, o })}>{t('rt.edit')}</button>
+                  <button class="ghost danger" onclick={() => removeOutbound(i)} aria-label={t('rt.delete')}>✕</button>
+                </span>
+              {/if}
+            </li>
+          {/each}
+        </ol>
+      {/if}
+      <p class="small faint">{t('ob.hint')}</p>
+
+      <div class="rform">
+        <h3>{t('rs.title')}</h3>
+        <label>
+          <span>{t('rs.type')}</span>
+          <select bind:value={resolver.type} onchange={changedRules}>
+            <option value="system">{t('rs.system')}</option>
+            <option value="https">{t('rs.https')}</option>
+            <option value="tls">{t('rs.tls')}</option>
+            <option value="udp">{t('rs.udp')}</option>
+            <option value="tcp">{t('rs.tcp')}</option>
+          </select>
+        </label>
+        {#if resolver.type !== 'system'}
+          <label>
+            <span>{t('rs.addr')}</span>
+            <input type="text" bind:value={resolver.addr} oninput={changedRules} placeholder={resolver.type === 'https' ? 'https://1.1.1.1/dns-query' : resolver.type === 'tls' ? '1.1.1.1:853' : '1.1.1.1:53'} spellcheck="false" />
+          </label>
+          <label><span>{t('rs.timeout')}</span><input type="text" bind:value={resolver.timeout} oninput={changedRules} placeholder="10s" /></label>
+          {#if resolver.type === 'tls' || resolver.type === 'https'}
+            <label><span>{t('rs.sni')}</span><input type="text" bind:value={resolver.sni} oninput={changedRules} spellcheck="false" /></label>
+            <label class="check"><input type="checkbox" bind:checked={resolver.insecure} onchange={changedRules} /> {t('rs.insecure')}</label>
+          {/if}
+        {/if}
+        <p class="small faint">{t('rs.hint')}</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>{t('rc.title')}</h2>
+      <RoutingCheck serverId={server.id} acl={() => ({ rules: rows.map((r) => r.rule), tail })} outbounds={obs.map((o) => o.name)} onrule={(i) => (highlight = i)} />
+    </section>
+  </div>
+{/if}
+
 {#if preview && view}
   <section class="card">
     <h2>{t('cfg.problems')}</h2>
@@ -405,12 +537,43 @@
     {#if ruleErrors.length}<div class="prob error">{t('rt.ruleErrors', { n: ruleErrors.length })}</div>{/if}
     {#if !configErrors.length && !configWarnings.length && !ruleErrors.length}<p class="muted small">{t('cfg.noProblems')}</p>{/if}
     {#if !changed}<p class="muted small">{t('rt.same')}</p>{/if}
+
+    {#if !keepFile}
+      <div class="dry">
+        <h3>{t('dry.title')}</h3>
+        <label class="field">
+          <span>{t('dry.requests')}</span>
+          <input type="text" bind:value={extra} oninput={changedRules} placeholder="youtube.com, ya.ru:443, [2001:db8::1]:53" spellcheck="false" />
+        </label>
+        {#if preview.changes.length}
+          <ul class="changes small">
+            {#each preview.changes as c, i (i)}
+              <li>
+                <span class="mono">{c.request.host}{c.request.proto && c.request.proto !== 'tcp' ? ' ' + c.request.proto : ''}:{c.request.port}</span>
+                — {c.before.outbound}{c.before.hijack ? ' → ' + c.before.hijack : ''} ⟶ <b>{c.after.outbound}{c.after.hijack ? ' → ' + c.after.hijack : ''}</b>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="muted small">{t('dry.none')}</p>
+        {/if}
+      </div>
+    {/if}
     <div class="row actions">
       <span class="grow"></span>
       <button onclick={onclose}>{t('cfg.cancel')}</button>
       <button class="primary" disabled={busy || !changed || !preview.ok || !!error} onclick={() => (confirming = true)}>{t('cfg.apply')}</button>
     </div>
   </section>
+{/if}
+
+{#if obEditing}
+  <OutboundDialog
+    outbound={obEditing.o}
+    taken={obs.filter((_, i) => i !== obEditing!.index).map((o) => o.name)}
+    onsave={saveOutbound}
+    onclose={() => (obEditing = null)}
+  />
 {/if}
 
 {#if editing}
@@ -466,6 +629,19 @@
   tr.grouped td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
   tr.over td { border-top: 2px solid var(--accent); }
   tr.group td { background: var(--surface-2); padding: 4px 8px; }
+  tr.hl td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .side { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; margin-bottom: 16px; }
+  @media (max-width: 900px) { .side { grid-template-columns: 1fr; } }
+  .side h2 { margin-bottom: 10px; }
+  .obs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .obs li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+  .obs .acts button { padding: 2px 6px; }
+  .rform { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+  .rform label:not(.check) { display: flex; flex-direction: column; gap: 5px; }
+  .rform label span { color: var(--muted); font-size: 12.5px; }
+  .changes { margin: 8px 0 0; padding-left: 18px; }
+  .changes li { padding: 2px 0; }
+  .dry { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
   .link-btn { background: none; border: 0; padding: 0; font: inherit; font-weight: 600; color: inherit; cursor: pointer; }
   .sel, .num { width: 1%; white-space: nowrap; }
   .grip { cursor: grab; margin-right: 4px; color: var(--faint); }
