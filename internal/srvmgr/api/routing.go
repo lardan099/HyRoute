@@ -13,7 +13,7 @@ import (
 )
 
 func (s *server) routing() *routing.Service {
-	r := &routing.Service{Editor: s.editor(), Applier: s.Apply, Chains: s.Store}
+	r := &routing.Service{Editor: s.editor(), Applier: s.Apply, Chains: s.Store, Geo: s.Geo.Loader()}
 	if s.Connect != nil {
 		r.Connect = func(ctx context.Context, id int64) (remote.Executor, error) { return s.Connect.Connect(ctx, id) }
 	}
@@ -110,7 +110,7 @@ func (s *server) checkRouting(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	v, err := acl.Match(in.ACL, acl.Env{Outbounds: in.Outbounds}, in.Request)
+	v, err := acl.Match(in.ACL, acl.Env{Outbounds: in.Outbounds, Geo: s.Geo.Loader()}, in.Request)
 	if err != nil {
 		writeError(w, &Error{Status: http.StatusBadRequest, Code: "invalid", Message: err.Error(), Details: "request"})
 		return

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
+	"github.com/lardan099/hyroute/internal/srvmgr/geo"
 	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
 	"github.com/lardan099/hyroute/internal/srvmgr/importer"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
@@ -40,6 +42,7 @@ type testEnv struct {
 	jobs    *jobs.Engine
 	keys    *secrets.Keyring
 	apply   *apply.Applier
+	geo     *geo.Store
 	clock   time.Time
 }
 
@@ -70,8 +73,10 @@ func newEnv(t *testing.T) *testEnv {
 	e.jobs.Register(linker.Kind())
 	e.jobs.Register(linker.UnlinkKind())
 	e.keys = keys
+	// Releases on a closed loopback port: an update fails at once.
+	e.geo = &geo.Store{Dir: filepath.Join(t.TempDir(), "geo"), Base: "http://127.0.0.1:1/releases"}
 	e.h = New(Deps{Store: db, Auth: e.auth, Servers: e.servers, Connect: e.connect, Jobs: e.jobs,
-		Deploy: &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}, Apply: e.apply, Cascade: linker, Keys: keys})
+		Deploy: &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}, Apply: e.apply, Cascade: linker, Geo: e.geo, Keys: keys})
 	return e
 }
 

@@ -27,6 +27,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/datadir"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
+	"github.com/lardan099/hyroute/internal/srvmgr/geo"
 	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
 	"github.com/lardan099/hyroute/internal/srvmgr/importer"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
@@ -193,6 +194,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			Deploy:     &deploy.Submitter{Store: db, Keys: keys, Jobs: engine},
 			Apply:      applier,
 			Cascade:    linker,
+			Geo:        &geo.Store{Dir: filepath.Join(cfg.DataDir, "geo")},
 			Keys:       keys,
 			Logs:       logs,
 			Log:        log,

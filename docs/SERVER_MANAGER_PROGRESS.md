@@ -1735,3 +1735,20 @@ P1-09 (общий пакет ссылок).
   переименованием, удалением, новым паролем и DoH, отказы — 10 случаев,
   без каскада, acl.file, экспорт и импорт), `TestMaskRenamedOutbound`,
   `TestRoutingAPI`.
+
+### P3-07a Базы geo у controller
+
+- Пакет `geo`: `geoip.dat` и `geosite.dat` Loyalsoldier в
+  `<data dir>/geo`; последний релиз по редиректу `releases/latest`,
+  хеш из `.sha256sum` того же релиза, файл читается как база до замены;
+  оба меняются только вместе с `info.json`; тот же релиз не качается.
+  Разобранные базы кешируются на релиз; `Loader()` — для проверок
+  правил (нет баз — nil).
+- API: `GET /api/v1/geo`, `POST /api/v1/geo/update`,
+  `GET /api/v1/geo/categories`; редактор маршрутизации и «Проверить
+  правило» проверяют geo-имена по базам controller.
+- Lint: geo-правила без `acl.geoip`/`acl.geosite` — Hysteria скачивает
+  базу при старте с cdn.jsdelivr.net.
+- Тесты: `TestUpdate` (первая загрузка, тот же релиз, неверный хеш,
+  не база, новый релиз, испорченный файл на диске), `TestLatestRefused`,
+  `TestLintGeoDownload`, `TestGeoAPI`.

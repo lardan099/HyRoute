@@ -87,6 +87,15 @@ func lint(d Document, env Env, valid []bool, at []int) []Problem {
 			strings.Join(open, ", ") + "): к службам на 127.0.0.1, к адресу метаданных облака 169.254.169.254. Добавьте в начало правила reject для этих сетей."})
 	}
 
+	// Databases Hysteria downloads at start, from a CDN the server may not
+	// reach.
+	for _, g := range []struct{ kind, file, path string }{{KindGeoIP, "geoip.dat", env.GeoIPPath}, {KindGeoSite, "geosite.dat", env.GeoSitePath}} {
+		if g.path == "" && slices.ContainsFunc(d.Rules, func(r Rule) bool { return !r.Off && !r.Bad() && KindOf(r.Address) == g.kind }) {
+			add(-1, Problem{Level: Warn, Code: "geo_download", Message: "Для правил " + g.kind + ": Hysteria скачивает " + g.file +
+				" при старте с cdn.jsdelivr.net (и заново раз в неделю); без доступа к нему сервер не запустится. Установите базы geo на сервер."})
+		}
+	}
+
 	if env.Entry {
 		t := strings.ToLower(env.Resolver.Type)
 		plain := t == "" || t == "system" || t == "udp" || t == "tcp"

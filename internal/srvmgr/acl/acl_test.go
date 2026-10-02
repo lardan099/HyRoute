@@ -301,7 +301,7 @@ func TestLintPrivate(t *testing.T) {
 		"direct(suffix:example.com)\nreject(geoip:private)\nproxy(all)",
 	}
 	for _, text := range quiet {
-		if got := codes(Check(Parse(text), Env{Outbounds: []string{"proxy"}})); len(got[-1]) != 0 {
+		if got := codes(Check(Parse(text), Env{Outbounds: []string{"proxy"}})); slices.Contains(got[-1], "private") {
 			t.Errorf("%q: %v", text, got)
 		}
 	}
@@ -392,6 +392,31 @@ func TestKindOf(t *testing.T) {
 func TestEnvOf(t *testing.T) {
 	c := &hyconfig.Server{Outbounds: []hyconfig.Outbound{{Name: "cascade"}, {Name: "direct"}}, Resolver: hyconfig.Resolver{Type: "https"}}
 	if e := EnvOf(c); !reflect.DeepEqual(e.Outbounds, []string{"cascade", "direct"}) || e.Resolver.Type != "https" {
+		t.Fatalf("%+v", e)
+	}
+}
+
+func TestLintGeoDownload(t *testing.T) {
+	for _, c := range []struct {
+		text, ip, site string
+		want           []string
+	}{
+		{"direct(geoip:ru)\ndirect(geosite:google)", "", "", []string{"geoip.dat", "geosite.dat"}},
+		{"direct(geoip:ru)\ndirect(geosite:google)", "/etc/hysteria/geo/geoip.dat", "", []string{"geosite.dat"}},
+		{"direct(geoip:ru)\ndirect(geosite:google)", "/a", "/b", nil},
+		{"direct(all)\n#~off direct(geoip:ru)", "", "", nil},
+	} {
+		var got []string
+		for _, p := range Check(Parse(c.text), Env{GeoIPPath: c.ip, GeoSitePath: c.site}) {
+			if p.Code == "geo_download" {
+				got = append(got, strings.Fields(p.Message)[5])
+			}
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%q: %q", c.text, got)
+		}
+	}
+	if e := EnvOf(&hyconfig.Server{ACL: hyconfig.ACL{GeoIP: "/a", GeoSite: "/b"}}); e.GeoIPPath != "/a" || e.GeoSitePath != "/b" {
 		t.Fatalf("%+v", e)
 	}
 }

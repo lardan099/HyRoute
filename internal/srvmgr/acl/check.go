@@ -45,11 +45,14 @@ type Env struct {
 	// Entry: the server is the entry of a cascade.
 	Entry    bool
 	Resolver hyconfig.Resolver
+	// GeoIPPath and GeoSitePath are acl.geoip and acl.geosite of the
+	// config ("": Hysteria downloads the database itself).
+	GeoIPPath, GeoSitePath string
 }
 
 // EnvOf is the environment of a server config.
 func EnvOf(c *hyconfig.Server) Env {
-	e := Env{Resolver: c.Resolver}
+	e := Env{Resolver: c.Resolver, GeoIPPath: c.ACL.GeoIP, GeoSitePath: c.ACL.GeoSite}
 	for _, o := range c.Outbounds {
 		e.Outbounds = append(e.Outbounds, o.Name)
 	}
