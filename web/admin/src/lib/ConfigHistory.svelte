@@ -31,6 +31,7 @@
     rollback: 'srv.sourceRollback',
     rotate: 'srv.sourceRotate',
     cascade: 'srv.sourceCascade',
+    geo: 'srv.sourceGeo',
   };
   const source = (r: ConfigRevision) => t(sourceKey[r.source], { n: r.fromRevision ?? 0 });
 

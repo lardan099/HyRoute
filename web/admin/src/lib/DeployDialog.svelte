@@ -115,6 +115,7 @@
     import: 'deploy.changedImport',
     rotate: 'deploy.changedRotate',
     cascade: 'deploy.changedCascade',
+    geo: 'deploy.changedGeo',
   };
   const outModes: [string, Key][] = [
     ['', 'deploy.outModeDefault'],

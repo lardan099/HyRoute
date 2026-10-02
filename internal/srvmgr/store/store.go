@@ -40,6 +40,7 @@ type Store interface {
 	Presets
 	Chains
 	LinkChecks
+	ServerGeos
 	Close() error
 }
 
@@ -261,6 +262,16 @@ type HealthChecks interface {
 	HealthHistory(ctx context.Context, serverID int64, since time.Time, limit int) ([]model.Health, error)
 	// PruneHealth drops checks older than before.
 	PruneHealth(ctx context.Context, before time.Time) error
+}
+
+// ServerGeos stores the geo databases servers have (P3-07).
+type ServerGeos interface {
+	// SetServerGeo records what a server has now.
+	SetServerGeo(ctx context.Context, g model.ServerGeo) error
+	// ServerGeo is what a server has; ErrNotFound: nothing HyRoute put.
+	ServerGeo(ctx context.Context, serverID int64) (model.ServerGeo, error)
+	// ServerGeos is every server's.
+	ServerGeos(ctx context.Context) ([]model.ServerGeo, error)
 }
 
 // LinkChecks stores the checks of cascade links.

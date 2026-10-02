@@ -137,6 +137,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	engine.Register(deploy.Kind(deployDeps))
 	engine.Register(deploy.Maintenance(deployDeps))
 	engine.Register(importer.Kind(importer.Deps{Store: db, Keys: keys}))
+	geoFiles := &geo.Store{Dir: filepath.Join(cfg.DataDir, "geo")}
+	geoJobs := geo.New(geo.Deps{DB: db, Keys: keys, Files: geoFiles, Jobs: engine, Nodes: conn.Connect})
+	engine.Register(geoJobs.Kind())
 	engine.Register(service.Kind(service.Deps{Store: db, Keys: keys}))
 	engine.Register(tuning.Kind())
 	applier := apply.New(apply.Deps{Store: db, Keys: keys, Jobs: engine})
@@ -194,7 +197,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			Deploy:     &deploy.Submitter{Store: db, Keys: keys, Jobs: engine},
 			Apply:      applier,
 			Cascade:    linker,
-			Geo:        &geo.Store{Dir: filepath.Join(cfg.DataDir, "geo")},
+			Geo:        geoFiles,
+			GeoJobs:    geoJobs,
 			Keys:       keys,
 			Logs:       logs,
 			Log:        log,

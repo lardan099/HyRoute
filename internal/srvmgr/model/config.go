@@ -19,7 +19,19 @@ const (
 	// ConfigCascade: a cascade link added or removed its part (P3-02):
 	// the link's user on the exit, the outbound on the entry.
 	ConfigCascade ConfigSource = "cascade"
+	// ConfigGeo: the geo job set the paths of the databases (P3-07).
+	ConfigGeo ConfigSource = "geo"
 )
+
+// ServerGeo is the release of the geo databases a server has (P3-07).
+type ServerGeo struct {
+	ServerID int64
+	Release  string
+	// GeoIP and GeoSite are the SHA-256 of the files.
+	GeoIP, GeoSite string
+	JobID          int64
+	At             time.Time
+}
 
 // ConfigMeta is the non-secret summary of a config revision: what the UI
 // shows and what client links need besides the passwords.

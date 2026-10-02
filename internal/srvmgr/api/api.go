@@ -37,8 +37,10 @@ type Deps struct {
 	Apply   *apply.Applier
 	// Cascade deploys cascade links (P3-02).
 	Cascade *cascade.Linker
-	// Geo are the controller's geo databases (P3-07).
-	Geo *geo.Store
+	// Geo are the controller's geo databases (P3-07), GeoJobs puts them
+	// on servers.
+	Geo     *geo.Store
+	GeoJobs *geo.Installer
 	// Keys open config revisions (the passwords journals are redacted
 	// with).
 	Keys *secrets.Keyring
@@ -128,6 +130,8 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/geo", s.authed(anyRole, s.geoInfo))
 	mux.HandleFunc("POST /api/v1/geo/update", s.authed(anyRole, s.geoUpdate))
 	mux.HandleFunc("GET /api/v1/geo/categories", s.authed(anyRole, s.geoCategories))
+	mux.HandleFunc("GET /api/v1/servers/{id}/geo", s.authed(anyRole, s.serverGeo))
+	mux.HandleFunc("POST /api/v1/servers/{id}/geo", s.authed(anyRole, s.installGeo))
 	mux.HandleFunc("GET /api/v1/chains", s.authed(anyRole, s.listChains))
 	mux.HandleFunc("POST /api/v1/chains", s.authed(anyRole, s.createChain))
 	mux.HandleFunc("GET /api/v1/chains/{id}", s.authed(anyRole, s.getChain))

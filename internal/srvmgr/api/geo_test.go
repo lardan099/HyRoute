@@ -70,6 +70,26 @@ func TestGeoAPI(t *testing.T) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 
+	// A server: its databases, then the job that puts them there.
+	id := strconv.FormatInt(srv.ID, 10)
+	cfg := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-geo-api-auth\nacl:\n  inline:\n    - direct(geoip:ru)\n")
+	c := model.ServerConfig{ServerID: srv.ID, SHA256: "x", Source: model.ConfigDeploy, At: time.Now()}
+	e.db.AddConfig(t.Context(), &c, func(rev int) ([]byte, error) { return e.keys.Seal(cfg, model.ConfigContext(srv.ID, rev)) })
+	rec = owner.do("GET", "/api/v1/servers/"+id+"/geo", nil, nil)
+	if rec.Code != 200 || rec.Body.String() != `{"release":"","latest":false,"paths":false,"rules":true}`+"\n" {
+		t.Fatalf("%d %q", rec.Code, rec.Body)
+	}
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/geo", map[string]any{"source": "auto"}, nil), http.StatusConflict, "no_installation")
+	e.db.SetInstallation(t.Context(), model.Installation{ServerID: srv.ID, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", At: time.Now()})
+	e.db.SetHostKey(t.Context(), model.HostKey{ServerID: srv.ID, Type: "ssh-ed25519", Key: []byte("fake"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()})
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/geo", map[string]any{"source": "ftp"}, nil), http.StatusBadRequest, "invalid")
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/geo", map[string]any{"source": "relay"}, nil)
+	var j jobJSON
+	json.Unmarshal(rec.Body.Bytes(), &j)
+	if rec.Code != http.StatusAccepted || j.Kind != "geo" {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+
 	var u model.User
 	u.Username, u.Role = "viewer", model.RoleReadOnly
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)

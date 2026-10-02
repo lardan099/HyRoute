@@ -75,8 +75,10 @@ func newEnv(t *testing.T) *testEnv {
 	e.keys = keys
 	// Releases on a closed loopback port: an update fails at once.
 	e.geo = &geo.Store{Dir: filepath.Join(t.TempDir(), "geo"), Base: "http://127.0.0.1:1/releases"}
+	geoJobs := geo.New(geo.Deps{DB: db, Keys: keys, Files: e.geo, Jobs: e.jobs})
+	e.jobs.Register(geoJobs.Kind())
 	e.h = New(Deps{Store: db, Auth: e.auth, Servers: e.servers, Connect: e.connect, Jobs: e.jobs,
-		Deploy: &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}, Apply: e.apply, Cascade: linker, Geo: e.geo, Keys: keys})
+		Deploy: &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}, Apply: e.apply, Cascade: linker, Geo: e.geo, GeoJobs: geoJobs, Keys: keys})
 	return e
 }
 
