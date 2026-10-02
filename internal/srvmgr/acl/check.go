@@ -58,15 +58,21 @@ func EnvOf(c *hyconfig.Server) Env {
 
 // Check returns what Hysteria would refuse in d, then the lint.
 func Check(d Document, env Env) []Problem {
+	ps, valid, at := d.compile(env)
+	return append(ps, lint(d, env, valid, at)...)
+}
+
+// compile checks each rule; valid are the enabled rules Hysteria
+// accepts, at the line index of every rule.
+func (d Document) compile(env Env) (ps []Problem, valid []bool, at []int) {
 	lines, at := d.render()
 	obs := outboundMap(env.Outbounds)
 	geo := withPrivate{env.Geo}
-	var ps []Problem
 	add := func(i int, p Problem) {
 		p.Rule, p.Line = i, at[i]+1
 		ps = append(ps, p)
 	}
-	valid := make([]bool, len(d.Rules))
+	valid = make([]bool, len(d.Rules))
 	for i, r := range d.Rules {
 		if r.Bad() {
 			add(i, Problem{Level: Error, Code: "syntax", Message: "Hysteria не прочтёт эту строку: правило пишется как выход(адрес), выход(адрес, протокол/порт) или выход(адрес, протокол/порт, подмена)."})
@@ -85,7 +91,7 @@ func Check(d Document, env Env) []Problem {
 		}
 		valid[i] = true
 	}
-	return append(ps, lint(d, env, valid, at)...)
+	return ps, valid, at
 }
 
 // fields: the rule's line reads back as the rule (no comma, "#", bracket
