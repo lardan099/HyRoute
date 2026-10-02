@@ -99,3 +99,18 @@ func TestMonitorInterval(t *testing.T) {
 		t.Fatalf("env: %v %v", c.MonitorInterval, err)
 	}
 }
+
+func TestGeoInterval(t *testing.T) {
+	c, err := Load(nil, env(nil), io.Discard)
+	if err != nil || c.GeoInterval != 7*24*time.Hour {
+		t.Fatalf("default: %v %v", c.GeoInterval, err)
+	}
+	c, err = Load([]string{"-geo-interval", "0"}, env(nil), io.Discard)
+	if err != nil || c.GeoInterval != 0 {
+		t.Fatalf("off: %v %v", c.GeoInterval, err)
+	}
+	c, err = Load(nil, env(map[string]string{"HYROUTE_SERVER_GEO_INTERVAL": "24h"}), io.Discard)
+	if err != nil || c.GeoInterval != 24*time.Hour {
+		t.Fatalf("env: %v %v", c.GeoInterval, err)
+	}
+}

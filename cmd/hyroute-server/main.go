@@ -169,6 +169,16 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		defer func() { stopJobs(); <-monDone }()
 	}
 
+	if cfg.GeoInterval > 0 {
+		sched := &geo.Scheduler{Files: geoFiles, Jobs: geoJobs, DB: db, Keys: keys, Interval: cfg.GeoInterval, Log: log}
+		geoDone := make(chan struct{})
+		go func() {
+			sched.Run(jobsCtx)
+			close(geoDone)
+		}()
+		defer func() { stopJobs(); <-geoDone }()
+	}
+
 	var certs *certFiles
 	if cfg.TLS() {
 		if certs, err = loadCert(cfg.TLSCert, cfg.TLSKey, log); err != nil {

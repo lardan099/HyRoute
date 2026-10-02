@@ -37,6 +37,8 @@ type Config struct {
 	LogLevel string
 	// MonitorInterval is how often servers are sampled (0: never).
 	MonitorInterval time.Duration
+	// GeoInterval is how often the geo databases are updated (0: never).
+	GeoInterval time.Duration
 }
 
 // DefaultListen is the address used when none is given.
@@ -76,6 +78,7 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 	fs.BoolVar(&c.InsecureHTTP, "insecure-http", isTrue(env("INSECURE_HTTP", "")), "allow plaintext HTTP on an address reachable from the network (env HYROUTE_SERVER_INSECURE_HTTP)")
 	fs.BoolVar(&c.TrustProxy, "trust-proxy", isTrue(env("TRUST_PROXY", "")), "trust X-Forwarded-* from a reverse proxy on loopback (env HYROUTE_SERVER_TRUST_PROXY)")
 	fs.DurationVar(&c.MonitorInterval, "monitor-interval", envDuration(getenv("HYROUTE_SERVER_MONITOR_INTERVAL"), time.Minute), "how often to sample the servers' CPU, memory, disk and network; 0 turns it off (env HYROUTE_SERVER_MONITOR_INTERVAL)")
+	fs.DurationVar(&c.GeoInterval, "geo-interval", envDuration(getenv("HYROUTE_SERVER_GEO_INTERVAL"), 7*24*time.Hour), "how often to look for newer geo databases and put them on the servers that use HyRoute's; 0 turns it off (env HYROUTE_SERVER_GEO_INTERVAL)")
 	fs.StringVar(&c.LogLevel, "log-level", env("LOG_LEVEL", "info"), "debug, info, warn or error (env HYROUTE_SERVER_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
