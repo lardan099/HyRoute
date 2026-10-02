@@ -587,6 +587,123 @@ export interface ConfigCheck {
 
 export type PresetSection = 'ports' | 'obfs' | 'masquerade' | 'speed' | 'quic' | 'udp' | 'resolver' | 'sniff' | 'acl' | 'outbounds';
 
+// AclRule is one routing rule (acl.Rule): outbound(address[, proto/port[,
+// hijack]]). text is the line as read: the controller writes it back while
+// the fields say the same; a line Hysteria cannot read has only text.
+export interface AclRule {
+  outbound: string;
+  address: string;
+  proto?: string;
+  port?: string;
+  hijack?: string;
+  comment?: string;
+  group?: string;
+  off?: boolean;
+  text?: string;
+  before?: string[];
+}
+
+export interface AclDocument {
+  rules: AclRule[] | null;
+  tail?: string[];
+}
+
+// AclProblem: rule is the index in the rules (-1: the ACL as a whole); fix
+// are rules to add at the top.
+export interface AclProblem {
+  rule: number;
+  line?: number;
+  level: 'error' | 'warn';
+  code: string;
+  message: string;
+  detail?: string;
+  other?: number;
+  fix?: AclRule[];
+}
+
+// RoutingOutbound: a password the editor got as HIDDEN and sends back so
+// keeps the current one; from is the current name (rules follow a rename).
+export interface RoutingOutbound {
+  name: string;
+  from?: string;
+  type: string; // direct, socks5, http
+  direct?: { mode?: string; bindIPv4?: string; bindIPv6?: string; bindDevice?: string; fastOpen?: boolean };
+  socks5?: { addr: string; username?: string; password?: string };
+  http?: { url: string; password?: string; insecure?: boolean };
+  locked?: boolean;
+}
+
+export interface RoutingResolver {
+  type: 'system' | 'udp' | 'tcp' | 'tls' | 'https' | string;
+  addr?: string;
+  timeout?: string;
+  sni?: string;
+  insecure?: boolean;
+}
+
+export interface RoutingView {
+  revision: number;
+  acl: AclDocument;
+  file?: string;
+  outbounds: RoutingOutbound[];
+  resolver: RoutingResolver;
+  cascade?: { id: number; name: string };
+  problems: AclProblem[];
+}
+
+export interface AclRequest {
+  host: string;
+  ips?: string[];
+  proto?: string;
+  port: number;
+}
+
+export interface AclVerdict {
+  rule: number;
+  outbound: string;
+  hijack?: string;
+  reason: string;
+  unknown?: number[];
+}
+
+export interface RoutingInput {
+  base: number;
+  acl: AclDocument;
+  keepFile?: boolean;
+  outbounds: RoutingOutbound[];
+  resolver: RoutingResolver;
+  requests?: AclRequest[];
+}
+
+export interface RoutingPreview extends ConfigCheck {
+  acl: AclDocument;
+  rules: AclProblem[];
+  changes: { request: AclRequest; before: AclVerdict; after: AclVerdict }[];
+  ok: boolean;
+  same: boolean;
+}
+
+export interface RoutingFile {
+  path: string;
+  acl: AclDocument;
+  problems: AclProblem[];
+}
+
+export interface GeoInfo {
+  release: string;
+  files: { name: string; sha256: string; size: number; url: string }[];
+  at: string;
+  checkedAt: string;
+}
+
+export interface ServerGeo {
+  release: string;
+  at?: string;
+  latest: boolean;
+  paths: boolean;
+  rules: boolean;
+}
+
 // presetSections in config order; deploySections are those a deploy takes
 // (the form sets the ports and the obfuscation).
 export const presetSections: PresetSection[] = ['ports', 'obfs', 'masquerade', 'speed', 'quic', 'udp', 'resolver', 'sniff', 'acl', 'outbounds'];
@@ -816,6 +933,18 @@ export const api = {
   unlinkChain: (id: number, del: boolean) => request<Job>('POST', `/chains/${id}/unlink`, { delete: del }),
   checkChain: (id: number) => request<Chain>('POST', `/chains/${id}/check`),
   chainChecks: (id: number, idx = 0, limit = 100) => request<LinkCheck[]>('GET', `/chains/${id}/checks?idx=${idx}&limit=${limit}`),
+  routing: (serverId: number) => request<RoutingView>('GET', `/servers/${serverId}/routing`),
+  routingPreview: (serverId: number, input: RoutingInput) => request<RoutingPreview>('POST', `/servers/${serverId}/routing/preview`, input),
+  routingApply: (serverId: number, input: RoutingInput) => request<Job>('POST', `/servers/${serverId}/routing/apply`, input),
+  routingCheck: (serverId: number, input: { acl: AclDocument; outbounds: string[]; request: AclRequest }) =>
+    request<AclVerdict>('POST', `/servers/${serverId}/routing/check`, input),
+  routingFile: (serverId: number) => request<RoutingFile>('GET', `/servers/${serverId}/routing/file`),
+  geoInfo: () => request<GeoInfo>('GET', '/geo'),
+  geoUpdate: () => request<{ info: GeoInfo; changed: boolean }>('POST', '/geo/update'),
+  geoCategories: (kind: 'geoip' | 'geosite', q: string) =>
+    request<{ names: string[] }>('GET', `/geo/categories?kind=${kind}&q=${encodeURIComponent(q)}`),
+  serverGeo: (serverId: number) => request<ServerGeo>('GET', `/servers/${serverId}/geo`),
+  installGeo: (serverId: number, source: DeploySource, via?: number) => request<Job>('POST', `/servers/${serverId}/geo`, { source, via: via ?? 0 }),
   presetPreview: (serverId: number, p: PresetApply) => request<PresetCheck>('POST', `/servers/${serverId}/preset/preview`, p),
   presetApply: (serverId: number, p: PresetApply) => request<Job>('POST', `/servers/${serverId}/preset/apply`, p),
   clientSummary: (serverId: number) => request<ClientSummary>('GET', `/servers/${serverId}/client`),

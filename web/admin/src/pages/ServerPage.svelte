@@ -18,6 +18,7 @@
   import ConfigEditor from '../lib/ConfigEditor.svelte';
   import ClientCard from '../lib/ClientCard.svelte';
   import ConfigHistory from '../lib/ConfigHistory.svelte';
+  import RoutingEditor from '../lib/RoutingEditor.svelte';
   import MetricsCard from '../lib/MetricsCard.svelte';
   import HealthCard from '../lib/HealthCard.svelte';
   import TrafficCard from '../lib/TrafficCard.svelte';
@@ -38,6 +39,7 @@
   let presetting = $state(false);
   let editing = $state(false);
   let history = $state(false);
+  let routing = $state(false);
   let action = $state<{ name: ServiceAction; job: Job; done: boolean; ok: boolean } | null>(null);
   let writable = $derived(canWrite(session.user));
   let poll: ReturnType<typeof setTimeout> | undefined;
@@ -117,7 +119,7 @@
 
   // After the history or the editor: the summary may have changed.
   async function closePanel() {
-    editing = history = false;
+    editing = history = routing = false;
     try {
       config = await api.serverConfig(id);
     } catch {}
@@ -167,6 +169,8 @@
     <ConfigEditor {server} onclose={closePanel} />
   {:else if history}
     <ConfigHistory {server} {writable} onclose={closePanel} />
+  {:else if routing}
+    <RoutingEditor {server} onclose={closePanel} />
   {:else}
   <div class="grid">
     <section class="card">
@@ -239,6 +243,7 @@
           {#if config && writable}<button class="ghost" onclick={() => (presetting = true)}>{t('papply.open')}</button>{/if}
           {#if config && writable}<button class="ghost" onclick={() => (porting = true)}>{t('ports.open')}</button>{/if}
           {#if config && writable}<button class="ghost" onclick={() => (rotating = true)}>{t('rot.open')}</button>{/if}
+          {#if config && writable}<button class="ghost" onclick={() => (routing = true)}>{t('rt.open')}</button>{/if}
           {#if config && writable}<button class="ghost" onclick={() => (editing = true)}>{t('cfg.edit')}</button>{/if}
         </div>
         {#if config}
