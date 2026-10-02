@@ -1013,6 +1013,18 @@ export const ru = {
   'ctpl.offer': 'Шаблон «{name}» предлагает правила и DNS для входа. Их можно применить и до, и после развёртывания связи.',
   'ctpl.apply': 'Применить ко входу…',
   'ctpl.dismiss': 'Не нужно',
+  'geo.title': 'Базы geo',
+  'geo.controller': 'У controller — релиз {release} (скачан {at}).',
+  'geo.controllerNone': 'У controller баз нет: категории правил не подсказываются и не проверяются.',
+  'geo.download': 'Скачать',
+  'geo.update': 'Проверить обновление',
+  'geo.server': 'На сервере — релиз {release}.',
+  'geo.serverNone': 'HyRoute базы на сервер не ставил.',
+  'geo.latest': 'последний',
+  'geo.paths': 'Hysteria читает базы, которые поставил HyRoute, и ничего не качает при старте.',
+  'geo.noPaths': 'Правила geo есть, но пути к базам не заданы: Hysteria качает их при старте с cdn.jsdelivr.net.',
+  'geo.noRules': 'Правил geo в конфиге нет.',
+  'geo.install': 'Поставить на сервер',
   'rules.fileNote': 'Правила этого сервера в файле {path}: откройте маршрутизацию сервера и перенесите их в конфиг.',
 } as const;
 

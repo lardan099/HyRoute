@@ -345,6 +345,13 @@ func TestFile(t *testing.T) {
 		t.Fatalf("%v %+v", err, c.ACL)
 	}
 
+	// Not a rules file: nothing of it comes back.
+	host.data = []byte("root:$6$fake-hash:19000:0:99999:7:::\ndaemon:*:19000:0:99999:7:::\ndirect(all)\n")
+	e.svc.Connect = func(context.Context, int64) (remote.Executor, error) { return host, nil }
+	if f, err := e.svc.File(ctx, e.server); err == nil || len(f.ACL.Rules) != 0 || strings.Contains(err.Error(), "fake-hash") {
+		t.Fatalf("shadow: %v %+v", err, f)
+	}
+
 	host.data = bytes.Repeat([]byte("#"), MaxFile+1)
 	e.svc.Connect = func(context.Context, int64) (remote.Executor, error) { return host, nil }
 	var fe *model.FieldError

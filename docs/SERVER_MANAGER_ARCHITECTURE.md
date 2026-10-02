@@ -103,6 +103,8 @@ internal/srvmgr/
   topology                    каскады: проверка цепочек (петли, роли), хранение, состояние
   cascade                     связь entry → exit: конфиги, задания link/unlink, проверки связи
   acl                         правила маршрутизации: модель, разбор и сборка, проверки, lint
+  routing                     редактор маршрутизации: правила, outbounds, resolver, шаблоны
+  geo                         базы geo: у controller, задание geo, расписание
 third_party/hysteria-acl      компилятор ACL Hysteria v2.12.3 (копия, MIT)
   api                         HTTP /api/v1: handlers, middleware, ошибки
 ```

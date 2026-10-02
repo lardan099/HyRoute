@@ -48,6 +48,7 @@ type Server struct {
 	hostKey ssh.Signer
 	exec    ExecFunc
 	files   memFS
+	handler *sftp.Handlers
 	lines   []string
 	ln      net.Listener
 	wg      sync.WaitGroup
@@ -128,6 +129,15 @@ func (s *Server) SetExec(f ExecFunc) {
 func (s *Server) SetFiles(files map[string]string) {
 	s.mu.Lock()
 	s.files = memFS(files)
+	s.mu.Unlock()
+}
+
+// SetHandlers makes the SFTP subsystem serve these handlers: a fake
+// server's filesystem the test keeps in memory, shared with its exec
+// handler (nothing touches the test machine's files).
+func (s *Server) SetHandlers(h sftp.Handlers) {
+	s.mu.Lock()
+	s.handler = &h
 	s.mu.Unlock()
 }
 
@@ -275,8 +285,12 @@ func (s *Server) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 			}
 			req.Reply(true, nil)
 			s.mu.Lock()
-			files := s.files
+			files, handler := s.files, s.handler
 			s.mu.Unlock()
+			if handler != nil {
+				sftp.NewRequestServer(ch, *handler).Serve()
+				return
+			}
 			if files != nil {
 				sftp.NewRequestServer(ch, files.handlers()).Serve()
 				return

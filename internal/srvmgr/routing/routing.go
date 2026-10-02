@@ -286,7 +286,20 @@ func (s *Service) File(ctx context.Context, serverID int64) (FileView, error) {
 	if len(data) > MaxFile {
 		return f, &model.FieldError{Field: "acl.file", Msg: fmt.Sprintf("%s больше 1 МБ: такой файл редактор не открывает.", f.Path)}
 	}
-	f.ACL = acl.Parse(string(data))
+	doc := acl.Parse(string(data))
+	// A file that is mostly not rules is not shown: acl.file may name any
+	// file of the server, and lines that are no rules come back as they
+	// are.
+	bad := 0
+	for _, r := range doc.Rules {
+		if r.Bad() {
+			bad++
+		}
+	}
+	if bad > 0 && bad*2 > len(doc.Rules) {
+		return f, &model.FieldError{Field: "acl.file", Msg: fmt.Sprintf("%s не похож на файл правил Hysteria: редактор его не показывает.", f.Path)}
+	}
+	f.ACL = doc
 	f.Problems = append(f.Problems, acl.Check(f.ACL, s.env(c, ref))...)
 	return f, nil
 }

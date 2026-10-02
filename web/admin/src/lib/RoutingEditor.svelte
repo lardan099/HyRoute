@@ -26,6 +26,7 @@
   import ChainNote from './ChainNote.svelte';
   import Dialog from './Dialog.svelte';
   import DiffView from './DiffView.svelte';
+  import GeoCard from './GeoCard.svelte';
   import OutboundDialog from './OutboundDialog.svelte';
   import RoutingCheck from './RoutingCheck.svelte';
   import RuleDialog from './RuleDialog.svelte';
@@ -584,10 +585,13 @@
       </div>
     </section>
 
-    <section class="card">
-      <h2>{t('rc.title')}</h2>
-      <RoutingCheck serverId={server.id} acl={() => ({ rules: rows.map((r) => r.rule), tail })} outbounds={obs.map((o) => o.name)} onrule={(i) => (highlight = i)} />
-    </section>
+    <div class="col">
+      <section class="card">
+        <h2>{t('rc.title')}</h2>
+        <RoutingCheck serverId={server.id} acl={() => ({ rules: rows.map((r) => r.rule), tail })} outbounds={obs.map((o) => o.name)} onrule={(i) => (highlight = i)} />
+      </section>
+      <section class="card"><GeoCard serverId={server.id} writable={true} /></section>
+    </div>
   </div>
 {/if}
 
@@ -700,6 +704,7 @@
   .side { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; margin-bottom: 16px; }
   @media (max-width: 900px) { .side { grid-template-columns: 1fr; } }
   .side h2 { margin-bottom: 10px; }
+  .col { display: flex; flex-direction: column; gap: 16px; }
   .obs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .obs li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
   .obs .acts button { padding: 2px 6px; }
