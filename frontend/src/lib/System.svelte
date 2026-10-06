@@ -82,6 +82,10 @@
 
   let info = $state<SystemInfo | null>(null);
   let prefs = $state<Prefs>({});
+  // The prefs controls stay off until the first read: a click on the
+  // defaults shown meanwhile would save them over the rest (SavePrefs
+  // takes the whole set).
+  let prefsLoaded = $state(false);
   let error = $state('');
   let ok = $state('');
   let diag = $state('');
@@ -91,9 +95,11 @@
   // would undo the click, so it is dropped: the save reads its own back.
   async function load() {
     try {
-      info = await api.System();
+      // Prefs first: System waits for netsh, up to seconds.
       const p = await api.Prefs();
       if (prefsPending === 0) prefs = p;
+      prefsLoaded = true;
+      info = await api.System();
       autostart = await api.Autostart();
       const r = await api.Settings();
       if (routingPending === 0) routing = r;
@@ -122,6 +128,7 @@
   let prefsSaving: Promise<unknown> = Promise.resolve();
   let prefsPending = 0;
   async function savePrefs(patch: Partial<Prefs>) {
+    if (!prefsLoaded) return; // settle puts the control back
     const next = { ...prefs, ...patch };
     prefs = next;
     error = '';
@@ -289,9 +296,9 @@
         {/if}
       </div>
       <div class="opts">
-        <label class="check"><input type="radio" name="upd" value="auto" checked={updateMode === 'auto'} onchange={(e) => settle(e, () => savePrefs({ updateCheck: 'auto' }), () => updateMode)} /> Проверять автоматически</label>
+        <label class="check"><input type="radio" name="upd" value="auto" checked={updateMode === 'auto'} disabled={!prefsLoaded} onchange={(e) => settle(e, () => savePrefs({ updateCheck: 'auto' }), () => updateMode)} /> Проверять автоматически</label>
         <span class="muted">При запуске и раз в 12 часов. Устанавливается только после вашего подтверждения.</span>
-        <label class="check"><input type="radio" name="upd" value="manual" checked={updateMode === 'manual'} onchange={(e) => settle(e, () => savePrefs({ updateCheck: 'manual' }), () => updateMode)} /> Только вручную</label>
+        <label class="check"><input type="radio" name="upd" value="manual" checked={updateMode === 'manual'} disabled={!prefsLoaded} onchange={(e) => settle(e, () => savePrefs({ updateCheck: 'manual' }), () => updateMode)} /> Только вручную</label>
         <span class="muted">По кнопке «Проверить обновления».</span>
         <label for="chan">Канал</label>
         <select id="chan" disabled title="Канал Beta появится позже"><option>Stable</option></select>
@@ -330,12 +337,12 @@
       {#if autostart.error}<div class="note error small">{autostart.error}</div>{/if}
     {/if}
     <label class="check">
-      <input type="checkbox" checked={prefs.closeToTray ?? true} onchange={(e) => settle(e, (el) => savePrefs({ closeToTray: el.checked }), () => prefs.closeToTray ?? true)} />
+      <input type="checkbox" checked={prefs.closeToTray ?? true} disabled={!prefsLoaded} onchange={(e) => settle(e, (el) => savePrefs({ closeToTray: el.checked }), () => prefs.closeToTray ?? true)} />
       Кнопка × сворачивает HyRoute в трей
     </label>
     <p class="muted small">Окно открывается щелчком по значку в трее. Выйти из программы — «Выход» в меню значка (правая кнопка мыши).</p>
     <label class="check">
-      <input type="checkbox" checked={prefs.autoConnect ?? false} onchange={(e) => settle(e, (el) => savePrefs({ autoConnect: el.checked }), () => prefs.autoConnect ?? false)} />
+      <input type="checkbox" checked={prefs.autoConnect ?? false} disabled={!prefsLoaded} onchange={(e) => settle(e, (el) => savePrefs({ autoConnect: el.checked }), () => prefs.autoConnect ?? false)} />
       Подключаться сразу после запуска
     </label>
     <p class="muted small">
@@ -391,12 +398,12 @@
   <section class="card">
     <h2><Icon name="log" size={17} /> Журнал на диске</h2>
     <div class="opts">
-      <label class="check"><input type="checkbox" checked={prefs.logsToDisk ?? true} onchange={(e) => settle(e, (el) => savePrefs({ logsToDisk: el.checked }), () => prefs.logsToDisk ?? true)} /> Хранить логи на диске</label>
+      <label class="check"><input type="checkbox" checked={prefs.logsToDisk ?? true} disabled={!prefsLoaded} onchange={(e) => settle(e, (el) => savePrefs({ logsToDisk: el.checked }), () => prefs.logsToDisk ?? true)} /> Хранить логи на диске</label>
       <span class="muted">Выключено — логи только в памяти (последние 10 000 строк) и пропадают при выходе.</span>
       <label for="lmax">Размер файла, МБ</label>
-      <input id="lmax" type="number" min="1" max="200" style="width: 90px" value={prefs.logMaxMB || 5} onchange={(e) => settle(e, (el) => savePrefs({ logMaxMB: +el.value }), () => prefs.logMaxMB || 5)} />
+      <input id="lmax" type="number" min="1" max="200" style="width: 90px" value={prefs.logMaxMB || 5} disabled={!prefsLoaded} onchange={(e) => settle(e, (el) => savePrefs({ logMaxMB: +el.value }), () => prefs.logMaxMB || 5)} />
       <label for="lkeep">Старых файлов</label>
-      <input id="lkeep" type="number" min="1" max="20" style="width: 90px" value={prefs.logKeep || 3} onchange={(e) => settle(e, (el) => savePrefs({ logKeep: +el.value }), () => prefs.logKeep || 3)} />
+      <input id="lkeep" type="number" min="1" max="20" style="width: 90px" value={prefs.logKeep || 3} disabled={!prefsLoaded} onchange={(e) => settle(e, (el) => savePrefs({ logKeep: +el.value }), () => prefs.logKeep || 3)} />
     </div>
     <p class="muted small">
       Общий лог — hyroute.log, у каждого профиля свой hysteria-&lt;id&gt;.log. При достижении размера файл переименовывается в .1, .2…, самые старые удаляются.

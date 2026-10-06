@@ -239,8 +239,12 @@
       .catch((e) => (error = errText(e)));
   });
 
+  // Read once, as launchLoaded: «Назад» and the step again keep the choice.
+  let killLoaded = false;
   $effect(() => {
-    if (settings && step === 'launch') wantKill = settings.killSwitch ?? false;
+    if (!settings || step !== 'launch' || killLoaded) return;
+    killLoaded = true;
+    wantKill = settings.killSwitch ?? false;
   });
 
   async function applyLaunch() {

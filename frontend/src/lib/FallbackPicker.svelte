@@ -38,7 +38,7 @@
 <div class="fb" class:compact>
   {#if !compact}<span class="muted">Запасные</span>{/if}
   <div class="list">
-    {#each value as id, i (id + i)}
+    {#each value as id, i (i + ':' + id)}
       <span
         class="chip"
         class:idle={idle(i)}

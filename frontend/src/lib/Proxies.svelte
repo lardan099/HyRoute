@@ -16,6 +16,9 @@
   trackUnsaved(() => editing !== null && JSON.stringify(editing) !== editingFrom); // backup
   let saving = $state(false);
   let showPass = $state(false);
+  // A press that started in a field and ended on the backdrop is not a
+  // click on the backdrop.
+  let downOnBackdrop = false;
 
   async function load() {
     try {
@@ -209,7 +212,12 @@
 </div>
 
 {#if editing}
-  <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && (editing = null)}>
+  <div
+    class="backdrop"
+    role="presentation"
+    onmousedown={(e) => (downOnBackdrop = e.target === e.currentTarget)}
+    onclick={(e) => downOnBackdrop && e.target === e.currentTarget && (editing = null)}
+  >
     <div class="dialog ed">
       <div class="row">
         <h2 class="grow">{editing.id ? 'Прокси' : 'Новый прокси'}</h2>

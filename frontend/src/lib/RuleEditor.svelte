@@ -26,12 +26,15 @@
 
   // svelte-ignore state_referenced_locally
   let r = $state<Rule>(JSON.parse(JSON.stringify(rule)));
-  trackUnsaved(() => JSON.stringify(r) !== JSON.stringify(rule)); // backup
   r.apps ??= [];
   r.domains ??= [];
   r.protocol ??= '';
   r.profile ??= '';
   r.fallback ??= [];
+  // backup: compared with the rule as opened, the empty fields above
+  // filled in (Go leaves them out), so an untouched rule is not unsaved.
+  const opened = JSON.stringify(r);
+  trackUnsaved(() => JSON.stringify(r) !== opened); // backup
   let siteInput = $state('');
   let appInput = $state('');
   let error = $state('');
@@ -308,7 +311,7 @@
     <div class="field">
       <div class="lbl"><Icon name="globe" size={16} /> Сайты и адреса</div>
       <div class="chips">
-        {#each r.domains! as d, i (d + i)}
+        {#each r.domains! as d, i (i + ':' + d)}
           {@const il = itemLabel(d)}
           {#if il}
             <span class="chip" class:geo={il.geo} class:miss={!!il.missing} title={il.geo ? il.tip : hide(il.tip)}>
@@ -352,7 +355,7 @@
         />
         <button class="browse" onclick={() => (picking = true)} title="YouTube, Telegram, заблокированное в России, реклама…"><Icon name="database" size={15} />Готовые списки…</button>
       </div>
-      {#each r.domains!.map((d) => ({ d, il: itemLabel(d) })).filter((x) => x.il?.missing) as x (x.d)}
+      {#each r.domains!.map((d, i) => ({ d, i, il: itemLabel(d) })).filter((x) => x.il?.missing) as x (x.i)}
         <div class="note warn small">«{x.il!.text}» ({x.d}): {x.il!.missing}. Правило сохранится, но этот список не сработает, пока в «Настройки → Базы правил» не выбрана база, где он есть.</div>
       {/each}
       {#if sitePortShown}
@@ -382,7 +385,7 @@
     <div class="field">
       <div class="lbl"><Icon name="app" size={16} /> Программы</div>
       <div class="chips">
-        {#each r.apps! as a, i (a.pattern + i)}
+        {#each r.apps! as a, i (i + ':' + a.pattern)}
           <span class="chip" title={a.pattern}>
             <span class="ellipsis">{appLabel(a.pattern)}</span>
             <button

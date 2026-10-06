@@ -1,4 +1,5 @@
 // Shared UI state: status, profiles, Privacy mode, theme.
+import { untrack } from 'svelte';
 import { maskDomains, maskHosts, maskIPs, maskURLs } from './privacy';
 import { api, isGroupId, type BackupAppearance, type BackupMsg, type GroupView, type ProfileSummary, type Rule, type Status, type SubAlert } from './api';
 import { netUnknownName, type NetState } from './api'; // netmodes
@@ -263,13 +264,16 @@ const netRuleQuote = /([Пп]равил[а-я]* сет(?:и|ей) «)([^»]*)»/
 // ==== backup ====
 
 // trackUnsaved counts an editor in ui.unsaved while dirty() holds: a
-// restore re-mounts the page, and asks first.
+// restore re-mounts the page, and asks first. The counter is changed
+// untracked: an effect that reads what it writes runs itself again, up to
+// Svelte's depth limit, and a teardown of another editor in between then
+// leaves the count off.
 export function trackUnsaved(dirty: () => boolean) {
   $effect(() => {
     if (!dirty()) return;
-    ui.unsaved++;
+    untrack(() => ui.unsaved++);
     return () => {
-      ui.unsaved--;
+      untrack(() => ui.unsaved--);
     };
   });
 }

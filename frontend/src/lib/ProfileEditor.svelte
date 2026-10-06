@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, errText, type Profile } from '../api';
-  import { hide } from '../state.svelte';
+  import { ui, hide } from '../state.svelte';
   import { trackUnsaved } from '../state.svelte'; // backup
 
   // sourceName is the subscription the server comes from ('' for a server
@@ -20,6 +20,17 @@
   let showSecrets = $state(false);
   let error = $state('');
   let saving = $state(false);
+  // Privacy mode: the name, address and SNI are shown masked and read-only
+  // until «Показать и редактировать», again once the mode is turned off
+  // and on (as NetRuleEditor).
+  let revealed = $state(false);
+  $effect(() => {
+    if (!ui.privacy) revealed = false;
+  });
+  const ro = $derived(ui.privacy && !revealed);
+  // A press that started in a field and ended on the backdrop is not a
+  // click on the backdrop.
+  let downOnBackdrop = false;
 
   // validPin mirrors hysteria.ValidPin: a hex SHA-256, with the ':' or '-'
   // separators Hysteria strips. Any other value never matches a
@@ -51,7 +62,12 @@
   }
 </script>
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div
+  class="backdrop"
+  role="presentation"
+  onmousedown={(e) => (downOnBackdrop = e.target === e.currentTarget)}
+  onclick={(e) => downOnBackdrop && e.target === e.currentTarget && onclose()}
+>
   <div class="dialog" role="dialog" aria-modal="true">
     <h2>{p.id ? 'Сервер' : 'Новый сервер'}</h2>
     {#if sourceName}
@@ -61,13 +77,27 @@
         hopping и «Резолвить адрес». Чтобы изменить их насовсем, скопируйте ссылку сервера и добавьте его как отдельный.
       </div>
     {/if}
+    {#if ro}
+      <div class="note info row">
+        <span class="grow">Включено «Скрыть данные»: название, адрес и SNI скрыты.</span>
+        <button onclick={() => (revealed = true)}>Показать и редактировать</button>
+      </div>
+    {/if}
     <div class="grid">
       <label for="pe-name">Название</label>
-      <input id="pe-name" bind:value={p.name} placeholder="например, 🇳🇱 Нидерланды" />
+      {#if ro}
+        <div class="ro" id="pe-name">{hide(p.name) || '—'}</div>
+      {:else}
+        <input id="pe-name" bind:value={p.name} placeholder="например, 🇳🇱 Нидерланды" />
+      {/if}
 
       <label for="pe-host">Адрес и порт</label>
       <div class="row">
-        <input id="pe-host" class="grow" bind:value={p.host} placeholder="example.com или IP" />
+        {#if ro}
+          <div class="ro grow" id="pe-host">{hide(p.host) || '—'}</div>
+        {:else}
+          <input id="pe-host" class="grow" bind:value={p.host} placeholder="example.com или IP" />
+        {/if}
         <input bind:value={p.ports} style="width: 170px" placeholder="443 или 443,20000-50000" title="Порт или диапазоны для port hopping" />
       </div>
 
@@ -94,7 +124,11 @@
       <summary>Дополнительно: TLS, скорость, port hopping</summary>
       <div class="grid">
         <label for="pe-sni">SNI</label>
-        <input id="pe-sni" bind:value={p.tls.sni} placeholder="по умолчанию — адрес сервера" />
+        {#if ro}
+          <div class="ro" id="pe-sni">{hide(p.tls.sni) || 'по умолчанию — адрес сервера'}</div>
+        {:else}
+          <input id="pe-sni" bind:value={p.tls.sni} placeholder="по умолчанию — адрес сервера" />
+        {/if}
 
         <label for="pe-pin">Отпечаток (pinSHA256)</label>
         <input id="pe-pin" bind:value={p.tls.pinSHA256} class="mono" class:bad={pinBad} aria-invalid={pinBad} placeholder="если задан, сертификат проверяется только по нему" />
@@ -118,7 +152,8 @@
         </label>
       </div>
     </details>
-    {#if error}<div class="note error">{error}</div>{/if}
+    <!-- An error may quote the address or another server's name. -->
+    {#if error}<div class="note error">{ro ? hide(error) : error}</div>{/if}
     <p class="muted small">Если сервер сейчас используется, он переподключится с новыми настройками.</p>
     <div class="actions">
       <button onclick={onclose}>Отмена</button>
@@ -135,4 +170,5 @@
   .adv summary { cursor: pointer; color: var(--muted); margin-bottom: 10px; }
   p.small { margin: 12px 0 0; }
   input.bad { border-color: var(--block); }
+  .ro { padding: 6px 0; overflow-wrap: anywhere; }
 </style>
