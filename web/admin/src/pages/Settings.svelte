@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, asApiError, type ApiError, type Role, type SessionInfo, type User } from '../api';
-  import { t, type Key } from '../i18n';
+  import { locale, t, type Key } from '../i18n';
   import { canManageUsers, session, signedOut } from '../session.svelte';
 
   let users = $state<User[]>([]);
@@ -15,7 +15,7 @@
   let creating = $state(false);
   let createError = $state<ApiError | null>(null);
 
-  const fmt = (s: string) => new Date(s).toLocaleString('ru-RU');
+  const fmt = (s: string) => new Date(s).toLocaleString(locale);
   const who = (id: number) => users.find((u) => u.id === id)?.username ?? '#' + id;
 
   async function load() {

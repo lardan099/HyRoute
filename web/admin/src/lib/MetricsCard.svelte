@@ -3,7 +3,7 @@
   // chosen period, as small charts or as a table.
   import { onDestroy } from 'svelte';
   import { api, asApiError, type ApiError, type MetricPeriod, type MetricSeries } from '../api';
-  import { t, type Key } from '../i18n';
+  import { locale, t, type Key } from '../i18n';
   import LineChart from './LineChart.svelte';
   import { bits, mib, pct } from './format';
 
@@ -128,7 +128,7 @@
         <tbody>
           {#each rows as p (p.t)}
             <tr>
-              <td>{new Date(p.t).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
+              <td>{new Date(p.t).toLocaleString(locale, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
               <td>{p.cpu != null ? pct(p.cpu) : '—'}</td>
               <td>{mib(p.memUsed)}</td>
               <td>{pct(diskPct(p))}</td>

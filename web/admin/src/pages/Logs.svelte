@@ -4,7 +4,7 @@
   // controller.
   import { onMount } from 'svelte';
   import { api, asApiError, type ApiError, type LogEntry, type Server } from '../api';
-  import { t, tOr } from '../i18n';
+  import { locale, t, tOr } from '../i18n';
   import { go } from '../router.svelte';
   import { clock } from '../lib/format';
 
@@ -106,7 +106,7 @@
 <div class="card lines mono">
   {#each entries as e, i (i)}
     <div class="line {e.level}">
-      <span class="faint">{new Date(e.time).toLocaleDateString('ru-RU')} {clock(e.time)}</span>
+      <span class="faint">{new Date(e.time).toLocaleDateString(locale)} {clock(e.time)}</span>
       {#if e.jobId}
         <button class="link small" onclick={() => go('deployments', e.jobId!)}>{tOr(`kind.${e.kind}`, e.kind ?? '')} #{e.jobId}</button>
         {#if e.serverId}<span class="faint">{byId[e.serverId]?.name ?? '#' + e.serverId}</span>{/if}

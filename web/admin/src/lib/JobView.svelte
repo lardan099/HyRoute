@@ -4,7 +4,7 @@
   import { api, asApiError, jobEventsURL, type ApiError, type Job, type JobDetail, type JobLog, type JobStep, type Server } from '../api';
   import { t, tOr, type Key } from '../i18n';
   import { canWrite, session } from '../session.svelte';
-  import { duration, jobTone, stepTone, when } from './format';
+  import { clock, duration, jobTone, stepTone, when } from './format';
   import PreflightReport from './PreflightReport.svelte';
   import DeployResult from './DeployResult.svelte';
   import DeployDialog from './DeployDialog.svelte';
@@ -245,7 +245,7 @@
       <h2>{t('jobs.log')}</h2>
       <div class="lines mono" bind:this={logBox} onscroll={() => logBox && (follow = logBox.scrollTop + logBox.clientHeight >= logBox.scrollHeight - 20)}>
         {#each logs as l (l.seq)}
-          <div class="line {l.level}"><span class="faint">{new Date(l.time).toLocaleTimeString('ru-RU')}</span> {l.message}</div>
+          <div class="line {l.level}"><span class="faint">{clock(l.time)}</span> {l.message}</div>
         {:else}
           <div class="faint">{t('jobs.noLog')}</div>
         {/each}

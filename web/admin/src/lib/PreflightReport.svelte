@@ -12,7 +12,7 @@
     <span class="pill {report.blocked ? 'block' : 'direct'}">{report.blocked ? t('preflight.blocked') : t('preflight.ready')}</span>
   </div>
   <p class="facts muted small">
-    {report.os || '—'} · {report.arch} · {t('preflight.cpu', { n: report.cpus })} · {report.memoryMiB} МБ · {t('preflight.disk', { n: report.diskFreeMiB })}
+    {report.os || '—'} · {report.arch} · {t('preflight.cpu', { n: report.cpus })} · {t('srv.mb', { n: report.memoryMiB })} · {t('preflight.disk', { n: report.diskFreeMiB })}
   </p>
   <ul>
     {#each report.checks as c, i (i)}

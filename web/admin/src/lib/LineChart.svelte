@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { t } from '../i18n';
+  import { locale, t } from '../i18n';
   // A small time-series line chart: 2px lines (a 10% wash under a single
   // series), recessive hairline grid, one y-axis from 0, a crosshair with
   // a tooltip that lists every series (pointer and arrow keys). A line
@@ -82,8 +82,8 @@
   let span = $derived(to - from);
   function timeLabel(t: number): string {
     const d = new Date(t);
-    const hm = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-    return span > 48 * 3600e3 ? d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) : hm;
+    const hm = d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
+    return span > 48 * 3600e3 ? d.toLocaleDateString(locale, { day: '2-digit', month: '2-digit' }) : hm;
   }
   let xTicks = $derived([0, 1 / 3, 2 / 3, 1].map((f) => from + f * span));
 
@@ -173,7 +173,7 @@
     {#if !times.length}<div class="empty small muted">{t('mon.empty')}</div>{/if}
     {#if idx !== null}
       <div class="tip small" style="left:{tipLeft}px" class:flip>
-        <div class="muted">{new Date(times[idx]).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</div>
+        <div class="muted">{new Date(times[idx]).toLocaleString(locale, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</div>
         {#each series as s (s.name)}
           <div class="row-t"><i style="background:{s.color}"></i><b>{s.values[idx] !== null ? format(s.values[idx]!) : '—'}</b> <span class="muted">{s.name}</span></div>
         {/each}

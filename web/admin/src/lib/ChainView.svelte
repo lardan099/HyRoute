@@ -161,7 +161,7 @@
           {#if link.params.up || link.params.noUdp || link.params.checkTarget}
             <span class="small faint">
               {#if link.params.up}{link.params.up} / {link.params.down}{/if}
-              {#if link.params.noUdp} · без UDP{/if}
+              {#if link.params.noUdp} · {t('cascades.noUdpShort')}{/if}
               {#if link.params.checkTarget} · {t('cascades.target')}: {link.params.checkTarget}{/if}
             </span>
           {/if}

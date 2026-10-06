@@ -42,7 +42,7 @@
   let picked = $derived(Object.values(chosen).filter(Boolean).length);
   let udp = $derived(st?.settings.filter((s) => s.group === 'udp') ?? []);
   let tcp = $derived(st?.settings.filter((s) => s.group === 'tcp') ?? []);
-  const mib = (v: string) => (/^\d+$/.test(v) ? `${Math.round(Number(v) / 1048576 * 10) / 10} МиБ` : v);
+  const mib = (v: string) => (/^\d+$/.test(v) ? t('unit.mib', { n: Math.round(Number(v) / 1048576 * 10) / 10 }) : v);
   const label = (k: string) => t(('tune.key.' + k) as Parameters<typeof t>[0]);
 </script>
 

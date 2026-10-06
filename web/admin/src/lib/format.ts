@@ -1,4 +1,5 @@
 import type { JobState, ServerState, StepState } from '../api';
+import { locale, t, type Key } from '../i18n';
 
 // flag turns an ISO country code ("DE") into its flag emoji.
 export function flag(country: string): string {
@@ -43,7 +44,7 @@ export function stepTone(s: StepState): string {
 }
 
 export function when(s: string | null): string {
-  return s ? new Date(s).toLocaleString('ru-RU') : '—';
+  return s ? new Date(s).toLocaleString(locale) : '—';
 }
 
 // duration between two times, "1 мин 5 с".
@@ -51,7 +52,7 @@ export function duration(from: string | null, to: string | null): string {
   if (!from) return '—';
   const ms = (to ? new Date(to) : new Date()).getTime() - new Date(from).getTime();
   const s = Math.max(0, Math.round(ms / 1000));
-  return s < 60 ? `${s} с` : `${Math.floor(s / 60)} мин ${s % 60} с`;
+  return s < 60 ? t('unit.sec', { n: s }) : t('unit.minSec', { m: Math.floor(s / 60), s: s % 60 });
 }
 
 // uptime in seconds as "3 д 4 ч", "5 ч 12 мин", "7 мин".
@@ -60,13 +61,13 @@ export function uptime(sec: number): string {
   const d = Math.floor(sec / 86400);
   const h = Math.floor((sec % 86400) / 3600);
   const m = Math.floor((sec % 3600) / 60);
-  if (d > 0) return `${d} д ${h} ч`;
-  if (h > 0) return `${h} ч ${m} мин`;
-  return `${Math.max(m, 1)} мин`;
+  if (d > 0) return t('unit.dayHour', { d, h });
+  if (h > 0) return t('unit.hourMin', { h, m });
+  return t('unit.min', { n: Math.max(m, 1) });
 }
 
 export function clock(s: string): string {
-  return new Date(s).toLocaleTimeString('ru-RU');
+  return new Date(s).toLocaleTimeString(locale);
 }
 
 // pct is a percentage without needless decimals.
@@ -76,28 +77,28 @@ export function pct(v: number): string {
 
 // mib is a size given in MiB, in MiB or GiB.
 export function mib(v: number): string {
-  if (v >= 1024) return `${(v / 1024).toFixed(v >= 10240 ? 0 : 1)} ГБ`;
-  return `${Math.round(v)} МБ`;
+  if (v >= 1024) return t('unit.gb', { n: (v / 1024).toFixed(v >= 10240 ? 0 : 1) });
+  return t('unit.mb', { n: Math.round(v) });
 }
 
 // bits is a rate given in bits per second.
 export function bits(v: number): string {
-  const units = ['бит/с', 'Кбит/с', 'Мбит/с', 'Гбит/с'];
+  const units: Key[] = ['unit.bps', 'unit.kbps', 'unit.mbps', 'unit.gbps'];
   let i = 0;
   while (v >= 1000 && i < units.length - 1) {
     v /= 1000;
     i++;
   }
-  return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+  return t(units[i], { n: v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1) });
 }
 
 // bytes is an amount of data in bytes (binary units, as the client shows).
 export function bytes(v: number): string {
-  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  const units: Key[] = ['unit.b', 'unit.kb', 'unit.mb', 'unit.gb', 'unit.tb'];
   let i = 0;
   while (v >= 1024 && i < units.length - 1) {
     v /= 1024;
     i++;
   }
-  return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+  return t(units[i], { n: v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1) });
 }

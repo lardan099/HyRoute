@@ -2,6 +2,25 @@
 // another language is one more file of the same shape.
 export const ru = {
   'app.name': 'HyRoute Server',
+  // The locale of dates and times.
+  'app.locale': 'ru-RU',
+
+  // Units of lib/format.ts.
+  'unit.sec': '{n} с',
+  'unit.minSec': '{m} мин {s} с',
+  'unit.min': '{n} мин',
+  'unit.hourMin': '{h} ч {m} мин',
+  'unit.dayHour': '{d} д {h} ч',
+  'unit.b': '{n} Б',
+  'unit.kb': '{n} КБ',
+  'unit.mb': '{n} МБ',
+  'unit.gb': '{n} ГБ',
+  'unit.tb': '{n} ТБ',
+  'unit.mib': '{n} МиБ',
+  'unit.bps': '{n} бит/с',
+  'unit.kbps': '{n} Кбит/с',
+  'unit.mbps': '{n} Мбит/с',
+  'unit.gbps': '{n} Гбит/с',
 
   'nav.overview': 'Обзор',
   'nav.servers': 'Серверы',
@@ -799,6 +818,7 @@ export const ru = {
   'cascades.speed': 'Скорость связи (вверх / вниз)',
   'cascades.speedHint': 'Пусто — BBR. С обоими числами — Brutal, как у клиентов.',
   'cascades.noUdp': 'Не пускать UDP через каскад',
+  'cascades.noUdpShort': 'без UDP',
   'cascades.checkTarget': 'Адрес проверки связи',
   'cascades.checkTargetHint': 'Хост:порт, который проверка открывает через выход. Пусто — SSH-порт выхода.',
   'cascades.deployNow': 'Сразу развернуть связь',

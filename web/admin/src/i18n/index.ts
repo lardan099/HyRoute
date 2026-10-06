@@ -4,6 +4,9 @@ export type { Key };
 
 const dict: Record<Key, string> = ru;
 
+// locale is the language's locale for dates and times.
+export const locale = dict['app.locale'];
+
 // t returns the string for key; {name} placeholders are replaced from params.
 export function t(key: Key, params?: Record<string, string | number>): string {
   let s: string = dict[key] ?? key;
