@@ -49,7 +49,7 @@ func dial(t *testing.T, srv *sshtest.Server, a Auth) *Client {
 
 func TestRunAndArgs(t *testing.T) {
 	needShell(t)
-	srv := sshtest.Start(t, "tester", fakePass)
+	srv := sshtest.StartLocal(t, "tester", fakePass)
 	c := dial(t, srv, Auth{Password: fakePass})
 	ctx := context.Background()
 
@@ -75,7 +75,7 @@ func TestRunAndArgs(t *testing.T) {
 
 func TestProbe(t *testing.T) {
 	needShell(t)
-	srv := sshtest.Start(t, "tester", fakePass)
+	srv := sshtest.StartLocal(t, "tester", fakePass)
 	c := dial(t, srv, Auth{Password: fakePass})
 	p, err := remote.RunProbe(context.Background(), c)
 	if err != nil {
@@ -88,7 +88,7 @@ func TestProbe(t *testing.T) {
 
 func TestFiles(t *testing.T) {
 	needShell(t)
-	srv := sshtest.Start(t, "tester", fakePass)
+	srv := sshtest.StartLocal(t, "tester", fakePass)
 	c := dial(t, srv, Auth{Password: fakePass})
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -143,7 +143,7 @@ func TestFiles(t *testing.T) {
 
 func TestStreamAndCancel(t *testing.T) {
 	needShell(t)
-	srv := sshtest.Start(t, "tester", fakePass)
+	srv := sshtest.StartLocal(t, "tester", fakePass)
 	c := dial(t, srv, Auth{Password: fakePass})
 	var got []string
 	err := c.Stream(context.Background(), remote.Cmd{Args: []string{"printf", "a\\nb\\nc\\n"}}, func(l string) { got = append(got, l) })
@@ -163,7 +163,7 @@ func TestStreamAndCancel(t *testing.T) {
 
 func TestKeyAuth(t *testing.T) {
 	needShell(t)
-	srv := sshtest.Start(t, "tester", "")
+	srv := sshtest.StartLocal(t, "tester", "")
 	user, priv := sshtest.NewUserKey(t)
 	srv.AuthorizedKey = user.PublicKey()
 	c := dial(t, srv, Auth{Key: priv})

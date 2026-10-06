@@ -1,9 +1,14 @@
 // Package sshtest is an in-process SSH server for tests of the remote
 // layer: password and public key auth, exec requests handled by a function
-// (by default the local /bin/sh, with "sudo -n --" stripped as if the user
-// were root), the SFTP subsystem on the local filesystem (or on fixed
-// files, SetFiles), and a host key
-// that can be swapped to simulate a reinstalled server.
+// (SetExec), the SFTP subsystem on fixed files (SetFiles) or handlers
+// (SetHandlers), and a host key that can be swapped to simulate a
+// reinstalled server.
+//
+// Nothing reaches the test machine by default: without SetExec a command
+// fails, and without files or handlers the SFTP subsystem is refused. A
+// test of the transport itself opts in with StartLocal: the local /bin/sh
+// (with "sudo -n --" stripped as if the user were root) and the local
+// filesystem.
 package sshtest
 
 import (
@@ -51,6 +56,7 @@ type Server struct {
 	handler   *sftp.Handlers
 	lines     []string
 	noForward bool
+	local     bool // StartLocal: SFTP on the local filesystem
 	ln        net.Listener
 	wg        sync.WaitGroup
 }
@@ -95,11 +101,30 @@ func Start(t testing.TB, user, password string) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{Host: "127.0.0.1", Port: ln.Addr().(*net.TCPAddr).Port, User: user, Password: password, hostKey: NewSigner(t), exec: ShellExec, ln: ln}
+	s := &Server{Host: "127.0.0.1", Port: ln.Addr().(*net.TCPAddr).Port, User: user, Password: password, hostKey: NewSigner(t), exec: noExec, ln: ln}
 	s.wg.Add(1)
 	go s.serve()
 	t.Cleanup(s.Close)
 	return s
+}
+
+// StartLocal is Start with commands run by the local /bin/sh
+// (ShellExec) and SFTP on the local filesystem: for tests of the SSH
+// transport, which then work in their own temporary folders.
+func StartLocal(t testing.TB, user, password string) *Server {
+	t.Helper()
+	s := Start(t, user, password)
+	s.mu.Lock()
+	s.exec, s.local = ShellExec, true
+	s.mu.Unlock()
+	return s
+}
+
+// noExec is the exec handler of a server without SetExec: a command
+// reaches nothing on the test machine.
+func noExec(_ context.Context, line string, _ io.Reader, _, stderr io.Writer) int {
+	io.WriteString(stderr, "sshtest: no exec handler (SetExec, or StartLocal for the local shell): "+line)
+	return 127
 }
 
 // HostKey is the current host key.
@@ -292,10 +317,14 @@ func (s *Server) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 				req.Reply(false, nil)
 				continue
 			}
-			req.Reply(true, nil)
 			s.mu.Lock()
-			files, handler := s.files, s.handler
+			files, handler, local := s.files, s.handler, s.local
 			s.mu.Unlock()
+			if handler == nil && files == nil && !local {
+				req.Reply(false, nil) // no filesystem was given
+				continue
+			}
+			req.Reply(true, nil)
 			if handler != nil {
 				sftp.NewRequestServer(ch, *handler).Serve()
 				return
