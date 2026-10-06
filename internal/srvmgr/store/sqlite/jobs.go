@@ -3,14 +3,28 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
 
+	sqlite3 "modernc.org/sqlite"
+
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
+
+// lower_unicode is lower() for all of Unicode: SQLite's own lower() and
+// LIKE fold ASCII only, and job logs are Russian.
+func init() {
+	sqlite3.MustRegisterDeterministicScalarFunction("lower_unicode", 1, func(_ *sqlite3.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if s, ok := args[0].(string); ok {
+			return strings.ToLower(s), nil
+		}
+		return args[0], nil
+	})
+}
 
 const jobCols = `id, kind, server_id, state, current_step, params, data, attempt, error_message, error_details, created_by, created_at, started_at, finished_at, lease_owner, lease_until`
 
@@ -316,10 +330,9 @@ func (d *DB) SearchJobLogs(ctx context.Context, f model.JobLogFilter) ([]model.J
 		q += ` AND l.level = 'error'`
 	}
 	if f.Text != "" {
-		// LIKE is case-insensitive for ASCII only; Russian text is matched
-		// as written.
-		q += ` AND l.message LIKE ? ESCAPE '\'`
-		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(f.Text)
+		// LIKE alone folds ASCII only: both sides are lowered first.
+		q += ` AND lower_unicode(l.message) LIKE ? ESCAPE '\'`
+		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(strings.ToLower(f.Text))
 		args = append(args, "%"+esc+"%")
 	}
 	q += ` ORDER BY l.ts DESC, l.job_id DESC, l.seq DESC LIMIT ?`
