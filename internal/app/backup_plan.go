@@ -263,6 +263,11 @@ type planCtx struct {
 	groupsReplaced *groups.File
 	// rsmap: rule profile ID in the file → its ID in the result.
 	rsmap map[string]string
+	// serversSum: the line «Серверы: будет …» (index in pl.lines, +1; 0 =
+	// none) with its counts; the totals are filled in once the servers
+	// still referenced are kept (finishServersLine).
+	serversSum                int
+	serversAdd, serversUpdate int
 }
 
 type removedServer struct {
@@ -306,6 +311,7 @@ func planRestore(cur cfgState, p *backup.Payload, ch BackupChoice, env planEnv) 
 	x.keepReferenced()
 	x.keepReplacedGroups()
 	x.keepGroupMembers()
+	x.finishServersLine()
 	x.finishGroups()
 	x.reportDangling()
 	x.planNetworks()
@@ -574,13 +580,8 @@ func (x *planCtx) planServers() {
 				removedN++
 			}
 		}
-		manual := 0
-		for _, s := range next.Profiles.List {
-			if s.Source == "" {
-				manual++
-			}
-		}
-		pl.linef("servers", "Серверы: будет %d — добавится %d, обновится %d, удалится %d.", manual, added, updated, removedN)
+		x.serversSum, x.serversAdd, x.serversUpdate = len(pl.lines)+1, added, updated
+		pl.linef("servers", "Серверы: будет %d — добавится %d, обновится %d, удалится %d.", 0, added, updated, removedN)
 	} else {
 		pl.linef("servers", "Серверы: добавится %d, уже есть %d.", added, have)
 	}
@@ -1366,6 +1367,27 @@ func (x *planCtx) keepReferenced() {
 			next.Profiles.Active = next.Profiles.List[0].ID
 		}
 	}
+}
+
+// finishServersLine counts «Серверы: будет …» on the result: the servers
+// kept because something refers to them (a subscription's that became
+// manual too) are there, not removed.
+func (x *planCtx) finishServersLine() {
+	if x.serversSum == 0 {
+		return
+	}
+	manual, removed := 0, 0
+	for _, s := range x.pl.next.Profiles.List {
+		if s.Source == "" {
+			manual++
+		}
+	}
+	for _, r := range x.removed {
+		if r.sub == "" {
+			removed++
+		}
+	}
+	x.pl.lines[x.serversSum-1] = msg("servers").t(fmt.Sprintf("Серверы: будет %d — добавится %d, обновится %d, удалится %d.", manual, x.serversAdd, x.serversUpdate, removed)).m
 }
 
 // keepGroupMembers is step 6b: a used group never loses its last member

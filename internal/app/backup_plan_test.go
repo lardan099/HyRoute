@@ -488,6 +488,19 @@ func TestPlanMsgParts(t *testing.T) {
 	}
 }
 
+// «Серверы: будет …» counts a server kept because a rule uses it: it is
+// in the result, not removed.
+func TestPlanServersLineCountsKept(t *testing.T) {
+	old := srv("aaaaaaaa0001", "Old", "old.example")
+	cur := baseState(old)
+	cur.Settings.Rules = []rules.Rule{{Name: "R", Apps: []rules.AppMatch{{Pattern: "r.exe"}}, Action: rules.Tunnel, Profile: old.ID}}
+	pl := plan(cur, payload(true).put("servers", bkServers{List: []hysteria.Profile{srv("bbbbbbbb0001", "New", "new.example")}}).p, map[string]string{"servers": "replace"})
+	tx := texts(pl)
+	if !strings.Contains(tx, "Серверы: будет 2 — добавится 1, обновится 0, удалится 0.") || !strings.Contains(tx, "«Old» останется") {
+		t.Fatalf("%s", tx)
+	}
+}
+
 // A group name of 64 four-byte characters is 256 bytes: its target is
 // clipped to what the restore reads (255), at a character's start.
 func TestTargetsClipGroupName(t *testing.T) {
