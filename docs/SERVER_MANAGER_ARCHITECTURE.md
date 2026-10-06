@@ -132,16 +132,17 @@ env), `setup-token` на время первого запуска и `lock`: con
 
 | Таблица | Поля (основные) | Заметки |
 |---|---|---|
-| `schema_migrations` | version, applied_at | миграции только вперёд, в транзакции |
-| `users` | id, username (unique), password_hash (PHC argon2id), role, disabled, created_at | роли: owner, admin, operator, readonly |
-| `sessions` | id_hash (SHA-256 токена), user_id, csrf_hash, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent | в БД только хеши токенов |
-| `servers` | id, name, tags (json), location, host, ssh_port, ssh_user, auth_type (password/key), role (standalone/entry/relay/exit), notes, state, created_at, updated_at | state: new, deploying, healthy, degraded, offline, needs_attention |
-| `server_credentials` | server_id, kind (ssh_password/ssh_key/ssh_key_passphrase), secret (envelope) | никогда не возвращаются в API |
-| `host_keys` | server_id, key_type, key (raw), fingerprint_sha256, trusted_at, trusted_by | TOFU; смена ключа — только явный re-trust |
-| `installations` | server_id, binary_path, config_path, unit, service_user, version, managed (bool), updated_at | managed = установлено HyRoute (deploy); импорт записывает найденную установку с managed = 0 |
-| `server_configs` | id, server_id, revision, config (envelope, контекст `server/<id>/config/<rev>`), sha256, meta (json: версия, listen, порты, TLS, pin, SNI, obfs, auth), source (deploy/import/edit), job_id, created_by, created_at | ревизия появляется только после успешного применения; YAML с паролями — зашифрован |
-| `jobs` | id, kind, server_id, state, current_step, params (json без секретов), secret_params (envelope), attempt, error_message, error_details, created_by, created_at, started_at, finished_at, lease_owner, lease_until | |
-| `job_steps` | job_id, idx, name, state, attempt, started_at, finished_at, error | |
+| `schema_migrations` | version, name, applied_at | миграции только вперёд, в транзакции |
+| `settings` | key, value, updated_at | настройки controller без секретов; `master_key_check` — проверочное значение мастер-ключа |
+| `users` | id, username (unique), password_hash (PHC argon2id), role, disabled, created_at, updated_at | роли: owner, admin, operator, readonly |
+| `sessions` | id, token_hash (SHA-256 токена, unique), user_id, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent | в БД только хеш токена; CSRF-токен не хранится, а вычисляется как HMAC от токена сессии |
+| `servers` | id, name, tags (json), country, location, host, ssh_port, ssh_user, auth_type (password/key), role (standalone/entry/relay/exit), notes, state, hop_interval, created_at, updated_at | state: new, deploying, healthy, degraded, offline, needs_attention; role следует из каскадов (миграция 0016); hop_interval — интервал смены портов у клиентов, с (0 — по умолчанию клиента; миграция 0014) |
+| `server_credentials` | server_id, kind (ssh_password/ssh_key/ssh_key_passphrase), sealed (envelope), updated_at | никогда не возвращаются в API |
+| `host_keys` | server_id, key_type, key (raw), fingerprint (`SHA256:…`), trusted_at, trusted_by | TOFU; смена ключа — только явный re-trust |
+| `installations` | server_id, binary_path, config_path, unit, service_user, version, managed (bool), firewall_tool, firewall_ports, firewall_keep, updated_at | managed = установлено HyRoute (deploy); импорт записывает найденную установку с managed = 0; firewall_* — открытые HyRoute правила ufw/firewalld и «не трогать брандмауэр» (миграция 0008) |
+| `server_configs` | id, server_id, revision, config (envelope, контекст `server/<id>/config/<rev>`), sha256, meta (json: версия, listen, порты, TLS, pin, SNI, obfs, auth), source (deploy/import/edit/rollback/rotate/cascade/geo), from_revision, job_id, created_by, created_at | ревизия появляется только после успешного применения; YAML с паролями — зашифрован; from_revision — ревизия, к которой вернулись (rollback) |
+| `jobs` | id, kind, server_id, state, current_step, params (json без секретов), data (json без секретов: результаты шагов), secret (envelope, контекст `job/<id>/secret`), attempt, error_message, error_details, created_by, created_at, started_at, finished_at, lease_owner, lease_until | |
+| `job_steps` | job_id, idx, name, phase, state, attempt, started_at, finished_at, error | |
 | `job_logs` | job_id, seq, ts, level, step, message | message уже прошёл redaction |
 | `audit_log` | id, ts, user_id, action, target, details | кто что сделал (вход, выход, пользователи, подтверждение ключа, показ ссылок); из неудачных входов и попыток setup хранятся последние 10 000 |
 | `chains` | id, name (unique), notes, created_by, created_at, updated_at | каскад (P3-01), миграция 0016 |
@@ -149,6 +150,11 @@ env), `setup-token` на время первого запуска и `lock`: con
 | `chain_links` | chain_id, idx, params (json без секретов), secrets (envelope, контекст `chain/<id>/link/<idx>`), state (new/linking/active/stale/unlinking/failed), from_revision, to_revision, config_sha256, updated_at | связь узлов idx и idx + 1 |
 | `link_checks` | chain_id, idx, at, status, reason, service, handshake_ms, tcp_ms | проверки связей с entry (P3-03), 7 дней |
 | `job_servers` | job_id, server_id | другие серверы задания (связь каскада меняет entry и exit) |
+| `metrics` | server_id, step (0/900), at, cpu, mem_used, mem_total, disk_used, disk_total, load1, rx, tx | нагрузка серверов (миграция 0010): замеры 48 ч, 15-минутные средние 30 дней |
+| `health_checks` | server_id, at, status, reason, ssh_ms, service, listening, udp, udp_ms, egress | проверки серверов (миграция 0011), 7 дней |
+| `traffic` | server_id, hour, user, tx, rx | трафик пользователей Hysteria по часам (миграция 0012), 90 дней; сайты не хранятся |
+| `presets` | id, name (unique), config (YAML без секретов и адресов), notes (json), created_by, created_at, updated_at | пресеты конфига (миграция 0015) |
+| `server_geo` | server_id, release, geoip, geosite (SHA-256 файлов), job_id, at | какие базы geo стоят на сервере (миграция 0020) |
 
 Ссылки для клиентов не хранятся: они собираются из текущей ревизии по
 запросу (`profile`).
