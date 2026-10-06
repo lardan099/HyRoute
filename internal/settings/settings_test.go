@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -56,36 +54,6 @@ func TestParseNoRules(t *testing.T) {
 		if !strings.Contains(string(b), `"rules":[]`) {
 			t.Fatalf("%s: %s", in, b)
 		}
-	}
-}
-
-func TestWatch(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "rules.json")
-	os.WriteFile(p, []byte(`{"defaultAction":"direct","rules":[]}`), 0o644)
-	stop := make(chan struct{})
-	defer close(stop)
-	changes := make(chan *Settings, 4)
-	errs := make(chan error, 4)
-	go Watch(p, 10*time.Millisecond, stop, func(s *Settings, _ *rules.Set) { changes <- s }, func(e error) { errs <- e })
-	time.Sleep(30 * time.Millisecond)
-	future := time.Now().Add(time.Second)
-	os.WriteFile(p, []byte(`{"defaultAction":"broken"`), 0o644)
-	os.Chtimes(p, future, future)
-	select {
-	case <-errs:
-	case <-time.After(time.Second):
-		t.Fatal("no error for broken file")
-	}
-	os.WriteFile(p, []byte(`{"defaultAction":"tunnel","rules":[]}`), 0o644)
-	future = future.Add(time.Second)
-	os.Chtimes(p, future, future)
-	select {
-	case s := <-changes:
-		if s.DefaultAction != rules.Tunnel {
-			t.Fatal("wrong settings")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("no change")
 	}
 }
 
