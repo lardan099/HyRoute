@@ -131,6 +131,23 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 }
 
+// A comment line is skipped whole, commas included.
+func TestParseKeysComments(t *testing.T) {
+	k1, k2 := base64.StdEncoding.EncodeToString(key(1)), base64.StdEncoding.EncodeToString(key(2))
+	keys, err := parseKeys("# старый ключ, удалить после ротации\n1:" + k1 + "\n")
+	if err != nil || len(keys) != 1 || keys[1] == nil {
+		t.Fatalf("%v %v", keys, err)
+	}
+	keys, err = parseKeys("  # 1:" + k1 + ",2:" + k2 + "\r\n1:" + k1)
+	if err != nil || len(keys) != 1 || keys[2] != nil {
+		t.Fatalf("a commented key is in use: %v %v", keys, err)
+	}
+	// A key without a version is not named version 1 in the error.
+	if _, err := parseKeys("not base64!"); err == nil || strings.Contains(err.Error(), "version") {
+		t.Fatalf("%v", err)
+	}
+}
+
 func TestCreateAndLoadKeyFile(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "master.key")

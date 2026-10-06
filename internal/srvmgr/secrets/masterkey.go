@@ -16,31 +16,37 @@ import (
 const EnvMasterKey = "HYROUTE_MASTER_KEY"
 
 // Master key text: one key per line or comma-separated, each
-// "<version>:<base64 of 32 bytes>" or just the base64 (version 1).
+// "<version>:<base64 of 32 bytes>" or just the base64 (version 1); a
+// line starting with "#" is a comment, commas and all.
 // The highest version seals new values; the others open old ones.
 func parseKeys(text string) (map[uint32][]byte, error) {
 	keys := map[uint32][]byte{}
-	for _, item := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == '\r' || r == ',' }) {
-		item = strings.TrimSpace(item)
-		if item == "" || strings.HasPrefix(item, "#") {
+	for _, line := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == '\r' }) {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
-		v := uint64(1)
-		if ver, b, ok := strings.Cut(item, ":"); ok {
-			n, err := strconv.ParseUint(ver, 10, 32)
-			if err != nil || n == 0 {
-				return nil, fmt.Errorf("master key version %q: want a positive number", ver)
+		for _, item := range strings.Split(line, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
 			}
-			v, item = n, b
+			v, name := uint64(1), "master key"
+			if ver, b, ok := strings.Cut(item, ":"); ok {
+				n, err := strconv.ParseUint(ver, 10, 32)
+				if err != nil || n == 0 {
+					return nil, fmt.Errorf("master key version %q: want a positive number", ver)
+				}
+				v, item, name = n, b, fmt.Sprintf("master key version %d", n)
+			}
+			key, err := decodeKey(item)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", name, err)
+			}
+			if _, dup := keys[uint32(v)]; dup {
+				return nil, fmt.Errorf("master key version %d given twice", v)
+			}
+			keys[uint32(v)] = key
 		}
-		key, err := decodeKey(item)
-		if err != nil {
-			return nil, fmt.Errorf("master key version %d: %w", v, err)
-		}
-		if _, dup := keys[uint32(v)]; dup {
-			return nil, fmt.Errorf("master key version %d given twice", v)
-		}
-		keys[uint32(v)] = key
 	}
 	if len(keys) == 0 {
 		return nil, errors.New("no master key in the text")
