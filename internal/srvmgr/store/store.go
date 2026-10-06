@@ -153,6 +153,9 @@ type Servers interface {
 	SetHopInterval(ctx context.Context, id int64, seconds int, at time.Time) error
 	// SetServerState changes only the state.
 	SetServerState(ctx context.Context, id int64, state model.ServerState, at time.Time) error
+	// AddServerNote appends note to the server's notes as a paragraph of
+	// its own (what a job left on the server for the admin), atomically.
+	AddServerNote(ctx context.Context, id int64, note string, at time.Time) error
 	// SwapServerState sets state only while the server is in one of from,
 	// atomically; false: it was not (or there is no such server).
 	SwapServerState(ctx context.Context, id int64, from []model.ServerState, state model.ServerState, at time.Time) (bool, error)

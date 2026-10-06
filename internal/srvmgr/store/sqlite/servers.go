@@ -153,6 +153,18 @@ func (d *DB) SetServerState(ctx context.Context, id int64, state model.ServerSta
 	return nil
 }
 
+func (d *DB) AddServerNote(ctx context.Context, id int64, note string, at time.Time) error {
+	res, err := d.db.ExecContext(ctx, `UPDATE servers SET notes = CASE WHEN notes = '' THEN ? ELSE notes || char(10) || char(10) || ? END, updated_at = ? WHERE id = ?`,
+		note, note, unixTime(at), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 func (d *DB) SwapServerState(ctx context.Context, id int64, from []model.ServerState, state model.ServerState, at time.Time) (bool, error) {
 	if len(from) == 0 {
 		return false, nil
