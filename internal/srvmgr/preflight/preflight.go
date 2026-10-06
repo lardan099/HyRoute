@@ -63,6 +63,8 @@ type Report struct {
 	Checks       []Check   `json:"checks"`
 	Blocked      bool      `json:"blocked"` // some check failed
 	Ports        []PortUse `json:"ports,omitempty"`
+
+	stdPID int // MainPID of the running StdUnit
 }
 
 // PortUse is a needed port found in use.
@@ -269,6 +271,10 @@ func rateOS(o remote.OSRelease) (Level, string) {
 	return Warn, "Поддержка по возможности: проверено на Debian и Ubuntu."
 }
 
+// ForeignPortCheck is the check of a needed port held by a Hysteria that
+// is not the standard service.
+const ForeignPortCheck = "port-hysteria"
+
 // Standard places of an installation made by the official script (and by
 // HyRoute Server).
 const (
@@ -286,6 +292,9 @@ func (r *Report) inspectHysteria(ctx context.Context, ex remote.Executor) error 
 		}
 		if u.Exists() {
 			r.Hysteria.Installed, r.Hysteria.Unit, r.Hysteria.Active = true, u.Name, u.ActiveState == "active"
+			if r.Hysteria.Active {
+				r.stdPID = u.MainPID
+			}
 		}
 	}
 	if ok, err := remote.PathExists(ctx, ex, StdBinary, false); err != nil {
@@ -329,7 +338,13 @@ func (r *Report) checkPorts(ls []remote.Listener, opt Options) {
 		seen[u] = true
 		r.Ports = append(r.Ports, u)
 		title := fmt.Sprintf("Порт %s %d занят", strings.ToUpper(l.Proto), l.Port)
-		if l.Process == "hysteria" {
+		if strings.HasPrefix(l.Process, "hysteria") {
+			// Another Hysteria than the standard service (its own unit,
+			// a container) keeps the port: a deploy cannot take it.
+			if l.PID != 0 && l.PID != r.stdPID {
+				r.add(ForeignPortCheck, Fail, title+" другой Hysteria", fmt.Sprintf("Порт держит процесс %d, а не служба %s: новая служба его не займёт. Импортируйте сервер, чтобы управлять этой Hysteria, или остановите её и отключите автозапуск.", l.PID, StdUnit))
+				continue
+			}
 			r.add("port", Warn, title+" Hysteria", "Это уже установленная Hysteria.")
 			continue
 		}

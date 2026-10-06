@@ -389,6 +389,30 @@ func TestVerifyWithoutSS(t *testing.T) {
 	}
 }
 
+// Another Hysteria on the port (its own unit, a container) is not the
+// deploy's: preflight stops before any change and offers the import, and
+// verify does not take its socket for the new service's.
+func TestForeignHysteriaOnPort(t *testing.T) {
+	s := newSim()
+	s.squatter = 777
+	h := newHarness(t, s)
+	j := h.deploy(params(), nil)
+	if j.State != model.JobFailed || j.CurrentStep != "preflight" || j.Data["foreign"] != "1" || !strings.Contains(j.ErrorMessage, "другой Hysteria") {
+		t.Fatalf("%s at %s: %s %v", j.State, j.CurrentStep, j.ErrorMessage, j.Data)
+	}
+	if _, found := s.file(BinaryPath); found {
+		t.Fatal("installed next to the other Hysteria")
+	}
+
+	s = newSim()
+	s.squatter, s.squatsLate = 777, true
+	h = newHarness(t, s)
+	j = h.deploy(params(), nil)
+	if j.State != model.JobFailed || j.CurrentStep != "verify" || h.state() == model.StateHealthy {
+		t.Fatalf("%s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, h.log(j.ID))
+	}
+}
+
 func TestFailedUpgradeRestoresPrevious(t *testing.T) {
 	s := newSim()
 	h := newHarness(t, s)

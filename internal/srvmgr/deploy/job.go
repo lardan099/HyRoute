@@ -187,6 +187,9 @@ func (x *deployer) preflight(ctx context.Context, env *jobs.Env, p Params) error
 			if c.Level == preflight.Fail {
 				why = append(why, c.Title)
 			}
+			if c.Level == preflight.Fail && c.ID == preflight.ForeignPortCheck {
+				env.Set("foreign", "1") // the UI offers the import
+			}
 		}
 		return jobs.Fail("Сервер не готов: "+strings.Join(why, "; ")+".", nil)
 	}
@@ -845,10 +848,11 @@ func (x *deployer) verify(ctx context.Context, env *jobs.Env, p Params) error {
 	}
 	deadline := x.Now().Add(timeout)
 	for {
-		st, err := remote.ActiveState(ctx, ex, Unit)
+		u, err := remote.Unit(ctx, ex, Unit)
 		if err != nil {
 			return err
 		}
+		st := u.ActiveState
 		if st == "failed" {
 			x.journal(ctx, env, ex)
 			return jobs.Fail("Hysteria остановилась с ошибкой сразу после запуска.", nil)
@@ -862,7 +866,7 @@ func (x *deployer) verify(ctx context.Context, env *jobs.Env, p Params) error {
 				// "active" also while it still gets its certificate or
 				// between the restarts of a crash loop: its own process
 				// must have said it serves.
-				up, err := serving(ctx, ex, sudo(env))
+				up, err := serving(ctx, ex, u.MainPID, sudo(env))
 				if err != nil {
 					return err
 				}
@@ -874,7 +878,9 @@ func (x *deployer) verify(ctx context.Context, env *jobs.Env, p Params) error {
 				return err
 			}
 			for _, li := range ls {
-				if li.Proto == "udp" && li.Port == l.First && li.Process == "hysteria" {
+				// The service's own process: another Hysteria on the port
+				// (its own unit, a container) is not this deploy working.
+				if li.Proto == "udp" && li.Port == l.First && li.Process == "hysteria" && li.PID == u.MainPID {
 					env.Logf("Hysteria работает и принимает соединения на UDP %d.", l.First)
 					return nil
 				}
@@ -892,19 +898,18 @@ func (x *deployer) verify(ctx context.Context, env *jobs.Env, p Params) error {
 	}
 }
 
-// serving: the unit's running process logged "server up and running",
+// serving: the unit's running process pid logged "server up and running",
 // which Hysteria does once it has its certificate and takes clients.
-func serving(ctx context.Context, ex remote.Executor, su bool) (bool, error) {
-	u, err := remote.Unit(ctx, ex, Unit)
-	if err != nil || u.MainPID == 0 {
-		return false, err
+func serving(ctx context.Context, ex remote.Executor, pid int, su bool) (bool, error) {
+	if pid == 0 {
+		return false, nil
 	}
 	es, err := remote.JournalEntries(ctx, ex, Unit, 200, su)
 	if err != nil {
 		return false, err
 	}
 	for _, e := range es {
-		if e.PID == u.MainPID && strings.Contains(e.Message, "server up and running") {
+		if e.PID == pid && strings.Contains(e.Message, "server up and running") {
 			return true, nil
 		}
 	}

@@ -71,7 +71,7 @@ func (s server) fake() *fake.Executor {
 	f.On("ss", "-Hlntup").Reply(s.ss, 0)
 	f.On("systemctl", "show").Reply("LoadState=not-found\nActiveState=inactive\nFragmentPath=\nExecStart=\nUser=\n", 0)
 	if s.hysteria {
-		f.On("systemctl", "show").Reply("LoadState=loaded\nActiveState=active\nFragmentPath=/etc/systemd/system/hysteria-server.service\nExecStart={ path=/usr/local/bin/hysteria ; argv[]=/usr/local/bin/hysteria server --config /etc/hysteria/config.yaml }\nUser=hysteria\n", 0)
+		f.On("systemctl", "show").Reply("LoadState=loaded\nActiveState=active\nFragmentPath=/etc/systemd/system/hysteria-server.service\nExecStart={ path=/usr/local/bin/hysteria ; argv[]=/usr/local/bin/hysteria server --config /etc/hysteria/config.yaml }\nUser=hysteria\nMainPID=900\n", 0)
 		f.On("test", "-e", StdBinary).Reply("", 0)
 		f.On(StdBinary, "version").Reply("Version:\tv2.12.3\nBuildDate:\t2025-01-01\n", 0)
 	}
@@ -222,8 +222,21 @@ func TestExistingHysteria(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !r.Hysteria.Installed || r.Hysteria.Version != "v2.12.3" || !r.Hysteria.Active || level(r, "hysteria") != Warn || level(r, "port") != Warn {
+	if !r.Hysteria.Installed || r.Hysteria.Version != "v2.12.3" || !r.Hysteria.Active || level(r, "hysteria") != Warn || level(r, "port") != Warn || r.Blocked {
 		t.Fatalf("%+v %+v", r.Hysteria, r.Checks)
+	}
+
+	// Another Hysteria holds the port (its own unit, a container): the
+	// standard service is not it, or there is none.
+	other := "udp UNCONN 0 0 *:443 *:* users:((\"hysteria\",pid=777,fd=7))\n"
+	for _, std := range []bool{true, false} {
+		r, err := Run(context.Background(), server{os: osDebian12, github: "200", ss: other, hysteria: std}.fake(), rootProbe, Options{UDPPort: 443})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if level(r, ForeignPortCheck) != Fail || !r.Blocked {
+			t.Fatalf("standard service %v: %+v", std, r.Checks)
+		}
 	}
 }
 

@@ -45,6 +45,11 @@ type sim struct {
 	silent bool
 	// noSS: iproute2 is not installed.
 	noSS bool
+	// squatter: another Hysteria (its own unit, a container) holds UDP
+	// 443 with this PID, and the service cannot take it; squatsLate: it
+	// shows only once the service has started.
+	squatter   int
+	squatsLate bool
 	// before sees every command before it runs (outside the lock).
 	before func(line string)
 	// written sees every written path after the write (outside the lock).
@@ -191,6 +196,9 @@ func (s *sim) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 	case "ss":
 		if s.noSS {
 			return fail(127, "env: 'ss': No such file or directory"), nil
+		}
+		if s.squatter != 0 && (s.state == "active" || !s.squatsLate) {
+			return ok(fmt.Sprintf("udp UNCONN 0 0 *:443 *:* users:((\"hysteria\",pid=%d,fd=3))\n", s.squatter)), nil
 		}
 		if s.state == "active" {
 			port := 443
