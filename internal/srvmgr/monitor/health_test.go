@@ -81,7 +81,7 @@ func TestHealth(t *testing.T) {
 	keys, _ := secrets.NewKeyring(map[uint32][]byte{1: bytes.Repeat([]byte{9}, 32)})
 	bx := &boxes{m: map[int64]*box{}, probed: map[string]string{}}
 
-	// Each server: Hysteria on UDP 443 (the last one with Salamander).
+	// Each server: Hysteria on UDP 443 (8 and 9 with Salamander).
 	mk := func(n int, st model.ServerState, b *box, cfg string) int64 {
 		s := model.Server{Name: "s" + string(rune('0'+n)), SSHPort: 22, SSHUser: "root", AuthType: model.AuthPassword, Role: model.RoleStandalone, State: st}
 		s.Host = "pending"
@@ -107,6 +107,9 @@ func TestHealth(t *testing.T) {
 	attention := mk(6, model.StateNeedsAttention, &box{service: "failed", udp: quicprobe.ErrNoAnswer}, plain)
 	busy := mk(7, model.StateHealthy, &box{service: "inactive", udp: quicprobe.ErrNoAnswer}, plain)
 	obfsSrv := mk(8, model.StateHealthy, &box{service: "active", port: 443}, obfs)
+	// The type as Hysteria reads it: in any case, and plain is none.
+	upperSrv := mk(9, model.StateHealthy, &box{service: "active", port: 443}, strings.Replace(obfs, "type: salamander", "type: Salamander", 1))
+	plainSrv := mk(10, model.StateHealthy, &box{service: "active", port: 443, udp: quicprobe.ErrNoAnswer}, plain+"obfs:\n  type: plain\n")
 	j := model.Job{Kind: "apply", ServerID: busy, State: model.JobQueued, Params: []byte("{}"), CreatedAt: time.Now()}
 	if err := db.CreateJob(ctx, &j, []model.JobStep{{Idx: 0, Name: "connect"}}, nil); err != nil {
 		t.Fatal(err)
@@ -139,6 +142,8 @@ func TestHealth(t *testing.T) {
 		{noSSH, model.StateDegraded, model.StateDegraded, "но Hysteria отвечает на UDP 443"},
 		{attention, model.StateDegraded, model.StateNeedsAttention, "failed"}, // recorded, state is the admin's
 		{obfsSrv, model.StateHealthy, model.StateHealthy, ""},
+		{upperSrv, model.StateHealthy, model.StateHealthy, ""},
+		{plainSrv, model.StateDegraded, model.StateDegraded, "UDP 443 не отвечает снаружи"},
 	} {
 		h := last(tc.id)
 		if h.Status != tc.status || state(tc.id) != tc.state || !strings.Contains(h.Reason, tc.reason) {
@@ -157,7 +162,7 @@ func TestHealth(t *testing.T) {
 	if h := last(busy); h.Status != "" || state(busy) != model.StateHealthy {
 		t.Errorf("a server with a job was checked: %+v", h)
 	}
-	if bx.probed[hostOf(obfsSrv)+":443"] != "fake-health-obfs" || bx.probed[hostOf(good)+":443"] != "" {
+	if _, ok := bx.probed[hostOf(plainSrv)+":443"]; !ok || bx.probed[hostOf(obfsSrv)+":443"] != "fake-health-obfs" || bx.probed[hostOf(upperSrv)+":443"] != "fake-health-obfs" || bx.probed[hostOf(good)+":443"] != "" {
 		t.Errorf("probes %v", bx.probed)
 	}
 	// A week later the history is pruned.

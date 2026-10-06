@@ -53,9 +53,9 @@ func (c *Collector) startCheck(ctx context.Context, srv model.Server) *check {
 	}
 	hc.port = l.First
 	var obfs string
-	switch {
-	case cfg.Obfs.Type == "":
-	case cfg.Obfs.Type == "salamander":
+	switch strings.ToLower(cfg.Obfs.Type) {
+	case "", "plain": // plain is no obfuscation
+	case "salamander":
 		obfs = cfg.Obfs.Salamander.Password
 	default:
 		return hc // other obfuscation: not probed
