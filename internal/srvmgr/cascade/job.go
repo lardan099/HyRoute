@@ -618,7 +618,7 @@ func (x *linker) waitServer(ctx context.Context, env *jobs.Env, server int64, in
 		return err
 	}
 	su := sudo(env, server)
-	l, _ := hyconfig.ParseListen(c.Listen)
+	l, lerr := hyconfig.ParseListen(c.Listen) // Realms: no port to look at
 	wait := x.VerifyTimeout
 	if c.ACME != nil {
 		wait *= 3
@@ -636,9 +636,13 @@ func (x *linker) waitServer(ctx context.Context, env *jobs.Env, server int64, in
 			ls, err := remote.Listeners(ctx, ex, su)
 			var noSS *remote.ExitError
 			switch {
-			case errors.As(err, &noSS):
+			case errors.As(err, &noSS) || lerr != nil:
 				if steady {
-					env.Logf("Служба сервера %s работает (порт проверить нечем: на сервере нет ss).", role)
+					why := "порт проверить нечем: на сервере нет ss"
+					if lerr != nil {
+						why = "в режиме Realms своего порта у Hysteria нет"
+					}
+					env.Logf("Служба сервера %s работает (%s).", role, why)
 					return nil
 				}
 				steady = true
@@ -646,7 +650,7 @@ func (x *linker) waitServer(ctx context.Context, env *jobs.Env, server int64, in
 				return err
 			}
 			for _, s := range ls {
-				if s.Proto == "udp" && s.Port == l.First && strings.HasPrefix(s.Process, "hysteria") {
+				if lerr == nil && s.Proto == "udp" && s.Port == l.First && strings.HasPrefix(s.Process, "hysteria") {
 					env.Logf("Hysteria на сервере %s работает и принимает соединения на UDP %d.", role, l.First)
 					return nil
 				}

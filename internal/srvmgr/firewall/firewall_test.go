@@ -18,6 +18,8 @@ func TestPorts(t *testing.T) {
 		"acme:\n  domains: [a.example]\n  disableHTTP: true\n":                                   "443/udp, 443/tcp",
 		"masquerade:\n  listenHTTP: :80\n  listenHTTPS: :443\n":                                  "443/udp, 80/tcp, 443/tcp",
 		"acme:\n  domains: [a.example]\n  type: dns\nmasquerade:\n  listenHTTPS: 0.0.0.0:8443\n": "443/udp, 8443/tcp",
+		// Realms: no UDP ports of its own.
+		"listen: realm://fake-token@realm.example.com/r\nmasquerade:\n  listenHTTPS: :443\n": "443/tcp",
 	} {
 		c, err := hyconfig.ParseServer([]byte(yaml))
 		if err != nil {

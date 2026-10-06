@@ -535,3 +535,31 @@ func TestApplyWithoutSS(t *testing.T) {
 	}
 	h.back(log)
 }
+
+// A server in Realms mode has no UDP port of its own: the firewall step
+// opens nothing for listen, and verify trusts systemd once the service
+// stayed up, both for a switch to Realms and for an edit after it.
+func TestApplyRealms(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.v.mu.Lock()
+	h.v.ufw = map[string]bool{}
+	h.v.mu.Unlock()
+	realm := "listen: realm://fake-realm-token@realm.example.com/fake"
+	for base, fn := range []func(string) string{
+		func(s string) string { return strings.Replace(s, "listen: :443", realm, 1) },
+		func(s string) string { return strings.Replace(s, "www.example.com", "www.example.org", 1) },
+	} {
+		j, err := h.app.Submit(ctx, h.server, base+1, h.edit(fn), nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		j, log := h.wait(j)
+		if j.State != model.JobCompleted || !strings.Contains(log, "Realms") || !strings.Contains(h.v.file(), realm) {
+			t.Fatalf("edit %d: %s at %s: %s\n%s", base+1, j.State, j.CurrentStep, j.ErrorMessage, log)
+		}
+		if r := h.v.rules(); len(r) != 0 {
+			t.Fatalf("edit %d opened %q", base+1, r)
+		}
+	}
+}

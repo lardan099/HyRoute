@@ -36,19 +36,22 @@ func Managed(tool string) bool { return tool == "ufw" || tool == "firewalld" }
 
 // Ports are the ports a config needs reachable: the UDP ports Hysteria
 // listens on, the TCP port of its ACME challenge and those of the
-// masquerade site on TCP.
+// masquerade site on TCP. In Realms mode (listen realm://…) Hysteria has
+// no UDP ports of its own.
 func Ports(c *hyconfig.Server) ([]remote.PortSpec, error) {
-	l, err := hyconfig.ParseListen(c.Listen)
-	if err != nil {
-		return nil, err
-	}
-	rs, err := hy2uri.ParsePorts(l.Ports)
-	if err != nil {
-		return nil, err
-	}
 	var out []remote.PortSpec
-	for _, r := range rs {
-		out = append(out, remote.PortSpec{From: int(r.From), To: int(r.To), Proto: "udp"})
+	if !strings.Contains(c.Listen, "://") {
+		l, err := hyconfig.ParseListen(c.Listen)
+		if err != nil {
+			return nil, err
+		}
+		rs, err := hy2uri.ParsePorts(l.Ports)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rs {
+			out = append(out, remote.PortSpec{From: int(r.From), To: int(r.To), Proto: "udp"})
+		}
 	}
 	if a := c.ACME; a != nil {
 		tcp := func(port, def int) {

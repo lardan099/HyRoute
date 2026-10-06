@@ -771,13 +771,13 @@ func (x *applier) verify(ctx context.Context, env *jobs.Env) error {
 	if err != nil {
 		return err
 	}
-	l, _ := hyconfig.ParseListen(c.Listen)
+	l, lerr := hyconfig.ParseListen(c.Listen) // Realms: no port to look at
 	wait := x.VerifyTimeout
 	if c.ACME != nil {
 		wait *= 3 // the certificate is issued first
 	}
 	deadline := time.Now().Add(wait)
-	steady := false // active at the last poll too, with no ss to look at the port
+	steady := false // active at the last poll too, with no port to look at
 	for {
 		st, err := remote.ActiveState(ctx, ex, in.Unit)
 		if err != nil {
@@ -789,12 +789,17 @@ func (x *applier) verify(ctx context.Context, env *jobs.Env) error {
 			ls, err := remote.Listeners(ctx, ex, sudo(env))
 			var noSS *remote.ExitError
 			switch {
-			case errors.As(err, &noSS):
-				// ss is missing (or cannot list): systemd is trusted, as
-				// in the deploy, once the service stayed up for a poll; a
-				// config Hysteria rejects stops it right away.
+			case errors.As(err, &noSS) || lerr != nil:
+				// ss is missing (or cannot list), or Realms has no port:
+				// systemd is trusted, as in the deploy, once the service
+				// stayed up for a poll; a config Hysteria rejects stops it
+				// right away.
 				if steady {
-					env.Logf("Служба %s работает с новым конфигом (порт проверить нечем: на сервере нет ss).", in.Unit)
+					why := "порт проверить нечем: на сервере нет ss"
+					if lerr != nil {
+						why = "в режиме Realms своего порта у Hysteria нет"
+					}
+					env.Logf("Служба %s работает с новым конфигом (%s).", in.Unit, why)
 					return nil
 				}
 				steady = true
@@ -802,7 +807,7 @@ func (x *applier) verify(ctx context.Context, env *jobs.Env) error {
 				return err
 			}
 			for _, s := range ls {
-				if s.Proto == "udp" && s.Port == l.First && strings.HasPrefix(s.Process, "hysteria") {
+				if lerr == nil && s.Proto == "udp" && s.Port == l.First && strings.HasPrefix(s.Process, "hysteria") {
 					env.Logf("Hysteria работает с новым конфигом и принимает соединения на UDP %d.", l.First)
 					return nil
 				}
