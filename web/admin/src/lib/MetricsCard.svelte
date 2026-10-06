@@ -15,6 +15,8 @@
   let error = $state<ApiError | null>(null);
   let table = $state(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // gone: the card is destroyed; a read in flight then sets no timer.
+  let gone = false;
 
   async function load() {
     clearTimeout(timer);
@@ -25,13 +27,16 @@
       error = asApiError(e);
     }
     // Samples come every minute; averages every 15.
-    timer = setTimeout(load, data?.step ? 5 * 60e3 : 60e3);
+    if (!gone) timer = setTimeout(load, data?.step ? 5 * 60e3 : 60e3);
   }
   $effect(() => {
     period;
     load();
   });
-  onDestroy(() => clearTimeout(timer));
+  onDestroy(() => {
+    gone = true;
+    clearTimeout(timer);
+  });
 
   let pts = $derived(data?.points ?? []);
   let times = $derived(pts.map((p) => Date.parse(p.t)));

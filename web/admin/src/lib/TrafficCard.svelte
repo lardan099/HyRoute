@@ -21,13 +21,15 @@
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onlineTimer: ReturnType<typeof setTimeout> | undefined;
   let streamsTimer: ReturnType<typeof setTimeout> | undefined;
+  // gone: the card is destroyed; a read in flight then sets no timer.
+  let gone = false;
 
   async function load() {
     clearTimeout(timer);
     try {
       data = await api.serverTraffic(serverId, period);
     } catch {}
-    timer = setTimeout(load, 60e3); // the monitor counts once a minute
+    if (!gone) timer = setTimeout(load, 60e3); // the monitor counts once a minute
   }
   $effect(() => {
     period;
@@ -44,7 +46,7 @@
       online = null;
       onlineError = asApiError(e);
     }
-    onlineTimer = setTimeout(loadOnline, 15e3);
+    if (!gone && enabled) onlineTimer = setTimeout(loadOnline, 15e3);
   }
   let enabled = $derived(!!data?.enabled);
   $effect(() => {
@@ -52,6 +54,7 @@
     else clearTimeout(onlineTimer);
   });
   onDestroy(() => {
+    gone = true;
     clearTimeout(timer);
     clearTimeout(onlineTimer);
     clearTimeout(streamsTimer);
@@ -74,7 +77,7 @@
       streamsError = asApiError(e);
     }
     clearTimeout(streamsTimer); // a read started before a hide and show
-    if (showStreams) streamsTimer = setTimeout(loadStreams, ok ? 5e3 : 15e3);
+    if (showStreams && !gone) streamsTimer = setTimeout(loadStreams, ok ? 5e3 : 15e3);
   }
   function visible() {
     if (!document.hidden) loadStreams();

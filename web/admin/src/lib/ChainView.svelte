@@ -27,6 +27,8 @@
   let writable = $derived(canWrite(session.user));
   let link = $derived(chain?.links[0] ?? null);
   let timer: ReturnType<typeof setInterval> | undefined;
+  // gone: the view is destroyed before the reads of onMount ended.
+  let gone = false;
   let checking = $state(false);
   // offer: the entry rules of the template the cascade was made from.
   let offer = $state<RoutingTemplate | null>(null);
@@ -77,9 +79,12 @@
       servers = Object.fromEntries((await api.servers()).map((s) => [s.id, s]));
     } catch {}
     // Checks come every monitor round; a running job changes the state.
-    timer = setInterval(load, 15000);
+    if (!gone) timer = setInterval(load, 15000);
   });
-  onDestroy(() => clearInterval(timer));
+  onDestroy(() => {
+    gone = true;
+    clearInterval(timer);
+  });
 
   async function deploy() {
     try {

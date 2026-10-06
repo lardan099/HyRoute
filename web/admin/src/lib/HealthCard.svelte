@@ -9,15 +9,20 @@
   let { serverId }: { serverId: number } = $props();
   let data = $state<ServerHealth | null>(null);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // gone: the card is destroyed; a read in flight then sets no timer.
+  let gone = false;
 
   async function load() {
     try {
       data = await api.serverHealth(serverId);
     } catch {}
-    timer = setTimeout(load, 60e3);
+    if (!gone) timer = setTimeout(load, 60e3);
   }
   onMount(load);
-  onDestroy(() => clearTimeout(timer));
+  onDestroy(() => {
+    gone = true;
+    clearTimeout(timer);
+  });
 
   let h = $derived(data?.latest ?? null);
   const udpText = (u: string, ms?: number) =>

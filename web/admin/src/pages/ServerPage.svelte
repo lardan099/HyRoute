@@ -43,6 +43,8 @@
   let action = $state<{ name: ServiceAction; job: Job; done: boolean; ok: boolean } | null>(null);
   let writable = $derived(canWrite(session.user));
   let poll: ReturnType<typeof setTimeout> | undefined;
+  // gone: the page is left; a job read in flight then polls no more.
+  let gone = false;
 
   const actionName = (a: ServiceAction) => t(`srv.${a}` as Key);
 
@@ -74,7 +76,10 @@
     loadStatus();
   }
   onMount(load);
-  onDestroy(() => clearTimeout(poll));
+  onDestroy(() => {
+    gone = true;
+    clearTimeout(poll);
+  });
 
   async function run(a: ServiceAction) {
     confirming = null;
@@ -98,7 +103,7 @@
         return;
       }
     } catch {}
-    poll = setTimeout(() => watch(jobId), 1000);
+    if (!gone) poll = setTimeout(() => watch(jobId), 1000);
   }
 
   function ask(a: ServiceAction) {
