@@ -17,13 +17,21 @@
   let timer: ReturnType<typeof setTimeout> | undefined;
   // gone: the card is destroyed; a read in flight then sets no timer.
   let gone = false;
+  // seq numbers the reads: only the latest one shows its answer and sets
+  // the timer (a slow read of the period chosen before must not be drawn
+  // under this one).
+  let seq = 0;
 
   async function load() {
     clearTimeout(timer);
+    const my = ++seq;
     try {
-      data = await api.serverMetrics(serverId, period);
+      const d = await api.serverMetrics(serverId, period);
+      if (my !== seq) return;
+      data = d;
       error = null;
     } catch (e) {
+      if (my !== seq) return;
       error = asApiError(e);
     }
     // Samples come every minute; averages every 15.

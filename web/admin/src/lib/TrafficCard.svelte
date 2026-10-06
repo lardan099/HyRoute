@@ -23,13 +23,18 @@
   let streamsTimer: ReturnType<typeof setTimeout> | undefined;
   // gone: the card is destroyed; a read in flight then sets no timer.
   let gone = false;
+  // seq numbers the reads of the period: only the latest one shows its
+  // answer and sets the timer.
+  let seq = 0;
 
   async function load() {
     clearTimeout(timer);
+    const my = ++seq;
     try {
-      data = await api.serverTraffic(serverId, period);
+      const d = await api.serverTraffic(serverId, period);
+      if (my === seq) data = d;
     } catch {}
-    if (!gone) timer = setTimeout(load, 60e3); // the monitor counts once a minute
+    if (my === seq && !gone) timer = setTimeout(load, 60e3); // the monitor counts once a minute
   }
   $effect(() => {
     period;
