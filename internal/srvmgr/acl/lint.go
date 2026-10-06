@@ -24,6 +24,9 @@ var private = []struct{ cidr, sample string }{
 	{"fe80::/10", "fe80::1"},
 }
 
+// maxCovers bounds the rule pairs lint compares for shadowed rules.
+const maxCovers = 1 << 17
+
 // lint finds what Hysteria accepts but is probably not meant: rules that
 // never fire, domains it never matches, the server's own networks open
 // to clients, plain DNS on a cascade entry.
@@ -52,22 +55,77 @@ func lint(d Document, env Env, valid []bool, at []int) []Problem {
 		return n == 1
 	}
 
+	// A rule is compared only with the earlier ones that may cover it:
+	// rules for every address, for the same address and for suffixes of
+	// its name (found by index), then wildcard, geosite and address rules,
+	// each list in order. At most maxCovers comparisons in all: a large
+	// ACL (an acl.file moved inline) stays quick, and past the limit a
+	// cover goes unseen.
+	var every, wild, sites, nets []int
+	same, suffixes := map[string][]int{}, map[string][]int{}
+	left := maxCovers
 	for j, b := range d.Rules {
 		if !valid[j] {
 			continue
 		}
-		for i := range j {
-			if !valid[i] || !covers(d.Rules[i], b, func(h string) bool { return matches(i, h) }) {
-				continue
+		nb, kb := norm(b.Address), KindOf(b.Address)
+		indexed := slices.Concat(every, same[nb])
+		var lists [][]int
+		switch kb {
+		case KindDomain, KindSuffix, KindWildcard:
+			name := strings.TrimPrefix(nb, "suffix:")
+			if kb == KindWildcard {
+				name = nb[strings.LastIndex(nb, "*")+1:]
 			}
+			for t, ok := name, true; ok && t != ""; _, t, ok = strings.Cut(t, ".") {
+				indexed = append(indexed, suffixes[t]...)
+			}
+			lists = [][]int{wild}
+			if kb == KindDomain {
+				lists = append(lists, sites)
+			}
+		case KindIP, KindCIDR:
+			lists = [][]int{nets}
+		case KindGeoSite:
+			lists = [][]int{sites}
+		}
+		slices.Sort(indexed)
+		first := -1 // the earliest rule that covers b
+		for _, l := range append([][]int{indexed}, lists...) {
+			for _, i := range l {
+				if left == 0 || first >= 0 && i > first {
+					break
+				}
+				left--
+				if covers(d.Rules[i], b, func(h string) bool { return matches(i, h) }) {
+					first = i
+					break
+				}
+			}
+		}
+		if i := first; i >= 0 {
 			other := i
 			if dup(d.Rules[i], b) {
 				add(j, Problem{Level: Warn, Code: "duplicate", Message: fmt.Sprintf("Повтор правила %d: ничего не меняет.", i+1), Other: &other})
 			} else {
 				add(j, Problem{Level: Warn, Code: "shadowed", Message: fmt.Sprintf("Правило не сработает: всё, что оно выбирает, раньше забирает правило %d.", i+1), Other: &other})
 			}
-			break
 		}
+		switch kb {
+		case KindAll:
+			every = append(every, j)
+		case KindSuffix:
+			t := strings.TrimPrefix(nb, "suffix:")
+			suffixes[t] = append(suffixes[t], j)
+		case KindWildcard:
+			wild = append(wild, j)
+		case KindGeoSite:
+			sites = append(sites, j)
+		case KindIP, KindCIDR, KindGeoIP:
+			nets = append(nets, j)
+		}
+		same[nb] = append(same[nb], j)
+
 		if u, ok := punycode(b.Address); ok {
 			add(j, Problem{Level: Warn, Code: "punycode", Message: fmt.Sprintf("Hysteria сравнивает домены в Unicode, и правило с punycode не сработает: запишите адрес как «%s».", u)})
 		}

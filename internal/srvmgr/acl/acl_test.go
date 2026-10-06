@@ -1,11 +1,14 @@
 package acl
 
 import (
+	"fmt"
+	"maps"
 	"net"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lardan099/hyroute/internal/hyconfig"
 	hacl "github.com/lardan099/hyroute/third_party/hysteria-acl"
@@ -418,5 +421,30 @@ func TestLintGeoDownload(t *testing.T) {
 	}
 	if e := EnvOf(&hyconfig.Server{ACL: hyconfig.ACL{GeoIP: "/a", GeoSite: "/b"}}); e.GeoIPPath != "/a" || e.GeoSitePath != "/b" {
 		t.Fatalf("%+v", e)
+	}
+}
+
+// A large ACL (an acl.file moved inline) is checked quickly: a rule is
+// compared only with the earlier ones that may cover it. Cover is still
+// found far apart.
+func TestLintLargeACL(t *testing.T) {
+	var b strings.Builder
+	for i := range 20000 {
+		fmt.Fprintf(&b, "reject(d%d.example.com)\n", i)
+	}
+	b.WriteString("reject(suffix:example.org)\nreject(d7.example.com)\nreject(www.example.org)\nreject(*.example.org)\n")
+	start := time.Now()
+	ps := Check(Parse(b.String()), Env{})
+	if took := time.Since(start); took > time.Minute {
+		t.Fatalf("checked in %s", took)
+	}
+	got := map[int]string{}
+	for _, p := range ps {
+		if p.Code == "duplicate" || p.Code == "shadowed" {
+			got[p.Rule] = fmt.Sprint(p.Code, " ", *p.Other)
+		}
+	}
+	if want := map[int]string{20001: "duplicate 7", 20002: "shadowed 20000", 20003: "shadowed 20000"}; !maps.Equal(got, want) {
+		t.Fatalf("%v", got)
 	}
 }
