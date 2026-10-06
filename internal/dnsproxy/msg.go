@@ -205,7 +205,7 @@ func Reply(q Query, up []byte, o ReplyOpts) (out []byte, truncated bool, err err
 	m.Header.RecursionAvailable = true
 	m.Questions[0].Name = q.Wire
 	age := uint32(max(o.Age, 0) / time.Second)
-	negative := m.Header.RCode == dnsmessage.RCodeNameError || m.Header.RCode == dnsmessage.RCodeSuccess && len(m.Answers) == 0
+	negative := negativeMsg(&m)
 	for _, sec := range [][]dnsmessage.Resource{m.Answers, m.Authorities, m.Additionals} {
 		for i := range sec {
 			r := &sec[i]
@@ -391,6 +391,26 @@ func Negative(q Query, up []byte, any bool) (neg bool) {
 	return any || q.Type == dnsmessage.TypeA
 }
 
+// negativeMsg: NXDOMAIN, or NOERROR without a record of the type asked
+// (NODATA, RFC 2308), also after a CNAME chain, whose answer then holds
+// only the CNAMEs. A CNAME or ANY question is answered by any record.
+func negativeMsg(m *dnsmessage.Message) bool {
+	switch {
+	case m.Header.RCode == dnsmessage.RCodeNameError:
+		return true
+	case m.Header.RCode != dnsmessage.RCodeSuccess:
+		return false
+	case len(m.Questions) != 1 || m.Questions[0].Type == dnsmessage.TypeCNAME || m.Questions[0].Type == dnsmessage.TypeALL:
+		return len(m.Answers) == 0
+	}
+	for _, r := range m.Answers {
+		if r.Header.Type == m.Questions[0].Type {
+			return false
+		}
+	}
+	return true
+}
+
 // ttlOf is how long an answer may be cached: the smallest TTL of its
 // answer and authority records (not OPT), at most MaxTunnelTTL; for a
 // negative, the SOA's min(TTL, MINIMUM), at most MaxNegativeTTL. 0 = not
@@ -413,7 +433,7 @@ func ttlOf(msg []byte) (ttl time.Duration) {
 	if m.Header.Truncated {
 		return 0
 	}
-	if m.Header.RCode == dnsmessage.RCodeNameError || len(m.Answers) == 0 {
+	if negativeMsg(&m) {
 		for _, r := range m.Authorities {
 			if soa, ok := r.Body.(*dnsmessage.SOAResource); ok {
 				return time.Duration(min(r.Header.TTL, soa.MinTTL, MaxNegativeTTL)) * time.Second

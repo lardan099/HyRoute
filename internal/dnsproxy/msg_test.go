@@ -221,6 +221,20 @@ func TestReply(t *testing.T) {
 			t.Fatalf("negative %v: ttl %d min %d", rc, m.Authorities[0].Header.TTL, s.MinTTL)
 		}
 	}
+	// NODATA after a CNAME chain is a negative too: its SOA is clamped,
+	// and the cache keeps it for the SOA's minute, not the CNAME's TTL.
+	q6 := mustQuery(t, query(t, "www.example.com.", dnsmessage.TypeAAAA, 0, false))
+	up = answer(t, q6, dnsmessage.RCodeSuccess, []rr{{"www.example.com.", dnsmessage.TypeCNAME, 3600, "cdn.example.net."}}, soa, 3600, false)
+	out, _, err = Reply(q6, up, ReplyOpts{Max: 512, Tunnel: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := unpack(t, out); m.Authorities[0].Header.TTL != 60 || m.Authorities[0].Body.(*dnsmessage.SOAResource).MinTTL != 60 {
+		t.Fatalf("NODATA after CNAME: %+v", m.Authorities[0])
+	}
+	if ttl := ttlOf(up); ttl != MaxNegativeTTL*time.Second {
+		t.Fatalf("ttlOf %v", ttl)
+	}
 	// EDNS client: our size, no options.
 	qe := mustQuery(t, query(t, "www.example.com.", dnsmessage.TypeA, 4096, true))
 	out, _, _ = Reply(qe, answer(t, qe, dnsmessage.RCodeSuccess, []rr{{"www.example.com.", dnsmessage.TypeA, 60, "1.2.3.4"}}, nil, 0, true), ReplyOpts{Max: 4096})
