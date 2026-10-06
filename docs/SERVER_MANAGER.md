@@ -47,7 +47,7 @@ go build -o hyroute-server ./cmd/hyroute-server
 | `-geo-interval` | `HYROUTE_SERVER_GEO_INTERVAL` | `168h` (`0` — не обновлять базы geo; отрицательное значение — ошибка запуска) |
 | `-log-level` | `HYROUTE_SERVER_LOG_LEVEL` | `info` |
 
-Мастер-ключ можно передать и переменной `HYROUTE_MASTER_KEY` — тогда файл не читается и не создаётся.
+Мастер-ключ можно передать и переменной `HYROUTE_MASTER_KEY` — тогда файл не читается и не создаётся. Переменная из одних пробелов и переводов строки считается незаданной: ключ берётся из файла, с теми же проверками прав.
 
 Пример службы systemd для Linux (`/etc/systemd/system/hyroute-server.service`):
 

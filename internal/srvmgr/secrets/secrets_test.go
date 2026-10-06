@@ -131,6 +131,26 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 }
 
+// A variable of white space is no key: Load reads the file, and KeyInEnv,
+// by which main decides to check the file, agrees.
+func TestBlankEnvKey(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "master.key")
+	text, _ := NewKeyText()
+	if err := os.WriteFile(file, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"", " ", "\n", " \r\n\t"} {
+		e := env(map[string]string{EnvMasterKey: v})
+		if _, src, err := Load(e, file); err != nil || src != FromFile || KeyInEnv(e) {
+			t.Errorf("%q: %v %v in env %v", v, src, err, KeyInEnv(e))
+		}
+	}
+	e := env(map[string]string{EnvMasterKey: " " + strings.TrimSpace(text) + "\n"})
+	if _, src, err := Load(e, file); err != nil || src != FromEnv || !KeyInEnv(e) {
+		t.Errorf("%v %v", src, err)
+	}
+}
+
 // A comment line is skipped whole, commas included.
 func TestParseKeysComments(t *testing.T) {
 	k1, k2 := base64.StdEncoding.EncodeToString(key(1)), base64.StdEncoding.EncodeToString(key(2))

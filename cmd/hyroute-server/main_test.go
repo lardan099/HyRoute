@@ -143,17 +143,21 @@ func TestHTTPErrorLogSkipsBuffer(t *testing.T) {
 
 // runOnce starts the controller on dataDir and stops it once it serves.
 func runOnce(dataDir string) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ready := make(chan string, 1)
-	done := make(chan error, 1)
-	env := func(k string) string {
+	return runOnceEnv(func(k string) string {
 		if k == "HYROUTE_SERVER_DATA_DIR" {
 			return dataDir
 		}
 		return ""
-	}
-	go func() { done <- run(ctx, []string{"-listen", "127.0.0.1:0"}, env, io.Discard, ready) }()
+	})
+}
+
+// runOnceEnv is runOnce with this environment and more flags.
+func runOnceEnv(env func(string) string, args ...string) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan string, 1)
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, append([]string{"-listen", "127.0.0.1:0"}, args...), env, io.Discard, ready) }()
 	select {
 	case <-ready:
 		cancel()

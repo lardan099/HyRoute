@@ -87,13 +87,19 @@ const (
 	Created
 )
 
+// KeyInEnv reports whether Load takes the key from EnvMasterKey rather
+// than from the file: the variable holds more than white space.
+func KeyInEnv(getenv func(string) string) bool {
+	return strings.TrimSpace(getenv(EnvMasterKey)) != ""
+}
+
 // Load reads the master key from the environment (getenv(EnvMasterKey))
 // or from file. The file must not be readable by group or others. With
 // neither, the error wraps fs.ErrNotExist: only Open, which sees the
 // database, may create a key.
 func Load(getenv func(string) string, file string) (*Keyring, Source, error) {
-	if text := strings.TrimSpace(getenv(EnvMasterKey)); text != "" {
-		keys, err := parseKeys(text)
+	if KeyInEnv(getenv) {
+		keys, err := parseKeys(getenv(EnvMasterKey))
 		if err != nil {
 			return nil, 0, fmt.Errorf("%s: %w", EnvMasterKey, err)
 		}

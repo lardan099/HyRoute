@@ -82,8 +82,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		return fmt.Errorf("data directory %s: %w", cfg.DataDir, err)
 	}
 	defer lock.Close()
-	keyFile := getenv(secrets.EnvMasterKey) == ""
-	if keyFile {
+	if !secrets.KeyInEnv(getenv) {
 		if err := datadir.File(cfg.MasterKeyFile); err != nil {
 			return fmt.Errorf("master key: %w", err)
 		}
