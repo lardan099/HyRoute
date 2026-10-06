@@ -60,7 +60,6 @@ type restorePlan struct {
 	redact      map[string][]string
 	appearance  *BackupAppearance
 	ksChange    int // -1 off, 0 same, +1 on
-	geoChanged  bool
 	rules       rulesWrite
 	counts      struct{ servers, rules int }
 	lines       []BackupMsg
@@ -70,7 +69,6 @@ type restorePlan struct {
 
 // rulesWrite is how the rules step writes (backup_commit.go).
 type rulesWrite struct {
-	changed bool // settings.json's rules part changes
 	// rulesets: the rule profiles to write (nil = keep what is there);
 	// only: rulesets.json alone (an add of profiles), else a pair.
 	rulesets *store.Rulesets
@@ -1059,7 +1057,6 @@ func (x *planCtx) planRules() {
 			pl.rules.rulesets = rs
 			pl.counts.rules = len(a.Config.Rules)
 			pl.line(msg("rules").t(fmt.Sprintf("Правила: %s из копии заменят ваши. Включится профиль правил «%s». ", nProfiles(len(rs.List)), a.Name)).t(defaultText(a.Config, x.fileTargetName)))
-			pl.rules.changed = true
 			return
 		}
 		x.cleanRules(&fileCfg, map[string]bool{})
@@ -1070,7 +1067,6 @@ func (x *planCtx) planRules() {
 				a.SetConfig(fileCfg)
 			}
 		}
-		pl.rules.changed = true
 		pl.counts.rules = len(fileCfg.Rules)
 		pl.line(msg("rules").t(fmt.Sprintf("Правила: %s из копии заменят ваши %d. ", nRules(len(fileCfg.Rules)), before)).t(defaultText(fileCfg, x.fileTargetName)))
 		return
@@ -1122,7 +1118,6 @@ func (x *planCtx) planRules() {
 			a.SetConfig(next.Settings.Config)
 		}
 	}
-	pl.rules.changed = len(fileCfg.Rules) > 0
 	pl.counts.rules = len(next.Settings.Rules)
 	pl.linef("rules", "Правила: %s добавится после ваших %d. «Всё остальное» не меняется.", nRules(len(fileCfg.Rules)), before)
 }
@@ -1624,7 +1619,6 @@ func (x *planCtx) planSettings() {
 		// reads as off (CLIMode); a restore never widens it.
 		next.Prefs.CLI = "off"
 	}
-	pl.geoChanged = oldPrefs.GeoSource != next.Prefs.GeoSource || oldPrefs.GeoSiteURL != next.Prefs.GeoSiteURL || oldPrefs.GeoIPURL != next.Prefs.GeoIPURL
 	switch {
 	case !oldSt.KillSwitchOn() && next.Settings.KillSwitchOn():
 		pl.ksChange = 1
@@ -1892,7 +1886,6 @@ func (x *planCtx) decideWrites() {
 			want[f] = true // a covered broken file is always replaced
 		}
 	}
-	pl.rules.changed = pl.rules.changed && !sameRules(cur.Settings.Config, next.Settings.Config)
 	if want["rulesets.json"] && !pl.rules.only {
 		want["settings.json"] = true // a pair
 	}
