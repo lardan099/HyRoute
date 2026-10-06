@@ -69,6 +69,9 @@ jobs:
           npm ci
           npx svelte-check --threshold warning
           npm run build
+      - name: UI Privacy mode masks as logx.Sanitize
+        working-directory: frontend
+        run: node --experimental-strip-types scripts/privacy-check.mjs
       - name: frontend/dist matches the sources
         run: |
           git status --porcelain frontend/dist

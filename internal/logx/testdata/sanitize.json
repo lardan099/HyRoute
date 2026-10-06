@@ -1,0 +1,79 @@
+{
+ "hosts": [
+  "vpn.example.com"
+ ],
+ "cases": [
+  {
+   "in": "dst=85.203.0.249:443 src=192.168.1.5:5000",
+   "want": "dst=85.xxx.xxx.249:443 src=192.168.1.5:5000"
+  },
+  {
+   "in": "127.0.0.1 10.0.0.1 100.64.1.1 8.8.8.8",
+   "want": "127.0.0.1 10.0.0.1 100.64.1.1 8.xxx.xxx.8"
+  },
+  {
+   "in": "[2a01:4f8:c0c:1234::1]:443 ::1 fe80::1",
+   "want": "[2a01:xxxx::xxxx]:443 ::1 fe80::1"
+  },
+  {
+   "in": "21:37:10 info at 12:00:01.123",
+   "want": "21:37:10 info at 12:00:01.123"
+  },
+  {
+   "in": "server vpn.example.com ok",
+   "want": "server *** ok"
+  },
+  {
+   "in": "sub https://panel.example/sub/TOKEN?x=1 end",
+   "want": "sub https://***/… end"
+  },
+  {
+   "in": "2001:0db8:85a3:0000:0000:8a2e:0370:7334 full form",
+   "want": "2001:xxxx::xxxx full form"
+  },
+  {
+   "in": "version 2.12.3.4 not an ip? 999.1.1.1",
+   "want": "version 2.xxx.xxx.4 not an ip? 999.1.1.1"
+  },
+  {
+   "in": "geosite.dat from cdn.example.org",
+   "want": "geosite.dat from ***.org"
+  },
+  {
+   "in": "visited 999.md, point.md and example.zip",
+   "want": "visited ***.md, ***.md and ***.zip"
+  },
+  {
+   "in": "rename geosite.dat.new rules.json.new: denied",
+   "want": "rename geosite.dat.new rules.json.new: denied"
+  },
+  {
+   "in": "go.md log.md html.zip tcp/999.md:443",
+   "want": "***.md ***.md ***.zip tcp/***.md:443"
+  },
+  {
+   "in": "C:\\docs\\README.md package.zip",
+   "want": "C:\\docs\\***.md ***.zip"
+  },
+  {
+   "in": "мой-магазин.рф и example.com, госуслуги.рф",
+   "want": "***.рф и ***.com, ***.рф"
+  },
+  {
+   "in": "xn--e1afmkfd.xn--p1ai files.отчёт.txt",
+   "want": "***.xn--p1ai files.отчёт.txt"
+  },
+  {
+   "in": "example.com2 a_b.example.com x_example.com жx.com",
+   "want": "example.com2 a_b.***.com x_example.com ***.com"
+  },
+  {
+   "in": "a.zip.new x.md.zip sub.example.com2 e.xn--p1aiф",
+   "want": "a.zip.new x.md.zip ***.example.com2 ***.xn--p1aiф"
+  },
+  {
+   "in": "connected to 203.0.113.5.",
+   "want": "connected to 203.xxx.xxx.5."
+  }
+ ]
+}
