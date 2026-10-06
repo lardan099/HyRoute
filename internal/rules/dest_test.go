@@ -101,6 +101,22 @@ func TestAddressRules(t *testing.T) {
 	}
 }
 
+// An IPv4 network written as IPv6 (::ffff:…) works from /96 on; a shorter
+// one is refused instead of matching nothing.
+func TestMappedNetworks(t *testing.T) {
+	s := mustCompile(t, Config{DefaultAction: Tunnel, Rules: []Rule{
+		{Name: "lan", Domains: []string{"::ffff:10.0.0.0/104"}, Action: Direct},
+	}})
+	if r := s.Evaluate(at("10.1.2.3"), nil); r.Action != Direct {
+		t.Fatalf("%+v", r)
+	}
+	for _, bad := range []string{"::ffff:0.0.0.0/80", "::ffff:10.0.0.0/8"} {
+		if _, err := Compile(Config{DefaultAction: Tunnel, Rules: []Rule{{Name: "x", Domains: []string{bad}, Action: Direct}}}); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+}
+
 func TestAddressOnlyRuleNeverNeedsDomain(t *testing.T) {
 	s := mustCompile(t, Config{DefaultAction: Direct, Rules: []Rule{
 		{Domains: []string{"1.1.1.0/24"}, Action: Tunnel},

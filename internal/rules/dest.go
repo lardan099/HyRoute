@@ -155,6 +155,11 @@ func parseIPPattern(s string, g Geo) (p ipPat, warn string, err error) {
 	if pfx, perr := netip.ParsePrefix(s); perr == nil {
 		p.pfx = pfx.Masked()
 		if pfx.Addr().Is4In6() {
+			if pfx.Bits() < 96 {
+				// Shorter than the ::ffff:0:0/96 of mapped addresses: as
+				// IPv4 it would have a negative length and match nothing.
+				return p, "", fmt.Errorf("неверная сеть %q: у адреса IPv4 в виде ::ffff:… длина — от /96 до /128", s)
+			}
 			p.pfx = netip.PrefixFrom(pfx.Addr().Unmap(), pfx.Bits()-96).Masked()
 		}
 		return p, "", nil
