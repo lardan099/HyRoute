@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/lardan099/hyroute/internal/backup"
 	"github.com/lardan099/hyroute/internal/dnspolicy"
@@ -484,6 +485,17 @@ func TestPlanMsgParts(t *testing.T) {
 		if joined != m.Text {
 			t.Fatalf("%q != %q", joined, m.Text)
 		}
+	}
+}
+
+// A group name of 64 four-byte characters is 256 bytes: its target is
+// clipped to what the restore reads (255), at a character's start.
+func TestTargetsClipGroupName(t *testing.T) {
+	st := baseState()
+	st.Groups.Groups = []groups.Group{{ID: "grp-00000000000a", Name: strings.Repeat("😀", 64)}}
+	tg := targetsOf(st, []string{"grp-00000000000a"})["grp-00000000000a"]
+	if len(tg.Name) > 255 || !utf8.ValidString(tg.Name) || !tg.Group {
+		t.Fatalf("%d bytes %q", len(tg.Name), tg.Name)
 	}
 }
 

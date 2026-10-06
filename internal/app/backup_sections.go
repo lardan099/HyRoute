@@ -729,7 +729,7 @@ func targetsOf(st cfgState, refs []string) map[string]backup.Target {
 		if p := st.Profiles.Find(id); p != nil {
 			out[id] = backup.Target{Name: clip(p.Name, 255), Host: clip(p.Host, 255), Ports: clip(p.Ports, 255), Sub: clip(subName[p.Source], 255)}
 		} else if g := st.Groups.Find(id); g != nil {
-			out[id] = backup.Target{Name: g.Name, Group: true}
+			out[id] = backup.Target{Name: clip(g.Name, 255), Group: true} // 64 runes may be 256 bytes
 		}
 	}
 	return out
