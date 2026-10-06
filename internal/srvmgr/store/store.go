@@ -139,8 +139,10 @@ type Servers interface {
 	// is standalone whatever s.Role says: roles come from the chains.
 	CreateServer(ctx context.Context, s *model.Server, seal SealFunc) error
 	// UpdateServer replaces the fields of s but its role (Chains keeps
-	// it), stores the credentials seal
-	// returns (seal may be nil) and deletes the kinds in drop, atomically.
+	// it) and its state (SetServerState and SwapServerState change it: a
+	// copy read before the update may be stale), stores the credentials
+	// seal returns (seal may be nil) and deletes the kinds in drop,
+	// atomically.
 	// A change of how the controller reaches the server (host, SSH port,
 	// user, auth type or new credentials) fails with ErrBusy while the
 	// server has an unfinished job; a new host or port forgets the trusted

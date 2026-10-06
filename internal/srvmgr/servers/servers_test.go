@@ -264,3 +264,23 @@ func TestAddressChangeForgetsHostKey(t *testing.T) {
 		t.Fatal("host key kept for another address")
 	}
 }
+
+// An edit keeps the state a job wrote meanwhile: the copy Update read
+// before it may be stale.
+func TestUpdateKeepsState(t *testing.T) {
+	s, db, _ := newService(t)
+	ctx := context.Background()
+	info, _ := s.Create(ctx, 1, base())
+	if err := db.SetServerState(ctx, info.ID, model.StateDeploying, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	stale, _ := db.ServerByID(ctx, info.ID)
+	db.SetServerState(ctx, info.ID, model.StateHealthy, time.Now()) // the job ended
+	stale.Notes = "edited"
+	if err := db.UpdateServer(ctx, &stale, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.ServerByID(ctx, info.ID); got.State != model.StateHealthy || got.Notes != "edited" {
+		t.Fatalf("%s %q", got.State, got.Notes)
+	}
+}

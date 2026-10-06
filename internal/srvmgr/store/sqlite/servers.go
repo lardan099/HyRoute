@@ -107,8 +107,8 @@ func (d *DB) UpdateServer(ctx context.Context, s *model.Server, seal store.SealF
 				return err
 			}
 		}
-		res, err := t.ExecContext(ctx, `UPDATE servers SET name = ?, tags = ?, country = ?, location = ?, host = ?, ssh_port = ?, ssh_user = ?, auth_type = ?, notes = ?, state = ?, updated_at = ? WHERE id = ?`,
-			s.Name, tagsJSON(s.Tags), s.Country, s.Location, s.Host, s.SSHPort, s.SSHUser, string(s.AuthType), s.Notes, string(s.State), unixTime(s.UpdatedAt), s.ID)
+		res, err := t.ExecContext(ctx, `UPDATE servers SET name = ?, tags = ?, country = ?, location = ?, host = ?, ssh_port = ?, ssh_user = ?, auth_type = ?, notes = ?, updated_at = ? WHERE id = ?`,
+			s.Name, tagsJSON(s.Tags), s.Country, s.Location, s.Host, s.SSHPort, s.SSHUser, string(s.AuthType), s.Notes, unixTime(s.UpdatedAt), s.ID)
 		if err != nil {
 			return conflict(err)
 		}
