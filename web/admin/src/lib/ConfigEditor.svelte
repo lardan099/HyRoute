@@ -244,6 +244,7 @@
   {#if error}
     <div class="note error" role="alert">{error.message}</div>
   {/if}
+  {#if !check}<div class="row actions"><span class="grow"></span><button onclick={onclose}>{t('cfg.cancel')}</button></div>{/if}
 </section>
 
 {#if check}
