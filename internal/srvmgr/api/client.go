@@ -38,7 +38,7 @@ func (s *server) clientSource(w http.ResponseWriter, r *http.Request) (int64, mo
 		s.fail(w, r, configError(err))
 		return 0, model.Server{}, model.ServerConfig{}, nil, false
 	}
-	return id, model.Server{ID: in.ID, Name: in.Name, Host: in.Host}, cur, cfg, true
+	return id, in.Server, cur, cfg, true
 }
 
 // clientProfile is the summary of the client side of a server: no

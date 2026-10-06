@@ -83,6 +83,10 @@ func TestClientProfileAPI(t *testing.T) {
 		t.Fatalf("GET revealed: %s", rec.Body)
 	}
 	code(t, owner.do("POST", "/api/v1/servers/"+id+"/client/reveal", map[string]any{}, map[string]string{"X-CSRF-Token": "forged"}), http.StatusForbidden, "csrf")
+	// The hop interval of the server goes into the links and the config.
+	if err := e.db.SetHopInterval(ctx, srv.ID, 10, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	rec = owner.do("POST", "/api/v1/servers/"+id+"/client/reveal", map[string]any{}, nil)
 	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
 		t.Fatalf("Cache-Control %q", cc)
@@ -95,6 +99,9 @@ func TestClientProfileAPI(t *testing.T) {
 	hp, _, err := hysteria.ParseURI(pr.URI)
 	if err != nil || hp.Auth != "fake-client-api-pass" || hp.Obfs.Password != "fake-client-api-obfs" || hp.Ports != "443,20000-50000" {
 		t.Fatalf("%v %+v", err, hp)
+	}
+	if !strings.Contains(pr.URI, "mportHopInt=10") || !strings.Contains(pr.Compat, "mportHopInt=10") || !strings.Contains(pr.Config, "hopInterval: 10s") {
+		t.Fatalf("no hop interval:\n%s\n%s\n%s", pr.URI, pr.Compat, pr.Config)
 	}
 	audit, _ := e.db.ListAudit(ctx, 10)
 	if len(audit) == 0 || audit[0].Action != "client.reveal" || audit[0].Target != "server/"+id || strings.Contains(audit[0].Details, "fake") {
