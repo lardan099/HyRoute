@@ -28,6 +28,13 @@ Inter-|   Receive                                                |  Transmit
   eth0: 5000000   4000    0    0    0     0          0         0  7000000    5000    0    0    0     0       0          0
 docker0:  800000   700    0    0    0     0          0         0   800000     700    0    0    0     0       0          0
   ens4: 1000       10    0    0    0     0          0         0  2000        20    0    0    0     0       0          0
+   wg0:  300000   300    0    0    0     0          0         0  3000000    3000    0    0    0     0       0          0
+  awg0:  300000   300    0    0    0     0          0         0  3000000    3000    0    0    0     0       0          0
+  tun0:  300000   300    0    0    0     0          0         0  3000000    3000    0    0    0     0       0          0
+tailscale0:  300000   300    0    0    0     0          0         0  3000000    3000    0    0    0     0       0          0
+eth0.100:  200000   200    0    0    0     0          0         0  200000     200    0    0    0     0       0          0
+ bond0:  1000      10    0    0    0     0          0         0  2000        20    0    0    0     0       0          0
+lxdbr0:  400000   400    0    0    0     0          0         0  400000     400    0    0    0     0       0          0
 
 ==> /proc/uptime <==
 86400.50 170000.00
@@ -49,7 +56,7 @@ func TestReadSample(t *testing.T) {
 		t.Errorf("%+v", s)
 	}
 	if s.RxBytes != 5001000 || s.TxBytes != 7002000 {
-		t.Errorf("net %d/%d (lo and docker0 must not count)", s.RxBytes, s.TxBytes)
+		t.Errorf("net %d/%d (only eth0 and ens4 count: the rest also passes them)", s.RxBytes, s.TxBytes)
 	}
 	if s.DiskTotalKiB != 20511312 || s.DiskUsedKiB != 3000000 {
 		t.Errorf("disk %d/%d", s.DiskUsedKiB, s.DiskTotalKiB)

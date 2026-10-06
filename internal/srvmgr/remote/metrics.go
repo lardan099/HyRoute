@@ -123,12 +123,16 @@ func parseStat(s *Sample, lines []string) error {
 }
 
 // virtualIface: traffic of these also passes a real interface (or never
-// leaves the machine).
+// leaves the machine): containers and bridges, tunnels and VPNs
+// (WireGuard, AmneziaWG, OpenVPN, Tailscale, ZeroTier, GRE, IPsec),
+// VLANs (eth0.100) and bonds, whose ports are counted.
 func virtualIface(name string) bool {
-	if name == "lo" {
+	if name == "lo" || strings.Contains(name, ".") {
 		return true
 	}
-	for _, p := range []string{"veth", "docker", "br-", "virbr", "cni", "flannel"} {
+	for _, p := range []string{"veth", "docker", "br", "virbr", "lxdbr", "lxcbr", "vmbr", "cni", "flannel",
+		"wg", "awg", "tun", "tap", "ifb", "tailscale", "zt", "gre", "erspan", "ip6gre", "ip_vti", "ip6_vti", "ip6tnl", "sit", "ipsec",
+		"vlan", "bond", "team"} {
 		if strings.HasPrefix(name, p) {
 			return true
 		}
