@@ -875,3 +875,30 @@ func TestPlanPrefsKeepCLI(t *testing.T) {
 		t.Fatalf("%s %+v", pl.err, pl.next.Prefs)
 	}
 }
+
+// «Серверы: Заменить» with a copy made before the main server's port
+// changed: the copy's version gets its own ID, and the current server,
+// still named by a rule, stays under its ID (two profiles with one ID
+// broke the UI and the tunnel).
+func TestPlanReplaceKeepsIDsUnique(t *testing.T) {
+	cur := srv("aaaaaaaa0001", "NL", "nl.example")
+	cur.Ports = "444"
+	st := baseState(cur)
+	st.Settings.Rules = []rules.Rule{{Name: "r", Action: rules.Tunnel, Profile: "aaaaaaaa0001", Domains: []string{"example.com"}}}
+	old := srv("aaaaaaaa0001", "NL", "nl.example")
+	pl := plan(st, payload(true).put("servers", bkServers{Main: "aaaaaaaa0001", List: []hysteria.Profile{old}}).p, map[string]string{"servers": "replace"})
+	if pl.err != "" {
+		t.Fatal(pl.err)
+	}
+	ports := map[string]string{}
+	for _, p := range pl.next.Profiles.List {
+		if _, dup := ports[p.ID]; dup {
+			t.Fatalf("duplicate ID %s: %+v", p.ID, pl.next.Profiles.List)
+		}
+		ports[p.ID] = p.Ports
+	}
+	main := pl.next.Profiles.Active
+	if len(ports) != 2 || ports["aaaaaaaa0001"] != "444" || main == "aaaaaaaa0001" || ports[main] != "443" {
+		t.Fatalf("main %q: %+v", main, pl.next.Profiles.List)
+	}
+}

@@ -450,6 +450,12 @@ func (x *planCtx) markUsed() {
 	for _, p := range x.pl.next.Profiles.List {
 		x.used[p.ID] = true
 	}
+	// A current server «Заменить» drops comes back in step 6 while
+	// something refers to it: a server from the file never takes its ID
+	// (a matched one gets it explicitly).
+	for _, p := range x.cur.Profiles.List {
+		x.used[p.ID] = true
+	}
 }
 
 // importServer checks and cleans a server from the file: name, host,
@@ -458,6 +464,16 @@ func (x *planCtx) importServer(key string, s hysteria.Profile, cur *hysteria.Pro
 	var short bool
 	if s.Name, short = shortName(s.Name); short {
 		x.shortN++
+	}
+	// Before validServer: Validate refuses an ECH path that is not a local
+	// drive path, and that must drop the setting, not the server.
+	if s.TLS.ECH != "" && !hysteria.ECHInline(s.TLS.ECH) {
+		if importedPathErr(s.TLS.ECH, x.env) != "" {
+			s.TLS.ECH = ""
+			x.pl.warn(msg(key).t("Сервер «" + s.Name + "»: настройка ECH не перенесена — укажите её в редакторе сервера"))
+		} else if cur == nil || cur.TLS.ECH != s.TLS.ECH {
+			x.pl.warn(msg(key).t("Сервер «" + s.Name + "» будет читать настройку ECH из файла ").s(s.TLS.ECH).t("."))
+		}
 	}
 	s, err := validServer(s, x.p.Secrets)
 	if err != nil {
@@ -470,14 +486,6 @@ func (x *planCtx) importServer(key string, s hysteria.Profile, cur *hysteria.Pro
 			x.pl.warn(msg(key).t("Сервер «" + s.Name + "»: путь к сертификату не перенесён (" + why + ") — укажите файл в редакторе сервера"))
 		} else if cur == nil || cur.TLS.CA != s.TLS.CA {
 			x.pl.warn(msg(key).t("Сервер «" + s.Name + "» будет проверять сертификат по файлу ").s(s.TLS.CA).t("."))
-		}
-	}
-	if s.TLS.ECH != "" && !hysteria.ECHInline(s.TLS.ECH) {
-		if importedPathErr(s.TLS.ECH, x.env) != "" {
-			s.TLS.ECH = ""
-			x.pl.warn(msg(key).t("Сервер «" + s.Name + "»: настройка ECH не перенесена — укажите её в редакторе сервера"))
-		} else if cur == nil || cur.TLS.ECH != s.TLS.ECH {
-			x.pl.warn(msg(key).t("Сервер «" + s.Name + "» будет читать настройку ECH из файла ").s(s.TLS.ECH).t("."))
 		}
 	}
 	return s, true
@@ -1698,6 +1706,14 @@ func (x *planCtx) finalCheck() {
 	if len(next.Profiles.List) > importLimits.serversTotal {
 		pl.err = fmt.Sprintf("Серверов станет больше %d: выберите «Заменить» или меньше разделов", importLimits.serversTotal)
 		return
+	}
+	ids := map[string]bool{}
+	for _, s := range next.Profiles.List {
+		if ids[s.ID] {
+			pl.err = "Внутренняя ошибка восстановления: два сервера с одним ID (" + s.ID + "). Ничего не изменено."
+			return
+		}
+		ids[s.ID] = true
 	}
 	if len(next.Subs) > importLimits.subs {
 		pl.err = fmt.Sprintf("Подписок станет больше %d: выберите «Заменить» или меньше разделов", importLimits.subs)
