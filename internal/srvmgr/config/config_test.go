@@ -121,3 +121,17 @@ func TestGeoInterval(t *testing.T) {
 		t.Fatal("negative env passed")
 	}
 }
+
+// -allowed-host takes names, comma separated, from the flag or the env;
+// a URL or a port is refused.
+func TestAllowedHosts(t *testing.T) {
+	c, err := Load(nil, env(map[string]string{"HYROUTE_SERVER_ALLOWED_HOST": " Panel.Example.com., 203.0.113.5 ,"}), io.Discard)
+	if err != nil || strings.Join(c.AllowedHosts, ",") != "panel.example.com,203.0.113.5" {
+		t.Fatalf("%q %v", c.AllowedHosts, err)
+	}
+	for _, bad := range []string{"https://panel.example.com", "panel.example.com:443", "a b"} {
+		if _, err := Load([]string{"-allowed-host", bad}, env(nil), io.Discard); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

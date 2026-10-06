@@ -47,7 +47,7 @@ type Deps struct {
 	// Keys open config revisions (the passwords journals are redacted
 	// with).
 	Keys *secrets.Keyring
-	// Logs are the controller\'s latest log records (the Logs page).
+	// Logs are the controller's latest log records (the Logs page).
 	Logs    *logbuf.Buffer
 	Log     *slog.Logger
 	Version string
@@ -56,8 +56,11 @@ type Deps struct {
 	TrustProxy bool
 	// Loopback: the controller listens on a loopback address. Without a
 	// reverse proxy (TrustProxy) it then answers only requests that name
-	// it so (see loopbackHost).
+	// it so (see hostCheck).
 	Loopback bool
+	// AllowedHosts (-allowed-host): the names besides the loopback ones
+	// the panel answers to, in every mode; empty: the check above only.
+	AllowedHosts []string
 	// OnSetupDone runs after the first owner is created (main removes the
 	// setup token file).
 	OnSetupDone func()
@@ -172,32 +175,59 @@ func New(d Deps) http.Handler {
 	if d.UI != nil {
 		mux.Handle("/", uiHandler(d.UI))
 	}
-	return s.recoverPanics(s.logRequests(securityHeaders(s.loopbackHost(limitBody(mux)))))
+	return s.recoverPanics(s.logRequests(securityHeaders(s.hostCheck(limitBody(mux)))))
 }
 
-var errBadHost = &Error{Status: http.StatusMisdirectedRequest, Code: "bad_host", Message: "Панель на этом адресе открывается только как localhost, 127.0.0.1 или [::1]: откройте её по такому адресу."}
-
-// loopbackHost: a controller on a loopback address without a proxy
-// answers only localhost, 127.0.0.1 and [::1]. Another name pointed at
-// 127.0.0.1 (DNS rebinding) would make a page of another site
-// same-origin with the admin: it could read the API and spend the login
-// limits of the owner's own address.
-func (s *server) loopbackHost(next http.Handler) http.Handler {
-	if !s.Loopback || s.TrustProxy {
+// hostCheck answers only requests that name the panel as it is meant to
+// be reached. Another name pointed at its address (DNS rebinding) would
+// make a page of another site same-origin with the admin: it could read
+// the API and spend the login limits of the owner's own address.
+//   - With -allowed-host: the loopback names and those, in every mode.
+//     Behind a trusted proxy the name the browser used is
+//     X-Forwarded-Host when the proxy sets it (a proxy that rewrites Host).
+//   - Without: on a loopback address and no proxy, the loopback names
+//     only (localhost, 127.0.0.1, [::1]); otherwise nothing is checked.
+func (s *server) hostCheck(next http.Handler) http.Handler {
+	if len(s.AllowedHosts) == 0 && (!s.Loopback || s.TrustProxy) {
 		return next
 	}
+	names := []string{"localhost", "127.0.0.1", "[::1]"}
+	for _, h := range s.AllowedHosts {
+		names = append(names, h)
+	}
+	bad := &Error{Status: http.StatusMisdirectedRequest, Code: "bad_host",
+		Message: "Панель открывается только по адресам " + strings.Join(names, ", ") + ": откройте её по такому адресу."}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
+		if s.fromProxy(r) {
+			if f := r.Header.Get("X-Forwarded-Host"); f != "" {
+				host, _, _ = strings.Cut(f, ",")
+			}
 		}
-		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
-		if !strings.EqualFold(host, "localhost") && !isLoopback(host) {
-			writeError(w, errBadHost)
+		if !s.allowedHost(strings.TrimSpace(host)) {
+			writeError(w, bad)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// allowedHost: host (with a port or not) is a loopback name or one of
+// AllowedHosts.
+func (s *server) allowedHost(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"), ".")
+	if strings.EqualFold(host, "localhost") || isLoopback(host) {
+		return true
+	}
+	for _, a := range s.AllowedHosts {
+		if strings.EqualFold(host, a) {
+			return true
+		}
+	}
+	return false
 }
 
 // fail answers with err; an error that is not an *Error is logged here

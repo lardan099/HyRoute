@@ -43,6 +43,7 @@ go build -o hyroute-server ./cmd/hyroute-server
 | `-tls-cert`, `-tls-key` | `HYROUTE_SERVER_TLS_CERT`, `HYROUTE_SERVER_TLS_KEY` | нет (HTTP) |
 | `-insecure-http` | `HYROUTE_SERVER_INSECURE_HTTP` | выключено |
 | `-trust-proxy` | `HYROUTE_SERVER_TRUST_PROXY` | выключено |
+| `-allowed-host` | `HYROUTE_SERVER_ALLOWED_HOST` | нет (имена через запятую, например `panel.example.com`) |
 | `-monitor-interval` | `HYROUTE_SERVER_MONITOR_INTERVAL` | `1m` (`0` — не собирать метрики) |
 | `-geo-interval` | `HYROUTE_SERVER_GEO_INTERVAL` | `168h` (`0` — не обновлять базы geo; отрицательное значение — ошибка запуска) |
 | `-log-level` | `HYROUTE_SERVER_LOG_LEVEL` | `info` |
@@ -116,7 +117,7 @@ location / {
 
 Прокси должен передавать панели адрес, который набран в браузере: заголовок `Host` (Caddy делает это сам, nginx — только с `proxy_set_header Host $host`) или `X-Forwarded-Host`. Иначе вход и любые изменения отклоняются с ошибкой защиты от подделки, а в журнале controller появляется предупреждение «write refused: Origin is not the host».
 
-Запустите controller с `-trust-proxy`: тогда он верит заголовкам `X-Forwarded-For`, `X-Forwarded-Proto` и `X-Forwarded-Host` от прокси на этой машине (для журнала входов и защиты от перебора), и cookie сессии помечаются как только для HTTPS.
+Запустите controller с `-trust-proxy`: тогда он верит заголовкам `X-Forwarded-For`, `X-Forwarded-Proto` и `X-Forwarded-Host` от прокси на этой машине (для журнала входов и защиты от перебора), и cookie сессии помечаются как только для HTTPS. Укажите и `-allowed-host` с публичным именем панели (`-allowed-host panel.example.com`): тогда она отвечает только на это имя и на `localhost`, `127.0.0.1`, `[::1]`. Без флага за прокси имя не проверяется, и если к панели ходят ещё и SSH-туннелем, чужой сайт может выдать себя за неё, перенаправив своё имя на `127.0.0.1`.
 
 **Свой TLS** — без прокси: укажите сертификат и ключ в формате PEM, и панель будет отвечать по HTTPS на любом адресе.
 

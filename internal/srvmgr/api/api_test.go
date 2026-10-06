@@ -256,4 +256,26 @@ func TestLoopbackHost(t *testing.T) {
 			t.Fatalf("%+v: %d %s", d, rec.Code, rec.Body)
 		}
 	}
+	// -allowed-host: those names and the loopback ones, behind a proxy
+	// too (an ssh -L tunnel to it), and nothing else.
+	for _, d := range []Deps{{Store: db, Loopback: true, TrustProxy: true, AllowedHosts: []string{"panel.example.com"}}, {Store: db, AllowedHosts: []string{"panel.example.com"}}} {
+		for host, ok := range map[string]bool{"panel.example.com": true, "PANEL.example.com:443": true, "localhost:8480": true, "attacker.example": false} {
+			if rec := get(d, host); (rec.Code == http.StatusOK) != ok {
+				t.Fatalf("%+v %s: %d %s", d, host, rec.Code, rec.Body)
+			}
+		}
+	}
+	// A proxy that rewrites Host: the name the browser used is
+	// X-Forwarded-Host.
+	d = Deps{Store: db, Loopback: true, TrustProxy: true, AllowedHosts: []string{"panel.example.com"}}
+	for fwd, ok := range map[string]bool{"panel.example.com": true, "attacker.example": false} {
+		r := httptest.NewRequest("GET", "/api/v1/health", nil)
+		r.Host, r.RemoteAddr = "127.0.0.1:8480", "127.0.0.1:50000"
+		r.Header.Set("X-Forwarded-Host", fwd)
+		rec := httptest.NewRecorder()
+		New(d).ServeHTTP(rec, r)
+		if (rec.Code == http.StatusOK) != ok {
+			t.Fatalf("forwarded %s: %d %s", fwd, rec.Code, rec.Body)
+		}
+	}
 }

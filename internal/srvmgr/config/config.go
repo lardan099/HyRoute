@@ -34,6 +34,9 @@ type Config struct {
 	// X-Forwarded-For and X-Forwarded-Host from a reverse proxy on a
 	// loopback address.
 	TrustProxy bool
+	// AllowedHosts are the names the panel answers to besides the loopback
+	// ones (-allowed-host, comma separated; empty: see api.Deps).
+	AllowedHosts []string
 	// LogLevel is debug, info, warn or error.
 	LogLevel string
 	// MonitorInterval is how often servers are sampled (0: never).
@@ -81,6 +84,7 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 	fs.DurationVar(&c.MonitorInterval, "monitor-interval", envDuration(getenv("HYROUTE_SERVER_MONITOR_INTERVAL"), time.Minute), "how often to sample the servers' CPU, memory, disk and network; 0 turns it off (env HYROUTE_SERVER_MONITOR_INTERVAL)")
 	fs.DurationVar(&c.GeoInterval, "geo-interval", envDuration(getenv("HYROUTE_SERVER_GEO_INTERVAL"), 7*24*time.Hour), "how often to look for newer geo databases and put them on the servers that use HyRoute's; 0 turns it off (env HYROUTE_SERVER_GEO_INTERVAL)")
 	fs.StringVar(&c.LogLevel, "log-level", env("LOG_LEVEL", "info"), "debug, info, warn or error (env HYROUTE_SERVER_LOG_LEVEL)")
+	allowed := fs.String("allowed-host", env("ALLOWED_HOST", ""), "names the panel answers to besides localhost, comma separated, e.g. panel.example.com (env HYROUTE_SERVER_ALLOWED_HOST)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -89,6 +93,16 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 	}
 	if c.MasterKeyFile == "" {
 		c.MasterKeyFile = filepath.Join(c.DataDir, "master.key")
+	}
+	for _, h := range strings.Split(*allowed, ",") {
+		h = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(h), "."))
+		if h == "" {
+			continue
+		}
+		if strings.ContainsAny(h, "/:@ ") {
+			return Config{}, fmt.Errorf("-allowed-host: %q: give a name or an IPv4 address, without a scheme, path or port", h)
+		}
+		c.AllowedHosts = append(c.AllowedHosts, h)
 	}
 	return c, c.validate()
 }
