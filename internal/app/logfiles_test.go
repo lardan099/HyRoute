@@ -1,6 +1,8 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -64,5 +66,35 @@ func TestClearLogsWhileHysteriaWrites(t *testing.T) {
 			t.Fatal(err)
 		}
 		c.applyLogPrefs()
+	}
+}
+
+// A deleted server's journal and log file go with it: the file is closed
+// (it can be deleted) and the ring freed.
+func TestDeletedServerLogsFreed(t *testing.T) {
+	c, _ := newCtl(t)
+	dir := t.TempDir()
+	c.SetLogDir(dir)
+	defer c.SetLogDir("")
+	res, err := c.ImportURIs("hy2://a@one.example:443#ONE")
+	if err != nil || len(res.Added) != 1 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	id := res.Added[0].ID
+	c.hysteriaLine(id, hysteria.LogLine{Level: "info", Msg: "connected to server"})
+	if err := c.DeleteProfile(id); err != nil {
+		t.Fatal(err)
+	}
+	c.hyMu.Lock()
+	_, journal := c.hyLogs[id]
+	c.hyMu.Unlock()
+	c.files.mu.Lock()
+	_, file := c.files.hy[id]
+	c.files.mu.Unlock()
+	if journal || file {
+		t.Fatalf("journal %v, file %v", journal, file)
+	}
+	if err := os.Remove(filepath.Join(dir, "hysteria-"+safeName(id)+".log")); err != nil {
+		t.Fatal(err) // still open on Windows
 	}
 }

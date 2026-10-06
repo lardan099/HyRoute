@@ -262,6 +262,7 @@ func (c *Controller) updateNamesLocked() {
 	}
 	c.groupNamesLocked(m)
 	c.names.Store(&m)
+	c.dropLogsOf(m)
 }
 
 // stubProfile stands for every profile in stub mode.

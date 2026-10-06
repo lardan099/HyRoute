@@ -87,6 +87,33 @@ func (f *logFiles) closeLocked() {
 	f.hy = nil
 }
 
+// dropLogsOf frees the journal and the log file of every server not in
+// keep (deleted, or gone from its subscription): each holds a ring of
+// 3000 lines, and the file stays open, so it could not be deleted by
+// hand. Under c.mu: hyMu and files.mu nest in it.
+func (c *Controller) dropLogsOf(keep map[string]string) {
+	gone := func(id string) bool {
+		_, ok := keep[id]
+		return !ok && id != stubProfile
+	}
+	c.hyMu.Lock()
+	for id := range c.hyLogs {
+		if gone(id) {
+			delete(c.hyLogs, id)
+		}
+	}
+	c.hyMu.Unlock()
+	f := &c.files
+	f.mu.Lock()
+	for id, h := range f.hy {
+		if gone(id) {
+			h.Close()
+			delete(f.hy, id)
+		}
+	}
+	f.mu.Unlock()
+}
+
 // hysteriaFile returns the profile's log file, or nil when logs stay in
 // memory.
 func (c *Controller) hysteriaFile(id, name string) io.Writer {
