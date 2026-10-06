@@ -85,7 +85,7 @@ func Summarize(srv model.Server, cfg []byte, meta model.ConfigMeta, links []stri
 	if err != nil {
 		return Summary{}, err
 	}
-	s := Summary{Name: srv.Name, Host: srv.Host, Ports: meta.Ports, Auth: strings.ToLower(c.Auth.Type), Obfs: strings.ToLower(c.Obfs.Type), Warnings: []string{}}
+	s := Summary{Name: srv.Name, Host: srv.Host, Ports: meta.Ports, Auth: c.Auth.Kind(), Obfs: strings.ToLower(c.Obfs.Type), Warnings: []string{}}
 	if s.Ports == "" {
 		if l, err := hyconfig.ParseListen(c.Listen); err == nil {
 			s.Ports = l.Ports

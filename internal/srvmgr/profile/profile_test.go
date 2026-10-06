@@ -130,14 +130,23 @@ func TestLinkUser(t *testing.T) {
 	}
 }
 
+// Passwords checked by a service or a command, under any name Hysteria
+// takes for them.
 func TestExternalAuth(t *testing.T) {
-	cfg := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: http\n  http:\n    url: http://127.0.0.1:8081/auth\n")
-	if _, err := Build(srv, cfg, model.ConfigMeta{TLS: "acme"}, "", nil); !errors.Is(err, ErrExternalAuth) {
-		t.Fatalf("%v", err)
-	}
-	s, err := Summarize(srv, cfg, model.ConfigMeta{TLS: "acme"}, nil)
-	if err != nil || len(s.Warnings) != 1 {
-		t.Fatalf("%+v %v", s, err)
+	for _, a := range []struct{ auth, kind string }{
+		{"type: http\n  http:\n    url: http://127.0.0.1:8081/auth", "http"},
+		{"type: HTTPS\n  http:\n    url: http://127.0.0.1:8081/auth", "http"},
+		{"type: command\n  command: /usr/local/bin/check", "command"},
+		{"type: cmd\n  command: /usr/local/bin/check", "command"},
+	} {
+		cfg := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  " + a.auth + "\n")
+		if _, err := Build(srv, cfg, model.ConfigMeta{TLS: "acme"}, "", nil); !errors.Is(err, ErrExternalAuth) {
+			t.Fatalf("%s: %v", a.auth, err)
+		}
+		s, err := Summarize(srv, cfg, model.ConfigMeta{TLS: "acme"}, nil)
+		if err != nil || s.Auth != a.kind || len(s.Warnings) != 1 {
+			t.Fatalf("%s: %+v %v", a.auth, s, err)
+		}
 	}
 }
 

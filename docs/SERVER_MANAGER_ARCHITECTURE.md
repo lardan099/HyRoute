@@ -338,7 +338,8 @@ queued → connecting → preflight → downloading → installing → configuri
   v2.12.3): `listen`, `tls`, `acme`, `ech`, `obfs` (salamander, gecko),
   `quic`, `mimic`, `congestion`, `bandwidth`, `ignoreClientBandwidth`,
   `speedTest`, `disableUDP`, `udpIdleTimeout`, `auth` (password,
-  userpass, http, command), `resolver`, `sniff`, `acl`, `outbounds`,
+  userpass, http, command; `Auth.Kind` сводит алиасы Hysteria `https` и
+  `cmd` к `http` и `command` для сводки профиля и импорта), `resolver`, `sniff`, `acl`, `outbounds`,
   `trafficStats`, `masquerade`, `realm`; и клиентского (для выдачи
   пользователю): `server`, `auth`, `tls`, `obfs`, `transport`, `quic`,
   `congestion`, `bandwidth`, `fastOpen`, `lazy`, `mimic`, `realm`, режимы

@@ -1,5 +1,7 @@
 package hyconfig
 
+import "strings"
+
 // Server is the Hysteria server config. Field order is the order the
 // config is written in.
 type Server struct {
@@ -94,6 +96,19 @@ type Auth struct {
 	HTTP     AuthHTTP          `yaml:"http,omitempty"`
 	Command  string            `yaml:"command,omitempty"`
 	Unknown  Unknown           `yaml:"-"`
+}
+
+// Kind is the auth type in lower case, with the aliases Hysteria takes
+// ("https", "cmd") as "http" and "command".
+func (a *Auth) Kind() string {
+	switch t := strings.ToLower(a.Type); t {
+	case "https":
+		return "http"
+	case "cmd":
+		return "command"
+	default:
+		return t
+	}
 }
 
 // AuthHTTP is an authentication backend.

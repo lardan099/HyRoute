@@ -219,6 +219,19 @@ func TestImportRealmsTokenNotInMeta(t *testing.T) {
 	}
 }
 
+// The aliases Hysteria takes for external auth are external auth.
+func TestImportExternalAuthAlias(t *testing.T) {
+	m := official()
+	m.SetFile("/etc/hysteria/config.yaml", []byte(strings.Replace(officialConfig, "type: password\n  password: fake-official-pass", "type: cmd\n  command: /usr/local/bin/check", 1)))
+	f, _, err := discover(t, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Meta.Auth != "command" || !slices.Contains(ids(f), "info:external-auth") {
+		t.Fatalf("meta %+v, findings %q", f.Meta, ids(f))
+	}
+}
+
 func selfSigned(t *testing.T, name string, notAfter time.Time) []byte {
 	t.Helper()
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
