@@ -346,6 +346,44 @@ func TestStopDuringDoneCheckIsRecovered(t *testing.T) {
 	}
 }
 
+// A job the next controller cannot go on with (its steps changed) still
+// ends as any other: the interrupted step failed and Finished runs with
+// the job's data.
+func TestRecoveryOfChangedStepsRunsFinished(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	h1 := newHarness(t, nil, simpleKind("demo", Step{Name: "install", Phase: model.JobInstalling, Run: func(ctx context.Context, env *Env) error {
+		env.Set("changed", "1")
+		entered <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}}))
+	h1.start()
+	j, _ := h1.eng.Submit(context.Background(), "demo", 0, nil, nil, 0)
+	<-entered
+	h1.kill()
+
+	finished := make(chan string, 1)
+	k := simpleKind("demo",
+		Step{Name: "install", Phase: model.JobInstalling, Run: func(context.Context, *Env) error { return nil }},
+		Step{Name: "cleanup", Phase: model.JobVerifying, Run: func(context.Context, *Env) error { return nil }})
+	k.Recover = func(context.Context, *Env) (Resolution, error) { return ResolveRetry, nil }
+	k.Finished = func(_ context.Context, env *Env, j model.Job) { finished <- string(j.State) + " " + env.Get("changed") }
+	h2 := newHarness(t, h1.db, k)
+	h2.start()
+	h2.wait(j.ID, model.JobFailed)
+	select {
+	case got := <-finished:
+		if got != "failed 1" {
+			t.Fatalf("Finished saw %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Finished did not run")
+	}
+	if st := h2.steps(j.ID); len(st) != 1 || st[0] != model.StepFailed {
+		t.Fatalf("steps %v", st)
+	}
+}
+
 func TestRecoveryWithoutCheckFails(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	k := simpleKind("demo", Step{Name: "install", Phase: model.JobInstalling, Run: func(ctx context.Context, env *Env) error {

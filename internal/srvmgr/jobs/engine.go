@@ -249,10 +249,7 @@ func (e *Engine) prepare(ctx context.Context, id int64) (model.Job, *Kind, []Ste
 			return j, k, nil, nil, nil, fmt.Errorf("%w: step %d is %q stored, %q in this controller", errStepsChanged, i, rows[i].Name, steps[i].Name)
 		}
 	}
-	env := &Env{JobID: j.ID, ServerID: j.ServerID, Servers: j.Servers, CreatedBy: j.CreatedBy, Params: j.Params, eng: e, data: map[string]string{}}
-	for k, v := range j.Data {
-		env.data[k] = v
-	}
+	env := e.bareEnv(j)
 	sealed, err := e.Store.JobSecret(ctx, id)
 	if err != nil {
 		return j, k, nil, nil, nil, fmt.Errorf("job secrets: %w", err)
@@ -270,6 +267,16 @@ func (e *Engine) prepare(ctx context.Context, id int64) (model.Job, *Kind, []Ste
 		}
 	}
 	return j, k, steps, rows, env, nil
+}
+
+// bareEnv is the Env of job j without its secrets: what prepare starts
+// from, and what the Finished hook of a job prepare failed for gets.
+func (e *Engine) bareEnv(j model.Job) *Env {
+	env := &Env{JobID: j.ID, ServerID: j.ServerID, Servers: j.Servers, CreatedBy: j.CreatedBy, Params: j.Params, eng: e, data: map[string]string{}}
+	for k, v := range j.Data {
+		env.data[k] = v
+	}
+	return env
 }
 
 // resumeIndex is the first step that is not done or skipped.
@@ -338,6 +345,8 @@ func (e *Engine) runJob(ctx context.Context, id int64) {
 	if err != nil {
 		// A stopping controller leaves the job to the recovery.
 		if j.ID != 0 && ctx.Err() == nil {
+			env = e.bareEnv(j)
+			defer env.close()
 			e.fail(ctx, &j, env, fmt.Errorf("prepare: %w", err))
 		}
 		return
@@ -608,18 +617,21 @@ func (e *Engine) recoverJob(ctx context.Context, id int64) {
 	j, k, steps, rows, env, err := e.prepare(ctx, id)
 	if err != nil {
 		if j.ID != 0 && ctx.Err() == nil {
+			// The job cannot go on (made by a controller with other steps,
+			// say), yet it ends as any other: its interrupted step failed
+			// and the Finished hook releases what the job held.
+			if rows, rerr := e.Store.JobSteps(ctx, id); rerr == nil {
+				e.interrupted(ctx, rows)
+			}
+			env = e.bareEnv(j)
+			defer env.close()
 			e.fail(ctx, &j, env, Fail("Задание прервано перезапуском controller и не может быть продолжено.", err))
 		}
 		return
 	}
 	defer env.close()
 	was, rollingBack := j.CurrentStep, j.State == model.JobRollingBack
-	for i := range rows {
-		if rows[i].State == model.StepRunning {
-			rows[i].State, rows[i].Error = model.StepFailed, "interrupted by a controller restart"
-			e.saveStep(ctx, rows[i])
-		}
-	}
+	e.interrupted(ctx, rows)
 	j.State = model.JobRecovering
 	e.save(ctx, &j, env)
 	if rollingBack {
@@ -654,6 +666,16 @@ func (e *Engine) recoverJob(ctx context.Context, id int64) {
 		e.finished(ctx, &j, env)
 	case res == ResolveRetry:
 		e.requeue(ctx, &j, env, steps, rows, "Проверка после перезапуска: задание продолжится.")
+	}
+}
+
+// interrupted marks the steps a controller restart cut short as failed.
+func (e *Engine) interrupted(ctx context.Context, rows []model.JobStep) {
+	for i := range rows {
+		if rows[i].State == model.StepRunning {
+			rows[i].State, rows[i].Error = model.StepFailed, "interrupted by a controller restart"
+			e.saveStep(ctx, rows[i])
+		}
 	}
 }
 
