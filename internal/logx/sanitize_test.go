@@ -21,6 +21,7 @@ func TestSanitize(t *testing.T) {
 		"rename geosite.dat.new rules.json.new: denied":     "rename geosite.dat.new rules.json.new: denied",
 		"go.md log.md html.zip tcp/999.md:443":              "***.md ***.md ***.zip tcp/***.md:443",
 		`C:\docs\README.md package.zip`:                     `C:\docs\***.md ***.zip`,
+		`from C:\Users\Иван\Downloads\HyRoute ok`:           `from C:\Users\***\Downloads\HyRoute ok`,
 		"мой-магазин.рф и example.com, госуслуги.рф":        "***.рф и ***.com, ***.рф",
 		"xn--e1afmkfd.xn--p1ai files.отчёт.txt":             "***.xn--p1ai files.отчёт.txt",
 		"example.com2 a_b.example.com x_example.com жx.com": "example.com2 a_b.***.com x_example.com ***.com",
