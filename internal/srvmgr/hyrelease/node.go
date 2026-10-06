@@ -68,7 +68,9 @@ func (n *Node) binary(ctx context.Context, a Asset) ([]byte, error) {
 	return read(ctx, nx, tmp, su, a)
 }
 
-// read reads a binary of the node, bounded, and checks it in memory.
+// read reads a binary of the node and checks it in memory. The executor
+// bounds the read (sshexec stops at 32 MB with remote.ErrFileTooLarge);
+// maxBinary is for one that does not.
 func read(ctx context.Context, ex remote.Executor, path string, sudo bool, a Asset) ([]byte, error) {
 	b, err := ex.ReadFile(ctx, path, sudo)
 	if err != nil {
