@@ -96,6 +96,8 @@ func (s *Service) Create(ctx context.Context, in Input, actor int64) (Info, erro
 	if len(in.Nodes) < 2 {
 		return Info{}, nodesErr("Выберите сервер входа и сервер выхода.")
 	}
+	// The local port is the entry's: the first deployment picks a free one.
+	in.Link.LocalPort = 0
 	if err := in.Link.Validate(); err != nil {
 		return Info{}, err
 	}

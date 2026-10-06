@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -81,6 +82,26 @@ type host struct {
 	// failRead: reading this file fails as a broken connection does;
 	// fail: so do commands starting with it.
 	failRead, fail string
+	// listen are more lines of ss: sockets of other programs.
+	listen string
+}
+
+// linkPID is the process of a running link client.
+const linkPID = 5151
+
+// linkPort is the SOCKS5 port of link unit u's config (0: none).
+func (h *host) linkPort(u string) int {
+	b, found := h.files["/etc/hysteria/"+strings.TrimSuffix(strings.TrimPrefix(u, "hyroute-"), ".service")+".yaml"]
+	if !found || u == unitName {
+		return 0
+	}
+	c, err := hyconfig.ParseClient(b)
+	if err != nil || c.SOCKS5 == nil {
+		return 0
+	}
+	_, port, _ := strings.Cut(c.SOCKS5.Listen, "127.0.0.1:")
+	n, _ := strconv.Atoi(port)
+	return n
 }
 
 func newHost(name, cfg string) *host {
@@ -203,7 +224,23 @@ func (h *host) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 		if port, up := h.serverOK(); up && h.units[unitName] == "active" {
 			out = fmt.Sprintf("udp UNCONN 0 0 *:%d *:* users:((\"hysteria\",pid=4242,fd=7))\n", port)
 		}
-		return ok(out), nil
+		for u, st := range h.units {
+			if port := h.linkPort(u); st == "active" && port != 0 {
+				out += fmt.Sprintf("tcp LISTEN 0 4096 127.0.0.1:%d 0.0.0.0:* users:((\"hysteria\",pid=%d,fd=3))\n", port, linkPID)
+			}
+		}
+		return ok(out + h.listen), nil
+	case len(a) > 2 && a[0] == "systemctl" && a[1] == "show":
+		st, pid := h.units[last], 0
+		switch {
+		case st == "":
+			return ok("LoadState=not-found\nActiveState=inactive\nMainPID=0\n"), nil
+		case st == "active" && last == unitName:
+			pid = 4242
+		case st == "active":
+			pid = linkPID
+		}
+		return ok(fmt.Sprintf("LoadState=loaded\nActiveState=%s\nMainPID=%d\n", st, pid)), nil
 	case a[0] == "journalctl":
 		return ok("FATAL something broke (auth fake-alice-pass)\n"), nil
 	}
@@ -749,6 +786,7 @@ func TestLinkResumesAfterRestart(t *testing.T) {
 	}
 	j := w.submit()
 	<-reached
+	before, _ := ParseParams(w.link().Params)
 	stopped := make(chan struct{})
 	go func() { w.stop(); close(stopped) }()
 	time.Sleep(30 * time.Millisecond) // the controller is cancelled
@@ -769,6 +807,46 @@ func TestLinkResumesAfterRestart(t *testing.T) {
 	// exit a second time.
 	if n := w.exit.restarts(unitName); n != 1 || !strings.Contains(log, "с шага «check»") {
 		t.Fatalf("exit restarted %d times\n%s", n, log)
+	}
+	// The link's own client on its port is not another program.
+	if p, _ := ParseParams(w.link().Params); p.LocalPort != before.LocalPort || strings.Contains(log, "занят другой программой") {
+		t.Fatalf("port %d → %d\n%s", before.LocalPort, p.LocalPort, log)
+	}
+}
+
+// After an unlink the link deploys again on its stored port while it is
+// free; once another program listens there, the link client gets
+// another port.
+func TestLinkPortTakenAfterUnlink(t *testing.T) {
+	w := linked(t, exitPW)
+	first, _ := ParseParams(w.link().Params)
+	if j, log := w.unlink(false); j.State != model.JobCompleted {
+		t.Fatalf("unlink: %s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	if j, log := w.wait(w.submit()); j.State != model.JobCompleted {
+		t.Fatalf("again: %s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	if p, _ := ParseParams(w.link().Params); p.LocalPort != first.LocalPort {
+		t.Fatalf("a free port changed: %d → %d", first.LocalPort, p.LocalPort)
+	}
+	if j, log := w.unlink(false); j.State != model.JobCompleted {
+		t.Fatalf("unlink: %s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	w.entry.mu.Lock()
+	w.entry.listen = fmt.Sprintf("tcp LISTEN 0 128 127.0.0.1:%d 0.0.0.0:* users:((\"python3\",pid=77,fd=3))\n", first.LocalPort)
+	w.entry.mu.Unlock()
+	j, log := w.wait(w.submit())
+	if j.State != model.JobCompleted || !strings.Contains(log, "занят другой программой") {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	p, _ := ParseParams(w.link().Params)
+	entryNow, _ := w.entry.file(cfgPath)
+	nc, _ := hyconfig.ParseServer([]byte(entryNow))
+	client, _ := w.entry.file(linkCfg(w))
+	cc, _ := hyconfig.ParseClient([]byte(client))
+	want := fmt.Sprintf("127.0.0.1:%d", p.LocalPort)
+	if p.LocalPort == first.LocalPort || p.LocalPort < 40000 || len(nc.Outbounds) == 0 || nc.Outbounds[0].SOCKS5.Addr != want || cc.SOCKS5.Listen != want {
+		t.Fatalf("port %d → %d, outbounds %+v, client %q", first.LocalPort, p.LocalPort, nc.Outbounds, client)
 	}
 }
 

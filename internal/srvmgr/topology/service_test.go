@@ -83,9 +83,14 @@ func TestServiceCreate(t *testing.T) {
 	_, err = s.Create(ctx, Input{Name: "x", Nodes: []int64{e, b}, Link: cascade.Params{Up: "10 mbps"}}, 0)
 	fieldMsg(t, err, "обе скорости")
 
-	// A second entry to the same exit.
-	if _, err := s.Create(ctx, Input{Name: "second", Nodes: []int64{e, b}}, 0); err != nil {
+	// A second entry to the same exit. A local port given is dropped: the
+	// first deployment picks a free one on the entry.
+	second, err := s.Create(ctx, Input{Name: "second", Nodes: []int64{e, b}, Link: cascade.Params{LocalPort: 9999}}, 0)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if p, err := cascade.ParseParams(second.Links[0].Params); err != nil || p.LocalPort != 0 {
+		t.Fatalf("local port %d kept (%v)", p.LocalPort, err)
 	}
 
 	// Rename and notes; names compared in any script.

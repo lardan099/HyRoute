@@ -384,27 +384,15 @@ func (x *linker) check(ctx context.Context, env *jobs.Env, p jobParams) error {
 	if err != nil {
 		return err
 	}
-	if pl.params.LocalPort == 0 {
-		used := map[int]bool{}
-		ls, err := remote.Listeners(ctx, exEntry, sudo(env, p.Entry))
-		var noSS *remote.ExitError
-		switch {
-		case errors.As(err, &noSS):
-			env.Warnf("На сервере входа нет ss: свободен ли порт клиента связи, не проверено.")
-		case err != nil:
+	if pl.params.LocalPort == 0 || first {
+		picked, err := x.localPort(ctx, env, exEntry, p, pl)
+		if err != nil {
 			return err
 		}
-		for _, l := range ls {
-			used[l.Port] = true
-		}
-		pl.params.LocalPort = pickPort(p.Chain, p.Idx, used)
-		pl.link.Params = pl.params.Raw()
-		if err := x.Store.UpdateLink(ctx, pl.link); err != nil {
-			return err
-		}
-		env.Logf("Клиент связи будет слушать SOCKS5 на 127.0.0.1:%d сервера входа.", pl.params.LocalPort)
-		if pl, err = x.plan(ctx, p); err != nil {
-			return err
+		if picked {
+			if pl, err = x.plan(ctx, p); err != nil {
+				return err
+			}
 		}
 	}
 	for _, c := range []*hyconfig.Server{pl.exitParsed, pl.entryParsed} {
@@ -439,6 +427,53 @@ func (x *linker) check(ctx context.Context, env *jobs.Env, p jobParams) error {
 	link := pl.link
 	link.State, link.UpdatedAt = model.LinkLinking, x.Now()
 	return x.Store.UpdateLink(ctx, link)
+}
+
+// localPort gives the link client its port on the entry's loopback, by
+// ss: a link without one picks a free one; a link deployed first keeps
+// its stored port only while no other program listens there (one may
+// have taken it after an unlink or a failed deployment). The link's own
+// client, still up when a recovery checks again, is not another program.
+// It reports whether the port was picked (and stored).
+func (x *linker) localPort(ctx context.Context, env *jobs.Env, ex remote.Executor, p jobParams, pl *plan) (bool, error) {
+	ls, err := remote.Listeners(ctx, ex, sudo(env, p.Entry))
+	var noSS *remote.ExitError
+	switch {
+	case errors.As(err, &noSS):
+		env.Warnf("На сервере входа нет ss: свободен ли порт клиента связи, не проверено.")
+	case err != nil:
+		return false, err
+	}
+	used := map[int]bool{}
+	for _, l := range ls {
+		used[l.Port] = true
+	}
+	old := pl.params.LocalPort
+	if old != 0 {
+		if !used[old] {
+			return false, nil
+		}
+		u, err := remote.Unit(ctx, ex, UnitName(p.Chain, p.Idx))
+		var failed *remote.ExitError
+		if err != nil && !errors.As(err, &failed) {
+			return false, err
+		}
+		for _, l := range ls {
+			if l.Port == old && u.MainPID != 0 && l.PID == u.MainPID {
+				return false, nil
+			}
+		}
+	}
+	pl.params.LocalPort = pickPort(p.Chain, p.Idx, used)
+	pl.link.Params = pl.params.Raw()
+	if err := x.Store.UpdateLink(ctx, pl.link); err != nil {
+		return false, err
+	}
+	if old != 0 {
+		env.Logf("Порт %d на loopback сервера входа занят другой программой: клиент связи получает другой.", old)
+	}
+	env.Logf("Клиент связи будет слушать SOCKS5 на 127.0.0.1:%d сервера входа.", pl.params.LocalPort)
+	return true, nil
 }
 
 // pickPort is a free port for the link client, 40000–49999, starting at a
