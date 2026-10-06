@@ -255,11 +255,13 @@
     changedRules();
   }
 
+  // duplicate copies the selected rules below themselves; a line Hysteria
+  // cannot read has only its text, so a copy of it would be an empty rule.
   function duplicate() {
     const out: Row[] = [];
     for (const r of rows) {
       out.push(r);
-      if (selected.has(r.key)) out.push({ key: nextKey++, rule: { ...r.rule, text: undefined, before: undefined } });
+      if (selected.has(r.key) && !bad(r.rule)) out.push({ key: nextKey++, rule: { ...r.rule, text: undefined, before: undefined } });
     }
     rows = out;
     changedRules();
