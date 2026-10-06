@@ -1407,14 +1407,9 @@ func (c *Core) Maintain(now time.Time) {
 	var idleSess []*udpSession
 	c.mu.Lock()
 	for k, tf := range c.tcp {
-		if !tf.est && now.Sub(tf.last) > synOnlyTTL {
-			// The connection never came up: no FIN or FLOW_DELETED will
-			// end it. A later SYN gets a fresh decision.
-			closed = append(closed, tf.rec)
-			delete(c.tcp, k)
-			continue
-		}
-		if (tf.hasFIN && now.Sub(tf.finAt) > time.Minute) || now.Sub(tf.last) > 2*time.Hour {
+		// A flow of SYNs only never came up: no FIN or FLOW_DELETED will
+		// end it.
+		if (tf.hasFIN && now.Sub(tf.finAt) > time.Minute) || (!tf.est && now.Sub(tf.last) > synOnlyTTL) || now.Sub(tf.last) > 2*time.Hour {
 			closed = append(closed, tf.rec)
 			delete(c.tcp, k)
 			// Every flow here is Direct: its later segments (a remote that

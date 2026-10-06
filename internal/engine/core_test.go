@@ -933,7 +933,7 @@ func TestFallback(t *testing.T) {
 
 // A Direct connection that never got past the handshake (its SYNs were
 // dropped or refused: the answer is inbound and unseen) ends a minute
-// after its last SYN; one that sent data lives on until FIN or idle.
+// after its last SYN; one that got further lives on until FIN or idle.
 func TestTCPDirectSYNOnlyExpires(t *testing.T) {
 	h := newHarness(t, appRules, Options{})
 	h.c.DNS.AddResponse(dnsResponse(t, "example.org.", "93.184.216.34"))
@@ -952,10 +952,9 @@ func TestTCPDirectSYNOnlyExpires(t *testing.T) {
 	h.c.mu.Lock()
 	_, dead := h.c.tcp[nat.FlowKey{Src: netip.MustParseAddrPort(L), Dst: netip.MustParseAddrPort(R)}]
 	_, live := h.c.tcp[nat.FlowKey{Src: netip.MustParseAddrPort(up), Dst: netip.MustParseAddrPort(R)}]
-	_, remembered := h.c.untracked[nat.FlowKey{Src: netip.MustParseAddrPort(L), Dst: netip.MustParseAddrPort(R)}]
 	h.c.mu.Unlock()
-	if dead || remembered || !live {
-		t.Fatalf("SYN-only kept %v (untracked %v), established kept %v", dead, remembered, live)
+	if dead || !live {
+		t.Fatalf("SYN-only kept %v, established kept %v", dead, live)
 	}
 	if n := len(h.c.Flows.Active(time.Now())); n != 1 {
 		t.Fatalf("%d active records", n)
