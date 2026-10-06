@@ -724,14 +724,12 @@ func (c *Core) newFlow(p *packet.Packet, addr *divert.Address, proto uint8, key 
 		// The flow is parked: this packet waits for its first one's
 		// decision even if the owner is known by now (deciding it here
 		// would open a second record and overwrite the flow's state).
-		if len(pf.pkts) < pendingMaxPackets {
-			if c.pendBytes+size <= pendingMaxBytes {
-				pf.pkts = append(pf.pkts, pendingPkt{append([]byte(nil), p.Buf...), *addr, orig})
-				pf.bytes += size
-				c.pendBytes += size
-			} else {
-				c.PendingFull.Add(1)
-			}
+		if len(pf.pkts) < pendingMaxPackets && c.pendBytes+size <= pendingMaxBytes {
+			pf.pkts = append(pf.pkts, pendingPkt{append([]byte(nil), p.Buf...), *addr, orig})
+			pf.bytes += size
+			c.pendBytes += size
+		} else {
+			c.PendingFull.Add(1) // dropped: the flow's or the queue's room is used up
 		}
 		c.mu.Unlock()
 		return

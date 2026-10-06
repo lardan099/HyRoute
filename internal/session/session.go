@@ -106,9 +106,13 @@ type Stats struct {
 	// FragDropped: IP fragments dropped (their datagram was not direct);
 	// Malformed: outbound packets that did not parse, dropped; Panics:
 	// packets whose handling panicked, dropped.
-	FragDropped int64  `json:"fragDropped"`
-	Malformed   int64  `json:"malformed"`
-	Panics      int64  `json:"panics"`
+	FragDropped int64 `json:"fragDropped"`
+	Malformed   int64 `json:"malformed"`
+	Panics      int64 `json:"panics"`
+	// PendingFull: packets the pending queue had no room for (a flow
+	// decided without waiting for its owner, or a packet of a waiting flow
+	// past its 8, dropped).
+	PendingFull int64  `json:"pendingFull"`
 	DNSPairs    int    `json:"dnsPairs"`
 	NATEntries  int    `json:"natEntries"`
 	RelayPort   int    `json:"relayPort"`
