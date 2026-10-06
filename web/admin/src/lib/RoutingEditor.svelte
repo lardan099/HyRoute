@@ -381,6 +381,13 @@
   {:else if view}
     {#if view.cascade}<div class="note info small">{t('rt.cascadeNote', { name: view.cascade.name })}</div>{/if}
 
+    {#each whole as p, i (i)}
+      <div class="note {p.level === 'error' ? 'error' : 'warn'} small lint">
+        <span class="grow">{p.message}</span>
+        {#if p.fix?.length}<button class="ghost" onclick={() => addFix(p)}>{t('rt.addFix')}</button>{/if}
+      </div>
+    {/each}
+
     {#if keepFile}
       <div class="note info">
         {t('rt.fileNote', { path: view.file ?? '' })}
@@ -401,13 +408,6 @@
         </ol>
       {/if}
     {:else}
-      {#each whole as p, i (i)}
-        <div class="note {p.level === 'error' ? 'error' : 'warn'} small lint">
-          <span class="grow">{p.message}</span>
-          {#if p.fix?.length}<button class="ghost" onclick={() => addFix(p)}>{t('rt.addFix')}</button>{/if}
-        </div>
-      {/each}
-
       <div class="row tools">
         <input class="search" type="search" bind:value={q} placeholder={t('rt.search')} />
         <select bind:value={fOutbound} aria-label={t('rt.outbound')}>

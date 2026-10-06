@@ -383,6 +383,28 @@ func TestFile(t *testing.T) {
 	}
 }
 
+// Rules in acl.file get the lint that holds for any rules: plain DNS on
+// a cascade entry.
+func TestFileLint(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, fileConfig, true)
+	plain := func(ps []acl.Problem) bool {
+		return slices.ContainsFunc(ps, func(p acl.Problem) bool { return p.Code == "plain_resolver" && p.Rule == -1 })
+	}
+	v, err := e.svc.Open(ctx, e.server)
+	if err != nil || !plain(v.Problems) {
+		t.Fatalf("%v %+v", err, v.Problems)
+	}
+	in := Input{Base: v.Revision, KeepFile: true, Resolver: v.Resolver}
+	if p, err := e.svc.Preview(ctx, e.server, in); err != nil || !plain(p.Rules) {
+		t.Fatalf("%v %+v", err, p.Rules)
+	}
+	in.Resolver = Resolver{Type: "https", Addr: "1.1.1.1:443"}
+	if p, err := e.svc.Preview(ctx, e.server, in); err != nil || plain(p.Rules) {
+		t.Fatalf("DoH: %v %+v", err, p.Rules)
+	}
+}
+
 func TestExportImport(t *testing.T) {
 	e := newEnv(t, config, true)
 	v, _ := e.svc.Open(context.Background(), e.server)

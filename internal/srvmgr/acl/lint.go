@@ -154,16 +154,31 @@ func lint(d Document, env Env, valid []bool, at []int) []Problem {
 		}
 	}
 
-	if env.Entry {
-		t := strings.ToLower(env.Resolver.Type)
-		plain := t == "" || t == "system" || t == "udp" || t == "tcp"
-		// With an ACL Hysteria resolves every domain before choosing the
-		// outbound; a udp or tcp resolver resolves them anyway.
-		if plain && (d.Text() != "" || t == "udp" || t == "tcp") {
-			add(-1, Problem{Level: Warn, Code: "plain_resolver", Message: "Вход каскада узнаёт адреса сайтов через DNS без шифрования: провайдер входа видит, какие сайты открывают клиенты. Укажите resolver типа https (DoH) или tls (DoT)."})
-		}
+	if p, ok := plainResolver(env, d.Text() != ""); ok {
+		add(-1, p)
 	}
 	return ps
+}
+
+// FileLint is the lint of rules kept in acl.file, which the controller
+// has not read: what holds for any rules there.
+func FileLint(env Env) []Problem {
+	if p, ok := plainResolver(env, true); ok {
+		return []Problem{p}
+	}
+	return nil
+}
+
+// plainResolver: a cascade entry resolves the clients' domains with plain
+// DNS. With an ACL (hasACL) Hysteria resolves every domain before choosing
+// the outbound; a udp or tcp resolver resolves them anyway.
+func plainResolver(env Env, hasACL bool) (Problem, bool) {
+	t := strings.ToLower(env.Resolver.Type)
+	plain := t == "" || t == "system" || t == "udp" || t == "tcp"
+	if !env.Entry || !plain || !hasACL && t != "udp" && t != "tcp" {
+		return Problem{}, false
+	}
+	return Problem{Rule: -1, Level: Warn, Code: "plain_resolver", Message: "Вход каскада узнаёт адреса сайтов через DNS без шифрования: провайдер входа видит, какие сайты открывают клиенты. Укажите resolver типа https (DoH) или tls (DoT)."}, true
 }
 
 // reachable: a connection to sample goes somewhere other than reject on

@@ -58,7 +58,8 @@ type View struct {
 	Resolver  Resolver   `json:"resolver"`
 	// Cascade is the deployed cascade the server is the entry of.
 	Cascade *ChainRef `json:"cascade,omitempty"`
-	// Problems are the checks and lint of the rules (none for a file).
+	// Problems are the checks and lint of the rules (for a file, the lint
+	// that holds for any rules: acl.FileLint).
 	Problems []acl.Problem `json:"problems"`
 }
 
@@ -84,6 +85,8 @@ func (s *Service) Open(ctx context.Context, serverID int64) (View, error) {
 	}
 	if v.File == "" {
 		v.Problems = append(v.Problems, acl.Check(acl.ParseInline(c.ACL.Inline), s.env(c, ref))...)
+	} else {
+		v.Problems = append(v.Problems, acl.FileLint(s.env(c, ref))...)
 	}
 	return v, nil
 }
@@ -253,6 +256,8 @@ func (s *Service) candidate(ctx context.Context, serverID int64, in Input) (Prev
 	p := Preview{Check: ch, ACL: hiddenDoc(after), Rules: []acl.Problem{}, Changes: []acl.Change{}, Same: same}
 	if !in.KeepFile || !file {
 		p.Rules = append(p.Rules, acl.Check(after, envAfter)...)
+	} else {
+		p.Rules = append(p.Rules, acl.FileLint(envAfter)...)
 	}
 	if !file {
 		changes, err := acl.DryRun(before, after, envBefore, envAfter, kept, in.Requests)
