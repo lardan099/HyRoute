@@ -43,6 +43,16 @@ jobs:
         with:
           go-version: '1.27.x'
           check-latest: true
+      - name: gofmt
+        # On Linux: a Windows checkout may turn the line ends into CRLF.
+        run: |
+          files=$(gofmt -l cmd internal build tools frontend/*.go web/admin/*.go)
+          test -z "$files" || { echo "$files"; echo "::error::gofmt -l lists these files: run gofmt -w on them"; exit 1; }
+      # The Linux build (hyroute-server) has code of its own: vet and the
+      # vulnerability check also for GOOS=linux.
+      - run: go vet ./...
+      - name: Known vulnerabilities (govulncheck)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - name: WinDivert's filter compiler (tools/wdfilter)
         run: ./tools/wdfilter/build.sh
       - run: go test -race ./...
