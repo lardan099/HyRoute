@@ -396,19 +396,29 @@ func (c *Controller) GeoCategories(kind, query string, limit int) []string {
 // the same lock order: that save compiled its rules with the old
 // databases and would otherwise publish them last.
 func (c *Controller) recompileRules() {
+	// Every writer of the settings holds saveMu, so they stay as read
+	// while the compile runs without c.mu: after DB.Forget it decodes
+	// each category again (ru-blocked-all: over a million names).
 	c.saveMu.Lock()
 	defer c.saveMu.Unlock()
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.settings == nil {
+	st := c.settings
+	c.mu.Unlock()
+	if st == nil {
 		return
 	}
-	set, err := rules.Compile(c.settings.Config)
+	runCompileHook()
+	set, err := rules.Compile(st.Config)
 	if err != nil {
 		c.Log.Warn("rules: recompile failed", "err", err)
 		return
 	}
-	set.ExactWeb = c.settings.ExactWeb()
+	set.ExactWeb = st.ExactWeb()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.settings != st {
+		return
+	}
 	c.set = set
 	c.applyRoutingLocked()
 }

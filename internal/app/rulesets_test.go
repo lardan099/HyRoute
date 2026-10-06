@@ -694,6 +694,7 @@ func TestNoCompileUnderMu(t *testing.T) {
 	must(t, errOf(c.SwitchRuleset(home, SourceUser, SwitchOptions{})))
 	c.Store.TestRulesetsWrite = nil
 	addRule(t, c, "marker.example") // a pair: the marker is on disk
+	c.recompileRules()              // after a rule database update
 	c2, _ := newCtlAt(t, c.Store)
 	_ = c2
 	if n.Load() < 6 {
