@@ -83,27 +83,29 @@ func (l *Linker) UnlinkKind() *jobs.Kind {
 			d := func(f func(context.Context, *jobs.Env, unlinkParams) (bool, error)) func(context.Context, *jobs.Env) (bool, error) {
 				return func(ctx context.Context, env *jobs.Env) (bool, error) { return f(ctx, env, p) }
 			}
+			// As in the link job, a retry or a recovery before the commit
+			// starts at check.
 			return []jobs.Step{
 				{Name: "connect", Phase: model.JobConnecting, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.connect(ctx, env, p.jobParams) }},
 				{Name: "check", Phase: model.JobPreflight, Safe: true, Run: w(x.uncheck)},
-				{Name: "entry-config", Phase: model.JobConfiguring, Safe: true, Done: d(x.unEntryDone), Run: w(x.unEntry),
+				{Name: "entry-config", Phase: model.JobConfiguring, Done: d(x.unEntryDone), Run: w(x.unEntry),
 					Undo: func(ctx context.Context, env *jobs.Env) error {
 						return x.undoConfig(ctx, env, p.Entry, "entryConfig", "entryChanged", "входа")
 					}},
-				{Name: "entry-restart", Phase: model.JobStarting, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error {
+				{Name: "entry-restart", Phase: model.JobStarting, Done: restarted("entryChanged"), Run: func(ctx context.Context, env *jobs.Env) error {
 					return x.restart(ctx, env, p.Entry, "entryChanged", "входа")
 				}},
-				{Name: "entry-verify", Phase: model.JobVerifying, Safe: true, Run: w(x.unEntryVerify)},
-				{Name: "link-service", Phase: model.JobConfiguring, Safe: true, Done: d(x.unServiceDone), Run: w(x.unService), Undo: w(x.undoUnService)},
-				{Name: "link-config", Phase: model.JobConfiguring, Safe: true, Done: d(x.unConfigDone), Run: w(x.unConfig), Undo: w(x.undoUnConfig)},
-				{Name: "exit-config", Phase: model.JobConfiguring, Safe: true, Done: d(x.unExitDone), Run: w(x.unExit),
+				{Name: "entry-verify", Phase: model.JobVerifying, Run: w(x.unEntryVerify)},
+				{Name: "link-service", Phase: model.JobConfiguring, Done: d(x.unServiceDone), Run: w(x.unService), Undo: w(x.undoUnService)},
+				{Name: "link-config", Phase: model.JobConfiguring, Done: d(x.unConfigDone), Run: w(x.unConfig), Undo: w(x.undoUnConfig)},
+				{Name: "exit-config", Phase: model.JobConfiguring, Done: d(x.unExitDone), Run: w(x.unExit),
 					Undo: func(ctx context.Context, env *jobs.Env) error {
 						return x.undoConfig(ctx, env, p.Exit, "exitConfig", "exitChanged", "выхода")
 					}},
-				{Name: "exit-restart", Phase: model.JobStarting, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error {
+				{Name: "exit-restart", Phase: model.JobStarting, Done: restarted("exitChanged"), Run: func(ctx context.Context, env *jobs.Env) error {
 					return x.restart(ctx, env, p.Exit, "exitChanged", "выхода")
 				}},
-				{Name: "exit-verify", Phase: model.JobVerifying, Safe: true, Run: w(x.unExitVerify)},
+				{Name: "exit-verify", Phase: model.JobVerifying, Run: w(x.unExitVerify)},
 				{Name: "commit", Phase: model.JobVerifying, Safe: true, Done: d(x.unCommitted), Run: w(x.unCommit)},
 				{Name: "cleanup", Phase: model.JobVerifying, Safe: true, Run: w(x.unCleanup)},
 			}, nil

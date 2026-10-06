@@ -760,6 +760,39 @@ func TestLinkResumesAfterRestart(t *testing.T) {
 	if len(w.revs(w.in)) != 2 || len(w.revs(w.out)) != 2 || w.link().State != model.LinkActive {
 		t.Fatalf("revisions %d %d, link %s", len(w.revs(w.in)), len(w.revs(w.out)), w.link().State)
 	}
+	// The recovery checked the servers again, without restarting the
+	// exit a second time.
+	if n := w.exit.restarts(unitName); n != 1 || !strings.Contains(log, "с шага «check»") {
+		t.Fatalf("exit restarted %d times\n%s", n, log)
+	}
+}
+
+// The first deployment fails and is rolled back; the admin then edits
+// the exit's config over SSH. A retry checks the servers again and stops
+// before writing: the edit stays.
+func TestLinkRetryChecksConfigsAgain(t *testing.T) {
+	w := newWorld(t, exitUP)
+	w.exit.down = true
+	j, log := w.wait(w.submit())
+	if j.State != model.JobFailed || !strings.Contains(j.ErrorMessage, "Связь не заработала") {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	edited := exitUP + "# edited over SSH\n"
+	w.exit.mu.Lock()
+	w.exit.files[cfgPath] = []byte(edited)
+	w.exit.down = false
+	w.exit.mu.Unlock()
+	if j, err := w.linker.x.Jobs.Retry(context.Background(), j.ID, 1); err != nil {
+		t.Fatal(err)
+	} else if j, log = w.wait(j); j.State != model.JobFailed || j.CurrentStep != "check" || !strings.Contains(j.ErrorMessage, "изменили не через HyRoute") {
+		t.Fatalf("retry: %s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, log)
+	}
+	if now, _ := w.exit.file(cfgPath); now != edited {
+		t.Fatalf("the edit is gone:\n%s", now)
+	}
+	if l := w.link(); l.State != model.LinkFailed {
+		t.Fatalf("link %s", l.State)
+	}
 }
 
 func TestParsePing(t *testing.T) {

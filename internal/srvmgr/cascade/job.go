@@ -172,20 +172,24 @@ func (l *Linker) Kind() *jobs.Kind {
 			d := func(f func(context.Context, *jobs.Env, jobParams) (bool, error)) func(context.Context, *jobs.Env) (bool, error) {
 				return func(ctx context.Context, env *jobs.Env) (bool, error) { return f(ctx, env, p) }
 			}
-			// Each step looks at the servers first: a retry or a recovery
-			// goes on from the nearest step.
+			// Each step looks at the servers first. A retry or a recovery
+			// before the commit starts at check, which compares the
+			// servers' configs with the base revisions again and marks
+			// the link linking (a rollback may have run, and the configs
+			// may have been edited since); steps done already are skipped,
+			// a service restarted already is not restarted again.
 			return []jobs.Step{
 				{Name: "connect", Phase: model.JobConnecting, Safe: true, Run: w(x.connect)},
 				{Name: "check", Phase: model.JobPreflight, Safe: true, Run: w(x.check)},
-				{Name: "exit-config", Phase: model.JobConfiguring, Safe: true, Done: d(x.exitConfigDone), Run: w(x.exitConfig), Undo: w(x.undoExitConfig)},
-				{Name: "exit-restart", Phase: model.JobStarting, Safe: true, Run: w(x.exitRestart)},
-				{Name: "exit-verify", Phase: model.JobVerifying, Safe: true, Run: w(x.exitVerify)},
-				{Name: "link-config", Phase: model.JobConfiguring, Safe: true, Done: d(x.linkConfigDone), Run: w(x.linkConfig), Undo: w(x.undoLinkConfig)},
-				{Name: "link-service", Phase: model.JobStarting, Safe: true, Run: w(x.linkService), Undo: w(x.undoLinkService)},
-				{Name: "link-check", Phase: model.JobVerifying, Safe: true, Run: w(x.linkCheck)},
-				{Name: "entry-config", Phase: model.JobConfiguring, Safe: true, Done: d(x.entryConfigDone), Run: w(x.entryConfig), Undo: w(x.undoEntryConfig)},
-				{Name: "entry-restart", Phase: model.JobStarting, Safe: true, Run: w(x.entryRestart)},
-				{Name: "entry-verify", Phase: model.JobVerifying, Safe: true, Run: w(x.entryVerify)},
+				{Name: "exit-config", Phase: model.JobConfiguring, Done: d(x.exitConfigDone), Run: w(x.exitConfig), Undo: w(x.undoExitConfig)},
+				{Name: "exit-restart", Phase: model.JobStarting, Done: restarted("exitChanged"), Run: w(x.exitRestart)},
+				{Name: "exit-verify", Phase: model.JobVerifying, Run: w(x.exitVerify)},
+				{Name: "link-config", Phase: model.JobConfiguring, Done: d(x.linkConfigDone), Run: w(x.linkConfig), Undo: w(x.undoLinkConfig)},
+				{Name: "link-service", Phase: model.JobStarting, Run: w(x.linkService), Undo: w(x.undoLinkService)},
+				{Name: "link-check", Phase: model.JobVerifying, Run: w(x.linkCheck)},
+				{Name: "entry-config", Phase: model.JobConfiguring, Done: d(x.entryConfigDone), Run: w(x.entryConfig), Undo: w(x.undoEntryConfig)},
+				{Name: "entry-restart", Phase: model.JobStarting, Done: restarted("entryChanged"), Run: w(x.entryRestart)},
+				{Name: "entry-verify", Phase: model.JobVerifying, Run: w(x.entryVerify)},
 				{Name: "commit", Phase: model.JobVerifying, Safe: true, Done: d(x.committed), Run: w(x.commit)},
 				{Name: "cleanup", Phase: model.JobVerifying, Safe: true, Run: w(x.cleanup)},
 			}, nil
@@ -554,6 +558,10 @@ func (x *linker) undoConfig(ctx context.Context, env *jobs.Env, server int64, fl
 	if env.Get(flag) == "" || committedRevision(env) {
 		return jobs.ErrNothingToUndo
 	}
+	// The service gets the previous config back: a retry restarts it.
+	if err := env.Set(changedFlag+":restarted", ""); err != nil {
+		return err
+	}
 	in, err := x.Store.Installation(ctx, server)
 	if err != nil {
 		return err
@@ -592,7 +600,15 @@ func (x *linker) restart(ctx context.Context, env *jobs.Env, server int64, chang
 		return jobs.Fail("Не удалось перезапустить службу сервера "+role+".", err)
 	}
 	env.Logf("Служба %s сервера %s перезапущена.", in.Unit, role)
-	return nil
+	return env.Set(changedFlag+":restarted", "1")
+}
+
+// restarted: the service runs the config this job wrote (the restart
+// after it is recorded; the undo of the config clears the record).
+func restarted(changedFlag string) func(context.Context, *jobs.Env) (bool, error) {
+	return func(_ context.Context, env *jobs.Env) (bool, error) {
+		return env.Get(changedFlag+":restarted") == "1", nil
+	}
 }
 
 func (x *linker) exitRestart(ctx context.Context, env *jobs.Env, p jobParams) error {
