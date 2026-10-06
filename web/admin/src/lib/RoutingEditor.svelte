@@ -4,7 +4,7 @@
   // filters), the checks of the controller over it, and the apply job. The
   // controller checks every draft (Hysteria's compiler and lint) and keeps
   // the text of untouched rules as it was.
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import {
     api,
@@ -194,6 +194,8 @@
     clearTimeout(timer);
     timer = setTimeout(check, 400);
   }
+  // A closed editor sends no check of its last edit.
+  onDestroy(() => clearTimeout(timer));
 
   function save(r: AclRule) {
     if (!editing) return;

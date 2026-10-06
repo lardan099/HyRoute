@@ -3,7 +3,7 @@
   // searched in the controller's databases), protocol and port, outbound,
   // hijack, comment, group, off. Fields are checked here; the controller
   // checks the rule again with Hysteria's compiler.
-  import { untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { api, asApiError, type AclRule } from '../api';
   import { t, type Key } from '../i18n';
   import { addressOf, bad, badChars, isIP, kindOf, kinds, outboundOK, portOK, valueOf, type AddrKind } from './acl';
@@ -73,6 +73,7 @@
       }
     }, 250);
   }
+  onDestroy(() => clearTimeout(timer));
 
   function setKind(k: AddrKind) {
     kind = k;
