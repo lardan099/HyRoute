@@ -199,7 +199,9 @@ type tcpFlow struct {
 }
 
 type udpFlow struct {
-	rec     *flows.Record
+	rec *flows.Record
+	// route is set before the flow is in c.udp and never after: the
+	// packet loop reads it without c.mu.
 	route   rules.Action
 	profile string
 	last    time.Time

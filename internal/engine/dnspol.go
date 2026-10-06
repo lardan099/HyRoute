@@ -863,10 +863,12 @@ func (c *Core) DropDoH() func(*nat.Entry) bool {
 		}
 	}
 	for k, uf := range c.udp {
+		// Closed as the TCP ones, not switched to Block: the packet loop
+		// reads a published flow's route without c.mu. The next datagram
+		// is decided again, and blocked.
 		if uf.route != rules.Block && c.dohBlocked(browserOf(uf.rec), packet.ProtoUDP, k.Dst, "") {
-			uf.route = rules.Block
-			uf.rec.Set(func(f *flows.Fields) { f.Rule = dnspolicy.RuleBrowserDoH })
-			c.finish(uf.rec, rules.Block, "dropped: blocked")
+			delete(c.udp, k)
+			closed = append(closed, uf.rec)
 		}
 	}
 	c.mu.Unlock()

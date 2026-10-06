@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1100,9 +1101,16 @@ func TestDropDoH(t *testing.T) {
 	if i := r.next(t); i.addr.Outbound() || i.pkt.TCPFlags()&packet.FlagRST == 0 {
 		t.Fatal("tracked DoH flow not reset")
 	}
-	// The UDP flow is blocked now.
+	// The UDP flow is blocked now: closed, and its next datagram decided
+	// again.
 	r.sendUDP("192.168.1.5:46001", "8.8.8.8:443", []byte("quic"))
 	r.none(t)
+	if v := lastRecord(t, r.c); v.Dst != "8.8.8.8:443" || v.Route != "block" || v.Rule != dnspolicy.RuleBrowserDoH {
+		t.Fatalf("%+v", v)
+	}
+	if !slices.ContainsFunc(r.c.Flows.Closed(), func(v flows.View) bool { return v.Dst == "8.8.8.8:443" && v.Route == "direct" }) {
+		t.Fatal("the direct UDP flow not closed")
+	}
 	// Others go on.
 	r.sendTCP("192.168.1.5:46002", "93.184.216.34:443", packet.FlagACK, "data")
 	if i := r.next(t); !i.addr.Outbound() {
