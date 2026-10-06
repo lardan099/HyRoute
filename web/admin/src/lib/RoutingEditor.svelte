@@ -43,7 +43,10 @@
   let obs = $state<RoutingOutbound[]>([]);
   let resolver = $state<RoutingResolver>({ type: 'system' });
   let extra = $state('');
+  // highlight is the row "Проверить правило" found: its key, as the rows
+  // were when the check was sent (checked), so it follows a move.
   let highlight = $state<number | null>(null);
+  let checked: number[] = [];
   let obEditing = $state<{ index: number | null; o: RoutingOutbound | null } | null>(null);
   let tplOpen = $state<{ list: RoutingTemplate[]; title: string } | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);
@@ -480,7 +483,7 @@
                     class:off={r.rule.off}
                     class:grouped={!!r.rule.group}
                     class:over={overKey === r.key && dragKey !== r.key}
-                    class:hl={highlight === r.i}
+                    class:hl={highlight === r.key}
                     draggable={!filtering}
                     ondragstart={(e) => {
                       dragKey = r.key;
@@ -600,7 +603,15 @@
     <div class="col">
       {#if !keepFile}<section class="card">
         <h2>{t('rc.title')}</h2>
-        <RoutingCheck serverId={server.id} acl={() => ({ rules: rows.map((r) => r.rule), tail })} outbounds={obs.map((o) => o.name)} onrule={(i) => (highlight = i)} />
+        <RoutingCheck
+          serverId={server.id}
+          acl={() => {
+            checked = rows.map((r) => r.key);
+            return { rules: rows.map((r) => r.rule), tail };
+          }}
+          outbounds={obs.map((o) => o.name)}
+          onrule={(i) => (highlight = checked[i] ?? null)}
+        />
       </section>{/if}
       <section class="card"><GeoCard serverId={server.id} writable={true} /></section>
     </div>
