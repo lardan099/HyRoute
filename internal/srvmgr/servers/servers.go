@@ -273,9 +273,14 @@ func (s *Service) Update(ctx context.Context, actor, id int64, in Input) (Info, 
 		drop = []model.CredKind{model.CredSSHKey, model.CredSSHKeyPassphrase}
 	case model.AuthKey:
 		var key []byte
+		// The stored passphrase is written again only with a new key or
+		// a typed passphrase: sealed anew it would count as new
+		// credentials (refused during a job) though nothing changed.
+		changed := in.KeyPassphrase != nil
 		if in.Key != nil && strings.TrimSpace(*in.Key) != "" {
 			key = []byte(strings.TrimSpace(*in.Key) + "\n")
 			creds[model.CredSSHKey] = string(key)
+			changed = true
 		} else if cur.HasKey {
 			c, err := s.Credentials(ctx, id)
 			if err != nil {
@@ -293,9 +298,11 @@ func (s *Service) Update(ctx context.Context, actor, id int64, in Input) (Info, 
 			return Info{}, err
 		}
 		drop = []model.CredKind{model.CredSSHPassword}
-		if pass != "" {
+		switch {
+		case !changed:
+		case pass != "":
 			creds[model.CredSSHKeyPassphrase] = pass
-		} else {
+		default:
 			drop = append(drop, model.CredSSHKeyPassphrase)
 		}
 	}

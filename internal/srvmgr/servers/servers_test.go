@@ -284,3 +284,40 @@ func TestUpdateKeepsState(t *testing.T) {
 		t.Fatalf("%s %q", got.State, got.Notes)
 	}
 }
+
+// A key under a passphrase that comes back with neither is kept as it is:
+// renaming such a server during a job is no change of its credentials.
+func TestUpdateKeepsKeyPassphrase(t *testing.T) {
+	s, db, _ := newService(t)
+	ctx := context.Background()
+	in := base()
+	in.AuthType, in.Password, in.Key, in.KeyPassphrase = model.AuthKey, nil, ptr(genKey(t, fakePassphrase)), ptr(fakePassphrase)
+	info, err := s.Create(ctx, 1, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := db.ServerCredentials(ctx, info.ID)
+	j := model.Job{Kind: "deploy", ServerID: info.ID, State: model.JobInstalling, CreatedAt: time.Now()}
+	if err := db.CreateJob(ctx, &j, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	in.Key, in.KeyPassphrase, in.Name, in.Notes = nil, nil, "Renamed", "during a job"
+	got, err := s.Update(ctx, 1, info.ID, in)
+	if err != nil || got.Name != "Renamed" || !got.HasKeyPassphrase {
+		t.Fatalf("%+v %v", got, err)
+	}
+	after, _ := db.ServerCredentials(ctx, info.ID)
+	if len(after) != len(before) {
+		t.Fatalf("credentials %d -> %d", len(before), len(after))
+	}
+	for i := range before {
+		if before[i].Kind != after[i].Kind || !bytes.Equal(before[i].Sealed, after[i].Sealed) {
+			t.Fatalf("%s sealed again", before[i].Kind)
+		}
+	}
+	// A typed passphrase is a change of the credentials.
+	in.KeyPassphrase = ptr(fakePassphrase)
+	if _, err := s.Update(ctx, 1, info.ID, in); !errors.Is(err, store.ErrBusy) {
+		t.Fatalf("passphrase during a job: %v", err)
+	}
+}
