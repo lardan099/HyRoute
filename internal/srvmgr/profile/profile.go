@@ -112,6 +112,10 @@ func Summarize(srv model.Server, cfg []byte, meta model.ConfigMeta, links []stri
 	if s.Auth == "http" || s.Auth == "command" {
 		s.Warnings = append(s.Warnings, "Пароли клиентов проверяет внешний сервис: HyRoute их не знает, и ссылку нужно дополнить паролем вручную.")
 	}
+	if c.Mimic.Enabled {
+		// The client config has it (ClientFor), a link has no field for it.
+		s.Warnings = append(s.Warnings, "На сервере включён mimic: он нужен и клиенту, а ссылка и QR-код его не передают. Подключайте клиент через config.yaml, в нём mimic включён; клиент без mimic (в том числе HyRoute) не подключится.")
+	}
 	if meta.TLS == "" && c.ACME == nil && c.TLS == nil {
 		s.Warnings = append(s.Warnings, "В конфиге нет TLS: Hysteria с ним не запустится.")
 	}

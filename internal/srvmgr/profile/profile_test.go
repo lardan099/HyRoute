@@ -85,6 +85,20 @@ func TestACMEServer(t *testing.T) {
 	}
 }
 
+// A link carries no mimic, which the client needs too: the summary says
+// so, and the client config has it.
+func TestMimicWarning(t *testing.T) {
+	cfg := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-profile-pass\nmimic:\n  enabled: true\n")
+	pr, err := Build(srv, cfg, model.ConfigMeta{TLS: "acme", Ports: "443"}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc, _ := hyconfig.ParseClient([]byte(pr.Config))
+	if len(pr.Warnings) != 1 || !strings.Contains(pr.Warnings[0], "mimic") || !cc.Mimic.Enabled {
+		t.Fatalf("%q\n%s", pr.Warnings, pr.Config)
+	}
+}
+
 // With several ACME domains the summary shows the SNI the links carry:
 // none when the address is any of the domains, else the first one.
 func TestACMEDomainsSNI(t *testing.T) {
