@@ -93,6 +93,10 @@
   // ---- server ----
   let link = $state('');
   let added = $state('');
+  // What the import or the subscription warned about (a link over http://,
+  // links that did not parse): shown with the result, as «Серверы» and
+  // «Подписки» do.
+  let warnings = $state<string[]>([]);
 
   async function paste() {
     error = '';
@@ -110,11 +114,13 @@
     const t = link.trim();
     error = '';
     added = '';
+    warnings = [];
     if (!t) return;
     busy = true;
     try {
       if (/(hysteria2|hy2):\/\//i.test(t)) {
         const r = await api.ImportURIs(t);
+        warnings = r.warnings ?? [];
         if (r.added.length) {
           added = `Добавлено: ${r.added.map((p) => hide(p.name)).join(', ')}.`;
           link = '';
@@ -132,6 +138,7 @@
             : 'По этой ссылке не нашлось ни одного сервера. Проверьте, что скопировали её целиком, или попросите новую.';
         } else {
           const s = await api.AddSubscription({ token: pv.token, name: pv.title || 'Моя подписка', enabled: true, interval: '24h' });
+          warnings = [...(pv.warnings ?? []), ...(pv.errors ?? []).slice(0, 5)];
           added = `Подписка «${hide(s.name)}» добавлена: ${s.profiles} ${plural(s.profiles, 'сервер', 'сервера', 'серверов')}. HyRoute будет обновлять её сам раз в сутки.`;
           link = '';
         }
@@ -391,6 +398,7 @@
         <button class="primary" onclick={addLink} disabled={busy || !link.trim()}>{busy ? 'Добавляю…' : 'Добавить'}</button>
       </div>
       {#if added}<div class="note ok">{added}</div>{/if}
+      {#each warnings as w, i (i)}<div class="note warn small">{hide(w)}</div>{/each}
       {#if ui.profiles.length}
         <p class="muted small">
           Серверов добавлено: {ui.profiles.length}{ui.profiles.length <= 4 ? ` (${ui.profiles.map((p) => hide(p.name)).join(', ')})` : ''}. Можно
