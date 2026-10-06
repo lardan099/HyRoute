@@ -1,6 +1,19 @@
 package hyconfig
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
+
+// MaxServerConfig bounds a server config HyRoute reads, writes or checks:
+// far more than any real one (an ACL of tens of thousands of rules fits),
+// and the panel keeps a few copies of it per request (the masked text,
+// the diff). Import, the config editor, apply and the routing editor all
+// parse through ParseServer, so this is the one limit.
+const MaxServerConfig = 6 << 20
+
+// ErrTooLarge is a server config over MaxServerConfig.
+var ErrTooLarge = errors.New("конфиг больше 6 МБ: панель обрабатывает конфиги до 6 МБ")
 
 // Server is the Hysteria server config. Field order is the order the
 // config is written in.
@@ -29,8 +42,11 @@ type Server struct {
 	Unknown               Unknown      `yaml:"-"`
 }
 
-// ParseServer reads a server config.
+// ParseServer reads a server config (at most MaxServerConfig).
 func ParseServer(b []byte) (*Server, error) {
+	if len(b) > MaxServerConfig {
+		return nil, ErrTooLarge
+	}
 	var s Server
 	if err := parseDoc(b, &s); err != nil {
 		return nil, err

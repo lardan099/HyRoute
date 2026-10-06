@@ -267,10 +267,12 @@ func TestConfigEditBodyLimit(t *testing.T) {
 	for _, op := range []string{"render", "apply"} {
 		code(t, owner.do("POST", "/api/v1/servers/999/config/"+op, map[string]any{"revision": 1, "yaml": big}, nil), http.StatusNotFound, "not_found")
 	}
-	huge := strings.Repeat("# padding\n", 700000)
+	// A config of 6 MB (hyconfig.MaxServerConfig) fits, escaped as JSON;
+	// a body past that is refused before the handler.
+	huge := strings.Repeat("# padding\n", 1400000)
 	rec := owner.do("POST", "/api/v1/servers/999/config/render", map[string]any{"revision": 1, "yaml": huge}, nil)
 	code(t, rec, http.StatusRequestEntityTooLarge, "too_large")
-	if m := decodeError(t, rec).Message; !strings.Contains(m, "6 МБ") {
+	if m := decodeError(t, rec).Message; !strings.Contains(m, "13 МБ") {
 		t.Fatalf("%q", m)
 	}
 	code(t, owner.do("PATCH", "/api/v1/servers/999", map[string]any{"notes": huge[:2<<20]}, nil), http.StatusRequestEntityTooLarge, "too_large")

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/hyconfig"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
@@ -50,6 +51,8 @@ func mapError(err error) error {
 		return &Error{Status: http.StatusTooManyRequests, Code: "rate_limited", Message: "Слишком много неудачных попыток. Повторите через " + strconv.Itoa(max(secs, 1)) + " с.", Details: "retry-after=" + strconv.Itoa(max(secs, 1))}
 	case errors.Is(err, auth.ErrBusy):
 		return &Error{Status: http.StatusServiceUnavailable, Code: "auth_busy", Message: "Сервер сейчас проверяет слишком много паролей сразу. Повторите через несколько секунд.", Details: "retry-after=" + strconv.Itoa(busyRetry)}
+	case errors.Is(err, hyconfig.ErrTooLarge):
+		return &Error{Status: http.StatusRequestEntityTooLarge, Code: "config_too_large", Message: err.Error()}
 	case errors.As(err, &inv):
 		return &Error{Status: http.StatusBadRequest, Code: "invalid", Message: inv.Msg, Details: inv.Field}
 	case errors.Is(err, auth.ErrBadCredentials):

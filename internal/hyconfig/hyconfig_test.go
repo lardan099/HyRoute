@@ -1,6 +1,7 @@
 package hyconfig
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -341,4 +342,16 @@ func FuzzServerRoundTrip(f *testing.F) {
 			t.Fatalf("unstable: %v\n%s\n---\n%s", err, out, out2)
 		}
 	})
+}
+
+// A server config over MaxServerConfig is refused whole: the panel's one
+// size limit, for import, the editors and apply.
+func TestParseServerTooLarge(t *testing.T) {
+	big := []byte("listen: :443\n#" + strings.Repeat("x", MaxServerConfig) + "\n")
+	if _, err := ParseServer(big); !errors.Is(err, ErrTooLarge) {
+		t.Fatal(err)
+	}
+	if _, err := ParseServer([]byte("listen: :443\n")); err != nil {
+		t.Fatal(err)
+	}
 }

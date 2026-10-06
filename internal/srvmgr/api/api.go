@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/hyconfig"
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
@@ -314,6 +315,11 @@ const maxBody = 1 << 20
 // with it.
 const maxRoutingBody = 6 << 20
 
+// maxConfigBody bounds the config editor's bodies: they carry a config of
+// up to hyconfig.MaxServerConfig as a JSON string, which escaping may make
+// twice as long.
+const maxConfigBody = 2*hyconfig.MaxServerConfig + 1<<20
+
 // bodyTimeout bounds the time a body takes to arrive (a few MB fit even
 // on a slow link). The server has no ReadTimeout, it would end event
 // streams, so without it a body that never comes holds its connection
@@ -324,8 +330,9 @@ func limitBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
 			limit := int64(maxBody)
-			if strings.Contains(r.URL.Path, "/routing") || strings.HasPrefix(r.URL.Path, "/api/v1/chain-templates/") ||
-				strings.HasSuffix(r.URL.Path, "/config/render") || strings.HasSuffix(r.URL.Path, "/config/apply") {
+			if strings.HasSuffix(r.URL.Path, "/config/render") || strings.HasSuffix(r.URL.Path, "/config/apply") {
+				limit = maxConfigBody
+			} else if strings.Contains(r.URL.Path, "/routing") || strings.HasPrefix(r.URL.Path, "/api/v1/chain-templates/") {
 				limit = maxRoutingBody
 			} else if r.URL.Path == "/api/v1/presets/import" {
 				limit = maxPresetBody
