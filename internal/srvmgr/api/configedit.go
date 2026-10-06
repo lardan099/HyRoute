@@ -238,6 +238,7 @@ func (s *server) configRevisions(w http.ResponseWriter, r *http.Request) {
 				names[c.By] = ""
 			}
 		}
+		c.Meta.Listen = model.ListenWithoutToken(c.Meta.Listen) // kept by older controllers
 		out = append(out, revisionJSON{Revision: c.Revision, Source: c.Source, FromRevision: c.FromRevision, Meta: c.Meta, JobID: c.JobID, By: names[c.By], CreatedAt: c.At, Current: i == 0})
 	}
 	writeJSON(w, http.StatusOK, out)

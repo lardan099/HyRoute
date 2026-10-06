@@ -142,6 +142,12 @@ func Redactor(ctx context.Context, st store.Configs, keys *secrets.Keyring, serv
 // ConfigSecrets are the secret values of a server config.
 func ConfigSecrets(c *hyconfig.Server) []string {
 	out := []string{c.Auth.Password, c.Obfs.Salamander.Password, c.Obfs.Gecko.Password, c.TrafficStats.Secret}
+	// Realms: listen: realm://<token>@host/id.
+	if strings.Contains(c.Listen, "://") {
+		if u, err := url.Parse(c.Listen); err == nil && u.User != nil {
+			out = append(out, u.User.Username())
+		}
+	}
 	for _, p := range c.Auth.UserPass {
 		out = append(out, p)
 	}

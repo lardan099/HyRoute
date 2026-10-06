@@ -46,6 +46,7 @@ func TestStringPatterns(t *testing.T) {
 		{"https://admin:" + fakePass + "@panel.example.com/api", []string{fakePass}, []string{"https://admin:" + Mask + "@panel.example.com/api"}},
 		{"url: http://:" + fakePass + "@203.0.113.5:3128", []string{fakePass}, []string{"http://:" + Mask + "@203.0.113.5:3128"}},
 		{"bot token " + fakeToken + " ok", []string{fakeToken}, []string{" ok"}},
+		{"listen: realm://" + fakePass + "@realm.example.com/fake", []string{fakePass}, []string{"realm://" + Mask + "@realm.example.com/fake"}},
 		{"-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ\nfakekeymaterial\n-----END OPENSSH PRIVATE KEY-----\nnext line", []string{"b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ", "fakekeymaterial"}, []string{"next line"}},
 		{"-----BEGIN EC PRIVATE KEY-----\ntruncated fakekeymaterial", []string{"fakekeymaterial"}, nil},
 	}

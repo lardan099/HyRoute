@@ -146,7 +146,7 @@ func Discover(ctx context.Context, ex remote.Executor, sudo bool, now time.Time)
 }
 
 func baseMeta(c *hyconfig.Server, version string) model.ConfigMeta {
-	m := model.ConfigMeta{Version: version, Listen: c.Listen, Auth: strings.ToLower(c.Auth.Type), Obfs: strings.ToLower(c.Obfs.Type)}
+	m := model.ConfigMeta{Version: version, Listen: model.ListenWithoutToken(c.Listen), Auth: strings.ToLower(c.Auth.Type), Obfs: strings.ToLower(c.Obfs.Type)}
 	if l, err := hyconfig.ParseListen(c.Listen); err == nil {
 		m.Ports = l.Ports
 	}

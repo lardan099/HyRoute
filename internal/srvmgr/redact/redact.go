@@ -1,9 +1,9 @@
 // Package redact removes secrets from text before it is logged, stored in
 // job logs or returned by the API: passwords and tokens in key/value form
 // (YAML, JSON, logfmt, query strings), Hysteria share links, URL
-// passwords, Authorization headers, PEM private keys, Telegram bot tokens,
-// and any exact values registered with a Redactor (the passwords a job is
-// working with).
+// passwords, Realms tokens in a listen URI, Authorization headers, PEM
+// private keys, Telegram bot tokens, and any exact values registered with
+// a Redactor (the passwords a job is working with).
 package redact
 
 import (
@@ -29,6 +29,7 @@ var (
 	pemRe      = regexp.MustCompile(`(?s)-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)`)
 	hyURIRe    = regexp.MustCompile(`(?i)\b(hysteria2\+realm(?:\+http)?|hysteria2|hy2)://[^\s"'<>]+`)
 	urlPassRe  = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^/\s:@"'<>]*):[^/\s@"'<>]+@`) // the user may be empty
+	realmRe    = regexp.MustCompile(`(?i)\b(realm(?:\+[a-z]+)?://)[^/\s@"'<>]+@`)
 	authHdrRe  = regexp.MustCompile(`(?i)\b((?:proxy-)?authorization["']?\s*[:=]\s*)("[^"]*"|[^\r\n,}]+)`)
 	keyValueRe = regexp.MustCompile(`(?i)(["']?\b` + secretKey + `["']?[ \t]*[:=][ \t]*)(` + regexp.QuoteMeta(Mask) + `|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|[^\s,;&}\]"']+)`)
 	telegramRe = regexp.MustCompile(`\b\d{6,12}:[A-Za-z0-9_-]{30,}\b`)
@@ -45,6 +46,7 @@ func String(s string) string {
 	s = pemRe.ReplaceAllString(s, "-----BEGIN ${1}PRIVATE KEY----- "+Mask+" -----END ${1}PRIVATE KEY-----")
 	s = hyURIRe.ReplaceAllString(s, "${1}://"+Mask)
 	s = urlPassRe.ReplaceAllString(s, "${1}:"+Mask+"@")
+	s = realmRe.ReplaceAllString(s, "${1}"+Mask+"@") // the token of a Realms listen
 	s = authHdrRe.ReplaceAllString(s, "${1}"+Mask)
 	// The pattern takes the mask whole: text redacted once stays as it is.
 	s = keyValueRe.ReplaceAllStringFunc(s, func(m string) string {

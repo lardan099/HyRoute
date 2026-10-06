@@ -204,6 +204,20 @@ func TestImportOfficialInstallation(t *testing.T) {
 	}
 }
 
+// The token of a Realms listen stays out of the summary (job data, the
+// revision's meta).
+func TestImportRealmsTokenNotInMeta(t *testing.T) {
+	m := official()
+	m.SetFile("/etc/hysteria/config.yaml", []byte("listen: realm://fake-realm-token@realm.example.com/fake\n"+officialConfig))
+	f, _, err := discover(t, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Meta.Listen != "realm://realm.example.com/fake" {
+		t.Fatalf("meta %+v", f.Meta)
+	}
+}
+
 func selfSigned(t *testing.T, name string, notAfter time.Time) []byte {
 	t.Helper()
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

@@ -2,6 +2,7 @@ package model
 
 import (
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -44,6 +45,20 @@ type ConfigMeta struct {
 	SNI       string `json:"sni,omitempty"`
 	Obfs      string `json:"obfs,omitempty"` // salamander, gecko
 	Auth      string `json:"auth,omitempty"` // password, userpass…
+}
+
+// ListenWithoutToken is listen as ConfigMeta keeps it: a Realms URI
+// (realm://<token>@host/id) without its token.
+func ListenWithoutToken(listen string) string {
+	scheme, rest, ok := strings.Cut(listen, "://")
+	if !ok {
+		return listen
+	}
+	authority, _, _ := strings.Cut(rest, "/")
+	if i := strings.LastIndex(authority, "@"); i >= 0 {
+		return scheme + "://" + rest[i+1:]
+	}
+	return listen
 }
 
 // ServerConfig is one revision of a server's Hysteria config.

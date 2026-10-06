@@ -122,6 +122,7 @@ func (s *server) currentConfig(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	c.Meta.Listen = model.ListenWithoutToken(c.Meta.Listen) // kept by older controllers
 	out := configJSON{Revision: c.Revision, SHA256: c.SHA256, Meta: c.Meta, Source: c.Source, FromRevision: c.FromRevision, JobID: c.JobID, CreatedAt: c.At}
 	if in, err := s.Store.Installation(r.Context(), id); err == nil {
 		if hyrelease.CheckVersion(in.Version) == nil {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -258,6 +259,10 @@ func TestConfigSecrets(t *testing.T) {
 	u, _ := hyconfig.ParseServer([]byte("auth:\n  type: userpass\n  userpass:\n    alice: fake-alice-pass\n"))
 	if s := ConfigSecrets(u); !strings.Contains(strings.Join(s, ","), "fake-alice-pass") {
 		t.Fatal("userpass passwords missed")
+	}
+	r, _ := hyconfig.ParseServer([]byte("listen: realm://fake-realm-token@realm.example.com/fake\n"))
+	if s := ConfigSecrets(r); !slices.Contains(s, "fake-realm-token") {
+		t.Fatalf("the Realms token missed: %q", s)
 	}
 }
 

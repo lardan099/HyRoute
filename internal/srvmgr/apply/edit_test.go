@@ -460,3 +460,19 @@ func TestUnmaskKeyAndDocumentComments(t *testing.T) {
 		t.Fatalf("diff %q", changed)
 	}
 }
+
+// The token of a Realms listen is a secret of the editor too.
+func TestMaskRealmsToken(t *testing.T) {
+	cfg := strings.Replace(commented, "listen: :443", "listen: realm://fake-realm-token@realm.example.com/fake", 1)
+	m, paths, err := Mask([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(m), "fake-realm-token") || !slices.Contains(paths, "listen") {
+		t.Fatalf("%q\n%s", paths, m)
+	}
+	back, err := Unmask(m, []byte(cfg))
+	if err != nil || !strings.Contains(string(back), "listen: realm://fake-realm-token@realm.example.com/fake") {
+		t.Fatalf("%v\n%s", err, back)
+	}
+}
