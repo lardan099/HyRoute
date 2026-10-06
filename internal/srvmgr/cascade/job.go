@@ -36,6 +36,7 @@ type Store interface {
 	store.Installations
 	ServerByID(ctx context.Context, id int64) (model.Server, error)
 	SetServerState(ctx context.Context, id int64, state model.ServerState, at time.Time) error
+	AddServerNote(ctx context.Context, id int64, note string, at time.Time) error
 }
 
 // Deps are the link job's collaborators.
@@ -343,22 +344,31 @@ func (x *linker) connect(ctx context.Context, env *jobs.Env, p jobParams) error 
 		id   int64
 		role string
 	}{{p.Exit, "выхода"}, {p.Entry, "входа"}} {
-		ex, err := execOn(ctx, env, s.id)
-		if err != nil {
-			return err
-		}
-		pr, err := remote.RunProbe(ctx, ex)
-		if err != nil {
-			return jobs.Fail("Не удалось выполнить команды на сервере "+s.role+".", err)
-		}
-		if !pr.Privileged() {
-			return jobs.Fail("На сервере "+s.role+" пользователь SSH не root и не может выполнять sudo без пароля.", nil)
-		}
-		if err := env.Set("root:"+strconv.FormatInt(s.id, 10), strconv.FormatBool(pr.Root)); err != nil {
+		if _, err := x.reach(ctx, env, s.id, s.role); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// reach connects to a server of the job and records whether its SSH user
+// is root. unreachable: the job has no SSH connection to the server (no
+// answer, the login or the host key refused), or the connection broke
+// before its commands ran; not a server that answers without root.
+func (x *linker) reach(ctx context.Context, env *jobs.Env, server int64, role string) (unreachable bool, err error) {
+	ex, err := execOn(ctx, env, server)
+	if err != nil {
+		return true, err
+	}
+	pr, err := remote.RunProbe(ctx, ex)
+	if err != nil {
+		var ue *remote.UnreachableError
+		return errors.As(err, &ue), jobs.Fail("Не удалось выполнить команды на сервере "+role+".", err)
+	}
+	if !pr.Privileged() {
+		return false, jobs.Fail("На сервере "+role+" пользователь SSH не root и не может выполнять sudo без пароля.", nil)
+	}
+	return false, env.Set("root:"+strconv.FormatInt(server, 10), strconv.FormatBool(pr.Root))
 }
 
 // check: the servers still have the configs the job builds on (or this

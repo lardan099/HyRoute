@@ -163,6 +163,30 @@ func ConfigPath(entry model.Installation, chainID int64, idx int) string {
 	return path.Join(dir, "link-"+ID(chainID, idx)+".yaml")
 }
 
+// Left lists, for people, what link idx of chain chainID put on a server
+// and leaves there when the chain is deleted without that server (it did
+// not answer): on the entry (in its installation, c its config, nil when
+// not known) the link service, the link client's config and the outbound
+// while c has it; on an exit the link's user while c has it. An exit with
+// password auth keeps nothing of the link: nil.
+func Left(chainID int64, idx int, entry bool, in model.Installation, c *hyconfig.Server) []string {
+	where := "в конфиге Hysteria"
+	if in.Config != "" {
+		where = "в " + in.Config
+	}
+	if !entry {
+		if c == nil || HasUser(c, User(chainID, idx)) {
+			return []string{"пользователь связи " + User(chainID, idx) + " " + where}
+		}
+		return nil
+	}
+	left := []string{"служба связи " + UnitName(chainID, idx), "конфиг клиента связи " + ConfigPath(in, chainID, idx)}
+	if c == nil || HasOutbound(c) {
+		left = append(left, "outbound «"+OutboundName+"» "+where+" (пока он есть, у клиентов этого сервера нет интернета)")
+	}
+	return left
+}
+
 // ErrAuth: the exit's clients log in with http or command auth, where
 // HyRoute cannot make credentials for the link.
 var ErrAuth = errors.New("cascade: the exit's auth is neither password nor userpass")

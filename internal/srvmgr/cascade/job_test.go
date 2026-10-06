@@ -84,6 +84,8 @@ type host struct {
 	failRead, fail string
 	// listen are more lines of ss: sockets of other programs.
 	listen string
+	// gone: SSH to the host does not connect (its VPS was deleted).
+	gone bool
 }
 
 // linkPID is the process of a running link client.
@@ -349,6 +351,11 @@ type hosts map[int64]*host
 
 func (hs hosts) Connect(_ context.Context, id int64) (remote.Executor, error) {
 	if h, found := hs[id]; found {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.gone {
+			return nil, &remote.UnreachableError{Err: errors.New("dial tcp: i/o timeout")}
+		}
 		return h, nil
 	}
 	return nil, errors.New("no such server")

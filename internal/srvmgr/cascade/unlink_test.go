@@ -135,6 +135,243 @@ func TestUnlinkRollsBack(t *testing.T) {
 	}
 }
 
+func (h *host) setGone(gone bool) {
+	h.mu.Lock()
+	h.gone = gone
+	h.mu.Unlock()
+}
+
+func (h *host) ncmds() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.cmds)
+}
+
+// failUnlink: «Удалить каскад» while h does not answer fails at connect
+// and changes nothing.
+func (w *world) failUnlink(h *host) {
+	w.t.Helper()
+	h.setGone(true)
+	entryBefore, _ := w.entry.file(cfgPath)
+	exitBefore, _ := w.exit.file(cfgPath)
+	j, log := w.unlink(true)
+	if j.State != model.JobFailed || j.CurrentStep != "connect" {
+		w.t.Fatalf("unlink: %s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, log)
+	}
+	entryNow, _ := w.entry.file(cfgPath)
+	exitNow, _ := w.exit.file(cfgPath)
+	if entryNow != entryBefore || exitNow != exitBefore || w.link().State != model.LinkActive {
+		w.t.Fatalf("a failed unlink changed something: link %s", w.link().State)
+	}
+}
+
+func (w *world) unreached() []Unreached {
+	w.t.Helper()
+	c, err := w.db.ChainByID(context.Background(), w.chain)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	un, err := w.linker.Unreached(context.Background(), c, 0)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return un
+}
+
+func (w *world) forceDelete() (model.Job, string) {
+	w.t.Helper()
+	j, _, err := w.linker.ForceDelete(context.Background(), w.chain, 0, 0)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return w.wait(j)
+}
+
+// The exit's VPS is gone: «Удалить каскад» cannot connect to it, and the
+// chain is then deleted without it. The entry loses all the link put
+// there, as with a normal unlink; the exit is not contacted, keeps its
+// revision and needs attention, with a note of the link's user left on it.
+func TestForceDeleteWithoutExit(t *testing.T) {
+	w := linked(t, exitUP)
+	ctx := context.Background()
+	if _, _, err := w.linker.ForceDelete(ctx, w.chain, 0, 0); !errors.Is(err, ErrReached) {
+		t.Fatalf("before a failed unlink: %v", err)
+	}
+	w.failUnlink(w.exit)
+	un := w.unreached()
+	if len(un) != 1 || un[0].Server != w.out || un[0].Entry || len(un[0].Left) != 1 || !strings.Contains(un[0].Left[0], User(w.chain, 0)+" в "+cfgPath) {
+		t.Fatalf("unreached %+v", un)
+	}
+	exitCmds := w.exit.ncmds()
+	j, log := w.forceDelete()
+	if j.State != model.JobCompleted {
+		t.Fatalf("%s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, log)
+	}
+	entryNow, _ := w.entry.file(cfgPath)
+	if nc, _ := hyconfig.ParseServer([]byte(entryNow)); HasOutbound(nc) || w.entry.unit(unitName) != "active" {
+		t.Fatalf("entry outbounds %+v", nc.Outbounds)
+	}
+	unit := UnitName(w.chain, 0)
+	for _, f := range []string{linkCfg(w), "/etc/systemd/system/" + unit, cfgPath + Backup, linkCfg(w) + Backup} {
+		if _, found := w.entry.file(f); found {
+			t.Fatalf("%s left on the entry", f)
+		}
+	}
+	if w.entry.unit(unit) == "active" {
+		t.Fatal("link service still runs")
+	}
+	if w.exit.ncmds() != exitCmds {
+		t.Fatal("the exit was contacted")
+	}
+	if _, err := w.db.ChainByID(ctx, w.chain); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("chain: %v", err)
+	}
+	if _, err := w.db.LinkSecrets(ctx, w.chain, 0); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("link secrets: %v", err)
+	}
+	if er, xr := w.revs(w.in), w.revs(w.out); len(er) != 3 || er[0].Source != model.ConfigCascade || len(xr) != 2 {
+		t.Fatalf("revisions: entry %d, exit %d", len(er), len(xr))
+	}
+	exit, _ := w.db.ServerByID(ctx, w.out)
+	if exit.State != model.StateNeedsAttention || exit.Role != model.RoleStandalone || !strings.Contains(exit.Notes, "Каскад «DE» удалён") || !strings.Contains(exit.Notes, User(w.chain, 0)) {
+		t.Fatalf("exit %s %s: %q", exit.State, exit.Role, exit.Notes)
+	}
+	if entry, _ := w.db.ServerByID(ctx, w.in); entry.State == model.StateNeedsAttention || entry.Notes != "" || entry.Role != model.RoleStandalone {
+		t.Fatalf("entry %s %s: %q", entry.State, entry.Role, entry.Notes)
+	}
+	if !strings.Contains(log, "Сервер выхода не отвечает") || !strings.Contains(log, "сервер выхода пропущен") {
+		t.Fatalf("log:\n%s", log)
+	}
+}
+
+// The entry's VPS is gone: the exit loses the link's user; the entry is
+// left with the link service, its client's config and the outbound, and
+// its note says so.
+func TestForceDeleteWithoutEntry(t *testing.T) {
+	w := linked(t, exitUP)
+	ctx := context.Background()
+	w.failUnlink(w.entry)
+	if un := w.unreached(); len(un) != 1 || un[0].Server != w.in || !un[0].Entry || len(un[0].Left) != 3 {
+		t.Fatalf("unreached %+v", un)
+	}
+	entryBefore, _ := w.entry.file(cfgPath)
+	entryCmds := w.entry.ncmds()
+	j, log := w.forceDelete()
+	if j.State != model.JobCompleted {
+		t.Fatalf("%s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, log)
+	}
+	exitNow, _ := w.exit.file(cfgPath)
+	if ec, _ := hyconfig.ParseServer([]byte(exitNow)); HasUser(ec, User(w.chain, 0)) || ec.Auth.UserPass["alice"] != "fake-alice-pass" || w.exit.unit(unitName) != "active" {
+		t.Fatalf("exit users %v", ec.Auth.UserPass)
+	}
+	if now, _ := w.entry.file(cfgPath); now != entryBefore || w.entry.ncmds() != entryCmds {
+		t.Fatal("the entry was contacted")
+	}
+	if xr := w.revs(w.out); len(xr) != 3 || len(w.revs(w.in)) != 2 {
+		t.Fatalf("revisions: entry %d, exit %d", len(w.revs(w.in)), len(xr))
+	}
+	entry, _ := w.db.ServerByID(ctx, w.in)
+	for _, s := range []string{UnitName(w.chain, 0), linkCfg(w), "outbound «cascade» в " + cfgPath} {
+		if !strings.Contains(entry.Notes, s) {
+			t.Fatalf("entry note without %q: %q", s, entry.Notes)
+		}
+	}
+	if entry.State != model.StateNeedsAttention {
+		t.Fatalf("entry %s", entry.State)
+	}
+	if exit, _ := w.db.ServerByID(ctx, w.out); exit.State == model.StateNeedsAttention || exit.Notes != "" {
+		t.Fatalf("exit %s: %q", exit.State, exit.Notes)
+	}
+}
+
+// A password exit keeps nothing of the link: deleted without it, it is
+// not marked.
+func TestForceDeletePasswordExit(t *testing.T) {
+	w := linked(t, exitPW)
+	w.failUnlink(w.exit)
+	if un := w.unreached(); len(un) != 1 || len(un[0].Left) != 0 {
+		t.Fatalf("unreached %+v", un)
+	}
+	j, log := w.forceDelete()
+	if j.State != model.JobCompleted {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	if exit, _ := w.db.ServerByID(context.Background(), w.out); exit.State == model.StateNeedsAttention || exit.Notes != "" {
+		t.Fatalf("exit %s: %q", exit.State, exit.Notes)
+	}
+	if _, found := w.entry.file(linkCfg(w)); found || !strings.Contains(log, "ничего не менял") {
+		t.Fatalf("log:\n%s", log)
+	}
+}
+
+// The chain is deleted without a server only while the normal way cannot
+// work: its latest job is «Удалить каскад» that could not reach a server.
+func TestForceDeleteRefused(t *testing.T) {
+	ctx := context.Background()
+	fresh := newWorld(t, exitUP)
+	if _, _, err := fresh.linker.ForceDelete(ctx, fresh.chain, 0, 0); !errors.Is(err, ErrNotDeployed) {
+		t.Fatalf("not deployed: %v", err)
+	}
+
+	// It failed with both servers reached.
+	w := linked(t, exitUP)
+	w.entry.mu.Lock()
+	w.entry.need = OutboundName
+	w.entry.mu.Unlock()
+	if j, log := w.unlink(true); j.State != model.JobFailed || j.CurrentStep == "connect" {
+		t.Fatalf("%s at %s\n%s", j.State, j.CurrentStep, log)
+	}
+	if _, _, err := w.linker.ForceDelete(ctx, w.chain, 0, 0); !errors.Is(err, ErrReached) || len(w.unreached()) != 0 {
+		t.Fatalf("after a failure on a reached server: %v", err)
+	}
+	w.entry.mu.Lock()
+	w.entry.need = ""
+	w.entry.mu.Unlock()
+
+	// «Снять связь» is not «Удалить каскад».
+	w.exit.setGone(true)
+	if j, _ := w.unlink(false); j.State != model.JobFailed {
+		t.Fatalf("unlink: %s", j.State)
+	}
+	if _, _, err := w.linker.ForceDelete(ctx, w.chain, 0, 0); !errors.Is(err, ErrReached) {
+		t.Fatalf("after «Снять связь»: %v", err)
+	}
+
+	// The exit came back and the link was deployed again since.
+	w.failUnlink(w.exit)
+	if len(w.unreached()) != 1 {
+		t.Fatal("not offered after the failed delete")
+	}
+	w.exit.setGone(false)
+	if j, log := w.wait(w.submit()); j.State != model.JobCompleted {
+		t.Fatalf("link: %s\n%s", j.ErrorMessage, log)
+	}
+	if _, _, err := w.linker.ForceDelete(ctx, w.chain, 0, 0); !errors.Is(err, ErrReached) {
+		t.Fatalf("after a newer link job: %v", err)
+	}
+}
+
+// Both servers answer again when the forced job runs: it is the normal
+// unlink.
+func TestForceDeleteBothBack(t *testing.T) {
+	w := linked(t, exitUP)
+	w.failUnlink(w.exit)
+	w.exit.setGone(false)
+	j, log := w.forceDelete()
+	if j.State != model.JobCompleted || !strings.Contains(log, "Оба сервера отвечают") {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	exitNow, _ := w.exit.file(cfgPath)
+	if ec, _ := hyconfig.ParseServer([]byte(exitNow)); HasUser(ec, User(w.chain, 0)) {
+		t.Fatal("the link's user stays on the exit")
+	}
+	for _, s := range []int64{w.in, w.out} {
+		if srv, _ := w.db.ServerByID(context.Background(), s); srv.State == model.StateNeedsAttention || srv.Notes != "" {
+			t.Fatalf("server %d %s: %q", s, srv.State, srv.Notes)
+		}
+	}
+}
+
 func TestUnlinkNotDeployed(t *testing.T) {
 	w := newWorld(t, exitUP)
 	if _, err := w.linker.Unlink(context.Background(), w.chain, 0, true, 0); !errors.Is(err, ErrNotDeployed) {

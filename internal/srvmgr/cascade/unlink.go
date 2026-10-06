@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
+	"strconv"
+	"strings"
 
 	"github.com/lardan099/hyroute/internal/hyconfig"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
@@ -18,14 +21,33 @@ import (
 // JobUnlink takes a link off its servers (P3-02c).
 const JobUnlink = "unlink"
 
-// ErrNotDeployed: nothing of the link is on its servers (new or failed);
-// the chain is deleted without a job.
-var ErrNotDeployed = errors.New("cascade: the link is not deployed")
+var (
+	// ErrNotDeployed: nothing of the link is on its servers (new or
+	// failed); the chain is deleted without a job.
+	ErrNotDeployed = errors.New("cascade: the link is not deployed")
+	// ErrReached: the latest job of the link is not a failed unlink that
+	// could not reach one of its servers; the chain is deleted the normal
+	// way (Unlink), not without a server (ForceDelete).
+	ErrReached = errors.New("cascade: the latest unlink reached the link's servers")
+)
 
 type unlinkParams struct {
 	jobParams
 	// Delete: the chain goes too once the link is off the servers.
 	Delete bool `json:"delete,omitempty"`
+	// Force (with Delete): a server the job cannot reach is skipped, left
+	// as it is and marked needs attention, instead of failing the job
+	// (ForceDelete).
+	Force bool `json:"force,omitempty"`
+}
+
+// unreached records that the connect step of an unlink could not reach a
+// server: unreached:<id> is "1".
+func unreached(server int64) string { return "unreached:" + strconv.FormatInt(server, 10) }
+
+// skipped: a forced unlink goes on without this server.
+func skipped(env *jobs.Env, p unlinkParams, server int64) bool {
+	return p.Force && env.Get(unreached(server)) == "1"
 }
 
 // Unlink queues the job that takes link idx of a chain off its servers:
@@ -33,11 +55,137 @@ type unlinkParams struct {
 // link going away), then the link service and its config, then the
 // link's user on the exit. deleteChain removes the chain after.
 func (l *Linker) Unlink(ctx context.Context, chainID int64, idx int, deleteChain bool, actor int64) (model.Job, error) {
-	x := l.x
-	c, err := x.Store.ChainByID(ctx, chainID)
+	c, err := l.x.Store.ChainByID(ctx, chainID)
 	if err != nil {
 		return model.Job{}, err
 	}
+	return l.x.unlink(ctx, c, idx, unlinkParams{Delete: deleteChain}, actor)
+}
+
+// ForceDelete queues the unlink job that deletes the chain without the
+// servers it cannot reach. It is for the chain whose latest unlink with
+// delete failed for want of a server (Unreached; ErrReached otherwise):
+// from each server it reaches the job takes the link off as Unlink does,
+// one it cannot reach it skips and marks needs attention with a note of
+// what the link left there; then the chain and its link secrets go. It
+// returns the job and the servers the failed unlink did not reach.
+func (l *Linker) ForceDelete(ctx context.Context, chainID int64, idx int, actor int64) (model.Job, []Unreached, error) {
+	c, err := l.x.Store.ChainByID(ctx, chainID)
+	if err != nil {
+		return model.Job{}, nil, err
+	}
+	if idx < 0 || idx >= len(c.Links) {
+		return model.Job{}, nil, store.ErrNotFound
+	}
+	if st := c.Links[idx].State; st == model.LinkNew || st == model.LinkFailed {
+		return model.Job{}, nil, ErrNotDeployed
+	}
+	un, err := l.Unreached(ctx, c, idx)
+	if err != nil {
+		return model.Job{}, nil, err
+	}
+	if len(un) == 0 {
+		return model.Job{}, nil, ErrReached
+	}
+	j, err := l.x.unlink(ctx, c, idx, unlinkParams{Delete: true, Force: true}, actor)
+	return j, un, err
+}
+
+// Forced reports whether job j is an unlink that goes on without the
+// servers it cannot reach (ForceDelete): retrying it is for owners and
+// admins, as starting it.
+func Forced(j model.Job) bool {
+	if j.Kind != JobUnlink {
+		return false
+	}
+	var p unlinkParams
+	return json.Unmarshal(j.Params, &p) == nil && p.Force
+}
+
+// Unreached is a server the latest unlink of a link could not reach, with
+// what the link leaves there when the chain is deleted without it.
+type Unreached struct {
+	Server int64
+	Entry  bool
+	// Left is what the link put on the server and the deletion leaves
+	// there (Left), by the server's current config.
+	Left []string
+}
+
+// scanJobs bounds how many jobs of the entry Unreached looks through for
+// the latest job of a link: an older one does not count, and the admin
+// deletes the chain the normal way first.
+const scanJobs = 1000
+
+// Unreached are the servers of deployed link idx of chain c that the
+// latest job of the link (link or unlink) could not reach, when that job
+// is an unlink with delete and failed: the chain may then be deleted
+// without them (ForceDelete). Nil: the normal unlink may still work (no
+// such attempt, a newer job of the link ran, both servers answered, or a
+// job of the link is running).
+func (l *Linker) Unreached(ctx context.Context, c model.Chain, idx int) ([]Unreached, error) {
+	x := l.x
+	if idx < 0 || idx >= len(c.Links) {
+		return nil, nil
+	}
+	link := c.Links[idx]
+	if link.State == model.LinkNew || link.State == model.LinkFailed {
+		return nil, nil
+	}
+	j, p, err := x.lastLinkJob(ctx, c.ID, link)
+	if err != nil || j.Kind != JobUnlink || j.State != model.JobFailed || !p.Delete {
+		return nil, err
+	}
+	var out []Unreached
+	for _, s := range []struct {
+		id    int64
+		entry bool
+	}{{link.From, true}, {link.To, false}} {
+		if j.Data[unreached(s.id)] != "1" {
+			continue
+		}
+		in, err := x.Store.Installation(ctx, s.id)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return nil, err
+		}
+		var cfg *hyconfig.Server
+		if cur, err := x.Store.CurrentConfig(ctx, s.id); err == nil {
+			if b, _, err := x.revision(ctx, s.id, cur.Revision); err == nil {
+				cfg, _ = hyconfig.ParseServer(b)
+			}
+		}
+		out = append(out, Unreached{Server: s.id, Entry: s.entry, Left: Left(c.ID, idx, s.entry, in, cfg)})
+	}
+	return out, nil
+}
+
+// lastLinkJob is the newest link or unlink job of the link, with its
+// params (a zero job: none among the entry's latest scanJobs jobs).
+func (x *linker) lastLinkJob(ctx context.Context, chainID int64, link model.ChainLink) (model.Job, unlinkParams, error) {
+	var before int64
+	for seen := 0; seen < scanJobs; {
+		js, err := x.Jobs.Store.ListJobs(ctx, model.JobFilter{ServerID: link.From, Limit: 100, BeforeID: before})
+		if err != nil || len(js) == 0 {
+			return model.Job{}, unlinkParams{}, err
+		}
+		for _, j := range js {
+			if j.Kind != JobLink && j.Kind != JobUnlink {
+				continue
+			}
+			var p unlinkParams
+			if json.Unmarshal(j.Params, &p) == nil && p.Chain == chainID && p.Idx == link.Idx {
+				return j, p, nil
+			}
+		}
+		seen += len(js)
+		before = js[len(js)-1].ID
+	}
+	return model.Job{}, unlinkParams{}, nil
+}
+
+// unlink queues the unlink job of link idx of chain c with the params of
+// p that are not about the link.
+func (x *linker) unlink(ctx context.Context, c model.Chain, idx int, p unlinkParams, actor int64) (model.Job, error) {
 	if idx < 0 || idx >= len(c.Links) {
 		return model.Job{}, store.ErrNotFound
 	}
@@ -45,7 +193,7 @@ func (l *Linker) Unlink(ctx context.Context, chainID int64, idx int, deleteChain
 	if link.State == model.LinkNew || link.State == model.LinkFailed {
 		return model.Job{}, ErrNotDeployed
 	}
-	p := unlinkParams{jobParams: jobParams{Chain: chainID, Idx: idx, Entry: link.From, Exit: link.To, Prev: link.State}, Delete: deleteChain}
+	p.jobParams = jobParams{Chain: c.ID, Idx: idx, Entry: link.From, Exit: link.To, Prev: link.State}
 	for _, s := range []struct {
 		id   int64
 		rev  *int
@@ -83,29 +231,52 @@ func (l *Linker) UnlinkKind() *jobs.Kind {
 			d := func(f func(context.Context, *jobs.Env, unlinkParams) (bool, error)) func(context.Context, *jobs.Env) (bool, error) {
 				return func(ctx context.Context, env *jobs.Env) (bool, error) { return f(ctx, env, p) }
 			}
+			// on: in a forced unlink a step of one server does nothing once
+			// the connect step could not reach that server (its Undo finds
+			// nothing recorded). The steps of a normal unlink are as they
+			// are.
+			on := func(server int64, s jobs.Step) jobs.Step {
+				if !p.Force {
+					return s
+				}
+				done, run := s.Done, s.Run
+				s.Done = func(ctx context.Context, env *jobs.Env) (bool, error) {
+					if done == nil || skipped(env, p, server) {
+						return false, nil
+					}
+					return done(ctx, env)
+				}
+				s.Run = func(ctx context.Context, env *jobs.Env) error {
+					if skipped(env, p, server) {
+						return nil
+					}
+					return run(ctx, env)
+				}
+				return s
+			}
 			// As in the link job, a retry or a recovery before the commit
 			// starts at check.
 			return []jobs.Step{
-				{Name: "connect", Phase: model.JobConnecting, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.connect(ctx, env, p.jobParams) }},
+				{Name: "connect", Phase: model.JobConnecting, Safe: true, Run: w(x.unconnect)},
 				{Name: "check", Phase: model.JobPreflight, Safe: true, Run: w(x.uncheck)},
-				{Name: "entry-config", Phase: model.JobConfiguring, Done: d(x.unEntryDone), Run: w(x.unEntry),
+				on(p.Entry, jobs.Step{Name: "entry-config", Phase: model.JobConfiguring, Done: d(x.unEntryDone), Run: w(x.unEntry),
 					Undo: func(ctx context.Context, env *jobs.Env) error {
 						return x.undoConfig(ctx, env, p.Entry, "entryConfig", "entryChanged", "входа")
-					}},
-				{Name: "entry-restart", Phase: model.JobStarting, Done: restarted("entryChanged"), Run: func(ctx context.Context, env *jobs.Env) error {
+					}}),
+				on(p.Entry, jobs.Step{Name: "entry-restart", Phase: model.JobStarting, Done: restarted("entryChanged"), Run: func(ctx context.Context, env *jobs.Env) error {
 					return x.restart(ctx, env, p.Entry, "entryChanged", "входа")
-				}},
-				{Name: "entry-verify", Phase: model.JobVerifying, Run: w(x.unEntryVerify)},
-				{Name: "link-service", Phase: model.JobConfiguring, Done: d(x.unServiceDone), Run: w(x.unService), Undo: w(x.undoUnService)},
-				{Name: "link-config", Phase: model.JobConfiguring, Done: d(x.unConfigDone), Run: w(x.unConfig), Undo: w(x.undoUnConfig)},
-				{Name: "exit-config", Phase: model.JobConfiguring, Done: d(x.unExitDone), Run: w(x.unExit),
+				}}),
+				on(p.Entry, jobs.Step{Name: "entry-verify", Phase: model.JobVerifying, Run: w(x.unEntryVerify)}),
+				on(p.Entry, jobs.Step{Name: "link-service", Phase: model.JobConfiguring, Done: d(x.unServiceDone), Run: w(x.unService), Undo: w(x.undoUnService)}),
+				on(p.Entry, jobs.Step{Name: "link-config", Phase: model.JobConfiguring, Done: d(x.unConfigDone), Run: w(x.unConfig), Undo: w(x.undoUnConfig)}),
+				on(p.Exit, jobs.Step{Name: "exit-config", Phase: model.JobConfiguring, Done: d(x.unExitDone), Run: w(x.unExit),
 					Undo: func(ctx context.Context, env *jobs.Env) error {
 						return x.undoConfig(ctx, env, p.Exit, "exitConfig", "exitChanged", "выхода")
-					}},
-				{Name: "exit-restart", Phase: model.JobStarting, Done: restarted("exitChanged"), Run: func(ctx context.Context, env *jobs.Env) error {
+					}}),
+				on(p.Exit, jobs.Step{Name: "exit-restart", Phase: model.JobStarting, Done: restarted("exitChanged"), Run: func(ctx context.Context, env *jobs.Env) error {
 					return x.restart(ctx, env, p.Exit, "exitChanged", "выхода")
-				}},
-				{Name: "exit-verify", Phase: model.JobVerifying, Run: w(x.unExitVerify)},
+				}}),
+				on(p.Exit, jobs.Step{Name: "exit-verify", Phase: model.JobVerifying, Run: w(x.unExitVerify)}),
 				{Name: "commit", Phase: model.JobVerifying, Safe: true, Done: d(x.unCommitted), Run: w(x.unCommit)},
 				{Name: "cleanup", Phase: model.JobVerifying, Safe: true, Run: w(x.unCleanup)},
 			}, nil
@@ -166,8 +337,52 @@ func (x *linker) unplan(ctx context.Context, p unlinkParams) (*unplan, error) {
 	return u, nil
 }
 
+// unconnect connects to both servers as the link job does. A server it
+// cannot reach is recorded (unreached): the unlink fails there, and the
+// chain may then be deleted without that server (ForceDelete). A forced
+// unlink goes on without it; the steps of that server do nothing, and the
+// commit marks it.
+func (x *linker) unconnect(ctx context.Context, env *jobs.Env, p unlinkParams) error {
+	skip := 0
+	for _, s := range []struct {
+		id   int64
+		role string
+	}{{p.Exit, "выхода"}, {p.Entry, "входа"}} {
+		down, err := x.reach(ctx, env, s.id, s.role)
+		if ctx.Err() != nil {
+			return ctx.Err() // stopping: no record of a server that did answer
+		}
+		if down || env.Get(unreached(s.id)) != "" {
+			mark := ""
+			if down {
+				mark = "1"
+			}
+			if err := env.Set(unreached(s.id), mark); err != nil {
+				return err
+			}
+		}
+		if err == nil {
+			continue
+		}
+		if !down || !p.Force {
+			return err
+		}
+		var se *jobs.StepError
+		if errors.As(err, &se) && se.Err != nil {
+			err = se.Err
+		}
+		env.Warnf("Сервер %s не отвечает (%v): каскад удаляется без него, на сервере ничего не меняется.", s.role, err)
+		skip++
+	}
+	if p.Force && skip == 0 {
+		env.Logf("Оба сервера отвечают: связь снимается с обоих, как при обычном удалении.")
+	}
+	return nil
+}
+
 // uncheck: the servers still have the configs the job builds on (or this
-// job's). The link becomes unlinking.
+// job's); a forced unlink does not look at a server it skips. The link
+// becomes unlinking.
 func (x *linker) uncheck(ctx context.Context, env *jobs.Env, p unlinkParams) error {
 	u, err := x.unplan(ctx, p)
 	if err != nil {
@@ -179,6 +394,9 @@ func (x *linker) uncheck(ctx context.Context, env *jobs.Env, p unlinkParams) err
 		want       []byte
 		role       string
 	}{{p.Exit, u.inExit.Config, p.ExitBaseSHA, u.exitCfg, "выхода"}, {p.Entry, u.inEntry.Config, p.EntryBaseSHA, u.entryCfg, "входа"}} {
+		if skipped(env, p, s.id) {
+			continue
+		}
 		ex, err := execOn(ctx, env, s.id)
 		if err != nil {
 			return err
@@ -420,20 +638,48 @@ func (x *linker) unCommitted(ctx context.Context, env *jobs.Env, p unlinkParams)
 
 // unCommit stores the revisions without the link (source cascade), then
 // deletes the chain or makes its link new again, without secrets: a new
-// deployment makes new ones.
+// deployment makes new ones. A server a forced unlink skipped keeps its
+// revision (it still runs that config) and is marked first.
 func (x *linker) unCommit(ctx context.Context, env *jobs.Env, p unlinkParams) error {
 	u, err := x.unplan(ctx, p)
 	if err != nil {
 		return err
 	}
-	if _, err := x.addRevisions(ctx, env, []newConfig{{p.Entry, u.inEntry, u.entryCfg, u.entryBase, u.entryParsed}, {p.Exit, u.inExit, u.exitCfg, u.exitBase, u.exitParsed}}); err != nil {
+	var cs []newConfig
+	for _, c := range []newConfig{{p.Entry, u.inEntry, u.entryCfg, u.entryBase, u.entryParsed}, {p.Exit, u.inExit, u.exitCfg, u.exitBase, u.exitParsed}} {
+		if !skipped(env, p, c.id) {
+			cs = append(cs, c)
+		}
+	}
+	if _, err := x.addRevisions(ctx, env, cs); err != nil {
 		return err
 	}
 	if p.Delete {
+		var off, left []string
+		for _, s := range []struct {
+			id   int64
+			role string
+		}{{p.Entry, "входа"}, {p.Exit, "выхода"}} {
+			if !skipped(env, p, s.id) {
+				off = append(off, s.role)
+				continue
+			}
+			if err := x.strand(ctx, env, p, u, s.id); err != nil {
+				return err
+			}
+			left = append(left, s.role)
+		}
 		if err := x.Store.DeleteChain(ctx, p.Chain, x.Now()); err != nil && !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
-		env.Logf("Связь снята с серверов, каскад удалён.")
+		switch {
+		case len(left) == 0:
+			env.Logf("Связь снята с серверов, каскад удалён.")
+		case len(off) == 0:
+			env.Logf("Каскад удалён без серверов: ни один не ответил, на них ничего не изменилось.")
+		default:
+			env.Logf("Связь снята с сервера %s, сервер %s пропущен; каскад удалён.", off[0], left[0])
+		}
 		return nil
 	}
 	c, err := x.Store.ChainByID(ctx, p.Chain)
@@ -452,6 +698,45 @@ func (x *linker) unCommit(ctx context.Context, env *jobs.Env, p unlinkParams) er
 	}
 	env.Logf("Связь снята с серверов; каскад остался, его можно развернуть снова.")
 	return nil
+}
+
+// strand marks a server a forced unlink skipped, once per job: needs
+// attention, with a note of what the link may have left there (Left, by
+// the revision the job built on). An exit the link never changed
+// (password auth) is not marked.
+func (x *linker) strand(ctx context.Context, env *jobs.Env, p unlinkParams, u *unplan, server int64) error {
+	key := "stranded:" + strconv.FormatInt(server, 10)
+	if env.Get(key) == "1" {
+		return nil
+	}
+	entry := server == p.Entry
+	in, base, role := u.inExit, u.exitBase, "выхода"
+	if entry {
+		in, base, role = u.inEntry, u.entryBase, "входа"
+	}
+	c, err := hyconfig.ParseServer(base) // the parsed plan has the link taken out
+	if err != nil {
+		return err
+	}
+	left := Left(p.Chain, p.Idx, entry, in, c)
+	if len(left) == 0 {
+		env.Logf("На сервере %s каскад ничего не менял (вход клиентов по общему паролю): там ничего не осталось.", role)
+		return env.Set(key, "1")
+	}
+	name := "#" + strconv.FormatInt(p.Chain, 10)
+	if ch, err := x.Store.ChainByID(ctx, p.Chain); err == nil {
+		name = "«" + ch.Name + "»"
+	}
+	what := strings.Join(left, "; ")
+	note := fmt.Sprintf("Каскад %s удалён %s без этого сервера: он не отвечал. На сервере могли остаться: %s. Уберите их, когда сервер снова будет доступен.", name, x.Now().Format("02.01.2006"), what)
+	if err := x.Store.AddServerNote(ctx, server, note, x.Now()); err != nil {
+		return err
+	}
+	if err := x.Store.SetServerState(ctx, server, model.StateNeedsAttention, x.Now()); err != nil {
+		return err
+	}
+	env.Warnf("Сервер %s помечен «Требует внимания», в его заметки записано, что на нём могло остаться: %s.", role, what)
+	return env.Set(key, "1")
 }
 
 func (x *linker) unCleanup(ctx context.Context, env *jobs.Env, p unlinkParams) error {
