@@ -59,7 +59,7 @@ func (e *Editor) Open(ctx context.Context, serverID int64) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	v := View{Revision: cur.Revision, SHA256: cur.SHA256, YAML: string(m), Unknown: []string{}}
+	v := View{Revision: cur.Revision, SHA256: cur.SHA256, YAML: string(m), Unknown: []string{}, Fields: Fields{ACMEDomains: []string{}}}
 	if c, err := hyconfig.ParseServer(m); err == nil {
 		v.Fields = FieldsOf(c)
 		v.Unknown = append(v.Unknown, hyconfig.UnknownFields(c)...)

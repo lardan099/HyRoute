@@ -44,7 +44,9 @@ func secretsOf(doc *yaml.Node) []secret {
 	seen := map[*yaml.Node]bool{}
 	pathOf := map[*yaml.Node]string{}
 	add := func(n *yaml.Node) {
-		if n.Kind == yaml.ScalarNode && n.Value != "" && !seen[n] {
+		// A null holds nothing to hide, and hidden it would be a string
+		// where Hysteria takes a section ("auth: null").
+		if n.Kind == yaml.ScalarNode && n.Value != "" && n.ShortTag() != "!!null" && !seen[n] {
 			seen[n] = true
 			out = append(out, secret{pathOf[n], n})
 		}

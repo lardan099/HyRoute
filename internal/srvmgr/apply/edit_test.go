@@ -488,6 +488,23 @@ func TestFieldsKeepMasqueradeWithoutType(t *testing.T) {
 	}
 }
 
+// An imported config with a null where a section goes ("auth: null"):
+// the null is no secret, the editor shows it as it is, and a check of
+// the text has the fields.
+func TestMaskKeepsNulls(t *testing.T) {
+	for _, null := range []string{"null", "~"} {
+		cfg := []byte("listen: :443\ntls:\n  cert: /etc/hysteria/server.crt\n  key: /etc/hysteria/server.key\nauth: " + null + "\n")
+		m, paths, err := Mask(cfg)
+		if err != nil || len(paths) != 0 || !strings.Contains(string(m), "auth: "+null) {
+			t.Fatalf("%v %q\n%s", err, paths, m)
+		}
+		ch, _, err := Build(cfg, string(m), nil)
+		if err != nil || ch.Fields.Listen != ":443" || ch.Fields.Cert != "/etc/hysteria/server.crt" {
+			t.Fatalf("auth: %s: %v %+v", null, err, ch.Fields)
+		}
+	}
+}
+
 // The token of a Realms listen is a secret of the editor too.
 func TestMaskRealmsToken(t *testing.T) {
 	cfg := strings.Replace(commented, "listen: :443", "listen: realm://fake-realm-token@realm.example.com/fake", 1)

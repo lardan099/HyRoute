@@ -191,7 +191,7 @@ type Check struct {
 // revision (secrets and all). It returns the unmasked candidate, nil when
 // it cannot be built (the check says why).
 func Build(current []byte, text string, fields *Fields) (Check, []byte, error) {
-	ch := Check{Problems: []hyconfig.Problem{}, Diff: []Line{}, Secrets: []string{}, Unknown: []string{}}
+	ch := Check{Problems: []hyconfig.Problem{}, Diff: []Line{}, Secrets: []string{}, Unknown: []string{}, Fields: Fields{ACMEDomains: []string{}}}
 	b := []byte(text)
 	if fields != nil {
 		c, err := hyconfig.ParseServer(b)
@@ -228,8 +228,10 @@ func Build(current []byte, text string, fields *Fields) (Check, []byte, error) {
 	if err != nil {
 		return ch, nil, err
 	}
-	mc, _ := hyconfig.ParseServer(masked)
-	ch.YAML, ch.Fields = string(masked), FieldsOf(mc)
+	ch.YAML = string(masked)
+	if mc, err := hyconfig.ParseServer(masked); err == nil {
+		ch.Fields = FieldsOf(mc)
+	}
 	pol := policy(c)
 	for _, p := range c.Validate() {
 		// The policy's error replaces Hysteria's warning about it.
