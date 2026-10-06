@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"log/slog"
@@ -63,6 +64,11 @@ type Deps struct {
 	// UI is the built admin app (a directory with index.html); nil
 	// serves no UI.
 	UI fs.FS
+	// Streams ends the live event streams (job events, the Hysteria
+	// journal) when it is done: main cancels it when shutdown starts, so
+	// they do not hold Shutdown while other requests finish. nil: a
+	// stream ends with its request only.
+	Streams context.Context
 }
 
 type server struct {

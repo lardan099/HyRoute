@@ -199,12 +199,11 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	if !cfg.Loopback() && !cfg.TLS() {
 		log.Warn("the admin serves plaintext HTTP beyond this machine (-insecure-http): passwords and sessions cross the network unencrypted", "listen", cfg.Listen)
 	}
-	// Requests get a context that ends when shutdown starts: live event
-	// streams return instead of holding Shutdown for its whole timeout.
-	baseCtx, endRequests := context.WithCancel(context.WithoutCancel(ctx))
-	defer endRequests()
+	// Live event streams end when shutdown starts instead of holding it
+	// for its whole timeout; other requests finish within it.
+	streams, endStreams := context.WithCancel(context.Background())
+	defer endStreams()
 	srv := &http.Server{
-		BaseContext: func(net.Listener) context.Context { return baseCtx },
 		Handler: api.New(api.Deps{
 			Store:      db,
 			Auth:       authSvc,
@@ -223,6 +222,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			TrustProxy: cfg.TrustProxy,
 			Loopback:   cfg.Loopback(),
 			UI:         admin.FS(),
+			Streams:    streams,
 			OnSetupDone: func() {
 				os.Remove(tokenFile)
 				log.Info("owner created, setup token removed")
@@ -234,6 +234,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		IdleTimeout:       120 * time.Second,
 		ErrorLog:          httpLog,
 	}
+	srv.RegisterOnShutdown(endStreams)
 	errc := make(chan error, 1)
 	if certs != nil {
 		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: certs.GetCertificate}
@@ -252,7 +253,6 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	case <-ctx.Done():
 	}
 	log.Info("shutting down")
-	endRequests()
 	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(sctx); err != nil {

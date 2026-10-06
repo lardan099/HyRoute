@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -180,6 +181,17 @@ func (s *server) retryJob(w http.ResponseWriter, r *http.Request) {
 // do not close it; the session of a stream is checked as often.
 var sseKeepalive = 20 * time.Second
 
+// streamContext is the context of a live event stream: r's, which also
+// ends when the controller shuts down (Deps.Streams).
+func (s *server) streamContext(r *http.Request) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(r.Context())
+	if s.Streams == nil {
+		return ctx, cancel
+	}
+	stop := context.AfterFunc(s.Streams, cancel)
+	return ctx, func() { stop(); cancel() }
+}
+
 // jobEvents streams a job as server-sent events: the stored log lines
 // after Last-Event-ID (or ?after=), then live "log", "step" and "job"
 // events until the job finishes.
@@ -273,11 +285,13 @@ func (s *server) jobEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, stop := s.streamContext(r)
+	defer stop()
 	keep := time.NewTicker(sseKeepalive)
 	defer keep.Stop()
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case <-keep.C:
 			if !s.sessionHolds(r) {

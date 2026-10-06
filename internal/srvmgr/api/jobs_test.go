@@ -192,6 +192,45 @@ func TestJobEventsStream(t *testing.T) {
 	}
 }
 
+// A stream ends when the controller shuts down (Deps.Streams): it does not
+// hold Shutdown, which lets the other requests finish.
+func TestJobEventsEndOnShutdown(t *testing.T) {
+	e := newEnv(t)
+	release := make(chan struct{})
+	defer close(release)
+	var broken atomic.Bool
+	e.jobs.Register(demoKind(release, &broken))
+	owner := e.setupOwner()
+	e.runJobs()
+	j, _ := e.jobs.Submit(context.Background(), "demo", 0, nil, nil, 1)
+	e.waitJob(j.ID, model.JobInstalling)
+
+	streams, shutdown := context.WithCancel(context.Background())
+	defer shutdown()
+	ts := httptest.NewServer(New(Deps{Store: e.db, Auth: e.auth, Servers: e.servers, Connect: e.connect, Jobs: e.jobs, Keys: e.keys, Streams: streams}))
+	defer ts.Close()
+	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/jobs/"+strconv.FormatInt(j.ID, 10)+"/events", nil)
+	req.AddCookie(owner.cookie)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	closed := make(chan struct{})
+	go func() { io.Copy(io.Discard, res.Body); close(closed) }()
+	select {
+	case <-closed:
+		t.Fatal("the stream ended before shutdown")
+	case <-time.After(200 * time.Millisecond):
+	}
+	shutdown()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream outlived shutdown")
+	}
+}
+
 // A stream ends once its session is gone: authed checked the session only
 // when the stream opened.
 func TestJobEventsEndWithSession(t *testing.T) {

@@ -182,7 +182,7 @@ func (s *server) journal(w http.ResponseWriter, r *http.Request) {
 
 	entries := make(chan service.Entry, 256)
 	done := make(chan error, 1)
-	ctx, stop := context.WithCancel(r.Context())
+	ctx, stop := s.streamContext(r)
 	defer stop()
 	go func() {
 		done <- remote.JournalFollow(ctx, ro, in.Unit, lines, !p.Root, func(e remote.JournalEntry) {
@@ -204,7 +204,7 @@ func (s *server) journal(w http.ResponseWriter, r *http.Request) {
 	defer keep.Stop()
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case e := <-entries:
 			if !send("entry", e) {
