@@ -225,7 +225,7 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 // uiHandler serves the admin app; paths that are not files get
-// index.html (the app routes on the client).
+// index.html (the app routes on the client), except under assets/.
 func uiHandler(ui fs.FS) http.Handler {
 	files := http.FileServerFS(ui)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -237,15 +237,24 @@ func uiHandler(ui fs.FS) http.Handler {
 		if p == "" {
 			p = "index.html"
 		}
-		if st, err := fs.Stat(ui, p); err != nil || st.IsDir() {
-			r = r.Clone(r.Context())
-			r.URL.Path = "/"
-		}
-		if strings.HasPrefix(p, "assets/") {
+		st, err := fs.Stat(ui, p)
+		found := err == nil && !st.IsDir()
+		switch {
+		case strings.HasPrefix(p, "assets/") && found:
 			// Vite names assets by content hash.
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		} else {
+		case strings.HasPrefix(p, "assets/"):
+			// An asset of another build: index.html cached under its name
+			// would break the page once that build is served again.
 			w.Header().Set("Cache-Control", "no-cache")
+			http.NotFound(w, r)
+			return
+		default:
+			w.Header().Set("Cache-Control", "no-cache")
+			if !found {
+				r = r.Clone(r.Context())
+				r.URL.Path = "/"
+			}
 		}
 		files.ServeHTTP(w, r)
 	})

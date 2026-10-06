@@ -128,6 +128,11 @@ func TestUIServingAndFallback(t *testing.T) {
 	if !strings.Contains(rec.Header().Get("Cache-Control"), "immutable") {
 		t.Fatal("hashed assets should be cached")
 	}
+	// An asset of another build is not the app, and nothing is cached.
+	rec = do(h, "GET", "/assets/app-2.js")
+	if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "<title>") || strings.Contains(rec.Header().Get("Cache-Control"), "immutable") {
+		t.Fatalf("missing asset: %d %q %q", rec.Code, rec.Header().Get("Cache-Control"), rec.Body.String())
+	}
 	if rec := do(h, "POST", "/servers"); rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST to UI: %d", rec.Code)
 	}
