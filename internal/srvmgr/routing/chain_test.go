@@ -95,7 +95,10 @@ func TestChainExport(t *testing.T) {
 func redactMask() string { return "[REDACTED]" }
 
 // A cascade from a template gets the link client's config a cascade made
-// by hand with the same settings gets.
+// by hand with the same settings gets. The template goes the way it does
+// in use: through its file (ImportChain) and the create request the form
+// sends; and the settings must show in the config, or two empty configs
+// would agree.
 func TestChainSameConfig(t *testing.T) {
 	exitCfg, err := hyconfig.ParseServer([]byte("listen: :443\nacme:\n  domains: [exit.example.com]\nauth:\n  type: password\n  password: fake-exit-pass\n"))
 	if err != nil {
@@ -105,10 +108,22 @@ func TestChainSameConfig(t *testing.T) {
 	s := cascade.Secrets{SOCKSUser: "link-1-0", SOCKSPassword: "fake-socks-pass"}
 	manual := cascade.Params{Up: "50 mbps", Down: "300 mbps", NoUDP: true}
 	for _, tp := range append(ChainBuiltins(), ChainTemplate{Format: ChainFormat, Version: ChainVersion, Name: "x", Link: manual}) {
-		// The template's settings as the create API stores them.
-		var stored cascade.Params
-		json.Unmarshal(tp.Link.Raw(), &stored)
-		hand := tp.Link
+		file, err := json.Marshal(tp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ImportChain(file)
+		if err != nil {
+			t.Fatalf("%s: %v", tp.Name, err)
+		}
+		body, _ := json.Marshal(map[string]any{"name": "c", "nodes": []int64{1, 2}, "link": got.Link})
+		var req struct {
+			Link cascade.Params `json:"link"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatal(err)
+		}
+		stored, hand := req.Link, tp.Link
 		stored.LocalPort, hand.LocalPort = 41000, 41000
 		a, err1 := cascade.ClientConfig(exit, exitCfg, model.ConfigMeta{}, 1, 0, stored, s)
 		b, err2 := cascade.ClientConfig(exit, exitCfg, model.ConfigMeta{}, 1, 0, hand, s)
@@ -119,6 +134,9 @@ func TestChainSameConfig(t *testing.T) {
 		yb, _ := b.Marshal()
 		if string(ya) != string(yb) {
 			t.Fatalf("%s:\n%s\n%s", tp.Name, ya, yb)
+		}
+		if a.Bandwidth.Up != tp.Link.Up || a.Bandwidth.Down != tp.Link.Down || a.SOCKS5.DisableUDP != tp.Link.NoUDP {
+			t.Fatalf("%s: the settings did not reach the config:\n%s", tp.Name, ya)
 		}
 	}
 }
