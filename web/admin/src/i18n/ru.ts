@@ -1008,7 +1008,7 @@ export const ru = {
   'rules.server': 'Сервер',
   'rules.check': 'Проверить',
   'rules.changes': 'Маршрут меняется у проверенных адресов ({n}):',
-  'tpl.resolver': 'DNS сервера станет: {addr}.',
+  'tpl.withResolver': 'Заменить DNS сервера на {addr}',
   'ctpl.template': 'Шаблон',
   'ctpl.none': 'Без шаблона',
   'ctpl.file': 'из файла',

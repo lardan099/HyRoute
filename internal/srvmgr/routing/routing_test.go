@@ -381,6 +381,13 @@ func TestExportImport(t *testing.T) {
 		t.Fatalf("%v\n%+v", err, back)
 	}
 
+	// The system resolver is not exported: a file from such a server
+	// does not switch another server's DNS back to it.
+	plain := newEnv(t, "listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-plain-pass\nacl:\n  inline:\n    - direct(all)\n", false)
+	if pv, err := plain.svc.Open(context.Background(), plain.server); err != nil || pv.Export().Resolver != nil {
+		t.Fatalf("%v %+v", err, pv.Export().Resolver)
+	}
+
 	// A hand-made file with passwords: they do not come in.
 	in := `{"format":"hyroute-routing","version":1,"acl":{"rules":[{"outbound":"p","address":"all"}]},"outbounds":[{"name":"p","type":"http","http":{"url":"http://u:fake-x@h:1","password":"fake-y"}},{"name":"q","type":"socks5","socks5":{"addr":"h:2","password":"fake-z"}}]}`
 	got, err := Import([]byte(in))

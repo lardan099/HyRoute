@@ -97,8 +97,8 @@ export type TemplateMode = 'top' | 'bottom' | 'replace';
 
 // merge puts a template into rules and outbounds: its rules at the top,
 // at the end or instead; its outbounds the list lacks (by name, without
-// passwords) at the end.
-export function merge(rules: AclRule[], obs: RoutingOutbound[], tpl: RoutingTemplate, mode: TemplateMode, withOutbounds: boolean) {
+// passwords) at the end; its resolver when withResolver.
+export function merge(rules: AclRule[], obs: RoutingOutbound[], tpl: RoutingTemplate, mode: TemplateMode, withOutbounds: boolean, withResolver: boolean) {
   const add = (tpl.acl.rules ?? []).map((r) => ({ ...r }));
   const out = mode === 'top' ? [...add, ...rules] : mode === 'bottom' ? [...rules, ...add] : add;
   const outbounds = [...obs];
@@ -107,5 +107,5 @@ export function merge(rules: AclRule[], obs: RoutingOutbound[], tpl: RoutingTemp
       if (!outbounds.some((x) => x.name.toLowerCase() === o.name.toLowerCase())) outbounds.push({ ...o, from: undefined, locked: undefined });
     }
   }
-  return { rules: out, outbounds, resolver: tpl.resolver ? { ...tpl.resolver } : undefined };
+  return { rules: out, outbounds, resolver: withResolver && tpl.resolver ? { ...tpl.resolver } : undefined };
 }

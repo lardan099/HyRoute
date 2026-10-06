@@ -15,6 +15,7 @@
   let serverId = $state(untrack(() => servers[0]?.id ?? 0));
   let mode = $state<TemplateMode>('top');
   let withOutbounds = $state(true);
+  let withResolver = $state(true);
   let input = $state<RoutingInput | null>(null);
   let preview = $state<RoutingPreview | null>(null);
   let error = $state<ApiError | null>(null);
@@ -35,7 +36,7 @@
   async function check() {
     reset();
     const my = seq;
-    const [id, where, outbounds] = [serverId, mode, withOutbounds];
+    const [id, where, outbounds, dns] = [serverId, mode, withOutbounds, withResolver];
     busy = true;
     try {
       const v = await api.routing(id);
@@ -44,7 +45,7 @@
         error = { message: t('rules.fileNote', { path: v.file }) } as ApiError;
         return;
       }
-      const m = merge(v.acl.rules ?? [], v.outbounds, tpl, where, outbounds);
+      const m = merge(v.acl.rules ?? [], v.outbounds, tpl, where, outbounds, dns);
       const draft = { base: v.revision, acl: { rules: m.rules, tail: v.acl.tail }, outbounds: m.outbounds, resolver: m.resolver ?? v.resolver };
       const p = await api.routingPreview(id, draft);
       if (my !== seq) return;
@@ -88,7 +89,9 @@
         </div>
       </div>
     </div>
-    {#if tpl.resolver}<p class="small muted">{t('tpl.resolver', { addr: tpl.resolver.addr ?? tpl.resolver.type })}</p>{/if}
+    {#if tpl.resolver}
+      <label class="check"><input type="checkbox" bind:checked={withResolver} onchange={reset} disabled={busy} /> {t('tpl.withResolver', { addr: tpl.resolver.addr || tpl.resolver.type })}</label>
+    {/if}
     {#if tpl.outbounds?.length}
       <label class="check"><input type="checkbox" bind:checked={withOutbounds} onchange={reset} disabled={busy} /> {t('tpl.outbounds', { list: tpl.outbounds.map((o) => o.name).join(', ') })}</label>
     {/if}

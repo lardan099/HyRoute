@@ -18,8 +18,9 @@ const (
 )
 
 // Export is a server's routing to save or move to another server: rules
-// with HyRoute's marks, outbounds and resolver, no passwords and no
-// cascade outbound (it belongs to the cascade).
+// with HyRoute's marks, outbounds and resolver (none for the system one,
+// as in a chain template), no passwords and no cascade outbound (it
+// belongs to the cascade).
 type Export struct {
 	Format    string       `json:"format"`
 	Version   int          `json:"version"`
@@ -30,7 +31,11 @@ type Export struct {
 
 // Export is the view to save, without secrets.
 func (v View) Export() Export {
-	e := Export{Format: Format, Version: Version, ACL: v.ACL, Resolver: &v.Resolver}
+	e := Export{Format: Format, Version: Version, ACL: v.ACL}
+	if v.Resolver.Type != "system" {
+		r := v.Resolver
+		e.Resolver = &r
+	}
 	for _, o := range v.Outbounds {
 		if !o.Locked {
 			e.Outbounds = append(e.Outbounds, o.public())

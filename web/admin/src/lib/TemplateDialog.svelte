@@ -1,7 +1,9 @@
 <script lang="ts">
   // Pick a rule template (or an imported file) and where its rules go: at
   // the top, at the end or instead of the server's rules; its outbounds the
-  // server lacks can come along (their passwords are typed on the server).
+  // server lacks can come along (their passwords are typed on the server),
+  // and its DNS (by default not from an imported file: the server's DNS
+  // stays).
   import { untrack } from 'svelte';
   import type { RoutingTemplate } from '../api';
   import { t, type Key } from '../i18n';
@@ -16,13 +18,14 @@
   }: {
     templates: RoutingTemplate[];
     title: string;
-    onapply: (tpl: RoutingTemplate, mode: Mode, withOutbounds: boolean) => void;
+    onapply: (tpl: RoutingTemplate, mode: Mode, withOutbounds: boolean, withResolver: boolean) => void;
     onclose: () => void;
   } = $props();
 
   let id = $state(untrack(() => templates[0]?.id ?? ''));
   let mode = $state<Mode>('top');
   let withOutbounds = $state(true);
+  let withResolver = $state(untrack(() => templates[0]?.id !== 'import'));
   let tpl = $derived(templates.find((x) => x.id === id) ?? null);
 </script>
 
@@ -43,7 +46,9 @@
           <li class:off={r.off}>{bad(r) ? r.text : `${r.outbound}(${r.address}${protoPort(r) ? ', ' + protoPort(r) : ''}${r.hijack ? ', ' + r.hijack : ''})`}{#if r.comment}<span class="faint"> # {r.comment}</span>{/if}</li>
         {/each}
       </ol>
-      {#if tpl.resolver}<p class="small muted">{t('tpl.resolver', { addr: tpl.resolver.addr ?? tpl.resolver.type })}</p>{/if}
+      {#if tpl.resolver}
+        <label class="check"><input type="checkbox" bind:checked={withResolver} /> {t('tpl.withResolver', { addr: tpl.resolver.addr || tpl.resolver.type })}</label>
+      {/if}
       {#if tpl.outbounds?.length}
         <label class="check"><input type="checkbox" bind:checked={withOutbounds} /> {t('tpl.outbounds', { list: tpl.outbounds.map((o) => o.name).join(', ') })}</label>
       {/if}
@@ -57,7 +62,7 @@
   </div>
   {#snippet actions()}
     <button type="button" onclick={onclose}>{t('common.cancel')}</button>
-    <button class="primary" disabled={!tpl} onclick={() => tpl && onapply(tpl, mode, withOutbounds)}>{t('tpl.apply')}</button>
+    <button class="primary" disabled={!tpl} onclick={() => tpl && onapply(tpl, mode, withOutbounds, withResolver)}>{t('tpl.apply')}</button>
   {/snippet}
 </Dialog>
 

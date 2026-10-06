@@ -300,13 +300,14 @@
     }
   }
 
-  function applyTemplate(tpl: RoutingTemplate, mode: TemplateMode, withOutbounds: boolean) {
+  function applyTemplate(tpl: RoutingTemplate, mode: TemplateMode, withOutbounds: boolean, withResolver: boolean) {
     const m = merge(
       rows.map((r) => r.rule),
       obs,
       tpl,
       mode,
       withOutbounds,
+      withResolver,
     );
     rows = rowsOf(m.rules);
     obs = m.outbounds;
