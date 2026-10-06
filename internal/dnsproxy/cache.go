@@ -34,6 +34,10 @@ func (e *cacheEntry) expires() time.Time { return e.at.Add(e.ttl) }
 const (
 	cacheMax    = 4096 // entries
 	sweepBudget = 1024 // entries one Sweep looks at
+	// cacheMaxMsg: a bigger answer is not cached (asked again instead),
+	// so the cache stays under cacheMax*cacheMaxMsg = 16 MB. Answers are
+	// rarely over 1.5 KB; a transport lets in up to 64 KB.
+	cacheMaxMsg = 4 << 10
 )
 
 // cache holds upstream answers (ID 0, as the upstream sent them) for their
@@ -61,6 +65,9 @@ func (c *cache) get(k cacheKey, now time.Time) ([]byte, time.Duration, bool) {
 // put stores msg for its TTL (ttlOf); an answer that may not be cached is
 // ignored.
 func (c *cache) put(k cacheKey, msg []byte, now time.Time) {
+	if len(msg) > cacheMaxMsg {
+		return
+	}
 	ttl := ttlOf(msg)
 	if ttl <= 0 {
 		return

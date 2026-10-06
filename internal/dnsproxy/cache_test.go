@@ -2,6 +2,7 @@ package dnsproxy
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -51,6 +52,15 @@ func TestCache(t *testing.T) {
 	c.put(k2, answer(t, q, dnsmessage.RCodeNameError, nil, nil, 0, false), t0) // no SOA
 	if _, _, ok := c.get(k2, t0); ok {
 		t.Fatal("uncacheable answer stored")
+	}
+	// Too big: not stored.
+	big := answer(t, q, dnsmessage.RCodeSuccess, append(bigRRs(20), rr{"a.example.", dnsmessage.TypeA, 60, "1.2.3.4"}), nil, 0, false)
+	if len(big) <= cacheMaxMsg {
+		t.Fatalf("test answer of %d bytes", len(big))
+	}
+	c.put(k2, big, t0)
+	if _, _, ok := c.get(k2, t0); ok {
+		t.Fatal("an answer over cacheMaxMsg stored")
 	}
 	// Capacity.
 	c.clear()
@@ -112,4 +122,13 @@ func TestFlight(t *testing.T) {
 	if string(got[1]) != "answer" {
 		t.Fatal("callers share one slice")
 	}
+}
+
+// bigRRs is n TXT records of 250 bytes.
+func bigRRs(n int) []rr {
+	out := make([]rr, n)
+	for i := range out {
+		out[i] = rr{"a.example.", dnsmessage.TypeTXT, 60, strings.Repeat("x", 250)}
+	}
+	return out
 }
