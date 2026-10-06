@@ -184,6 +184,13 @@ func checkKey(key []byte, passphrase string) error {
 	case errors.Is(err, x509.IncorrectPasswordError):
 		return fieldErr("keyPassphrase", "Пароль ключа не подходит.")
 	}
+	// x/crypto/ssh refuses a passphrase for a plain key with errors of no
+	// type of their own; the key is fine, the passphrase is not.
+	if passphrase != "" {
+		if _, perr := ssh.ParsePrivateKey(key); perr == nil {
+			return fieldErr("keyPassphrase", "Ключ не зашифрован: оставьте пароль ключа пустым.")
+		}
+	}
 	return fieldErr("key", "Это не закрытый SSH-ключ (ожидается OpenSSH, PEM RSA/EC/Ed25519).")
 }
 

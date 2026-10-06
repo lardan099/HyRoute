@@ -3,8 +3,11 @@ package servers
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"os"
@@ -148,6 +151,33 @@ func TestKeyAuth(t *testing.T) {
 	c, _ := s.Credentials(ctx, info.ID)
 	if _, err := ssh.ParsePrivateKeyWithPassphrase(c.Key, []byte(c.KeyPassphrase)); err != nil {
 		t.Fatalf("stored key does not parse: %v", err)
+	}
+}
+
+// A passphrase for a key that has none is an error of the passphrase, not
+// of the key, also for a stored key.
+func TestPassphraseForPlainKey(t *testing.T) {
+	s, _, _ := newService(t)
+	ctx := context.Background()
+	ec, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	der, _ := x509.MarshalECPrivateKey(ec)
+	pemEC := string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}))
+	in := base()
+	in.AuthType, in.Password, in.KeyPassphrase = model.AuthKey, nil, ptr("autofilled")
+	for _, key := range []string{genKey(t, ""), pemEC} {
+		in.Key = ptr(key)
+		if _, err := s.Create(ctx, 1, in); fieldOf(err) != "keyPassphrase" {
+			t.Fatalf("%.30q: %v", key, err)
+		}
+	}
+	in.KeyPassphrase = nil
+	info, err := s.Create(ctx, 1, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Key, in.KeyPassphrase = nil, ptr("autofilled")
+	if _, err := s.Update(ctx, 1, info.ID, in); fieldOf(err) != "keyPassphrase" {
+		t.Fatalf("stored key: %v", err)
 	}
 }
 
