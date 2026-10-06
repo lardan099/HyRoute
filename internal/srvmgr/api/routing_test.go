@@ -12,6 +12,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/acl"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/remote/sshtest"
 	"github.com/lardan099/hyroute/internal/srvmgr/routing"
 )
 
@@ -110,6 +111,39 @@ func TestRoutingAPI(t *testing.T) {
 	code(t, ro.do("GET", base, nil, nil), http.StatusForbidden, "forbidden")
 	code(t, ro.do("POST", base+"/preview", in, nil), http.StatusForbidden, "forbidden")
 	code(t, ro.do("GET", base+"/export", nil, nil), http.StatusForbidden, "forbidden")
+}
+
+// The export of a server whose rules are in acl.file has the file's
+// rules, read from the server.
+func TestRoutingExportFile(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	srv := sshtest.Start(t, "root", fakeSSHPass)
+	srv.SetExec(probeExec)
+	srv.SetFiles(map[string]string{"/etc/hysteria/acl.txt": "# rules\ndirect(geoip:ru)\nreject(all, udp/443)\n"})
+	rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": "S", "host": srv.Host, "sshPort": srv.Port, "authType": "password", "password": fakeSSHPass}, nil)
+	var created serverJSON
+	json.Unmarshal(rec.Body.Bytes(), &created)
+	id := strconv.FormatInt(created.ID, 10)
+	cfg := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-routing-file-auth\nacl:\n  file: /etc/hysteria/acl.txt\n")
+	c := model.ServerConfig{ServerID: created.ID, SHA256: "x", Source: model.ConfigImport, At: time.Now()}
+	e.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return e.keys.Seal(cfg, model.ConfigContext(created.ID, rev)) })
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/check", nil, nil)
+	fp := decodeError(t, rec).Data.(map[string]any)["fingerprint"].(string)
+	owner.do("POST", "/api/v1/servers/"+id+"/host-key", map[string]any{"fingerprint": fp}, nil)
+
+	base := "/api/v1/servers/" + id + "/routing/export"
+	rec = owner.do("GET", base+"?format=text", nil, nil)
+	if rec.Code != 200 || rec.Body.String() != "# rules\ndirect(geoip:ru)\nreject(all, udp/443)\n" {
+		t.Fatalf("%d %q", rec.Code, rec.Body)
+	}
+	rec = owner.do("GET", base, nil, nil)
+	var x routing.Export
+	json.Unmarshal(rec.Body.Bytes(), &x)
+	if rec.Code != 200 || len(x.ACL.Rules) != 2 || x.ACL.Rules[0].Address != "geoip:ru" {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
 }
 
 func TestChainTemplatesAPI(t *testing.T) {

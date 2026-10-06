@@ -138,6 +138,22 @@ func (s *server) exportRouting(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, configError(err))
 		return
 	}
+	if v.File != "" {
+		// The rules are in acl.file on the server, not in the view.
+		release, ok := s.sshSlot(w, r, id, false)
+		if !ok {
+			return
+		}
+		defer release()
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		f, err := s.routing().File(ctx, id)
+		if err != nil {
+			s.fail(w, r, configError(err))
+			return
+		}
+		v.ACL = f.ACL
+	}
 	name := "routing-" + strconv.FormatInt(id, 10)
 	switch r.URL.Query().Get("format") {
 	case "text":

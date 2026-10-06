@@ -1306,7 +1306,7 @@ routing`, ревизия с источником «правка»).
 | POST | `/api/v1/servers/{id}/routing/preview` | operator+ | `{base, acl, keepFile, outbounds, resolver, requests}` → проверка и diff конфига, правила после переименований, проблемы правил, dry-run (`changes`), `ok`, `same` |
 | POST | `/api/v1/servers/{id}/routing/apply` | operator+ | то же — задание `apply` (`change: routing`); ошибка в правилах или без изменений — 400 `invalid` |
 | POST | `/api/v1/servers/{id}/routing/check` | operator+ | `{acl, outbounds, request}` → правило, outbound, подмена, объяснение |
-| GET | `/api/v1/servers/{id}/routing/export` | operator+ | `format=json` (по умолчанию: правила, outbounds без паролей и каскада, resolver) или `text` (правила как читает Hysteria) |
+| GET | `/api/v1/servers/{id}/routing/export` | operator+ | `format=json` (по умолчанию: правила, outbounds без паролей и каскада, resolver) или `text` (правила как читает Hysteria); правила `acl.file` читаются с сервера по SSH, как в `routing/file` |
 | GET | `/api/v1/servers/{id}/routing/file` | operator+ | acl.file с сервера по SSH (до 1 МБ, полный путь): `{path, acl, problems}` |
 | GET | `/api/v1/routing/templates` | любая | шаблоны правил: встроенные (`builtin:local`, `builtin:ads`, `builtin:ru`) и пресеты с `acl.inline` (`preset:<id>`, outbounds без паролей) |
 | GET | `/api/v1/chain-templates` | любая | встроенные шаблоны каскадов: «Всё через exit», «RU напрямую» |
