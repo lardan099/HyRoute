@@ -949,6 +949,9 @@ func (c *Controller) BackupContents(secrets bool) []BackupSectionInfo {
 			in.Detail = nRules(len(st.Settings.Rules))
 			if st.Rulesets != nil {
 				in.Detail += " · " + nProfiles(len(st.Rulesets.List))
+			} else if st.Broken["rulesets.json"] != nil {
+				// Only the active rules go into the copy then.
+				in.Detail += " · rulesets.json не загружен — другие профили правил не сохранятся"
 			}
 		case "proxies":
 			withPass := 0
