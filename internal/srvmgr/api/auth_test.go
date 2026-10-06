@@ -366,3 +366,43 @@ func TestSecureCookieBehindProxy(t *testing.T) {
 		t.Fatalf("untrusted peer: cookie %+v", c3.cookie)
 	}
 }
+
+func TestClientIPBehindProxy(t *testing.T) {
+	s := &server{Deps: Deps{TrustProxy: true}}
+	for _, c := range []struct {
+		peer  string
+		lines []string
+		want  string
+	}{
+		{"127.0.0.1:50000", nil, "127.0.0.1"},
+		{"127.0.0.1:50000", []string{"203.0.113.7"}, "203.0.113.7"},
+		// Caddy and nginx extend the line that came, HAProxy adds its own.
+		{"127.0.0.1:50000", []string{"198.51.100.1, 203.0.113.7"}, "203.0.113.7"},
+		{"127.0.0.1:50000", []string{"198.51.100.1", "203.0.113.7"}, "203.0.113.7"},
+		{"[::1]:50000", []string{"198.51.100.1, 198.51.100.2", "2001:db8::7"}, "2001:db8::7"},
+		// Ports are dropped.
+		{"127.0.0.1:50000", []string{"203.0.113.7:4711"}, "203.0.113.7"},
+		{"127.0.0.1:50000", []string{"[2001:db8::7]:4711"}, "2001:db8::7"},
+		{"127.0.0.1:50000", []string{"[2001:db8::7]"}, "2001:db8::7"},
+		// Not an address: the proxy's own.
+		{"127.0.0.1:50000", []string{"203.0.113.7", "unknown"}, "127.0.0.1"},
+		// Only a proxy on this machine is believed.
+		{"198.51.100.9:50000", []string{"203.0.113.7"}, "198.51.100.9"},
+	} {
+		r := httptest.NewRequest("POST", "/api/v1/session", nil)
+		r.RemoteAddr = c.peer
+		for _, l := range c.lines {
+			r.Header.Add("X-Forwarded-For", l)
+		}
+		if got := s.clientIP(r); got != c.want {
+			t.Errorf("%s %q: %q, want %q", c.peer, c.lines, got, c.want)
+		}
+	}
+	s.TrustProxy = false
+	r := httptest.NewRequest("POST", "/api/v1/session", nil)
+	r.RemoteAddr = "127.0.0.1:50000"
+	r.Header.Set("X-Forwarded-For", "203.0.113.7")
+	if got := s.clientIP(r); got != "127.0.0.1" {
+		t.Errorf("without -trust-proxy: %q", got)
+	}
+}

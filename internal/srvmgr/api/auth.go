@@ -125,14 +125,28 @@ func (s *server) clientIP(r *http.Request) string {
 		host = r.RemoteAddr
 	}
 	if s.TrustProxy && isLoopback(host) {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
-			if ip := strings.TrimSpace(parts[len(parts)-1]); net.ParseIP(ip) != nil {
-				return ip
-			}
+		if ip := lastForwarded(r.Header.Values("X-Forwarded-For")); ip != "" {
+			return ip
 		}
 	}
 	return host
+}
+
+// lastForwarded is the last address of X-Forwarded-For, the one our proxy
+// appended: the proxy adds it to the last line (Caddy, nginx) or as a new
+// line (HAProxy), and everything before it came from the client. A port
+// (ip:port, [v6]:port) is dropped; "" when it is not an address.
+func lastForwarded(lines []string) string {
+	parts := strings.Split(strings.Join(lines, ","), ",")
+	v := strings.TrimSpace(parts[len(parts)-1])
+	if h, _, err := net.SplitHostPort(v); err == nil {
+		v = h
+	}
+	v = strings.TrimSuffix(strings.TrimPrefix(v, "["), "]")
+	if net.ParseIP(v) == nil {
+		return ""
+	}
+	return v
 }
 
 func isLoopback(host string) bool {
