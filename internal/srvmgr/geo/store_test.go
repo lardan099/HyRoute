@@ -250,8 +250,9 @@ func TestLatestRefused(t *testing.T) {
 	r := &releases{files: map[string]map[string][]byte{}}
 	srv := r.serve(t)
 	s := &Store{Dir: t.TempDir(), Base: srv.URL + "/releases", HTTP: srv.Client()}
-	if _, _, err := s.Update(context.Background()); err == nil {
-		t.Fatal("no release passed")
+	var down *DownloadError
+	if _, _, err := s.Update(context.Background()); !errors.As(err, &down) {
+		t.Fatalf("no release: %v", err)
 	}
 	r.latest = "../../etc"
 	if _, _, err := s.Update(context.Background()); err == nil {
@@ -266,5 +267,11 @@ func TestLatestRefused(t *testing.T) {
 	var nilStore *Store
 	if nilStore.Loader() != nil {
 		t.Fatal("nil store")
+	}
+
+	// The controller's own files broken: not a download error.
+	os.WriteFile(filepath.Join(s.Dir, "info.json"), []byte("{"), 0o600)
+	if _, _, err := s.Update(context.Background()); err == nil || errors.As(err, &down) {
+		t.Fatalf("broken info.json: %v", err)
 	}
 }

@@ -41,11 +41,16 @@ func (s *server) geoUpdate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
 	i, changed, err := s.Geo.Update(ctx)
-	if errors.Is(err, geo.ErrBusy) {
+	var down *geo.DownloadError
+	switch {
+	case errors.Is(err, geo.ErrBusy):
 		s.fail(w, r, &Error{Status: http.StatusConflict, Code: "geo_busy", Message: geo.ErrBusy.Error() + ": дождитесь конца."})
 		return
-	} else if err != nil {
+	case errors.As(err, &down):
 		s.fail(w, r, &Error{Status: http.StatusBadGateway, Code: "geo_download", Message: "Базы geo не скачались: " + err.Error()})
+		return
+	case err != nil:
+		s.fail(w, r, err) // the controller's disk: 500, in its log
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"info": i, "changed": changed})

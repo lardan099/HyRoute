@@ -48,6 +48,14 @@ var ErrNone = errors.New("у controller ещё нет баз geo: скачайт
 // ErrBusy: another update is running.
 var ErrBusy = errors.New("базы geo уже обновляются")
 
+// DownloadError: the release did not come (no answer, a bad answer, a
+// file that does not match its hash or is not a database). Other errors
+// of an update are the controller's own (its disk).
+type DownloadError struct{ Err error }
+
+func (e *DownloadError) Error() string { return e.Err.Error() }
+func (e *DownloadError) Unwrap() error { return e.Err }
+
 // defaultClient bounds a whole download (a stalled one must not hold the
 // updates for ever).
 var defaultClient = &http.Client{Timeout: 5 * time.Minute}
@@ -177,7 +185,8 @@ func (s *Store) healthy(i Info) bool {
 // rename of info.json, so a reader never sees half of an update; the
 // previous release stays for readers that opened it. The same release
 // is downloaded again only when its files are damaged. It reports
-// whether the files changed; another update running is ErrBusy.
+// whether the files changed; another update running is ErrBusy, a
+// release that did not come a *DownloadError.
 func (s *Store) Update(ctx context.Context) (Info, bool, error) {
 	if !s.updates.TryLock() {
 		return Info{}, false, ErrBusy
@@ -189,7 +198,7 @@ func (s *Store) Update(ctx context.Context) (Info, bool, error) {
 	}
 	tag, err := s.latest(ctx)
 	if err != nil {
-		return cur, false, err
+		return cur, false, &DownloadError{err}
 	}
 	cur.CheckedAt = s.now()
 	if tag == cur.Release && s.healthy(cur) {
@@ -203,7 +212,7 @@ func (s *Store) Update(ctx context.Context) (Info, bool, error) {
 	for _, name := range Names {
 		f, b, err := s.download(ctx, tag, name)
 		if err != nil {
-			return cur, false, err
+			return cur, false, &DownloadError{err}
 		}
 		if err := replace(filepath.Join(dir, name), b); err != nil {
 			return cur, false, err

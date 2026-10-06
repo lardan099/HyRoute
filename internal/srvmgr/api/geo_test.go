@@ -78,6 +78,10 @@ func TestGeoUpdateBusy(t *testing.T) {
 	close(release)
 	<-done
 	code(t, owner.do("POST", "/api/v1/geo/update", nil, nil), http.StatusBadGateway, "geo_download")
+	// The controller's own files are not a download: 500.
+	os.MkdirAll(e.geo.Dir, 0o700)
+	os.WriteFile(filepath.Join(e.geo.Dir, "info.json"), []byte("{"), 0o600)
+	code(t, owner.do("POST", "/api/v1/geo/update", nil, nil), http.StatusInternalServerError, "internal")
 }
 
 func TestGeoAPI(t *testing.T) {
