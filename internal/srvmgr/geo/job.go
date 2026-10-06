@@ -148,15 +148,21 @@ func (i *Installer) Kind() *jobs.Kind {
 			d := func(f func(context.Context, *jobs.Env, Params) (bool, error)) func(context.Context, *jobs.Env) (bool, error) {
 				return func(ctx context.Context, env *jobs.Env) (bool, error) { return f(ctx, env, p) }
 			}
+			// A retry or a recovery before the commit starts at check,
+			// which compares the controller's files and the server's
+			// config again (a rollback may have run, the controller may
+			// have newer databases, the config may have been edited);
+			// steps done already are skipped, a service restarted
+			// already is not restarted again.
 			return []jobs.Step{
 				{Name: "connect", Phase: model.JobConnecting, Safe: true, Run: x.connect},
 				{Name: "check", Phase: model.JobPreflight, Safe: true, Run: w(x.check)},
-				{Name: "prepare", Phase: model.JobConfiguring, Safe: true, Run: x.prepare, Undo: x.undoPrepare},
-				{Name: "dir", Phase: model.JobInstalling, Safe: true, Run: x.dir},
-				{Name: "files", Phase: model.JobInstalling, Safe: true, Done: d(x.filesDone), Run: w(x.files), Undo: w(x.undoFiles)},
-				{Name: "config", Phase: model.JobConfiguring, Safe: true, Done: x.configDone, Run: x.config, Undo: x.undoConfig},
-				{Name: "restart", Phase: model.JobStarting, Safe: true, Run: x.restart},
-				{Name: "verify", Phase: model.JobVerifying, Safe: true, Run: x.verify},
+				{Name: "prepare", Phase: model.JobConfiguring, Run: x.prepare, Undo: x.undoPrepare},
+				{Name: "dir", Phase: model.JobInstalling, Run: x.dir},
+				{Name: "files", Phase: model.JobInstalling, Done: d(x.filesDone), Run: w(x.files), Undo: w(x.undoFiles)},
+				{Name: "config", Phase: model.JobConfiguring, Done: x.configDone, Run: x.config, Undo: x.undoConfig},
+				{Name: "restart", Phase: model.JobStarting, Done: restarted, Run: x.restart},
+				{Name: "verify", Phase: model.JobVerifying, Run: x.verify},
 				{Name: "commit", Phase: model.JobVerifying, Safe: true, Done: d(x.committed), Run: w(x.commit)},
 				{Name: "cleanup", Phase: model.JobVerifying, Safe: true, Run: w(x.cleanup)},
 			}, nil
@@ -232,8 +238,8 @@ func want(b []byte) ([]byte, *hyconfig.Server, error) {
 	return out, c, err
 }
 
-// check: the controller still has the job's files, the server runs the
-// current revision.
+// check: the controller still has the job's files, the server has the
+// config of the base revision (or the one this job writes).
 func (x *installer) check(ctx context.Context, env *jobs.Env, p Params) error {
 	for _, f := range p.Files {
 		if _, have, err := x.Files.Open(f.Name); err != nil || have.SHA256 != f.SHA256 {
@@ -251,7 +257,11 @@ func (x *installer) check(ctx context.Context, env *jobs.Env, p Params) error {
 			return err
 		}
 	}
-	cur, _, in, err := x.base(ctx, env)
+	cur, b, in, err := x.base(ctx, env)
+	if err != nil {
+		return err
+	}
+	w, _, err := want(b)
 	if err != nil {
 		return err
 	}
@@ -259,14 +269,12 @@ func (x *installer) check(ctx context.Context, env *jobs.Env, p Params) error {
 	if err != nil {
 		return err
 	}
-	if env.Get("configState") == "" {
-		sum, err := remote.FileSHA256(ctx, ex, in.Config, sudo(env))
-		if err != nil {
-			return err
-		}
-		if sum != cur.SHA256 {
-			return jobs.Fail("Конфиг на сервере изменён не через HyRoute: импортируйте сервер заново или примените конфиг, потом повторите.", nil)
-		}
+	sum, err := remote.FileSHA256(ctx, ex, in.Config, sudo(env))
+	if err != nil {
+		return err
+	}
+	if sum != cur.SHA256 && sum != sha(w) {
+		return jobs.Fail("Конфиг на сервере изменён не через HyRoute: импортируйте сервер заново или примените конфиг, потом повторите.", nil)
 	}
 	env.Logf("Базы geo релиза %s (%s).", p.Release, sourceText(p))
 	return nil
@@ -295,6 +303,10 @@ func committedRevision(env *jobs.Env) bool { return env.Get("committed") == "1" 
 func (x *installer) undoPrepare(ctx context.Context, env *jobs.Env) error {
 	if env.Get("restarted") != "1" || committedRevision(env) {
 		return jobs.ErrNothingToUndo
+	}
+	// The service gets the previous files back: a retry restarts it.
+	if err := env.Set("restarted:done", ""); err != nil {
+		return err
 	}
 	_, _, in, err := x.base(ctx, env)
 	if err != nil {
@@ -606,7 +618,13 @@ func (x *installer) restart(ctx context.Context, env *jobs.Env) error {
 		return jobs.Fail("Не удалось перезапустить службу.", err)
 	}
 	env.Logf("Служба %s перезапущена.", in.Unit)
-	return nil
+	return env.Set("restarted:done", "1")
+}
+
+// restarted: the service runs what this job put there (the restart is
+// recorded once it ran; the undo of prepare clears the record).
+func restarted(_ context.Context, env *jobs.Env) (bool, error) {
+	return env.Get("restarted:done") == "1", nil
 }
 
 // verify waits until the service runs and Hysteria listens on its port

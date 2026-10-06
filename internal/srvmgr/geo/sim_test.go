@@ -25,6 +25,8 @@ type vps struct {
 	cmds      []string
 	writes    []string
 	down      bool // the transport fails
+	// hook runs before each command (tests block in it).
+	hook func(args []string)
 }
 
 func newVPS() *vps {
@@ -40,6 +42,12 @@ func failed(code int, stderr string) remote.Result {
 }
 
 func (v *vps) Run(_ context.Context, cmd remote.Cmd) (remote.Result, error) {
+	v.mu.Lock()
+	hook := v.hook
+	v.mu.Unlock()
+	if hook != nil {
+		hook(cmd.Args)
+	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.down {
@@ -203,6 +211,19 @@ func (v *vps) ran(prefix string) bool {
 		}
 	}
 	return false
+}
+
+// count is how many commands started with prefix.
+func (v *vps) count(prefix string) int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	n := 0
+	for _, c := range v.cmds {
+		if strings.HasPrefix(c, prefix) {
+			n++
+		}
+	}
+	return n
 }
 
 func (v *vps) reset() {

@@ -51,6 +51,7 @@ type harness struct {
 	server int64
 	nodeID int64
 	inst   *Installer
+	stop   func()                       // ends the controller
 	db2    map[string]map[string][]byte // release → files put
 	mu     sync.Mutex
 }
@@ -86,16 +87,24 @@ func newHarness(t *testing.T) *harness {
 	c := model.ServerConfig{ServerID: h.server, SHA256: sha([]byte(config)), Source: model.ConfigDeploy, At: time.Now()}
 	db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return keys.Seal([]byte(config), model.ConfigContext(h.server, rev)) })
 	h.v.files[cfgPath] = []byte(config)
+	h.stop = h.controller()
+	return h
+}
 
-	eng := jobs.New(db, keys, redact.New(), h, nil)
+// controller starts a controller process on the harness's database; the
+// function returned ends it as a dying process would.
+func (h *harness) controller() func() {
+	eng := jobs.New(h.db, h.keys, redact.New(), h, nil)
 	eng.Poll = 10 * time.Millisecond
-	h.inst = New(Deps{DB: db, Keys: keys, Files: h.files, Jobs: eng, Nodes: h.Connect, VerifyTimeout: 200 * time.Millisecond, Poll: 10 * time.Millisecond})
+	h.inst = New(Deps{DB: h.db, Keys: h.keys, Files: h.files, Jobs: eng, Nodes: h.Connect, VerifyTimeout: 200 * time.Millisecond, Poll: 10 * time.Millisecond})
 	eng.Register(h.inst.Kind())
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { eng.Run(runCtx); close(done) }()
-	t.Cleanup(func() { cancel(); <-done })
-	return h
+	var once sync.Once
+	stop := func() { once.Do(func() { cancel(); <-done }) }
+	h.t.Cleanup(stop)
+	return stop
 }
 
 // put makes release the controller's: its files, as servers can download
@@ -124,6 +133,22 @@ func (h *harness) run(source string, via int64) model.Job {
 	if err != nil {
 		h.t.Fatal(err)
 	}
+	return h.finish(j)
+}
+
+// retry asks for job j again and waits for it.
+func (h *harness) retry(j model.Job) model.Job {
+	h.t.Helper()
+	j, err := h.inst.x.Jobs.Retry(context.Background(), j.ID, 1)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return h.finish(j)
+}
+
+// finish waits for job j to end.
+func (h *harness) finish(j model.Job) model.Job {
+	h.t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		j, _ = h.db.JobByID(context.Background(), j.ID)
@@ -256,6 +281,72 @@ func TestInstallRollback(t *testing.T) {
 	}
 	if s, _ := h.db.ServerByID(ctx, h.server); s.State == model.StateNeedsAttention {
 		t.Fatal("needs attention after a clean rollback")
+	}
+}
+
+// A retry after the rollback checks again before it writes anything: the
+// controller has other databases now (the upload would not match the
+// job's), then the config was edited over SSH.
+func TestInstallRetryChecksAgain(t *testing.T) {
+	h := newHarness(t)
+	two := testDB(t, "two")
+	h.v.bad = func(f map[string][]byte) bool { return bytes.Equal(f[ServerDir+"/"+GeoSite], two[GeoSite]) }
+	h.put("R2", two)
+	j := h.run(SourceRelay, 0)
+	if j.State != model.JobFailed || j.CurrentStep != "verify" {
+		t.Fatalf("%s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, h.log(j.ID))
+	}
+	h.put("R3", testDB(t, "three"))
+	if j = h.retry(j); j.State != model.JobFailed || j.CurrentStep != "check" || !strings.Contains(j.ErrorMessage, "у controller уже другие") {
+		t.Fatalf("newer databases: %s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, h.log(j.ID))
+	}
+
+	h.put("R2", two)
+	edited := []byte(config + "# edited over SSH\n")
+	h.v.mu.Lock()
+	h.v.files[cfgPath] = edited
+	h.v.mu.Unlock()
+	h.v.reset()
+	if j = h.retry(j); j.State != model.JobFailed || j.CurrentStep != "check" || !strings.Contains(j.ErrorMessage, "изменён не через HyRoute") {
+		t.Fatalf("edited config: %s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, h.log(j.ID))
+	}
+	if b, _ := h.v.file(cfgPath); !bytes.Equal(b, edited) || len(h.v.writes) != 0 {
+		t.Fatalf("the edit is gone: %q", h.v.writes)
+	}
+}
+
+// The controller dies while Hysteria comes up with the new files: the
+// next one checks again and goes on, without restarting Hysteria a
+// second time.
+func TestInstallResumesAfterRestart(t *testing.T) {
+	h := newHarness(t)
+	h.put("R1", testDB(t, "one"))
+	reached, block := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	h.v.hook = func(a []string) {
+		if a[0] == "ss" {
+			once.Do(func() { close(reached); <-block })
+		}
+	}
+	j, err := h.inst.Submit(context.Background(), h.server, SourceAuto, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-reached
+	stopped := make(chan struct{})
+	go func() { h.stop(); close(stopped) }()
+	time.Sleep(30 * time.Millisecond) // the controller is cancelled
+	close(block)
+	<-stopped
+	h.v.mu.Lock()
+	h.v.hook = nil
+	h.v.mu.Unlock()
+	h.stop = h.controller()
+	if j = h.finish(j); j.State != model.JobCompleted || !h.has("R1") {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
+	}
+	if n := h.v.count("systemctl restart"); n != 1 || !strings.Contains(h.log(j.ID), "с шага «check»") {
+		t.Fatalf("restarted %d times\n%s", n, h.log(j.ID))
 	}
 }
 
