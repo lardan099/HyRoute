@@ -243,8 +243,16 @@ func (s *Supervisor) SOCKS() socks5.Client {
 	return s.socks
 }
 
-func (s *Supervisor) setStatus(f func(*Status)) {
+func (s *Supervisor) setStatus(f func(*Status)) { s.setStatusWhile(nil, f) }
+
+// setStatusWhile applies f only while live() holds (nil: always), tested
+// under the lock with the write.
+func (s *Supervisor) setStatusWhile(live func() bool, f func(*Status)) {
 	s.mu.Lock()
+	if live != nil && !live() {
+		s.mu.Unlock()
+		return
+	}
 	f(&s.status)
 	st := s.status
 	// Under the lock: an update from the run's wait loop (new server IPs)
@@ -457,11 +465,10 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 	)
 	runCtx, stopProbes := context.WithCancel(ctx)
 	defer stopProbes()
+	// The run's end cancels runCtx under s.mu: a probe or a log line that
+	// reports connected after it must not make the dead process available.
 	setConnected := func(udp bool) {
-		if runCtx.Err() != nil {
-			return
-		}
-		s.setStatus(func(st *Status) {
+		s.setStatusWhile(func() bool { return runCtx.Err() == nil }, func(st *Status) {
 			st.State, st.Kind, st.Message, st.UDPEnabled = Connected, ErrNone, "", udp
 			if !udp {
 				st.Message = "Сервер запретил UDP: UDP-трафик с маршрутом Tunnel будет отклоняться"
@@ -606,8 +613,10 @@ wait:
 			}
 		}
 	}
-	s.available.Store(false)
+	s.mu.Lock()
 	stopProbes()
+	s.available.Store(false)
+	s.mu.Unlock()
 	probes.Wait()
 	<-readDone
 
