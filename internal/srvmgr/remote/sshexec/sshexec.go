@@ -631,7 +631,7 @@ func (c *Client) WriteFile(ctx context.Context, p string, data []byte, f remote.
 	if _, err := c.output(ctx, "install", remote.Cmd{Args: args, Sudo: f.Sudo}); err != nil {
 		return err
 	}
-	if _, err := c.output(ctx, "mv", remote.Cmd{Args: []string{"mv", "-f", "--", staged, p}, Sudo: f.Sudo}); err != nil {
+	if _, err := c.output(ctx, "mv", remote.Cmd{Args: []string{"mv", "-fT", "--", staged, p}, Sudo: f.Sudo}); err != nil {
 		c.Run(context.WithoutCancel(ctx), remote.Cmd{Args: []string{"rm", "-f", "--", staged}, Sudo: f.Sudo})
 		return err
 	}

@@ -168,25 +168,30 @@ func InstallFile(ctx context.Context, ex Executor, src, dst string, mode fs.File
 	return Rename(ctx, ex, tmp, dst, sudo)
 }
 
-// Rename moves src over dst (same filesystem: atomic).
+// Rename moves src over dst (same filesystem: atomic). dst is always the
+// name itself (-T): a symlink there to a directory is replaced, never
+// moved into.
 func Rename(ctx context.Context, ex Executor, src, dst string, sudo bool) error {
 	for _, p := range []string{src, dst} {
 		if err := CheckPath(p); err != nil {
 			return err
 		}
 	}
-	_, err := run(ctx, ex, "mv", Cmd{Args: []string{"mv", "-f", "--", src, dst}, Sudo: sudo})
+	_, err := run(ctx, ex, "mv", Cmd{Args: []string{"mv", "-fT", "--", src, dst}, Sudo: sudo})
 	return err
 }
 
-// CopyFile copies src to dst keeping mode and owner (a backup).
+// CopyFile copies src to dst keeping mode and owner (a backup). Whatever
+// is at dst is removed first and dst made anew: a symlink there is never
+// written through, so a backup next to a file in a directory the
+// service's user can write cannot change another file.
 func CopyFile(ctx context.Context, ex Executor, src, dst string, sudo bool) error {
 	for _, p := range []string{src, dst} {
 		if err := CheckPath(p); err != nil {
 			return err
 		}
 	}
-	_, err := run(ctx, ex, "cp", Cmd{Args: []string{"cp", "-p", "--", src, dst}, Sudo: sudo})
+	_, err := run(ctx, ex, "cp", Cmd{Args: []string{"cp", "-p", "--remove-destination", "--", src, dst}, Sudo: sudo})
 	return err
 }
 

@@ -178,7 +178,7 @@ func TestInstall(t *testing.T) {
 	if g, err := h.db.ServerGeo(ctx, h.server); err != nil || g.Release != "R1" || g.GeoIP != sha(h.db2["R1"][GeoIP]) || g.JobID != j.ID {
 		t.Fatalf("%v %+v", err, g)
 	}
-	if !h.v.ran("systemctl restart") || h.v.ran("cp -p -- /etc/hysteria/geo") || strings.Contains(h.log(j.ID), "не скачал") {
+	if !h.v.ran("systemctl restart") || h.v.ran("cp -p --remove-destination -- /etc/hysteria/geo") || strings.Contains(h.log(j.ID), "не скачал") {
 		t.Fatalf("%q\n%s", h.v.cmds, h.log(j.ID))
 	}
 	for _, p := range []string{cfgPath + Backup, ServerDir + "/" + GeoIP + Backup} {

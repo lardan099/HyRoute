@@ -69,7 +69,7 @@ func TestInstallFile(t *testing.T) {
 	}
 	want := []string{
 		"install -m 0755 -o root -g root -- /tmp/hyroute.abcdefghij/hysteria /usr/local/bin/hysteria.hyroute-new",
-		"mv -f -- /usr/local/bin/hysteria.hyroute-new /usr/local/bin/hysteria",
+		"mv -fT -- /usr/local/bin/hysteria.hyroute-new /usr/local/bin/hysteria",
 	}
 	if got := ex.Commands(); !slices.Equal(got, want) {
 		t.Fatalf("%q", got)

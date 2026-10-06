@@ -151,3 +151,56 @@ func TestHasSystemCommand(t *testing.T) {
 		t.Fatalf("sh not found: %v %v", ok, err)
 	}
 }
+
+// A backup never writes through a symlink at its name, and a rename never
+// moves into a directory a symlink at the target points to.
+func TestCopyAndRenameKeepSymlinkTargets(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	src, other := filepath.Join(dir, "config.yaml"), filepath.Join(dir, "other")
+	if err := os.WriteFile(src, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	backup := src + ".hyroute-prev"
+	if err := os.Symlink(other, backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := CopyFile(ctx, userShell{}, src, backup, false); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(other); string(b) != "keep" {
+		t.Fatalf("copied through the link: %q", b)
+	}
+	if fi, err := os.Lstat(backup); err != nil || !fi.Mode().IsRegular() {
+		t.Fatalf("backup is not a file: %v %v", fi, err)
+	}
+	if b, _ := os.ReadFile(backup); string(b) != "new" {
+		t.Fatalf("backup %q", b)
+	}
+
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(src); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sub, src); err != nil {
+		t.Fatal(err)
+	}
+	if err := Rename(ctx, userShell{}, backup, src, false); err != nil {
+		t.Fatal(err)
+	}
+	if es, _ := os.ReadDir(sub); len(es) != 0 {
+		t.Fatalf("moved into the linked directory: %v", es)
+	}
+	if b, _ := os.ReadFile(src); string(b) != "new" {
+		t.Fatalf("renamed %q", b)
+	}
+}
