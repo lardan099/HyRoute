@@ -167,7 +167,7 @@ func TestMergeKeepsLocalSettings(t *testing.T) {
 	src := "sub:s1"
 	old := hysteria.Profile{ID: "x", Name: "NL", Host: "nl.example", Ports: "443,20000-30000", Auth: "a", Source: src,
 		Obfs: hysteria.Obfs{Type: "salamander", Password: "pw"},
-		TLS:  hysteria.TLS{SNI: "s.example", Insecure: true, PinSHA256: strings.Repeat("ab", 32), ECH: "e"}}
+		TLS:  hysteria.TLS{SNI: "s.example", Insecure: true, PinSHA256: strings.Repeat("ab", 32), ECH: "AAT+DQAA"}} // an inline ECHConfigList: a link carries no other
 	// Every other field set, as if edited: a field added to Profile later
 	// must either travel in the share link or be kept by keepLocal.
 	fillZero(t, reflect.ValueOf(&old).Elem())
