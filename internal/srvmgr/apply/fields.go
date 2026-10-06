@@ -112,7 +112,13 @@ func SetFields(c *hyconfig.Server, f Fields) error {
 	}
 	switch f.Masquerade {
 	case "":
-		c.Masquerade = hyconfig.Masquerade{Unknown: c.Masquerade.Unknown}
+		m := hyconfig.Masquerade{Unknown: c.Masquerade.Unknown}
+		if c.Masquerade.Type == "" {
+			// No type before either: the TCP servers of the section stay
+			// (switching a type off resets the section, as the wizard).
+			m.ListenHTTP, m.ListenHTTPS, m.ForceHTTPS = c.Masquerade.ListenHTTP, c.Masquerade.ListenHTTPS, c.Masquerade.ForceHTTPS
+		}
+		c.Masquerade = m
 	case "proxy":
 		c.Masquerade.Type = "proxy"
 		c.Masquerade.Proxy.URL, c.Masquerade.Proxy.RewriteHost = strings.TrimSpace(f.MasqueradeURL), f.RewriteHost

@@ -461,6 +461,33 @@ func TestUnmaskKeyAndDocumentComments(t *testing.T) {
 	}
 }
 
+// A masquerade without a type serves only its TCP side: an edit of
+// another field keeps it.
+func TestFieldsKeepMasqueradeWithoutType(t *testing.T) {
+	cfg := []byte(strings.Replace(commented, "tls:", "masquerade:\n  listenHTTP: :80\n  listenHTTPS: :443\n  forceHTTPS: true\ntls:", 1))
+	m, _, err := Mask(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc, err := hyconfig.ParseServer(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := FieldsOf(mc)
+	if f.Masquerade != "" {
+		t.Fatalf("masquerade %q", f.Masquerade)
+	}
+	f.BandwidthUp = "100 mbps"
+	_, cand, err := Build(cfg, string(m), &f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := hyconfig.ParseServer(cand)
+	if mq := c.Masquerade; mq.ListenHTTP != ":80" || mq.ListenHTTPS != ":443" || !mq.ForceHTTPS || c.Bandwidth.Up != "100 mbps" {
+		t.Fatalf("masquerade %+v, bandwidth %+v", mq, c.Bandwidth)
+	}
+}
+
 // The token of a Realms listen is a secret of the editor too.
 func TestMaskRealmsToken(t *testing.T) {
 	cfg := strings.Replace(commented, "listen: :443", "listen: realm://fake-realm-token@realm.example.com/fake", 1)
