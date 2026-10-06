@@ -167,6 +167,23 @@ func TestUnchanged(t *testing.T) {
 	}
 }
 
+// Outbounds left out of the input stay, as the resolver does; an empty
+// list removes them.
+func TestOutboundsLeftOut(t *testing.T) {
+	e := newEnv(t, config, false)
+	in := e.input()
+	in.Outbounds, in.Resolver = nil, Resolver{}
+	p, cand, _, err := e.svc.candidate(context.Background(), e.server, in)
+	if err != nil || !p.Same || !strings.Contains(string(cand), "fake-proxy-pass") {
+		t.Fatalf("%v %+v\n%s", err, p, cand)
+	}
+	in.Outbounds = []Outbound{}
+	in.ACL.Rules = in.ACL.Rules[:1] // the others name outbounds
+	if _, cand, _, err = e.svc.candidate(context.Background(), e.server, in); err != nil || strings.Contains(string(cand), "outbounds") {
+		t.Fatalf("%v\n%s", err, cand)
+	}
+}
+
 func TestEdit(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t, config, true)
@@ -518,7 +535,7 @@ func TestKeepFileOutbounds(t *testing.T) {
 	var fe *model.FieldError
 	for name, change := range map[string]func(in *Input){
 		"rename": func(in *Input) { in.Outbounds[0].Name = "nl" },
-		"remove": func(in *Input) { in.Outbounds = nil },
+		"remove": func(in *Input) { in.Outbounds = []Outbound{} },
 	} {
 		in := e.input()
 		in.KeepFile = true

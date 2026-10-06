@@ -149,7 +149,9 @@ type Input struct {
 	ACL  acl.Document `json:"acl"`
 	// KeepFile leaves acl.file as it is; without it the rules go to
 	// acl.inline and acl.file is dropped.
-	KeepFile  bool       `json:"keepFile,omitempty"`
+	KeepFile bool `json:"keepFile,omitempty"`
+	// Outbounds left out (null) stay as they are, as a resolver left out
+	// does; an empty list removes them.
 	Outbounds []Outbound `json:"outbounds"`
 	Resolver  Resolver   `json:"resolver"`
 	// Requests are tried before and after the edit besides the rules'
@@ -213,18 +215,23 @@ func (s *Service) candidate(ctx context.Context, serverID int64, in Input) (Prev
 		before, envBefore = acl.ParseInline(c.ACL.Inline), s.env(c, ref)
 		file = c.ACL.File != ""
 		was := routingOf(c)
-		obs, renames, err := outbounds(c.Outbounds, in.Outbounds, ref)
-		if err != nil {
-			return err
-		}
-		if file && in.KeepFile && (len(renames) > 0 || removed(c.Outbounds, in.Outbounds)) {
-			return &model.FieldError{Field: "outbounds", Msg: "Правила сервера в файле " + c.ACL.File + ": outbound, на который они могут ссылаться, нельзя переименовать или удалить — Hysteria не запустится. Сначала перенесите правила в конфиг."}
-		}
-		c.Outbounds = obs
-		for i, o := range in.Outbounds { // obs[i] is the editor's outbound i
-			if o.From != "" && i < len(obs) {
-				kept[strings.ToLower(obs[i].Name)] = o.From
+		var renames map[string]string
+		if in.Outbounds != nil {
+			obs, rn, err := outbounds(c.Outbounds, in.Outbounds, ref)
+			if err != nil {
+				return err
 			}
+			if file && in.KeepFile && (len(rn) > 0 || removed(c.Outbounds, in.Outbounds)) {
+				return &model.FieldError{Field: "outbounds", Msg: "Правила сервера в файле " + c.ACL.File + ": outbound, на который они могут ссылаться, нельзя переименовать или удалить — Hysteria не запустится. Сначала перенесите правила в конфиг."}
+			}
+			c.Outbounds, renames = obs, rn
+			for i, o := range in.Outbounds { // obs[i] is the editor's outbound i
+				if o.From != "" && i < len(obs) {
+					kept[strings.ToLower(obs[i].Name)] = o.From
+				}
+			}
+		} else {
+			kept = nil // the outbounds stay: each is the one of its name
 		}
 		in.Resolver.set(&c.Resolver)
 		after = renamed(restoreDoc(in.ACL, before), renames)
