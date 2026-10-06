@@ -76,6 +76,12 @@ func TestPresetsAPI(t *testing.T) {
 	}
 	file["version"] = 9
 	code(t, owner.do("POST", "/api/v1/presets/import", file, nil), http.StatusBadRequest, "invalid")
+	// A file over 1 MB is read (a preset with a big ACL); over the limit
+	// of preset files it gets 413.
+	file["notes"] = []string{strings.Repeat("x", 2<<20)}
+	code(t, owner.do("POST", "/api/v1/presets/import", file, nil), http.StatusBadRequest, "invalid")
+	file["notes"] = []string{strings.Repeat("x", 5<<20)}
+	code(t, owner.do("POST", "/api/v1/presets/import", file, nil), http.StatusRequestEntityTooLarge, "too_large")
 
 	if rec = owner.do("DELETE", "/api/v1/presets/"+id, nil, nil); rec.Code != http.StatusNoContent {
 		t.Fatalf("%d %s", rec.Code, rec.Body)

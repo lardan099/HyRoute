@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,6 +19,12 @@ import (
 
 func service(t *testing.T) (*Service, int64) {
 	t.Helper()
+	return serviceWith(t, full)
+}
+
+// serviceWith has a server whose current config is cfg.
+func serviceWith(t *testing.T, cfg string) (*Service, int64) {
+	t.Helper()
 	ctx := context.Background()
 	db, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
@@ -30,7 +37,7 @@ func service(t *testing.T) (*Service, int64) {
 		t.Fatal(err)
 	}
 	c := model.ServerConfig{ServerID: srv.ID, SHA256: "x", Source: model.ConfigDeploy, At: time.Now()}
-	if err := db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return keys.Seal([]byte(full), model.ConfigContext(srv.ID, rev)) }); err != nil {
+	if err := db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return keys.Seal([]byte(cfg), model.ConfigContext(srv.ID, rev)) }); err != nil {
 		t.Fatal(err)
 	}
 	return &Service{Store: db, Keys: keys}, srv.ID
@@ -111,5 +118,38 @@ func TestExportImport(t *testing.T) {
 		if _, err := s.Import(ctx, []byte(bad), 0); !errors.As(err, &fe) {
 			t.Errorf("%s: %v", bad, err)
 		}
+	}
+}
+
+// A preset with an inline ACL as large as the routing editor makes is
+// exported and imported again; one too large for a file is refused when
+// it is created.
+func TestLargePreset(t *testing.T) {
+	ctx := context.Background()
+	withACL := func(n int) string {
+		var b strings.Builder
+		b.WriteString("listen: :443\nacl:\n  inline:\n")
+		for i := range n {
+			fmt.Fprintf(&b, "    - direct(suffix:host-%06d.a-long-label-of-a-subdomain.of-a-long-name-of-a-site.example.com)\n", i)
+		}
+		return b.String()
+	}
+	s, srv := serviceWith(t, withACL(12000))
+	p, err := s.FromServer(ctx, "ACL", srv, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := Export(p.Preset)
+	if len(b) < 1<<20 {
+		t.Fatalf("export of %d bytes", len(b))
+	}
+	if _, err := s.Import(ctx, b, 0); err != nil {
+		t.Fatal(err)
+	}
+	// What counts is the file: "<" is < there, six times the config.
+	s, srv = serviceWith(t, "listen: :443\nmasquerade:\n  type: string\n  string:\n    content: "+strings.Repeat("<", MaxImport/5)+"\n")
+	var fe *model.FieldError
+	if _, err := s.FromServer(ctx, "ACL", srv, 0); !errors.As(err, &fe) || fe.Field != "config" || !strings.Contains(fe.Msg, "4 МБ") {
+		t.Fatal(err)
 	}
 }

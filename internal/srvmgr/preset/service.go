@@ -113,6 +113,10 @@ func (s *Service) create(ctx context.Context, name string, c *hyconfig.Server, a
 	}
 	now := s.now()
 	m := model.Preset{Name: name, Config: string(b), Notes: notes, CreatedBy: actor, CreatedAt: now, UpdatedAt: now}
+	// Its export must import again, after a rename too.
+	if f, err := Export(m); err != nil || len(f)+renameRoom > MaxImport {
+		return Info{}, &model.FieldError{Field: "config", Msg: fmt.Sprintf("Пресет получается больше %d МБ (большой ACL или страница маскировки): такой не загрузить обратно из файла.", MaxImport>>20)}
+	}
 	if err := s.Store.CreatePreset(ctx, &m); err != nil {
 		return Info{}, taken(err)
 	}
@@ -202,8 +206,13 @@ func (s *Service) Delete(ctx context.Context, id int64, actor int64) error {
 const (
 	Format  = "hyroute-preset"
 	Version = 1
-	// MaxImport is the largest export Import reads.
-	MaxImport = 256 << 10
+	// MaxImport is the largest export Import reads: a preset with an
+	// inline ACL as large as the routing editor makes fits. Presets are
+	// created only as large as this, so every export imports.
+	MaxImport = 4 << 20
+	// renameRoom is what a longer name can add to an export (64
+	// characters, escaped).
+	renameRoom = 1 << 10
 )
 
 // File is a preset as exported: JSON with the format and its version.
@@ -225,7 +234,7 @@ func Export(p model.Preset) ([]byte, error) {
 // A name in use gets a number.
 func (s *Service) Import(ctx context.Context, data []byte, actor int64) (Info, error) {
 	if len(data) > MaxImport {
-		return Info{}, &model.FieldError{Field: "file", Msg: "Файл пресета больше 256 КиБ."}
+		return Info{}, &model.FieldError{Field: "file", Msg: fmt.Sprintf("Файл пресета больше %d МБ.", MaxImport>>20)}
 	}
 	var f File
 	if err := json.Unmarshal(data, &f); err != nil || f.Format != Format {
