@@ -902,3 +902,28 @@ func TestPlanReplaceKeepsIDsUnique(t *testing.T) {
 		t.Fatalf("main %q: %+v", main, pl.next.Profiles.List)
 	}
 }
+
+// A copy without a password carries no DNS server or base links of one's
+// own (the export leaves them out): one that does keeps yours, with a
+// warning. With a password they are taken, and the plan names the host.
+func TestPlanCopyWithoutPasswordKeepsOwnServers(t *testing.T) {
+	cur := baseState()
+	file := dnspolicy.Config{ByRules: true, Tunnel: dnspolicy.Upstream{Preset: dnspolicy.Custom, URL: "https://dns.other.example/dns-query"}}
+	pl := plan(cur, payload(false).put("dns", file).p, map[string]string{"dns": "replace"})
+	if pl.err != "" || pl.next.DNS.Tunnel != cur.DNS.Tunnel || !pl.next.DNS.ByRules || !strings.Contains(texts(pl), "не переносится") {
+		t.Fatalf("%s %+v %s", pl.err, pl.next.DNS, texts(pl))
+	}
+	pl = plan(cur, payload(true).put("dns", file).p, map[string]string{"dns": "replace"})
+	if pl.err != "" || pl.next.DNS != file || !strings.Contains(texts(pl), "dns.other.example") {
+		t.Fatalf("%s %+v %s", pl.err, pl.next.DNS, texts(pl))
+	}
+	g := bkGeo{GeoSource: "custom", GeoSiteURL: "https://geo.other.example/geosite.dat", GeoIPURL: "https://geo.other.example/geoip.dat"}
+	pl = plan(cur, payload(false).put("geo", g).p, map[string]string{"geo": "replace"})
+	if pl.err != "" || pl.next.Prefs.GeoSource == "custom" || !strings.Contains(texts(pl), "не переносятся") {
+		t.Fatalf("%s %+v %s", pl.err, pl.next.Prefs, texts(pl))
+	}
+	pl = plan(cur, payload(true).put("geo", g).p, map[string]string{"geo": "replace"})
+	if pl.err != "" || pl.next.Prefs.GeoSiteURL != g.GeoSiteURL || !strings.Contains(texts(pl), "geo.other.example") {
+		t.Fatalf("%s %+v %s", pl.err, pl.next.Prefs, texts(pl))
+	}
+}

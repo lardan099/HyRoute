@@ -1535,7 +1535,20 @@ func (x *planCtx) planSettings() {
 		}
 	}
 	if x.chosen("geo") && x.d.geo != nil {
-		g := jsonMap(x.d.geo)
+		gp := *x.d.geo
+		if gp.GeoSource == "custom" && (oldPrefs.GeoSiteURL != gp.GeoSiteURL || oldPrefs.GeoIPURL != gp.GeoIPURL) {
+			// As the DNS server above: your own links are left out of a
+			// copy without a password, and a base from someone else's
+			// address may send sites past the tunnel.
+			if !x.p.Secrets {
+				gp.GeoSource, gp.GeoSiteURL, gp.GeoIPURL = oldPrefs.GeoSource, oldPrefs.GeoSiteURL, oldPrefs.GeoIPURL
+				pl.warn(msg("geo").t("Свои ссылки на базы правил из копии без пароля не переносятся: источник баз остаётся ваш."))
+			} else {
+				pl.warn(msg("geo").t("Базы правил будут скачиваться по ссылкам из копии: ").s(strings.Join(nonEmpty(urlHost(gp.GeoSiteURL), urlHost(gp.GeoIPURL)), ", ")).
+					t(". База решает, какие сайты идут через VPN: восстанавливайте так только свою копию."))
+			}
+		}
+		g := jsonMap(&gp)
 		var np store.Prefs
 		all := jsonMap(next.Prefs)
 		for _, k := range geoKeys {
@@ -2107,6 +2120,25 @@ func (x *planCtx) planDNS() {
 	}
 	pl := x.pl
 	a, b := x.cur.DNS, *x.d.dns
+	// A server of your own is an address the export of a copy without a
+	// password leaves out: such a copy carrying one was made elsewhere, and
+	// it would send the names to whoever wrote it. Yours stays. With a
+	// password the address is shown and warned about.
+	for _, u := range []struct {
+		cur, in *dnspolicy.Upstream
+		what    string
+	}{{&a.Tunnel, &b.Tunnel, "DNS-сервер для VPN"}, {&a.Direct, &b.Direct, "Сервер для прямых DNS-запросов"}} {
+		if u.in.Preset != dnspolicy.Custom || u.cur.Preset == dnspolicy.Custom && u.cur.URL == u.in.URL {
+			continue
+		}
+		if !x.p.Secrets {
+			*u.in = *u.cur
+			pl.warn(msg("dns").t(u.what + " из копии без пароля не переносится (такая копия своего сервера не хранит): остаётся ваш."))
+			continue
+		}
+		pl.warn(msg("dns").t(u.what + " станет сервером из копии: ").s(urlHost(u.in.URL)).
+			t(". Он будет видеть имена сайтов и сможет подменять ответы: восстанавливайте так только свою копию."))
+	}
 	pl.next.DNS = b
 	// Both: until the install, the current servers may still be logged.
 	pl.redact["dns"] = append(dnsSecrets(a), dnsSecrets(b)...)
@@ -2170,4 +2202,24 @@ func (x *planCtx) planStats() {
 		t += " (" + x.env.statsDetail + ")"
 	}
 	x.pl.line(msg("stats").t(t + "."))
+}
+
+// urlHost is the host of a link for a plan line ("" for none): its path
+// may hold a key.
+func urlHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
+}
+
+func nonEmpty(ss ...string) []string {
+	var out []string
+	for _, s := range ss {
+		if s != "" && !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
