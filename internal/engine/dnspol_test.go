@@ -1320,3 +1320,30 @@ func TestServeDNSCancel(t *testing.T) {
 	cl.Close()
 	<-done
 }
+
+// After a network change the new network's DNS server is a private
+// address the last snapshot lacks: the query waits off the loop for a
+// fresh snapshot and is intercepted, not passed on to that server. One a
+// fresh snapshot lacks too passes, and later ones do not wait again.
+func TestDNSNewPrivateServerWaitsForSnapshot(t *testing.T) {
+	r := newDNSRig(t, tunnelAll, byRules, Options{})
+	srv := netip.MustParseAddr("192.168.0.1")
+	primary, all := map[netip.Addr]bool{srv: true}, map[netip.Addr]bool{srv: true}
+	for a := range r.info.All {
+		all[a] = true
+	}
+	r.info.Primary, r.info.All = primary, all // the network changed; no refresh yet
+	before := r.snaps.Load()
+	r.ask("192.168.1.5:9003", "192.168.0.1:53", dnscach, polQuery(t, "ads.example.", dnsmessage.TypeA, 0))
+	if m := r.answer(t, "192.168.1.5:9003", "192.168.0.1:53"); m.Header.RCode != dnsmessage.RCodeNameError {
+		t.Fatal("new network's DNS server not intercepted")
+	}
+	if r.snaps.Load() == before {
+		t.Fatal("no fresh snapshot")
+	}
+	r.ask("192.168.1.5:9004", "10.9.9.9:53", dnscach, polQuery(t, "ads.example.", dnsmessage.TypeA, 0))
+	r.passed(t, "10.9.9.9:53")
+	if r.c.dnsTarget(netip.MustParseAddrPort("10.9.9.9:53"), false) != dnsNone {
+		t.Fatal("an address a fresh snapshot lacked is waited for again")
+	}
+}

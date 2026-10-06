@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -51,6 +52,10 @@ const (
 	dnsNone      dnsDest = iota // not intercepted: today's path
 	dnsMain                     // a DNS server of an adapter with a default gateway, or a public non-adapter address
 	dnsSecondary                // a DNS server of any other adapter, whatever its range
+	// dnsUnknown: a private address the last snapshot lacks (UDP): after
+	// a network change it may be the new network's DNS server, so the
+	// query waits off the loop for a fresh snapshot (dnsUDP).
+	dnsUnknown
 )
 
 const (
@@ -58,7 +63,11 @@ const (
 	dnsTunnelWait  = 5 * time.Second  // a tunnel resolution
 	dnsDirectWait  = 3 * time.Second  // a direct one: a failure must fall back quickly
 	dnsKickEvery   = 30 * time.Second // adapter refresh while a policy is set
-	dnsTCPMessages = 32               // per connection
+	// dnsUnknownWait bounds the wait for a fresh snapshot; an address a
+	// fresh one lacked is not waited for again for dnsUnknownKeep.
+	dnsUnknownWait = 300 * time.Millisecond
+	dnsUnknownKeep = 30 * time.Second
+	dnsTCPMessages = 32 // per connection
 )
 
 var (
@@ -93,6 +102,9 @@ type dnsState struct {
 	dnsSem   chan struct{}
 	dnsRows  dnsRows
 	kickedAt atomic.Int64 // last periodic adapter refresh (Maintain)
+	// dnsNotServer: private addresses a snapshot read after a miss did
+	// not list (netip.Addr → unix nanos), see dnsRecheck.
+	dnsNotServer sync.Map
 }
 
 // ---- which queries ----
@@ -122,6 +134,27 @@ func (c *Core) dnsTarget(dst netip.AddrPort, tcp bool) dnsDest {
 	if !DefaultExclusions(a) && !cgnatPrefix.Contains(a) || a.IsLoopback() {
 		return dnsMain // a public resolver a program asks itself
 	}
+	if tcp || c.SysDNS == nil {
+		return dnsNone
+	}
+	if at, ok := c.dnsNotServer.Load(a); ok && time.Since(time.Unix(0, at.(int64))) < dnsUnknownKeep {
+		return dnsNone // a fresh snapshot lacked it a moment ago
+	}
+	return dnsUnknown
+}
+
+// dnsRecheck classifies an address dnsTarget found unknown, by a
+// snapshot read after the miss: one it still lacks is remembered as no
+// DNS server of an adapter for dnsUnknownKeep.
+func (c *Core) dnsRecheck(a netip.Addr) dnsDest {
+	info := c.SysDNS.Get()
+	switch {
+	case info != nil && info.Primary[a]:
+		return dnsMain
+	case info != nil && info.All[a]:
+		return dnsSecondary
+	}
+	c.dnsNotServer.Store(a, time.Now().UnixNano())
 	return dnsNone
 }
 
@@ -131,7 +164,11 @@ func (c *Core) dnsTarget(dst netip.AddrPort, tcp bool) dnsDest {
 // go through the DNS check; other fragmented traffic to it still passes
 // unchanged, decided by its first fragment.
 func (c *Core) dnsHold(a netip.Addr) bool {
-	return c.DNSPol.Load() != nil && c.dnsTarget(netip.AddrPortFrom(a, 53), false) != dnsNone
+	if c.DNSPol.Load() == nil {
+		return false
+	}
+	d := c.dnsTarget(netip.AddrPortFrom(a, 53), false)
+	return d == dnsMain || d == dnsSecondary
 }
 
 // ownHysteria: a hysteria.exe HyRoute started.
@@ -187,6 +224,33 @@ func (c *Core) dnsUDP(pol *dnspolicy.Policy, dest dnsDest, p *packet.Packet, add
 		return false
 	}
 	key := nat.FlowKey{Src: p.Src(), Dst: p.Dst()}
+	if dest == dnsUnknown {
+		// Wait off the loop for a snapshot read after this miss; a full
+		// queue lets the query go on as before.
+		select {
+		case c.dnsSem <- struct{}{}:
+		default:
+			return false
+		}
+		mark := c.SysDNS.Mark()
+		cp, a := copyPacket(p, addr)
+		go func() {
+			defer func() { <-c.dnsSem }()
+			defer c.guard("dns")
+			c.SysDNS.Fresh(mark, dnsUnknownWait)
+			dest := c.dnsRecheck(key.Dst.Addr().Unmap())
+			if dest == dnsNone {
+				c.udpRoute(cp, &a)
+				return
+			}
+			pid, known, stage := c.waitOwner(packet.ProtoUDP, key)
+			if stage == "stopped" {
+				return
+			}
+			c.dnsJudge(&udpQuery{pol: pol, dest: dest, q: q, p: cp, addr: &a, pid: pid, known: known, attrib: stage, late: true})
+		}()
+		return true
+	}
 	pid, known := c.Conns.Lookup(attrib.Key5{Proto: packet.ProtoUDP, Local: key.Src, Remote: key.Dst})
 	if known {
 		return c.dnsJudge(&udpQuery{pol: pol, dest: dest, q: q, p: p, addr: addr, pid: pid, known: true, attrib: "packet"})
