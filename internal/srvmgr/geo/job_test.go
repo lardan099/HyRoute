@@ -350,6 +350,17 @@ func TestInstallResumesAfterRestart(t *testing.T) {
 	}
 }
 
+// With ACME Hysteria may get its certificate before it listens: verify
+// waits three times as long, as the link job does.
+func TestInstallWaitsForACME(t *testing.T) {
+	h := newHarness(t)
+	h.put("R1", testDB(t, "one"))
+	h.v.slow = 400 * time.Millisecond // the harness waits 200 ms
+	if j := h.run(SourceAuto, 0); j.State != model.JobCompleted {
+		t.Fatalf("%s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, h.log(j.ID))
+	}
+}
+
 // The server cannot reach GitHub: the controller uploads its files.
 func TestInstallRelay(t *testing.T) {
 	h := newHarness(t)

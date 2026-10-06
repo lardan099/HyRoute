@@ -648,7 +648,11 @@ func (x *installer) verify(ctx context.Context, env *jobs.Env) error {
 	}
 	su := sudo(env)
 	l, lerr := hyconfig.ParseListen(c.Listen)
-	deadline := time.Now().Add(x.VerifyTimeout)
+	wait := x.VerifyTimeout
+	if c.ACME != nil {
+		wait *= 3 // Hysteria may get a certificate before it listens
+	}
+	deadline := time.Now().Add(wait)
 	steady := false
 	for {
 		st, err := remote.ActiveState(ctx, ex, in.Unit)

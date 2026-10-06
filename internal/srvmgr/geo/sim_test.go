@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/remote"
 )
@@ -27,6 +28,9 @@ type vps struct {
 	down      bool // the transport fails
 	// hook runs before each command (tests block in it).
 	hook func(args []string)
+	// slow: Hysteria listens that long after a restart (ACME).
+	slow    time.Duration
+	started time.Time
 }
 
 func newVPS() *vps {
@@ -138,7 +142,7 @@ func (v *vps) Run(_ context.Context, cmd remote.Cmd) (remote.Result, error) {
 	case "systemctl":
 		switch a[1] {
 		case "restart":
-			v.state = "active"
+			v.state, v.started = "active", time.Now()
 			if v.bad != nil && v.bad(v.files) {
 				v.state = "failed"
 			}
@@ -147,7 +151,7 @@ func (v *vps) Run(_ context.Context, cmd remote.Cmd) (remote.Result, error) {
 			return remote.Result{Stdout: []byte(v.state + "\n"), ExitCode: map[bool]int{true: 0, false: 3}[v.state == "active"]}, nil
 		}
 	case "ss":
-		if v.state == "active" {
+		if v.state == "active" && time.Since(v.started) >= v.slow {
 			return ok(`udp UNCONN 0 0 *:443 *:* users:(("hysteria",pid=7,fd=3))` + "\n"), nil
 		}
 		return ok(""), nil
