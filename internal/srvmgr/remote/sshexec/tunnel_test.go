@@ -48,8 +48,8 @@ func TestDialLoopback(t *testing.T) {
 	free, _ := net.Listen("tcp", "127.0.0.1:0")
 	freePort := free.Addr().(*net.TCPAddr).Port
 	free.Close()
-	if _, err := c.DialLoopback(context.Background(), freePort); err == nil {
-		t.Fatal("a closed port opened")
+	if _, err := c.DialLoopback(context.Background(), freePort); err == nil || errors.Is(err, remote.ErrNoTunnel) {
+		t.Fatalf("a closed port: %v", err)
 	}
 	if _, err := c.DialLoopback(context.Background(), 70000); err == nil {
 		t.Fatal("port " + strconv.Itoa(70000))
@@ -57,5 +57,15 @@ func TestDialLoopback(t *testing.T) {
 	// An executor without a tunnel says so.
 	if _, err := remote.DialLoopback(context.Background(), fake.New(), port); !errors.Is(err, remote.ErrNoTunnel) {
 		t.Fatalf("fake: %v", err)
+	}
+	// sshd forbids forwarding (AllowTcpForwarding no): no tunnel either,
+	// and the connection itself keeps working.
+	srv.DisableForwarding()
+	srv.SetExec(func(context.Context, string, io.Reader, io.Writer, io.Writer) int { return 0 })
+	if _, err := c.DialLoopback(context.Background(), port); !errors.Is(err, remote.ErrNoTunnel) {
+		t.Fatalf("forwarding disabled: %v", err)
+	}
+	if res, err := c.Run(context.Background(), remote.Cmd{Args: []string{"true"}}); err != nil || !res.OK() {
+		t.Fatalf("run after a refused channel: %+v %v", res, err)
 	}
 }

@@ -44,14 +44,15 @@ type Server struct {
 	// rejects the host key must not reach authentication at all.
 	AuthAttempts atomic.Int32
 
-	mu      sync.Mutex
-	hostKey ssh.Signer
-	exec    ExecFunc
-	files   memFS
-	handler *sftp.Handlers
-	lines   []string
-	ln      net.Listener
-	wg      sync.WaitGroup
+	mu        sync.Mutex
+	hostKey   ssh.Signer
+	exec      ExecFunc
+	files     memFS
+	handler   *sftp.Handlers
+	lines     []string
+	noForward bool
+	ln        net.Listener
+	wg        sync.WaitGroup
 }
 
 // NewSigner makes a fresh ed25519 host or user key.
@@ -138,6 +139,14 @@ func (s *Server) SetFiles(files map[string]string) {
 func (s *Server) SetHandlers(h sftp.Handlers) {
 	s.mu.Lock()
 	s.handler = &h
+	s.mu.Unlock()
+}
+
+// DisableForwarding makes the server refuse every direct-tcpip channel as
+// administratively prohibited, as sshd with AllowTcpForwarding no does.
+func (s *Server) DisableForwarding() {
+	s.mu.Lock()
+	s.noForward = true
 	s.mu.Unlock()
 }
 
@@ -316,6 +325,13 @@ func (s *Server) forward(nc ssh.NewChannel) {
 		Port     uint32
 		OrigHost string
 		OrigPort uint32
+	}
+	s.mu.Lock()
+	off := s.noForward
+	s.mu.Unlock()
+	if off {
+		nc.Reject(ssh.Prohibited, "port forwarding is disabled")
+		return
 	}
 	if err := ssh.Unmarshal(nc.ExtraData(), &p); err != nil || (p.Host != "127.0.0.1" && p.Host != "localhost") || p.Port == 0 || p.Port > 65535 {
 		nc.Reject(ssh.Prohibited, "loopback only")

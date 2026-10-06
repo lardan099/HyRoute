@@ -672,7 +672,10 @@ func (c *Client) output(ctx context.Context, op string, cmd remote.Cmd) (string,
 }
 
 // DialLoopback opens 127.0.0.1:port on the server through the SSH
-// connection (direct-tcpip).
+// connection (direct-tcpip). An sshd that forbids forwarding
+// (AllowTcpForwarding no, DisableForwarding, PermitOpen, restrict) refuses
+// the channel as administratively prohibited: that is remote.ErrNoTunnel,
+// not a closed port.
 func (c *Client) DialLoopback(ctx context.Context, port int) (net.Conn, error) {
 	if port < 1 || port > 65535 {
 		return nil, fmt.Errorf("sshexec: bad port %d", port)
@@ -682,6 +685,10 @@ func (c *Client) DialLoopback(ctx context.Context, port int) (net.Conn, error) {
 	}
 	conn, err := c.ssh.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	if err != nil {
+		var oce *ssh.OpenChannelError
+		if errors.As(err, &oce) && oce.Reason == ssh.Prohibited {
+			return nil, fmt.Errorf("%w: %v", remote.ErrNoTunnel, err)
+		}
 		return nil, c.failed(ctx, err)
 	}
 	return conn, nil

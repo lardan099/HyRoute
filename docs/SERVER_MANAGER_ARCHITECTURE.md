@@ -944,8 +944,10 @@ SOCKS5 клиента Hysteria отвечает одним кодом (host unre
    ровно то, что делает сам Hysteria; затем CONNECT к цели проверки.
    Пароль не принят — Offline («обновите связь»); клиент не отвечает —
    Offline; клиент ответил отказом — exit или цель не открылись (решает
-   пункт 3). Подключение без туннеля (тестовые executor'ы) пропускает
-   этот сигнал.
+   пункт 3). Подключение без туннеля (тестовые executor'ы, или sshd
+   отказал в канале как administratively prohibited: `AllowTcpForwarding
+   no`, `DisableForwarding`, `restrict` у ключа — `ErrNoTunnel`)
+   пропускает этот сигнал.
 3. `hysteria ping` с конфигом связи до цели: нет «connected to server» —
    exit не отвечает (Offline); рукопожатие (по меткам времени лога)
    дольше 2 с — Degraded; цель не открылась ни через туннель, ни через
