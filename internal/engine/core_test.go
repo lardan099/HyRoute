@@ -616,6 +616,29 @@ func TestDNSSniffTCP(t *testing.T) {
 	}
 }
 
+// A TCP DNS answer that comes back through the relay (the tunnel) reaches
+// the cache: the sniff does not see what the main handle injects.
+func TestDNSTCPAnswerThroughTunnel(t *testing.T) {
+	h := newHarness(t, appRules, Options{})
+	client, resolver := netip.MustParseAddrPort("192.168.1.5:40054"), netip.MustParseAddrPort("8.8.8.8:53")
+	framed := func(m []byte) []byte { return append(binary.BigEndian.AppendUint16(nil, uint16(len(m))), m...) }
+	h.own(6, client.String(), resolver.String(), 100) // curl: tunnel
+	h.sendTCP(client.String(), resolver.String(), packet.FlagSYN, "")
+	if i := h.next(t); i.pkt.DstPort() != relayPort {
+		t.Fatal("not reflected")
+	}
+	h.c.HandleDNS(packet.BuildTCP(client, resolver, packet.FlagACK|packet.FlagPSH, 1, 1, framed(dnsQuery(t, "tun.test."))), true)
+	reflected := netip.AddrPortFrom(resolver.Addr(), client.Port())
+	relay := netip.AddrPortFrom(client.Addr(), relayPort)
+	h.c.HandlePacket(packet.BuildTCP(relay, reflected, packet.FlagACK|packet.FlagPSH, 1, 1, framed(dnsResponse(t, "tun.test.", "198.51.100.42"))), outAddr())
+	if i := h.next(t); i.pkt.Src() != resolver || i.pkt.Dst() != client {
+		t.Fatalf("answer %v -> %v", i.pkt.Src(), i.pkt.Dst())
+	}
+	if got := h.c.DNS.Names(netip.MustParseAddr("198.51.100.42")); len(got) != 1 || got[0] != "tun.test" {
+		t.Fatal(got)
+	}
+}
+
 func dnsResponse(t *testing.T, name, ip string) []byte {
 	t.Helper()
 	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{Response: true})

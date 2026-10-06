@@ -404,6 +404,12 @@ func (c *Core) tcpOut(p *packet.Packet, addr *divert.Address) {
 		}
 		c.NAT.TouchPacket(ent, p, false, nil, now)
 		nat.ReflectFromRelay(p, ent)
+		if ent.Flow.Dst.Port() == 53 && len(p.Payload()) > 0 {
+			// A TCP DNS answer through the tunnel: the sniff never sees
+			// what the main handle injects. It is cached only when it
+			// answers a query the sniff saw, as in HandleDNS.
+			c.DNS.AddAnswer(true, p.Dst(), p.Src(), p.Payload())
+		}
 		c.injectInbound(p, addr)
 		return
 	}
