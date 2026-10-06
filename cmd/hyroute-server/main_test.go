@@ -113,7 +113,7 @@ func TestRunServesHealthAndUI(t *testing.T) {
 func TestLoggerLevel(t *testing.T) {
 	for level, want := range map[string]int{"debug": 3, "info": 2, "warn": 1} {
 		var out bytes.Buffer
-		log, buf := newLogger(&out, level, redact.New())
+		log, _, buf := newLogger(&out, level, redact.New())
 		log.Debug("d")
 		log.Info("i")
 		log.Warn("w")
@@ -123,6 +123,21 @@ func TestLoggerLevel(t *testing.T) {
 		if got := strings.Count(out.String(), "\n"); got != want {
 			t.Errorf("%s: %d lines on stderr, want %d: %q", level, got, want, out.String())
 		}
+	}
+}
+
+// net/http's errors (TLS handshakes of scanners) go to stderr only and do
+// not push the controller's records out of the Logs page.
+func TestHTTPErrorLogSkipsBuffer(t *testing.T) {
+	var out bytes.Buffer
+	log, httpLog, buf := newLogger(&out, "info", redact.New())
+	log.Warn("server check failed")
+	httpLog.Print("http: TLS handshake error from 192.0.2.1:5555: EOF")
+	if recs := buf.Records(logbuf.Filter{}); len(recs) != 1 || recs[0].Message != "server check failed" {
+		t.Fatalf("buffer %+v", recs)
+	}
+	if !strings.Contains(out.String(), `level=WARN msg="http: TLS handshake error`) {
+		t.Fatalf("stderr %q", out.String())
 	}
 }
 

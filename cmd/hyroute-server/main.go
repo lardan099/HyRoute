@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	stdlog "log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -66,7 +67,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		return err
 	}
 	red := redact.New()
-	log, logs := newLogger(stderr, cfg.LogLevel, red)
+	log, httpLog, logs := newLogger(stderr, cfg.LogLevel, red)
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return fmt.Errorf("data directory: %w", err)
 	}
@@ -231,7 +232,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		// streams. Bodies are bounded by size and time in the API instead.
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
-		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+		ErrorLog:          httpLog,
 	}
 	errc := make(chan error, 1)
 	if certs != nil {
@@ -307,10 +308,14 @@ func cleanupSessions(ctx context.Context, a *auth.Service, log *slog.Logger) {
 
 // newLogger writes text logs at level to w and keeps the latest records
 // of the same level in a buffer for the Logs page; every record passes
-// through red first.
-func newLogger(w io.Writer, level string, red *redact.Redactor) (*slog.Logger, *logbuf.Buffer) {
+// through red first. httpLog is net/http's error log: it writes to w only,
+// since the TLS handshake errors of internet scanners would push the
+// controller's own records out of the buffer.
+func newLogger(w io.Writer, level string, red *redact.Redactor) (log *slog.Logger, httpLog *stdlog.Logger, buf *logbuf.Buffer) {
 	var l slog.Level
 	l.UnmarshalText([]byte(level)) // checked by config.Load
-	buf := logbuf.New(2000, l)
-	return slog.New(red.Handler(slog.NewMultiHandler(slog.NewTextHandler(w, &slog.HandlerOptions{Level: l}), buf.Handler()))), buf
+	buf = logbuf.New(2000, l)
+	text := slog.NewTextHandler(w, &slog.HandlerOptions{Level: l})
+	log = slog.New(red.Handler(slog.NewMultiHandler(text, buf.Handler())))
+	return log, slog.NewLogLogger(red.Handler(text), slog.LevelWarn), buf
 }
