@@ -707,7 +707,9 @@ func (c *Controller) proxyUDPDialer(p store.LocalProxy) localproxy.UDPDialer {
 			ep.NoteRejected()
 			c.proxyUDPFailed(p, member, group, failover, "dropped: tunnel unavailable")
 			if ep.Available() {
-				c.warnProxyUDP(p, "local proxy: server does not allow UDP", "server", ep.Profile.Name)
+				// The name from c.names: Sync rewrites ep.Profile under the
+				// tunnel manager's lock, which is not held here.
+				c.warnProxyUDP(p, "local proxy: server does not allow UDP", "server", c.profileName(member))
 				return nil, socks5.ReplyError(2)
 			}
 			return nil, socks5.ReplyError(1)
