@@ -410,7 +410,11 @@ queued → connecting → preflight → downloading → installing → configuri
   CAP_NET_RAW`, `NoNewPrivileges=true`. Такую установку потом понимает и
   импорт, и официальный скрипт.
 - Бинарник: `hysteria-linux-<arch>` из релиза GitHub выбранной версии,
-  SHA-256 сверяется с `hashes.txt` того же релиза. Источник
+  SHA-256 сверяется с `hashes.txt` того же релиза. `<arch>` — по
+  `uname -m` (`preflight.HysteriaArch`): amd64, arm64, arm (ARMv6/v7),
+  armv5, 386, s390x, riscv64, mipsle, loong64; сборку mipsle-sf по
+  `uname` не отличить, и она нужна только ядрам без эмулятора FPU
+  (OpenWrt), поэтому её HyRoute не ставит. Источник
   (`hyrelease.Source`): **direct** — сервер скачивает сам, controller
   сверяет хеш на сервере; **relay** — controller скачивает и сверяет
   сам, заливает по SFTP; **node** (P3-05, `source: node`, `via` — другой

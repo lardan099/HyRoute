@@ -44,10 +44,11 @@ type Asset struct {
 
 // AssetName is the Linux binary for a release-asset architecture (as in
 // the preflight report: amd64, arm64, arm, 386…). The plain amd64 build is
-// used, not amd64-avx: it runs on every x86-64 CPU.
+// used, not amd64-avx: it runs on every x86-64 CPU; nor mipsle-sf, which
+// preflight never picks.
 func AssetName(arch string) (string, error) {
 	switch arch {
-	case "amd64", "arm64", "arm", "armv5", "386", "s390x", "riscv64", "mipsle", "mipsle-sf", "loong64":
+	case "amd64", "arm64", "arm", "armv5", "386", "s390x", "riscv64", "mipsle", "loong64":
 		return "hysteria-linux-" + arch, nil
 	}
 	return "", fmt.Errorf("для архитектуры %q нет сборки Hysteria", arch)

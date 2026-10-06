@@ -94,7 +94,10 @@ func (r *Report) add(id string, l Level, title, details string) {
 const ReleaseURL = "https://github.com/apernet/hysteria/releases/latest"
 
 // HysteriaArch maps uname -m to the suffix of Hysteria's Linux release
-// assets (hysteria-linux-<arch>); "" when there is no build.
+// assets (hysteria-linux-<arch>); "" when there is no build. The
+// soft-float MIPS build is not offered: uname does not tell it, and it is
+// for kernels without the FPU emulator (OpenWrt), which preflight fails
+// anyway.
 func HysteriaArch(m string) string {
 	switch m {
 	case "x86_64", "amd64":
@@ -103,6 +106,8 @@ func HysteriaArch(m string) string {
 		return "arm64"
 	case "armv7l", "armv7", "armv6l":
 		return "arm"
+	case "armv5tel", "armv5tejl", "armv5l":
+		return "armv5"
 	case "i386", "i686":
 		return "386"
 	case "s390x":
@@ -111,6 +116,8 @@ func HysteriaArch(m string) string {
 		return "riscv64"
 	case "mips", "mipsel":
 		return "mipsle"
+	case "loongarch64":
+		return "loong64"
 	}
 	return ""
 }

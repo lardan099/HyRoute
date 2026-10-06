@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/lardan099/hyroute/internal/srvmgr/preflight"
 	"github.com/lardan099/hyroute/internal/srvmgr/remote"
 	"github.com/lardan099/hyroute/internal/srvmgr/remote/fake"
 )
@@ -26,19 +27,29 @@ func TestAssetName(t *testing.T) {
 			t.Errorf("%s: %s %v", arch, got, err)
 		}
 	}
-	for _, arch := range []string{"", "x86_64", "amd64-avx", "sparc", "../amd64"} {
+	for _, arch := range []string{"", "x86_64", "amd64-avx", "mipsle-sf", "sparc", "../amd64"} {
 		if _, err := AssetName(arch); err == nil {
 			t.Errorf("%q accepted", arch)
 		}
 	}
-	// Every pinned binary is one AssetName can ask for.
+	// Every pinned binary is one a server can get: preflight finds its
+	// architecture in uname -m, and AssetName asks for it.
+	reach := map[string]bool{}
+	for _, m := range []string{"x86_64", "aarch64", "armv7l", "armv6l", "armv5tel", "armv5tejl", "i686", "s390x", "riscv64", "mips", "loongarch64"} {
+		a := preflight.HysteriaArch(m)
+		if _, err := AssetName(a); err != nil {
+			t.Errorf("uname -m %s: %v", m, err)
+		}
+		reach[a] = true
+	}
 	for v, sums := range pinned {
 		if CheckVersion(v) != nil {
 			t.Errorf("pinned version %q", v)
 		}
 		for name, s := range sums {
-			if _, err := AssetName(strings.TrimPrefix(name, "hysteria-linux-")); err != nil || !hexRe.MatchString(s) {
-				t.Errorf("%s %s: %v", name, s, err)
+			a := strings.TrimPrefix(name, "hysteria-linux-")
+			if _, err := AssetName(a); err != nil || !hexRe.MatchString(s) || !reach[a] {
+				t.Errorf("%s %s: %v (reachable %v)", name, s, err, reach[a])
 			}
 		}
 	}
