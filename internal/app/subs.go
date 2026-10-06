@@ -55,6 +55,10 @@ var directTransport = func() *http.Transport {
 	return tr
 }()
 
+// maxSubErrors bounds the parse errors a subscription keeps of its last
+// update.
+const maxSubErrors = 5
+
 // subClient is the client of subscription downloads. A redirect from
 // https to http would send the token in the link and the servers'
 // passwords in the body in clear text: it is refused, as for the rule
@@ -615,6 +619,7 @@ func (c *Controller) applyFetched(id string, res FetchResult, rollback bool, tag
 		s.LastError = snapErr.Error()
 	}
 	s.Count, s.Ignored, s.Warnings = len(l.Profiles), l.Ignored, l.Warnings
+	s.Errors, s.ErrorCount = l.Errors[:min(len(l.Errors), maxSubErrors)], len(l.Errors)
 	if res.UserInfo != "" || !rollback {
 		s.UserInfo, s.InfoAt = res.UserInfo, res.At // "" clears, and InfoAt with it
 		if res.UserInfo == "" {
@@ -634,7 +639,8 @@ func (c *Controller) applyFetched(id string, res FetchResult, rollback bool, tag
 		err = snapErr
 	}
 	c.Log.Info("subscription updated", "subscription", s.Name, "profiles", len(l.Profiles), "added", st.Added,
-		"updated", st.Updated, "removed", st.Removed, "missingKept", st.MissingKept, "ignored", l.IgnoredTotal())
+		"updated", st.Updated, "removed", st.Removed, "missingKept", st.MissingKept, "ignored", l.IgnoredTotal(),
+		"unreadable", len(l.Errors))
 	c.changed()
 	return st, err
 }

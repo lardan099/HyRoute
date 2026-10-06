@@ -477,6 +477,8 @@ export interface Subscription {
   count: number;
   ignored: Record<string, number> | null;
   warnings: string[] | null;
+  errors?: string[]; // first messages of the links the last update could not read
+  errorCount?: number;
   userInfo: string;
   hasPrevious: boolean;
   profiles: number;

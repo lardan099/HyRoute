@@ -65,6 +65,11 @@ const (
 // in warnings; cosmetic client parameters are ignored silently.
 //
 // The authority is parsed by hand: net/url rejects multi-port hosts like
+var (
+	errBadAuth  = errors.New("bad auth encoding: invalid %-escape")
+	errBadQuery = errors.New("bad query: invalid %-escape or separator")
+)
+
 // "host:443,20000-50000".
 func Parse(s string) (l Link, warnings []string, err error) {
 	s = strings.TrimSpace(s)
@@ -92,12 +97,14 @@ func Parse(s string) (l Link, warnings []string, err error) {
 		userinfo := authority[:i]
 		hostport = authority[i+1:]
 		user, pass, hasPass := strings.Cut(userinfo, ":")
+		// The escape errors quote the bytes around the bad "%": a piece
+		// of the password. They are not passed on.
 		if user, err = url.PathUnescape(user); err != nil {
-			return l, nil, fmt.Errorf("bad auth encoding: %w", err)
+			return l, nil, errBadAuth
 		}
 		if hasPass {
 			if pass, err = url.PathUnescape(pass); err != nil {
-				return l, nil, fmt.Errorf("bad auth encoding: %w", err)
+				return l, nil, errBadAuth
 			}
 			l.Auth = user + ":" + pass
 		} else {
@@ -110,7 +117,7 @@ func Parse(s string) (l Link, warnings []string, err error) {
 
 	q, err := url.ParseQuery(rawQuery)
 	if err != nil {
-		return l, nil, fmt.Errorf("bad query: %w", err)
+		return l, nil, errBadQuery // as above: obfs-password is in the query
 	}
 	used := map[string]bool{}
 	get := func(k string) string { used[k] = true; return q.Get(k) }
