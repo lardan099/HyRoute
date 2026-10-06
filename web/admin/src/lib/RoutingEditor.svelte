@@ -617,21 +617,25 @@
     {#if !keepFile}
       <div class="dry">
         <h3>{t('dry.title')}</h3>
-        <label class="field">
-          <span>{t('dry.requests')}</span>
-          <input type="text" bind:value={extra} oninput={changedRules} placeholder="youtube.com, ya.ru:443, [2001:db8::1]:53" spellcheck="false" />
-        </label>
-        {#if preview.changes.length}
-          <ul class="changes small">
-            {#each preview.changes as c, i (i)}
-              <li>
-                <span class="mono">{c.request.host}{c.request.proto && c.request.proto !== 'tcp' ? ' ' + c.request.proto : ''}:{c.request.port}</span>
-                — {c.before.outbound}{c.before.hijack ? ' → ' + c.before.hijack : ''} ⟶ <b>{c.after.outbound}{c.after.hijack ? ' → ' + c.after.hijack : ''}</b>
-              </li>
-            {/each}
-          </ul>
+        {#if view.file}
+          <p class="muted small">{t('dry.fromFile', { path: view.file })}</p>
         {:else}
-          <p class="muted small">{t('dry.none')}</p>
+          <label class="field">
+            <span>{t('dry.requests')}</span>
+            <input type="text" bind:value={extra} oninput={changedRules} placeholder="youtube.com, ya.ru:443, [2001:db8::1]:53" spellcheck="false" />
+          </label>
+          {#if preview.changes.length}
+            <ul class="changes small">
+              {#each preview.changes as c, i (i)}
+                <li>
+                  <span class="mono">{c.request.host}{c.request.proto && c.request.proto !== 'tcp' ? ' ' + c.request.proto : ''}:{c.request.port}</span>
+                  — {c.before.outbound}{c.before.hijack ? ' → ' + c.before.hijack : ''} ⟶ <b>{c.after.outbound}{c.after.hijack ? ' → ' + c.after.hijack : ''}</b>
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <p class="muted small">{t('dry.none')}</p>
+          {/if}
         {/if}
       </div>
     {/if}
