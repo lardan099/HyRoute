@@ -1,18 +1,28 @@
 # Builds and publishes a release when a v* tag is pushed. The release body
 # is the annotated tag message (shown as the changelog in HyRoute's update
 # dialog). Tags with a "-" (v0.6.0-beta.1) become prereleases.
+#
+# Two jobs: build runs third-party code (npm packages, vite, go tools,
+# tests) with a read-only token that checkout does not keep; publish has
+# the write token and runs only gh on the built files. In one job a build
+# dependency could read the token, or put its own gh on PATH for the
+# publish step, and create a release the installed copies would accept.
 name: release
 on:
   push:
     tags: ['v*']
 permissions:
-  contents: write
+  contents: read
 # One run per tag at a time: a tag pushed twice must not race itself.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
+env:
+  # The scripts read the tag from here, never from ${{ }} in their text: a
+  # tag name may hold $( ) and quotes.
+  TAG: ${{ github.ref_name }}
 jobs:
-  release:
+  build:
     runs-on: windows-latest
     env:
       # build.ps1 and package.ps1 use this tag, not whichever git describe
@@ -22,8 +32,23 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
-      - run: git fetch --force origin "refs/tags/${{ github.ref_name }}:refs/tags/${{ github.ref_name }}"
+          persist-credentials: false
+      - run: git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
         shell: bash
+      - name: Release notes
+        shell: bash
+        run: |
+          # docs/release-notes/<tag>.txt; otherwise the message of an
+          # annotated tag. A lightweight tag has none (its contents would
+          # be the commit message), so it gets a plain line.
+          mkdir -p out
+          if [ -f "docs/release-notes/$TAG.txt" ]; then
+            cp "docs/release-notes/$TAG.txt" out/notes.md
+          elif [ "$(git cat-file -t "$TAG")" = tag ]; then
+            git tag -l --format='%(contents)' "$TAG" > out/notes.md
+          else
+            echo "HyRoute $TAG" > out/notes.md
+          fi
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           # Newest patch of the release branch: security fixes land there.
@@ -42,28 +67,36 @@ jobs:
         run: go test ./...
       - name: Package
         run: .\scripts\package.ps1
-      - name: Publish
+      - name: Collect
         shell: bash
+        run: cp "dist/HyRoute-${TAG#v}-windows-amd64.zip" dist/SHA256SUMS out/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: out
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          tag="${{ github.ref_name }}"
           # A published release is never replaced: installed copies may
           # already be downloading it and check it against SHA256SUMS.
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "::notice::Release $tag already exists, nothing to publish"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG already exists, nothing to publish"
             exit 0
           fi
-          # Notes: docs/release-notes/<tag>.txt; otherwise the message of
-          # an annotated tag. A lightweight tag has none (its contents
-          # would be the commit message), so it gets a plain line.
-          if [ -f "docs/release-notes/$tag.txt" ]; then
-            cp "docs/release-notes/$tag.txt" notes.md
-          elif [ "$(git cat-file -t "$tag")" = tag ]; then
-            git tag -l --format='%(contents)' "$tag" > notes.md
-          else
-            echo "HyRoute $tag" > notes.md
-          fi
           pre=""
-          case "$tag" in *-*) pre="--prerelease";; esac
-          gh release create "$tag" "dist/HyRoute-${tag#v}-windows-amd64.zip" dist/SHA256SUMS --title "HyRoute $tag" --notes-file notes.md $pre
+          case "$TAG" in *-*) pre="--prerelease";; esac
+          gh release create "$TAG" "out/HyRoute-${TAG#v}-windows-amd64.zip" out/SHA256SUMS --verify-tag --title "HyRoute $TAG" --notes-file out/notes.md $pre
