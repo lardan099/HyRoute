@@ -147,6 +147,18 @@ func ApplyJournaled(staging, target, exe, journalPath, from, to string, reconnec
 		}
 		todo = append(todo, step{name, dstName})
 	}
+	// A <name>.old an earlier update left (a copy of another Windows
+	// session ran it at that commit) would pass for this update's backup:
+	// Journal.Undo takes any .old for a step done. Such copies go first,
+	// moved aside when in use; one that cannot stops the update.
+	for _, s := range todo {
+		dst := filepath.Join(target, s.dst)
+		for _, left := range []string{dst + ".old", dst + ".new"} {
+			if err := removeOrSetAside(left); err != nil {
+				return nil, fmt.Errorf("%s: прежняя копия занята, обновление не начато: %w", filepath.Base(left), err)
+			}
+		}
+	}
 	if err := writeJournal(journalPath, j); err != nil {
 		return nil, fmt.Errorf("журнал обновления: %w", err)
 	}
