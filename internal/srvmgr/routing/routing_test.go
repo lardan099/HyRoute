@@ -184,6 +184,28 @@ func TestOutboundsLeftOut(t *testing.T) {
 	}
 }
 
+// Fields of another resolver type that the form kept change nothing: the
+// system resolver is not written, udp has no SNI.
+func TestResolverLeftovers(t *testing.T) {
+	plain := "listen: :443\nacme:\n  domains:\n    - vpn.example.com\nauth:\n  type: password\n  password: fake-left-pass\nacl:\n  inline:\n    - direct(all)\n"
+	for _, c := range []struct {
+		cfg    string
+		linked bool
+		r      Resolver
+	}{
+		{plain, false, Resolver{Type: "system", Addr: "1.1.1.1:853", SNI: "dns.example.com"}},
+		{config, true, Resolver{Type: "udp", Addr: "1.1.1.1:53", SNI: "dns.example.com", Insecure: true}},
+	} {
+		e := newEnv(t, c.cfg, c.linked)
+		in := e.input()
+		in.Resolver = c.r
+		p, _, _, err := e.svc.candidate(context.Background(), e.server, in)
+		if err != nil || !p.Same || apply.Changed(p.Diff) {
+			t.Fatalf("%+v: %v %+v", c.r, err, p.Diff)
+		}
+	}
+}
+
 func TestEdit(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t, config, true)

@@ -254,6 +254,13 @@ func resolverOf(r hyconfig.Resolver) Resolver {
 // spelling, the sections of other types stay.
 func (in Resolver) set(r *hyconfig.Resolver) {
 	in.Type = strings.ToLower(strings.TrimSpace(in.Type))
+	// Fields of another type the form kept are not part of this one.
+	switch in.Type {
+	case "system":
+		in = Resolver{Type: in.Type}
+	case "tcp", "udp":
+		in.SNI, in.Insecure = "", false
+	}
 	if in == resolverOf(*r) || in.Type == "" {
 		return
 	}
