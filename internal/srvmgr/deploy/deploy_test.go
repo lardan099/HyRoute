@@ -549,6 +549,27 @@ func TestRelayDownload(t *testing.T) {
 	}
 }
 
+// The controller cannot download the release: the error says who could,
+// the server itself or only another server.
+func TestRelayDownloadFails(t *testing.T) {
+	s := newSim()
+	h := newHarness(t, s)
+	h.mu.Lock()
+	h.noBinary = true
+	h.mu.Unlock()
+	p := params()
+	p.Source = SourceRelay
+	j := h.deploy(p, nil)
+	if j.State != model.JobFailed || !strings.HasPrefix(j.ErrorMessage, "Controller не скачал Hysteria") || !strings.Contains(j.ErrorMessage, "самим сервером") {
+		t.Fatalf("relay chosen: %s: %s", j.State, j.ErrorMessage)
+	}
+	s.github = false
+	j = h.deploy(params(), nil)
+	if j.State != model.JobFailed || !strings.HasPrefix(j.ErrorMessage, "С сервера GitHub недоступен") || !strings.Contains(j.ErrorMessage, "через другой сервер") {
+		t.Fatalf("no GitHub anywhere: %s: %s", j.State, j.ErrorMessage)
+	}
+}
+
 func TestForeignInstallation(t *testing.T) {
 	s := newSim()
 	foreign := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-foreign-password\n")

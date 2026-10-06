@@ -431,11 +431,14 @@ func (x *deployer) binary(ctx context.Context, env *jobs.Env, version, source st
 	tmp := dir + "/hysteria"
 	env.Logf("Загрузка Hysteria %s (%s, %s).", a.Version, a.Name, how)
 	if err := src.Fetch(ctx, ex, a, tmp, su); err != nil {
-		if errors.Is(err, hyrelease.ErrChecksum) {
+		var de *hyrelease.DownloadError
+		switch {
+		case errors.Is(err, hyrelease.ErrChecksum):
 			return jobs.Fail("Скачанный файл Hysteria не совпадает с хешем релиза; установка отменена.", err)
-		}
-		if source != SourceNode && source != SourceDirect && env.Get("github") != "true" {
-			return jobs.Fail("Ни сервер, ни controller не скачали Hysteria. Выберите загрузку через другой сервер, которому GitHub доступен.", err)
+		case errors.As(err, &de) && env.Get("github") == "false":
+			return jobs.Fail("С сервера GitHub недоступен, а controller не скачал Hysteria. Выберите загрузку через другой сервер, которому GitHub доступен.", err)
+		case errors.As(err, &de):
+			return jobs.Fail("Controller не скачал Hysteria с GitHub. Выберите загрузку самим сервером или через другой сервер.", err)
 		}
 		return jobs.Fail("Не удалось загрузить Hysteria на сервер.", err)
 	}

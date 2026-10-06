@@ -52,6 +52,19 @@ type Relay struct {
 // NewRelay is a relay source downloading through r.
 func NewRelay(r *Resolver) *Relay { return &Relay{R: r} }
 
+// DownloadError: the controller did not download the asset (Relay), as
+// opposed to a failed upload to the server.
+type DownloadError struct {
+	Name string
+	Err  error
+}
+
+func (e *DownloadError) Error() string {
+	return "controller не скачал " + e.Name + ": " + e.Err.Error()
+}
+
+func (e *DownloadError) Unwrap() error { return e.Err }
+
 func (r *Relay) binary(ctx context.Context, a Asset) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -60,7 +73,7 @@ func (r *Relay) binary(ctx context.Context, a Asset) ([]byte, error) {
 	}
 	b, err := r.R.get(ctx, a.URL, maxBinary)
 	if err != nil {
-		return nil, fmt.Errorf("controller не скачал %s: %w", a.Name, err)
+		return nil, &DownloadError{Name: a.Name, Err: err}
 	}
 	sum := sha256.Sum256(b)
 	if hex.EncodeToString(sum[:]) != a.SHA256 {
