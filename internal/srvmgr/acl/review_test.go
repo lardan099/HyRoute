@@ -45,7 +45,7 @@ func TestBuiltinOverridden(t *testing.T) {
 		t.Fatalf("%+v", v)
 	}
 	// A config outbound named direct changes where direct rules go.
-	ch, err := DryRun(Parse("direct(suffix:ru)"), Parse("direct(suffix:ru)"), Env{}, Env{Outbounds: []string{"direct"}}, nil)
+	ch, err := DryRun(Parse("direct(suffix:ru)"), Parse("direct(suffix:ru)"), Env{}, Env{Outbounds: []string{"direct"}}, nil, nil)
 	if err != nil || len(ch) == 0 {
 		t.Fatalf("%v %+v", err, ch)
 	}

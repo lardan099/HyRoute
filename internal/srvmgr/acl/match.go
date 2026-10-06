@@ -252,8 +252,11 @@ const maxSamples = 1000
 // DryRun tries the given requests and samples of both rule sets (a
 // domain, an address of a subnet, a name under a suffix) before and after
 // an edit, and returns those that leave by another outbound or go to
-// another address.
-func DryRun(before, after Document, envBefore, envAfter Env, extra []Request) ([]Change, error) {
+// another address. was maps the config's outbounds after the edit to
+// those before it (lower-case name → name before; a new one is not in
+// it): a renamed outbound is the same one, and one that took the old name
+// of another is not. Nil: an outbound is the one of the same name.
+func DryRun(before, after Document, envBefore, envAfter Env, was map[string]string, extra []Request) ([]Change, error) {
 	for _, q := range extra {
 		if _, _, _, err := q.parse(); err != nil {
 			return nil, err
@@ -289,11 +292,24 @@ func DryRun(before, after Document, envBefore, envAfter Env, extra []Request) ([
 		}
 		b := sb.verdict(before, envBefore, q, h, proto, port)
 		a := sa.verdict(after, envAfter, q, h, proto, port)
-		if !strings.EqualFold(b.Outbound, a.Outbound) || b.Builtin != a.Builtin || b.Hijack != a.Hijack {
+		if !sameRoute(b, a, was) {
 			out = append(out, Change{Request: q, Before: b, After: a})
 		}
 	}
 	return out, nil
+}
+
+// sameRoute: a request leaves by the same outbound before and after the
+// edit (was as in DryRun), to the same address.
+func sameRoute(b, a Verdict, was map[string]string) bool {
+	if b.Builtin != a.Builtin || b.Hijack != a.Hijack {
+		return false
+	}
+	if a.Builtin || was == nil {
+		return strings.EqualFold(b.Outbound, a.Outbound)
+	}
+	from, ok := was[strings.ToLower(a.Outbound)]
+	return ok && strings.EqualFold(from, b.Outbound)
 }
 
 func (q Request) key() string {

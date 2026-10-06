@@ -205,6 +205,9 @@ func (s *Service) candidate(ctx context.Context, serverID int64, in Input) (Prev
 	}
 	var before, after acl.Document
 	var envBefore, envAfter acl.Env
+	// kept: the outbounds after the edit that were there before (lower-case
+	// name → name before), as the dry run tells them.
+	kept := map[string]string{}
 	file, same := false, false
 	ch, cand, cur, err := s.Editor.Candidate(ctx, serverID, in.Base, func(c *hyconfig.Server) error {
 		before, envBefore = acl.ParseInline(c.ACL.Inline), s.env(c, ref)
@@ -218,6 +221,11 @@ func (s *Service) candidate(ctx context.Context, serverID int64, in Input) (Prev
 			return &model.FieldError{Field: "outbounds", Msg: "Правила сервера в файле " + c.ACL.File + ": outbound, на который они могут ссылаться, нельзя переименовать или удалить — Hysteria не запустится. Сначала перенесите правила в конфиг."}
 		}
 		c.Outbounds = obs
+		for i, o := range in.Outbounds { // obs[i] is the editor's outbound i
+			if o.From != "" && i < len(obs) {
+				kept[strings.ToLower(obs[i].Name)] = o.From
+			}
+		}
 		in.Resolver.set(&c.Resolver)
 		after = renamed(restoreDoc(in.ACL, before), renames)
 		if !in.KeepFile || !file {
@@ -240,7 +248,7 @@ func (s *Service) candidate(ctx context.Context, serverID int64, in Input) (Prev
 		p.Rules = append(p.Rules, acl.Check(after, envAfter)...)
 	}
 	if !file {
-		changes, err := acl.DryRun(before, after, envBefore, envAfter, in.Requests)
+		changes, err := acl.DryRun(before, after, envBefore, envAfter, kept, in.Requests)
 		if err != nil {
 			return Preview{}, nil, cur, &model.FieldError{Field: "requests", Msg: err.Error()}
 		}

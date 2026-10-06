@@ -177,7 +177,7 @@ func TestEdit(t *testing.T) {
 	in.Outbounds = append(in.Outbounds[:2], in.Outbounds[3], Outbound{Name: "extra", Type: "socks5", SOCKS5: &SOCKS5{Addr: "203.0.113.7:1080", Password: "fake-new-pass"}})
 	in.ACL.Rules = append(in.ACL.Rules[:2], acl.Rule{Outbound: "isp", Address: "geoip:ru"})
 	in.Resolver = Resolver{Type: "https", Addr: "1.1.1.1:443"}
-	in.Requests = []acl.Request{{Host: "www.example.com", Port: 443}}
+	in.Requests = []acl.Request{{Host: "www.example.com", Port: 443}, {Host: "example.org", Proto: "tcp", Port: 80}}
 	p, cand, _, err := e.svc.candidate(ctx, e.server, in)
 	if err != nil {
 		t.Fatal(err)
@@ -208,11 +208,12 @@ func TestEdit(t *testing.T) {
 	if slices.ContainsFunc(p.Rules, func(pr acl.Problem) bool { return pr.Code == "plain_resolver" }) {
 		t.Fatalf("%+v", p.Rules)
 	}
+	// proxy renamed is the same outbound: its requests do not change.
 	var changed []string
 	for _, ch := range p.Changes {
 		changed = append(changed, ch.Request.Host+":"+ch.Before.Outbound+">"+ch.After.Outbound)
 	}
-	if !slices.Contains(changed, "www.example.com:proxy>nl") {
+	if !slices.Equal(changed, []string{"example.org:web>cascade"}) {
 		t.Fatalf("%q", changed)
 	}
 	// The current passwords stay hidden; the new one is the admin's own.
@@ -427,11 +428,15 @@ func TestRenameOldNameTaken(t *testing.T) {
 	if p.ACL.Rules[1].Outbound != "proxy" {
 		t.Fatalf("the rule went to %s", p.ACL.Rules[1].Outbound)
 	}
-	// Without the new one the rule follows the rename.
+	// Its requests go to another server now: the dry run shows them.
+	if len(p.Changes) == 0 || !slices.ContainsFunc(p.Changes, func(c acl.Change) bool { return c.Request.Host == "www.example.com" && c.After.Outbound == "proxy" }) {
+		t.Fatalf("changes %+v", p.Changes)
+	}
+	// Without the new one the rule follows the rename, nothing changes.
 	in = e.input()
 	in.Outbounds[1].Name = "proxy_old"
-	if p, _, _, _ = e.svc.candidate(context.Background(), e.server, in); p.ACL.Rules[1].Outbound != "proxy_old" {
-		t.Fatalf("the rule stayed on %s", p.ACL.Rules[1].Outbound)
+	if p, _, _, _ = e.svc.candidate(context.Background(), e.server, in); p.ACL.Rules[1].Outbound != "proxy_old" || len(p.Changes) != 0 {
+		t.Fatalf("the rule stayed on %s, changes %+v", p.ACL.Rules[1].Outbound, p.Changes)
 	}
 }
 

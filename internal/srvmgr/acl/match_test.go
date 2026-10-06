@@ -80,7 +80,7 @@ func TestDryRun(t *testing.T) {
 	before := Parse("direct(suffix:example.com)\ndirect(1.1.1.1, udp/53, 9.9.9.9)\nproxy(all)")
 	after := Parse("direct(www.example.com)\ndirect(1.1.1.1, udp/53, 8.8.8.8)\nproxy(all)\ndirect(11.0.0.0/8)")
 	env := Env{Outbounds: []string{"proxy"}}
-	changes, err := DryRun(before, after, env, Env{Outbounds: []string{"PROXY"}}, []Request{{Host: "other.org", Port: 443}, {Host: "example.com", Port: 80}})
+	changes, err := DryRun(before, after, env, Env{Outbounds: []string{"PROXY"}}, nil, []Request{{Host: "other.org", Port: 443}, {Host: "example.com", Port: 80}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,8 +95,33 @@ func TestDryRun(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("%q", got)
 	}
-	if _, err := DryRun(before, after, env, env, []Request{{Host: "x"}}); err == nil {
+	if _, err := DryRun(before, after, env, env, nil, []Request{{Host: "x"}}); err == nil {
 		t.Fatal("a bad request passed")
+	}
+}
+
+// A renamed outbound is the same one: nothing of it changes, the default
+// neither. One that took the old name of another is not.
+func TestDryRunRenames(t *testing.T) {
+	before := Parse("proxy(suffix:example.com)\ndirect(suffix:ru)")
+	env := Env{Outbounds: []string{"proxy", "other"}}
+	extra := []Request{{Host: "a.org", Port: 443}}
+	renamed := Parse("nl(suffix:example.com)\ndirect(suffix:ru)")
+	ch, err := DryRun(before, renamed, env, Env{Outbounds: []string{"nl", "other"}}, map[string]string{"nl": "proxy", "other": "other"}, extra)
+	if err != nil || len(ch) != 0 {
+		t.Fatalf("rename: %v %+v", err, ch)
+	}
+	// Without the map the names differ.
+	if ch, _ := DryRun(before, renamed, env, Env{Outbounds: []string{"nl", "other"}}, nil, extra); len(ch) != 3 {
+		t.Fatalf("by name: %+v", ch)
+	}
+	ch, err = DryRun(before, before, env, Env{Outbounds: []string{"proxy_old", "other", "proxy"}}, map[string]string{"proxy_old": "proxy", "other": "other"}, extra)
+	var got []string
+	for _, c := range ch {
+		got = append(got, c.Request.Host+":"+c.Before.Outbound+">"+c.After.Outbound)
+	}
+	if err != nil || !slices.Equal(got, []string{"example.com:proxy>proxy", "www.example.com:proxy>proxy"}) {
+		t.Fatalf("old name taken: %v %q", err, got)
 	}
 }
 
