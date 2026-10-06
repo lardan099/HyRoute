@@ -88,7 +88,9 @@ func Read(ctx context.Context, ex remote.Executor, in model.Installation, sudo b
 	s.System.CheckedAtUTC = now.UTC()
 
 	if strings.HasPrefix(path.Base(in.Binary), "hysteria") {
-		if s.Version, err = remote.HysteriaVersion(ctx, ex, in.Binary); err != nil {
+		// A binary another user can change is not run: no version.
+		var ub *remote.UntrustedBinaryError
+		if s.Version, err = remote.HysteriaVersion(ctx, ex, in.Binary); err != nil && !errors.As(err, &ub) {
 			return s, err
 		}
 	}

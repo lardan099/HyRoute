@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -16,11 +17,14 @@ import (
 
 // entryBox is an entry for CheckLink: the link service's state, what
 // `hysteria ping` prints, and (tunnel set) its loopback, where a SOCKS5
-// server stands for the link client.
+// server stands for the link client. The binary is root's unless
+// writable says which path another user may write.
 type entryBox struct {
-	service string
-	ping    string
-	tunnel  func(ctx context.Context, port int) (net.Conn, error)
+	service  string
+	ping     string
+	tunnel   func(ctx context.Context, port int) (net.Conn, error)
+	writable string
+	pinged   bool
 }
 
 func (e *entryBox) Run(_ context.Context, cmd remote.Cmd) (remote.Result, error) {
@@ -29,7 +33,20 @@ func (e *entryBox) Run(_ context.Context, cmd remote.Cmd) (remote.Result, error)
 	case len(a) == 4 && a[0] == "systemctl" && a[1] == "is-active":
 		return remote.Result{Stdout: []byte(e.service + "\n")}, nil
 	case len(a) > 1 && a[len(a)-2] == "ping":
+		e.pinged = true
 		return remote.Result{Stderr: []byte(e.ping)}, nil
+	case a[0] == "readlink":
+		return remote.Result{Stdout: []byte(a[len(a)-1] + "\n")}, nil
+	case a[0] == "stat":
+		var out string
+		for _, p := range a[5:] {
+			if p == e.writable {
+				out += "999 999 755\n"
+			} else {
+				out += "0 0 755\n"
+			}
+		}
+		return remote.Result{Stdout: []byte(out)}, nil
 	}
 	return remote.Result{ExitCode: 127}, nil
 }
@@ -144,6 +161,12 @@ func TestCheckLink(t *testing.T) {
 	c := CheckLink(ctx, tunneled{&entryBox{service: "active", ping: pingOK, tunnel: dialTo(good)}}, probe(), time.Unix(1_700_000_000, 0))
 	if c.HandshakeMillis != 42 || c.TCPMillis != 12 || c.Service != "active" || c.ChainID != 3 {
 		t.Fatalf("%+v", c)
+	}
+	// A binary another user can replace is not run as root.
+	box := &entryBox{service: "active", ping: pingOK, writable: path.Dir(binPath)}
+	c = CheckLink(ctx, box, probe(), time.Unix(1_700_000_000, 0))
+	if c.Status != model.StateOffline || !strings.Contains(c.Reason, "не только root") || box.pinged {
+		t.Fatalf("writable binary directory: %+v pinged=%v", c, box.pinged)
 	}
 }
 

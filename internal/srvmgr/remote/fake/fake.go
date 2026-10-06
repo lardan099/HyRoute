@@ -100,6 +100,18 @@ func (f *Executor) On(argv ...string) *Rule {
 	return r
 }
 
+// RootPaths answers what remote.CheckBinary asks: every path is itself
+// (readlink -f) and is root's with mode 0755. Add it after other "stat"
+// rules: the newest matching rule answers.
+func (f *Executor) RootPaths() {
+	f.On("readlink", "-f", "--").Do(func(c remote.Cmd) (remote.Result, error) {
+		return remote.Result{Stdout: []byte(c.Args[len(c.Args)-1] + "\n")}, nil
+	})
+	f.On("stat", "-L", "-c", "%u %g %a", "--").Do(func(c remote.Cmd) (remote.Result, error) {
+		return remote.Result{Stdout: []byte(strings.Repeat("0 0 755\n", len(c.Args)-5))}, nil
+	})
+}
+
 // SetFile puts a file on the fake machine.
 func (f *Executor) SetFile(path string, data []byte) {
 	f.mu.Lock()

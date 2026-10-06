@@ -102,13 +102,16 @@ func Discover(ctx context.Context, ex remote.Executor, sudo bool, now time.Time)
 	}
 	f.Binary = argv[0]
 	// Only a program named hysteria* is asked its version: running an
-	// unknown program is not reading.
+	// unknown program, or one another user can change, is not reading.
 	if strings.HasPrefix(path.Base(f.Binary), "hysteria") {
 		v, err := remote.HysteriaVersion(ctx, ex, f.Binary)
-		if err != nil {
+		var ub *remote.UntrustedBinaryError
+		switch {
+		case errors.As(err, &ub):
+			f.add("binary-writable", Warn, "Бинарник Hysteria может подменить не только root", ub.Error()+", даже для проверки версии. Сделайте владельцем файла и каталогов root и снимите права записи группы и остальных.")
+		case err != nil:
 			return f, nil, err
-		}
-		if v == "" {
+		case v == "":
 			return f, nil, &Error{fmt.Sprintf("Служба %s запускает %s, но это не похоже на Hysteria (нет ответа на «version»).", u.Name, f.Binary)}
 		}
 		f.Version = v

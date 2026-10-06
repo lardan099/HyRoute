@@ -167,6 +167,11 @@ func (h *host) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 	case a[0] == "rm":
 		delete(h.files, last)
 		return ok(""), nil
+	case a[0] == "readlink":
+		return ok(last + "\n"), nil
+	case a[0] == "stat" && a[3] == "%u %g %a":
+		// The binary and its directories are root's.
+		return ok(strings.Repeat("0 0 755\n", len(a)-5)), nil
 	case a[0] == "stat":
 		b, found := h.files[last]
 		if !found {

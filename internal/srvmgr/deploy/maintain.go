@@ -209,7 +209,10 @@ func (x *deployer) maintainCheck(ctx context.Context, env *jobs.Env, p MaintainP
 		env.Set("github", strconv.FormatBool(code >= 200 && code < 400))
 	}
 	cur, err := remote.HysteriaVersion(ctx, ex, in.Binary)
-	if err != nil {
+	var ub *remote.UntrustedBinaryError
+	if errors.As(err, &ub) {
+		env.Warnf("%s.", ub.Error())
+	} else if err != nil {
 		return err
 	}
 	switch {
@@ -415,7 +418,8 @@ func (x *deployer) maintainVerify(ctx context.Context, env *jobs.Env, p Maintain
 	if err != nil {
 		return err
 	}
-	if v, err := remote.HysteriaVersion(ctx, ex, in.Binary); err != nil {
+	var ub *remote.UntrustedBinaryError
+	if v, err := remote.HysteriaVersion(ctx, ex, in.Binary); err != nil && !errors.As(err, &ub) {
 		return err
 	} else if v != "" && v != p.Version {
 		return jobs.Fail(fmt.Sprintf("Бинарник на сервере сообщает версию %s вместо %s.", v, p.Version), nil)

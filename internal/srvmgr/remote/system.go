@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -518,10 +520,85 @@ func Unit(ctx context.Context, ex Executor, name string) (SystemdUnit, error) {
 	return u, nil
 }
 
+// UntrustedBinaryError: a program the controller would run as root or as
+// its sudoer can be replaced by another user — the file, or a directory on
+// its path or on the path it links to, is not root's, or its group (other
+// than root) or anyone may write it. The controller does not run it.
+type UntrustedBinaryError struct {
+	Binary string
+	Path   string // the file or directory at fault
+}
+
+func (e *UntrustedBinaryError) Error() string {
+	if e.Path == e.Binary {
+		return e.Binary + " может изменить не только root: HyRoute его не запускает"
+	}
+	return e.Binary + " может подменить не только root (каталог " + e.Path + "): HyRoute его не запускает"
+}
+
+// CheckBinary makes sure only root can change the program at p: p and
+// what it links to (readlink -f), and every directory above both, are
+// root's and not writable by a group other than root or by others. A
+// missing path is an ExitError (stat), an unsafe one UntrustedBinaryError.
+func CheckBinary(ctx context.Context, ex Executor, p string, sudo bool) error {
+	if err := CheckPath(p); err != nil {
+		return err
+	}
+	real, err := run(ctx, ex, "readlink", Cmd{Args: []string{"readlink", "-f", "--", p}, Sudo: sudo})
+	if err != nil {
+		return err
+	}
+	if CheckPath(real) != nil {
+		return fmt.Errorf("readlink: unexpected path %q", real)
+	}
+	var paths []string
+	for _, x := range []string{p, real} {
+		for ; ; x = path.Dir(x) {
+			if !slices.Contains(paths, x) {
+				paths = append(paths, x)
+			}
+			if x == "/" {
+				break
+			}
+		}
+	}
+	out, err := run(ctx, ex, "stat", Cmd{Args: append([]string{"stat", "-L", "-c", "%u %g %a", "--"}, paths...), Sudo: sudo})
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(out, "\n")
+	if len(lines) != len(paths) {
+		return fmt.Errorf("stat: unexpected output %q", out)
+	}
+	for i, l := range lines {
+		f := strings.Fields(l)
+		if len(f) != 3 {
+			return fmt.Errorf("stat: unexpected output %q", l)
+		}
+		mode, err := strconv.ParseUint(f[2], 8, 32)
+		if err != nil {
+			return fmt.Errorf("stat: unexpected output %q", l)
+		}
+		if f[0] != "0" || mode&0o002 != 0 || mode&0o020 != 0 && f[1] != "0" {
+			return &UntrustedBinaryError{Binary: p, Path: paths[i]}
+		}
+	}
+	return nil
+}
+
 // HysteriaVersion runs "<path> version" and returns the version line
-// ("v2.12.3"), or "" when the binary does not answer like Hysteria.
+// ("v2.12.3"), or "" when the binary does not answer like Hysteria or is
+// not there. It runs as the SSH user, so only a binary that only root can
+// change (CheckBinary) is run; another is UntrustedBinaryError.
 func HysteriaVersion(ctx context.Context, ex Executor, path string) (string, error) {
 	if err := CheckPath(path); err != nil {
+		return "", err
+	}
+	if err := CheckBinary(ctx, ex, path, false); err != nil {
+		var ee *ExitError
+		if errors.As(err, &ee) {
+			return "", nil // missing or out of reach: nothing would run
+		}
 		return "", err
 	}
 	res, err := ex.Run(ctx, Cmd{Args: []string{path, "version"}})

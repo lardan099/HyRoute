@@ -170,7 +170,7 @@ func TestImportKeepsDeployedInstallationManaged(t *testing.T) {
 func TestImportConfigChangedMeanwhile(t *testing.T) {
 	m := official()
 	// The admin edits the config right after the import read it.
-	m.On("stat").Do(func(c remote.Cmd) (remote.Result, error) {
+	m.On("stat", "-L", "-c", "%a %U %G %s").Do(func(c remote.Cmd) (remote.Result, error) {
 		m.SetFile("/etc/hysteria/config.yaml", []byte(officialConfig+"# edited\n"))
 		return remote.Result{Stdout: []byte("640 root hysteria 100\n")}, nil
 	})

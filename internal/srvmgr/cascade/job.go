@@ -858,10 +858,15 @@ func capitalize(s string) string {
 	return s
 }
 
-// PingLink runs `hysteria ping` with the link client's config on the entry.
+// PingLink runs `hysteria ping` with the link client's config on the entry,
+// as root (the config is root's and the service group's): only a binary
+// that only root can change (remote.CheckBinary).
 func PingLink(ctx context.Context, ex remote.Executor, binary, config, target string, su bool) (Ping, error) {
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
+	if err := remote.CheckBinary(ctx, ex, binary, su); err != nil {
+		return Ping{}, err
+	}
 	res, err := ex.Run(ctx, remote.Cmd{Args: []string{binary, "--config", config, "--log-format", "json", "ping", target}, Sudo: su})
 	if err != nil {
 		var ue *remote.UnreachableError

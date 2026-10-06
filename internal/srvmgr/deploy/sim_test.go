@@ -255,7 +255,13 @@ func (s *sim) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 			delete(s.modes, src)
 		}
 		return ok(""), nil
+	case "readlink":
+		return ok(last + "\n"), nil
 	case "stat":
+		if a[3] == "%u %g %a" {
+			// The binary and its directories are root's.
+			return ok(strings.Repeat("0 0 755\n", len(a)-5)), nil
+		}
 		if !s.exists(last) {
 			return fail(1, "stat: cannot statx '"+last+"': No such file or directory"), nil
 		}

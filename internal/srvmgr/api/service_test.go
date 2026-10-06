@@ -30,6 +30,11 @@ func statusExec(ctx context.Context, line string, in io.Reader, out, errw io.Wri
 		fmt.Fprint(out, "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vda1 20000000 5000000 15360000 25% /\n")
 	case strings.HasSuffix(cmd, "hysteria version"):
 		fmt.Fprintln(out, "Version:\tv2.12.3")
+	case strings.HasPrefix(cmd, "readlink -f -- "):
+		fmt.Fprintln(out, strings.TrimPrefix(cmd, "readlink -f -- "))
+	case strings.HasPrefix(cmd, "stat -L -c '%u %g %a' -- "):
+		// The binary and its directories are root's.
+		fmt.Fprint(out, strings.Repeat("0 0 755\n", len(strings.Fields(strings.TrimPrefix(cmd, "stat -L -c '%u %g %a' -- ")))))
 	case strings.HasPrefix(cmd, "journalctl -u hysteria-server.service"):
 		fmt.Fprintln(out, `{"__REALTIME_TIMESTAMP":"1790000000000000","PRIORITY":"6","MESSAGE":"2026-09-21T10:13:20Z\tINFO\tserver up and running\t{\"listen\": \":443\"}"}`)
 		fmt.Fprintln(out, `{"__REALTIME_TIMESTAMP":"1790000001000000","PRIORITY":"6","MESSAGE":"2026-09-21T10:13:21Z\tWARN\tclient rejected\t{\"got\": \"fake-journal-auth-pass\"}"}`)

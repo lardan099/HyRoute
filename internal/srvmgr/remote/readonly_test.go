@@ -22,6 +22,8 @@ func TestReadOnly(t *testing.T) {
 		{"id", "-un"}, {"hostname"}, {"uname", "-m"}, {"true"},
 		{"test", "-e", "/etc/hysteria"},
 		{"stat", "-L", "-c", "%a %U %G %s", "--", "/etc/hysteria/config.yaml"},
+		{"readlink", "-f", "--", "/usr/local/bin/hysteria"},
+		{"stat", "-L", "-c", "%u %g %a", "--", "/usr/local/bin/hysteria", "/usr/local/bin", "/"},
 		{"cat", "--", "/etc/hysteria/config.yaml"},
 		{"sha256sum", "--", "/usr/local/bin/hysteria"},
 		{"ss", "-Hlntup"},

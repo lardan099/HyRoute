@@ -99,6 +99,7 @@ func newServer() *server {
 	s.On("nproc").Reply("2\n", 0)
 	s.On("df").Reply("Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vda1 20000000 5000000 15360000 25% /\n", 0)
 	s.On("/usr/local/bin/hysteria", "version").Reply("Version:\tv2.12.3\n", 0)
+	s.RootPaths()
 	s.On("ss").Reply("udp UNCONN 0 0 *:443 *:* users:((\"hysteria\",pid=4242,fd=7))\ntcp LISTEN 0 4096 *:22 *:* users:((\"sshd\",pid=1,fd=3))\n", 0)
 	return s
 }

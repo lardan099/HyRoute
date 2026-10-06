@@ -114,6 +114,7 @@ func newMachine() *machine {
 		}
 		return remote.Result{Stdout: []byte(mode + " " + itoa(len(b)) + "\n")}, nil
 	})
+	m.RootPaths()
 	return m
 }
 
@@ -441,6 +442,31 @@ func TestImportHyRouteDeployment(t *testing.T) {
 
 // Without ss the standard service is still found; a service with another
 // name cannot be, and the error says why.
+// A binary the service's user can replace is not run, not even for its
+// version: the import goes on and says so.
+func TestImportWritableBinary(t *testing.T) {
+	m := official()
+	m.On("stat", "-L", "-c", "%u %g %a", "--").Do(func(c remote.Cmd) (remote.Result, error) {
+		var out string
+		for _, p := range c.Args[5:] {
+			if p == "/usr/local/bin/hysteria" {
+				out += "999 999 755\n"
+			} else {
+				out += "0 0 755\n"
+			}
+		}
+		return remote.Result{Stdout: []byte(out)}, nil
+	})
+	f, _, err := discover(t, m)
+	if err != nil || f.Version != "" || f.Config != "/etc/hysteria/config.yaml" {
+		t.Fatalf("%v %+v", err, f)
+	}
+	has(t, f, "warn:binary-writable")
+	if slices.Contains(m.Commands(), "/usr/local/bin/hysteria version") {
+		t.Fatal("the binary ran")
+	}
+}
+
 func TestImportWithoutSS(t *testing.T) {
 	m := official()
 	m.On("ss").Fail("env: 'ss': No such file or directory", 127)

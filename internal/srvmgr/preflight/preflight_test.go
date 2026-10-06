@@ -75,6 +75,7 @@ func (s server) fake() *fake.Executor {
 		f.On("test", "-e", StdBinary).Reply("", 0)
 		f.On(StdBinary, "version").Reply("Version:\tv2.12.3\nBuildDate:\t2025-01-01\n", 0)
 	}
+	f.RootPaths()
 	return f
 }
 

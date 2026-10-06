@@ -2,6 +2,7 @@ package remote_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -123,5 +124,62 @@ func TestDownloadRejects(t *testing.T) {
 	}
 	if len(ex.Calls()) != 0 {
 		t.Fatal("ran something")
+	}
+}
+
+// A binary runs only when root alone can change it, the directories above
+// it and above what it links to.
+func TestHysteriaVersionTrust(t *testing.T) {
+	ctx := context.Background()
+	const bin = "/opt/hy/hysteria"
+	for _, tc := range []struct {
+		desc string
+		link string            // what readlink -f says ("": bin itself)
+		stat map[string]string // "uid gid mode" of a path (default root's 755)
+		want string
+		bad  string // the path at fault
+	}{
+		{"root's", "", nil, "v2.12.3", ""},
+		{"group root may write", "", map[string]string{"/opt/hy": "0 0 775"}, "v2.12.3", ""},
+		{"the service user's file", "", map[string]string{bin: "999 999 755"}, "", bin},
+		{"another group may write", "", map[string]string{bin: "0 999 775"}, "", bin},
+		{"the service user's directory", "", map[string]string{"/opt/hy": "999 999 755"}, "", "/opt/hy"},
+		{"anyone may write a directory", "", map[string]string{"/opt": "0 0 1777"}, "", "/opt"},
+		{"links into a home", "/home/u/hysteria", map[string]string{"/home/u": "1000 1000 755"}, "", "/home/u"},
+		{"missing", "", map[string]string{bin: "missing"}, "", ""},
+	} {
+		ex := fake.New()
+		ex.On("readlink", "-f", "--").Do(func(c remote.Cmd) (remote.Result, error) {
+			if tc.link != "" {
+				return remote.Result{Stdout: []byte(tc.link + "\n")}, nil
+			}
+			return remote.Result{Stdout: []byte(c.Args[len(c.Args)-1] + "\n")}, nil
+		})
+		ex.On("stat", "-L", "-c", "%u %g %a", "--").Do(func(c remote.Cmd) (remote.Result, error) {
+			var out string
+			for _, p := range c.Args[5:] {
+				m, ok := tc.stat[p]
+				if !ok {
+					m = "0 0 755"
+				}
+				if m == "missing" {
+					return remote.Result{ExitCode: 1, Stderr: []byte("stat: cannot statx '" + p + "': No such file or directory")}, nil
+				}
+				out += m + "\n"
+			}
+			return remote.Result{Stdout: []byte(out)}, nil
+		})
+		ex.On(bin, "version").Reply("Version:\tv2.12.3\n", 0)
+		v, err := remote.HysteriaVersion(ctx, ex, bin)
+		ran := slices.Contains(ex.Commands(), bin+" version")
+		var ub *remote.UntrustedBinaryError
+		switch {
+		case tc.bad != "":
+			if !errors.As(err, &ub) || ub.Path != tc.bad || ran {
+				t.Errorf("%s: %q %v, ran %v", tc.desc, v, err, ran)
+			}
+		case err != nil || v != tc.want || ran != (tc.want != ""):
+			t.Errorf("%s: %q %v, ran %v", tc.desc, v, err, ran)
+		}
 	}
 }
