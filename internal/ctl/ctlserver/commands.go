@@ -454,6 +454,9 @@ func cmdSubsUpdate(r *request, a any) (any, *ctl.Error) {
 			v.Error = err.Error()
 		}
 		out = append(out, v)
+		if i < len(ids)-1 {
+			r.beat() // one subscription done: the client's time starts again
+		}
 	}
 	return out, nil
 }

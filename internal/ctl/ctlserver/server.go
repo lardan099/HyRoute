@@ -205,6 +205,13 @@ func (r *request) emit(v any) error {
 	return r.s.write(r.conn, ctl.Frame{V: ctl.Proto, OK: true, Event: raw})
 }
 
+// beat sends a frame with nothing in it (not final): a long command's
+// sign of progress, after which the client gives it its time again.
+// Clients skip such frames.
+func (r *request) beat() error {
+	return r.s.write(r.conn, ctl.Frame{V: ctl.Proto, OK: true})
+}
+
 // encode marshals a result or event, masked with --private.
 func (r *request) encode(v any) (json.RawMessage, error) {
 	raw, err := ctl.Marshal(v)
