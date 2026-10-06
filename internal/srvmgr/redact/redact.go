@@ -28,7 +28,7 @@ var (
 
 	pemRe      = regexp.MustCompile(`(?s)-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)`)
 	hyURIRe    = regexp.MustCompile(`(?i)\b(hysteria2\+realm(?:\+http)?|hysteria2|hy2)://[^\s"'<>]+`)
-	urlPassRe  = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^/\s:@"'<>]+):[^/\s@"'<>]+@`)
+	urlPassRe  = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^/\s:@"'<>]*):[^/\s@"'<>]+@`) // the user may be empty
 	authHdrRe  = regexp.MustCompile(`(?i)\b((?:proxy-)?authorization["']?\s*[:=]\s*)("[^"]*"|[^\r\n,}]+)`)
 	keyValueRe = regexp.MustCompile(`(?i)(["']?\b` + secretKey + `["']?[ \t]*[:=][ \t]*)("(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|[^\s,;&}\]"']+)`)
 	telegramRe = regexp.MustCompile(`\b\d{6,12}:[A-Za-z0-9_-]{30,}\b`)

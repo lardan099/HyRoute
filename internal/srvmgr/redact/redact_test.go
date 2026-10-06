@@ -44,6 +44,7 @@ func TestStringPatterns(t *testing.T) {
 		{"hysteria2://" + fakePass + "@203.0.113.1:443/?obfs=salamander&obfs-password=" + fakeObfs + "#name", []string{fakePass, fakeObfs, "203.0.113.1"}, []string{"hysteria2://" + Mask}},
 		{"link hy2://user:" + fakePass + "@example.com:443 done", []string{fakePass}, []string{"hy2://" + Mask + " done"}},
 		{"https://admin:" + fakePass + "@panel.example.com/api", []string{fakePass}, []string{"https://admin:" + Mask + "@panel.example.com/api"}},
+		{"url: http://:" + fakePass + "@203.0.113.5:3128", []string{fakePass}, []string{"http://:" + Mask + "@203.0.113.5:3128"}},
 		{"bot token " + fakeToken + " ok", []string{fakeToken}, []string{" ok"}},
 		{"-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ\nfakekeymaterial\n-----END OPENSSH PRIVATE KEY-----\nnext line", []string{"b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ", "fakekeymaterial"}, []string{"next line"}},
 		{"-----BEGIN EC PRIVATE KEY-----\ntruncated fakekeymaterial", []string{"fakekeymaterial"}, nil},

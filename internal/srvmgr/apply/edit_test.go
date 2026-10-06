@@ -248,6 +248,7 @@ auth:
   password: *pw
 extra:
   upstream: https://bob:fake-url-pass@proxy.example.com/
+  proxy: http://:fake-nouser-pass@203.0.113.5:3128
   second:
     type: userpass
     userpass: *u
@@ -267,12 +268,12 @@ func TestMaskFollowsAliasesURLsAndComments(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(m)
-	for _, secret := range []string{"fake-anchored-pass", "fake-alice-pass", "fake-url-pass", "fake-comment-pass"} {
+	for _, secret := range []string{"fake-anchored-pass", "fake-alice-pass", "fake-url-pass", "fake-nouser-pass", "fake-comment-pass"} {
 		if strings.Contains(s, secret) {
 			t.Fatalf("%s visible:\n%s", secret, s)
 		}
 	}
-	for _, p := range []string{"shared", "users.alice", "extra.upstream"} {
+	for _, p := range []string{"shared", "users.alice", "extra.upstream", "extra.proxy"} {
 		if !slices.Contains(paths, p) {
 			t.Errorf("%s not listed: %q", p, paths)
 		}
