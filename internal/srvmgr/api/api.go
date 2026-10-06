@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"path"
 	"runtime/debug"
@@ -52,6 +53,10 @@ type Deps struct {
 	// TrustProxy: believe X-Forwarded-For/-Proto/-Host from a reverse
 	// proxy on a loopback address.
 	TrustProxy bool
+	// Loopback: the controller listens on a loopback address. Without a
+	// reverse proxy (TrustProxy) it then answers only requests that name
+	// it so (see loopbackHost).
+	Loopback bool
 	// OnSetupDone runs after the first owner is created (main removes the
 	// setup token file).
 	OnSetupDone func()
@@ -161,7 +166,32 @@ func New(d Deps) http.Handler {
 	if d.UI != nil {
 		mux.Handle("/", uiHandler(d.UI))
 	}
-	return s.recoverPanics(s.logRequests(securityHeaders(limitBody(mux))))
+	return s.recoverPanics(s.logRequests(securityHeaders(s.loopbackHost(limitBody(mux)))))
+}
+
+var errBadHost = &Error{Status: http.StatusMisdirectedRequest, Code: "bad_host", Message: "Панель на этом адресе открывается только как localhost, 127.0.0.1 или [::1]: откройте её по такому адресу."}
+
+// loopbackHost: a controller on a loopback address without a proxy
+// answers only localhost, 127.0.0.1 and [::1]. Another name pointed at
+// 127.0.0.1 (DNS rebinding) would make a page of another site
+// same-origin with the admin: it could read the API and spend the login
+// limits of the owner's own address.
+func (s *server) loopbackHost(next http.Handler) http.Handler {
+	if !s.Loopback || s.TrustProxy {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+		if !strings.EqualFold(host, "localhost") && !isLoopback(host) {
+			writeError(w, errBadHost)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // fail answers with err; an error that is not an *Error is logged here

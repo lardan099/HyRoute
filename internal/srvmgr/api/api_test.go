@@ -219,3 +219,36 @@ func TestBodyTimeout(t *testing.T) {
 		t.Fatalf("long request: %d %q", resp.StatusCode, b)
 	}
 }
+
+// On a loopback address without a proxy only loopback names are served:
+// another name pointed at 127.0.0.1 is refused before any handler.
+func TestLoopbackHost(t *testing.T) {
+	db := openDB(t)
+	get := func(d Deps, host string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "/api/v1/health", nil)
+		r.Host = host
+		r.RemoteAddr = "127.0.0.1:50000"
+		rec := httptest.NewRecorder()
+		New(d).ServeHTTP(rec, r)
+		return rec
+	}
+	d := Deps{Store: db, Loopback: true}
+	for _, host := range []string{"127.0.0.1:8480", "localhost:8480", "LOCALHOST", "[::1]:8480", "127.0.0.1"} {
+		if rec := get(d, host); rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", host, rec.Code, rec.Body)
+		}
+	}
+	for _, host := range []string{"attacker.example:8480", "attacker.example", "localhost.attacker.example:8480", "203.0.113.5:8480", ""} {
+		rec := get(d, host)
+		if rec.Code != http.StatusMisdirectedRequest || decodeError(t, rec).Code != "bad_host" {
+			t.Fatalf("%s: %d %s", host, rec.Code, rec.Body)
+		}
+	}
+	// A reverse proxy passes the public name; an address beyond loopback
+	// is not checked.
+	for _, d := range []Deps{{Store: db, Loopback: true, TrustProxy: true}, {Store: db}} {
+		if rec := get(d, "panel.example.com"); rec.Code != http.StatusOK {
+			t.Fatalf("%+v: %d %s", d, rec.Code, rec.Body)
+		}
+	}
+}
