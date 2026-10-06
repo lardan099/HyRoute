@@ -13,12 +13,32 @@ export const kinds: AddrKind[] = ['domain', 'suffix', 'wildcard', 'geosite', 'ip
 // own so.
 export const builtIn = ['direct', 'reject', 'default'];
 
-const ipv4 = /^(\d{1,3}\.){3}\d{1,3}$/;
-const ipv6 = /^[0-9a-f:.]+$/i;
+// isIPv4: four decimal fields up to 255 without leading zeros.
+function isIPv4(s: string): boolean {
+  const p = s.split('.');
+  return p.length === 4 && p.every((x) => /^(0|[1-9]\d{0,2})$/.test(x) && Number(x) <= 255);
+}
 
+// isIPv6: eight groups of up to four hex digits, "::" once for one or
+// more zero groups, an IPv4 address in place of the last two; no zone.
+function isIPv6(s: string): boolean {
+  const halves = s.split('::');
+  if (halves.length > 2) return false;
+  const [head, tail] = halves.map((h) => (h === '' ? [] : h.split(':')));
+  const end = halves.length === 2 ? tail : head;
+  let n = head.length + (tail?.length ?? 0);
+  if (end.length && end[end.length - 1].includes('.')) {
+    if (!isIPv4(end.pop()!)) return false;
+    n++;
+  }
+  if (![...head, ...(tail ?? [])].every((g) => /^[0-9a-f]{1,4}$/i.test(g))) return false;
+  return halves.length === 2 ? n < 8 : n === 8;
+}
+
+// isIP is what Go's net.ParseIP accepts: the controller and Hysteria's
+// compiler take an address for an IP by it.
 export function isIP(s: string): boolean {
-  if (ipv4.test(s)) return s.split('.').every((p) => Number(p) <= 255);
-  return (s.match(/:/g)?.length ?? 0) >= 2 && ipv6.test(s);
+  return s.includes(':') ? isIPv6(s) : isIPv4(s);
 }
 
 // norm is an address as the compiler sees it: lower case, no trailing dot.
