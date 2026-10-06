@@ -3,6 +3,7 @@ package connect
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -199,5 +200,60 @@ func TestUnreachable(t *testing.T) {
 	var ue *remote.UnreachableError
 	if !errors.As(err, &ue) {
 		t.Fatalf("%v", err)
+	}
+}
+
+// hostCert certifies key as a host key with a fresh CA, serial n.
+func hostCert(t *testing.T, key ssh.Signer, n uint64) ssh.Signer {
+	t.Helper()
+	cert := &ssh.Certificate{Key: key.PublicKey(), Serial: n, CertType: ssh.HostCert, ValidPrincipals: []string{"127.0.0.1"}, ValidBefore: ssh.CertTimeInfinity}
+	if err := cert.SignCert(rand.Reader, sshtest.NewSigner(t)); err != nil {
+		t.Fatal(err)
+	}
+	s, err := ssh.NewCertSigner(cert, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// A server with a host certificate is trusted by its key: the fingerprint
+// is the key file's (ssh-keygen -lf), and a reissued certificate is the
+// same server.
+func TestHostCertificateTrustedByKey(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	key := sshtest.NewSigner(t)
+	e.srv.SetHostKey(hostCert(t, key, 1))
+	want := ssh.FingerprintSHA256(key.PublicKey())
+	_, err := e.conn.Check(ctx, e.id)
+	var unknown *remote.HostKeyUnknownError
+	if !errors.As(err, &unknown) || unknown.Fingerprint != want || unknown.KeyType != ssh.KeyAlgoED25519 {
+		t.Fatalf("first connect: %v", err)
+	}
+	if hk, err := e.conn.Trust(ctx, 1, e.id, want, false); err != nil || hk.Fingerprint != want || !bytes.Equal(hk.Key, key.PublicKey().Marshal()) {
+		t.Fatalf("%+v %v", hk, err)
+	}
+	e.srv.SetHostKey(hostCert(t, key, 2))
+	if _, err := e.conn.Check(ctx, e.id); err != nil {
+		t.Fatalf("reissued certificate: %v", err)
+	}
+
+	// An earlier build stored the whole certificate: it still counts as
+	// its key, and trusting again stores the key without replace.
+	cert := hostCert(t, key, 3).PublicKey()
+	if err := e.db.SetHostKey(ctx, model.HostKey{ServerID: e.id, Type: cert.Type(), Key: cert.Marshal(), Fingerprint: ssh.FingerprintSHA256(cert), TrustedAt: time.Now(), TrustedBy: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.conn.Check(ctx, e.id); err != nil {
+		t.Fatalf("certificate trusted by an earlier build: %v", err)
+	}
+	if hk, err := e.conn.Trust(ctx, 1, e.id, want, false); err != nil || hk.Type != ssh.KeyAlgoED25519 || hk.Fingerprint != want {
+		t.Fatalf("%+v %v", hk, err)
+	}
+	e.srv.SetHostKey(hostCert(t, sshtest.NewSigner(t), 4))
+	var changed *remote.HostKeyChangedError
+	if _, err := e.conn.Check(ctx, e.id); !errors.As(err, &changed) {
+		t.Fatalf("a certificate of another key: %v", err)
 	}
 }

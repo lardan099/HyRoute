@@ -63,6 +63,17 @@ func target(s model.Server) sshexec.Target {
 	return sshexec.Target{Host: s.Host, Port: s.SSHPort, User: s.SSHUser}
 }
 
+// keyBytes is a trusted key as the transport presents keys now: a host
+// certificate an earlier build trusted counts as the key it certifies.
+func keyBytes(b []byte) []byte {
+	if k, err := ssh.ParsePublicKey(b); err == nil {
+		if c, ok := k.(*ssh.Certificate); ok {
+			return c.Key.Marshal()
+		}
+	}
+	return b
+}
+
 // checkAgainst returns the host key check for a trusted key (or none).
 func checkAgainst(trusted *model.HostKey) func(ssh.PublicKey) error {
 	return func(k ssh.PublicKey) error {
@@ -70,7 +81,7 @@ func checkAgainst(trusted *model.HostKey) func(ssh.PublicKey) error {
 		if trusted == nil {
 			return &remote.HostKeyUnknownError{KeyType: k.Type(), Fingerprint: fp}
 		}
-		if !bytes.Equal(k.Marshal(), trusted.Key) {
+		if !bytes.Equal(k.Marshal(), keyBytes(trusted.Key)) {
 			return &remote.HostKeyChangedError{KeyType: k.Type(), Fingerprint: fp, OldKeyType: trusted.Type, OldFingerprint: trusted.Fingerprint}
 		}
 		return nil
@@ -135,7 +146,9 @@ func (c *Connector) Trust(ctx context.Context, actor, serverID int64, fingerprin
 		if bytes.Equal(old.Key, seen.Marshal()) {
 			return *old, nil
 		}
-		if !replace {
+		// A certificate an earlier build trusted is stored again as its
+		// key, without replace.
+		if !replace && !bytes.Equal(keyBytes(old.Key), seen.Marshal()) {
 			return model.HostKey{}, &remote.HostKeyChangedError{KeyType: seen.Type(), Fingerprint: fp, OldKeyType: old.Type, OldFingerprint: old.Fingerprint}
 		}
 	}

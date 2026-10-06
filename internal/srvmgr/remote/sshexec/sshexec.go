@@ -53,7 +53,8 @@ type Auth struct {
 // Options tune a connection.
 type Options struct {
 	// HostKey decides whether the presented host key is trusted; it must
-	// return an error for unknown or changed keys.
+	// return an error for unknown or changed keys. A host certificate
+	// comes as the key it certifies.
 	HostKey func(key ssh.PublicKey) error
 	// Timeout bounds the TCP connect and the handshake (default 15 s).
 	Timeout time.Duration
@@ -159,7 +160,7 @@ func Dial(ctx context.Context, t Target, a Auth, o Options) (*Client, error) {
 		Auth:         methods,
 		AuthCallback: onePassword,
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
-			return o.HostKey(key)
+			return o.HostKey(hostKey(key))
 		},
 		Timeout:       o.Timeout,
 		ClientVersion: "SSH-2.0-HyRouteServer",
@@ -198,6 +199,18 @@ func Dial(ctx context.Context, t Target, a Auth, o Options) (*Client, error) {
 	return cl, nil
 }
 
+// hostKey is the server's own key. A host certificate (sshd
+// HostCertificate) stands for the key it certifies: the handshake
+// signature is checked with that key, so the server holds it. Its
+// fingerprint is the one ssh-keygen -lf prints for the key file, and a
+// reissued certificate keeps it.
+func hostKey(k ssh.PublicKey) ssh.PublicKey {
+	if c, ok := k.(*ssh.Certificate); ok {
+		return c.Key
+	}
+	return k
+}
+
 // errKeySeen aborts FetchHostKey's handshake once the key is known.
 var errKeySeen = errors.New("host key seen")
 
@@ -212,7 +225,7 @@ func FetchHostKey(ctx context.Context, t Target, timeout time.Duration) (ssh.Pub
 	cfg := &ssh.ClientConfig{
 		User: t.User,
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
-			seen = key
+			seen = hostKey(key)
 			return errKeySeen
 		},
 		Timeout:       timeout,
