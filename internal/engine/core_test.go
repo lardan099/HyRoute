@@ -258,6 +258,16 @@ func TestTCPRejectBlockAndIPv6(t *testing.T) {
 		t.Fatal("reject not recorded")
 	}
 	h.none(t)
+	// IPv6 to the tunnel while it is down: blocked, not refused.
+	h.own(6, L6, R6, 100)
+	h.sendTCP(L6, R6, packet.FlagSYN, "")
+	if i := h.next(t); i.pkt.TCPFlags()&packet.FlagRST == 0 || !i.pkt.IPv6 {
+		t.Fatal("IPv6 tunnel flow must be reset")
+	}
+	if v := lastRecord(t, h.c); h.c.Rejected.Load() != 1 || v.Outcome != "rst: IPv6 blocked for tunnel" || v.Route != "block" {
+		t.Fatalf("rejected %d, %+v", h.c.Rejected.Load(), v)
+	}
+	h.c.Maintain(time.Now().Add(rejectMemory + time.Second)) // the reset is remembered
 	h.tun.up.Store(true)
 	// IPv6 to the tunnel: RST.
 	h.own(6, L6, R6, 100)
@@ -281,7 +291,7 @@ func TestTCPRejectBlockAndIPv6(t *testing.T) {
 	if i := h.next(t); i.pkt.TCPFlags()&packet.FlagRST == 0 {
 		t.Fatal("retried SYN must be reset")
 	}
-	if len(h.c.Flows.Closed()) != n || h.c.SYNRetries.Load() != 1 || h.c.Blocked.Load() != 2 {
+	if len(h.c.Flows.Closed()) != n || h.c.SYNRetries.Load() != 1 || h.c.Blocked.Load() != 3 {
 		t.Fatalf("retry recorded: closed %d->%d retries %d blocked %d",
 			n, len(h.c.Flows.Closed()), h.c.SYNRetries.Load(), h.c.Blocked.Load())
 	}

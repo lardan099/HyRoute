@@ -1015,17 +1015,19 @@ func (c *Core) applyTCP(p *packet.Packet, addr *divert.Address, key nat.FlowKey,
 		c.rejectSYN(p, addr, key, now)
 		return true
 	case rules.Tunnel:
+		// IPv6 first, as in applyUDP: it is blocked whether the tunnel is
+		// up or not, and a tunnel that is down must not count it refused.
 		switch t := c.tunnel(res.Profile); {
+		case p.IPv6 && c.Opt.BlockIPv6Tunnel:
+			c.Blocked.Add(1)
+			c.finish(rec, rules.Block, "rst: IPv6 blocked for tunnel")
+			c.rejectSYN(p, addr, key, now)
+			return true
 		case t == nil || !t.Available():
 			c.abandon(pk) // the member went down since the pick
 			noteRejected(t)
 			c.Rejected.Add(1)
 			c.finish(rec, rules.Tunnel, "rst: tunnel unavailable")
-			c.rejectSYN(p, addr, key, now)
-			return true
-		case p.IPv6 && c.Opt.BlockIPv6Tunnel:
-			c.Blocked.Add(1)
-			c.finish(rec, rules.Block, "rst: IPv6 blocked for tunnel")
 			c.rejectSYN(p, addr, key, now)
 			return true
 		default:
