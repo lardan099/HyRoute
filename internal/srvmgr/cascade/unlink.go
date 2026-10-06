@@ -564,7 +564,9 @@ func (l *Linker) Sync(ctx context.Context, c model.Chain) (model.Chain, error) {
 }
 
 // fresh reports whether deploying the link again on the servers' current
-// configs would change nothing, with those revisions.
+// configs would change nothing, with those revisions. The same revisions
+// are not enough: the link client takes the exit's address and hop
+// interval from its server record, which changes without a revision.
 func (x *linker) fresh(ctx context.Context, chainID int64, link model.ChainLink) (bool, int, int, error) {
 	ce, err := x.Store.CurrentConfig(ctx, link.From)
 	if err != nil {
@@ -573,9 +575,6 @@ func (x *linker) fresh(ctx context.Context, chainID int64, link model.ChainLink)
 	cx, err := x.Store.CurrentConfig(ctx, link.To)
 	if err != nil {
 		return false, 0, 0, err
-	}
-	if ce.Revision == link.FromRevision && cx.Revision == link.ToRevision {
-		return true, ce.Revision, cx.Revision, nil
 	}
 	pl, err := x.plan(ctx, jobParams{Chain: chainID, Idx: link.Idx, Entry: link.From, Exit: link.To, EntryBase: ce.Revision, ExitBase: cx.Revision})
 	var se *jobs.StepError

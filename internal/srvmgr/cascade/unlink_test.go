@@ -142,6 +142,22 @@ func TestUnlinkNotDeployed(t *testing.T) {
 	}
 }
 
+// The exit moves to another address (no new revision): its link client
+// would get the new one, so the link is stale.
+func TestSyncExitMoved(t *testing.T) {
+	w := linked(t, exitUP)
+	ctx := context.Background()
+	s, _ := w.db.ServerByID(ctx, w.out)
+	s.Host = "203.0.113.99"
+	if err := w.db.UpdateServer(ctx, &s, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := w.db.ChainByID(ctx, w.chain)
+	if c, _ = w.linker.Sync(ctx, c); c.Links[0].State != model.LinkStale {
+		t.Fatalf("after the exit moved: %s", c.Links[0].State)
+	}
+}
+
 // A change on a server that breaks the link marks it stale; deploying
 // again fixes it; a change that does not touch the link keeps it active.
 func TestSync(t *testing.T) {
