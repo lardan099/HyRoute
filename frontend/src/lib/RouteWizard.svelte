@@ -282,7 +282,8 @@
     step = steps[at - 1].id;
   }
 
-  const nothing = $derived(base === 'only' && !picked.length && !apps.some((a) => a.way === 'tunnel') && !sites.some((s) => s.way === 'tunnel'));
+  // picked is shared by both bases: only the tiles of the one chosen count.
+  const nothing = $derived(base === 'only' && !tiles.some((t) => picked.includes(t.id)) && !apps.some((a) => a.way === 'tunnel') && !sites.some((s) => s.way === 'tunnel'));
 
   function summary(): string {
     if (base === 'all') return 'весь интернет' + (groups.some((g) => g.rules.some((r) => r.action === 'direct') && g.key !== '') ? ', кроме выбранного' : '');

@@ -18,7 +18,7 @@
   // Setup reads and writes the same settings as the pages, each save built
   // on a fresh copy (its revision), so it never undoes a change made
   // elsewhere meanwhile.
-  import { ui, hide, mainTarget, mainText, setupStep, setSetupStep, finishSetup } from '../state.svelte';
+  import { ui, hide, settle, hideUserPath, mainTarget, mainText, setupStep, setSetupStep, finishSetup } from '../state.svelte';
   import Icon from './Icon.svelte';
   import TargetOptions from './TargetOptions.svelte';
   import RouteWizard from './RouteWizard.svelte';
@@ -351,13 +351,13 @@
       <h1>Установим HyRoute как обычную программу</h1>
       {#if sys && inTarget}
         <p class="lead">
-          HyRoute уже лежит в {sys.programDir}, но права этой папки разрешают менять файлы программам без прав администратора. Откройте свойства
+          HyRoute уже лежит в {hideUserPath(sys.programDir)}, но права этой папки разрешают менять файлы программам без прав администратора. Откройте свойства
           папки, вкладку «Безопасность», и оставьте запись и изменение только администраторам. Или пропустите этот шаг: HyRoute будет работать,
           но не сможет запускаться вместе с Windows.
         </p>
       {:else if sys}
         <p class="lead">
-          Сейчас HyRoute запущен из папки <span class="path">{sys.programDir}</span> — скорее всего, из «Загрузок» или с рабочего стола.
+          Сейчас HyRoute запущен из папки <span class="path">{hideUserPath(sys.programDir)}</span> — скорее всего, из «Загрузок» или с рабочего стола.
         </p>
         <p>
           HyRoute работает с правами администратора, поэтому ему нужно лежать в защищённой папке Program Files: туда без вашего разрешения не
@@ -412,7 +412,7 @@
           У вас {ui.profiles.length} {plural(ui.profiles.length, 'сервер', 'сервера', 'серверов')}. Выберите основной: через него пойдёт трафик VPN.
           Обычно лучше всего работает ближайший к вам. Поменять его можно в любой момент на главной.
         </p>
-        <select class="big-select" value={main?.id ?? ''} onchange={(e) => pickMain((e.currentTarget as HTMLSelectElement).value)} disabled={checking}>
+        <select class="big-select" value={main?.id ?? ''} onchange={(e) => settle(e, (el) => pickMain(el.value), () => mainTarget()?.id ?? '')} disabled={checking}>
           {#if main?.unloaded}<option value={main.id} disabled>основная группа не загружена</option>{/if}
           <TargetOptions current={main?.unloaded ? '' : main?.id} />
         </select>

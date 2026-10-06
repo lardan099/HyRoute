@@ -488,7 +488,7 @@
           {#if pr || li.length}
             <div class="problems">
               {#if pr}<span><Icon name="alert" size={14} /> {pr}</span>{/if}
-              {#each li as x}<span class:info={x.severity === 'info'}><Icon name={x.severity === 'info' ? 'info' : 'alert'} size={14} /> {x.text}</span>{/each}
+              {#each li as x}<span class:info={x.severity === 'info'}><Icon name={x.severity === 'info' ? 'info' : 'alert'} size={14} /> {hide(x.text)}</span>{/each}
             </div>
           {/if}
         </div>

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { api, errText, fmtDateTime, optionsOf, type SystemInfo, type Prefs, type Updates, type Settings, type AutostartInfo, type EngineOptions } from '../api';
-  import { ui, hide, setTheme, setAccent, settle, setExpert, resetHelp, type Theme, type Accent } from '../state.svelte';
+  import { ui, hide, hideUserPath, setTheme, setAccent, settle, setExpert, resetHelp, type Theme, type Accent } from '../state.svelte';
   import Icon from './Icon.svelte';
   import GeoSettings from './GeoSettings.svelte';
   import Backup from './Backup.svelte';
@@ -487,8 +487,8 @@
 
       <h3>Данные</h3>
       <div class="kv">
-        <span class="muted">Настройки и профили</span><span class="mono">{info.dataDir}</span>
-        <span class="muted">Программа</span><span class="mono">{info.programDir}</span>
+        <span class="muted">Настройки и профили</span><span class="mono">{hideUserPath(info.dataDir)}</span>
+        <span class="muted">Программа</span><span class="mono">{hideUserPath(info.programDir)}</span>
         <span class="muted">Ядро Hysteria</span><span class="mono">{info.hysteriaPath}</span>
         <span class="muted">Сборка</span><span class="mono">{updates?.current ?? ''} ({info.build})</span>
       </div>

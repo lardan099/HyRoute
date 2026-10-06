@@ -319,6 +319,13 @@ export function hidePath(path: string): string {
   return ui.privacy ? '***' : path;
 }
 
+// hideUserPath shows a path with the user's name masked in Privacy mode
+// (C:\Users\***\…), the rest as hide() leaves it.
+export function hideUserPath(p: string): string {
+  if (!ui.privacy) return p;
+  return hide(p.replace(/([\\/]Users[\\/])[^\\/]+/i, '$1***'));
+}
+
 // hidePaths masks the paths Go writes in «…» inside a message, then hide().
 export function hidePaths(s: string): string {
   if (!ui.privacy) return s;

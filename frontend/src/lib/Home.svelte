@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, errText, fmtBytes, fmtDuration, cleanSettings, strategyLabel, type GroupView, type RulesetsView, type Settings, type SystemInfo, type TunnelStatus } from '../api';
-  import { ui, hide, settle, mainTarget, profileName } from '../state.svelte';
+  import { ui, hide, settle, hideUserPath, mainTarget, profileName } from '../state.svelte';
   import { startRestore } from '../state.svelte'; // backup
   import Icon from './Icon.svelte';
   import CheckProfile from './CheckProfile.svelte';
@@ -335,7 +335,7 @@
       <div class="grow">
         <b>Папку HyRoute могут менять программы без прав администратора</b>
         <p class="muted small">
-          {sys.programDir} — в Program Files, но права этой папки или файлов в ней разрешают менять их без запроса прав. HyRoute работает с правами
+          {hideUserPath(sys.programDir)} — в Program Files, но права этой папки или файлов в ней разрешают менять их без запроса прав. HyRoute работает с правами
           администратора, поэтому оставьте запись и изменение только администраторам: свойства папки и HyRoute.exe, вкладка «Безопасность». До
           этого автозапуск с Windows недоступен.
         </p>
@@ -347,7 +347,7 @@
       <div class="grow">
         <b>HyRoute запущен из папки, в которую может писать любая программа</b>
         <p class="muted small">
-          {sys.programDir}. HyRoute работает с правами администратора, поэтому его лучше держать в Program Files: туда без запроса прав ничего не
+          {hideUserPath(sys.programDir)}. HyRoute работает с правами администратора, поэтому его лучше держать в Program Files: туда без запроса прав ничего не
           записать. HyRoute скопирует себя в {sys.moveTarget}, добавит ярлык в меню «Пуск» и перезапустится оттуда. Настройки, серверы и правила
           останутся.
         </p>

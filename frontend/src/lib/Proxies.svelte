@@ -104,6 +104,12 @@
     const auth = p.username ? `${encodeURIComponent(p.username)}:${encodeURIComponent(p.password)}@` : '';
     return `${scheme}://${auth}${addr}`;
   }
+  // shownURL is url() for a tooltip: hide() leaves socks5:// and private
+  // addresses alone, so the login and password are masked here.
+  function shownURL(p: ProxyView, scheme: string, addr: string): string {
+    if (!ui.privacy) return url(p, scheme, addr);
+    return hide(`${scheme}://${p.username ? '***@' : ''}${addr}`);
+  }
 
   async function copy(text: string) {
     try {
@@ -187,8 +193,8 @@
           <div class="addr">
             <code class="grow">{hide(a)}</code>
             {#if i > 0}<span class="faint small">из сети</span>{/if}
-            <button class="mini" onclick={() => copy(url(p, 'socks5', a))} title={hide(url(p, 'socks5', a))}>socks5://</button>
-            <button class="mini" onclick={() => copy(url(p, 'http', a))} title={hide(url(p, 'http', a))}>http://</button>
+            <button class="mini" onclick={() => copy(url(p, 'socks5', a))} title={shownURL(p, 'socks5', a)}>socks5://</button>
+            <button class="mini" onclick={() => copy(url(p, 'http', a))} title={shownURL(p, 'http', a)}>http://</button>
             <button class="mini" onclick={() => copy(a)} title="Адрес и порт"><Icon name="copy" size={13} /></button>
           </div>
         {/each}
