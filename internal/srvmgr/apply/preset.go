@@ -53,7 +53,30 @@ func (e *Editor) presetCandidate(ctx context.Context, serverID int64, base int, 
 		return PresetCheck{}, nil, cur, err
 	}
 	ch, cand, err := Build(b, string(cand), nil)
+	if err == nil {
+		err = hideAll(&ch, b)
+	}
 	return PresetCheck{Check: ch, NewObfs: newObfs}, cand, cur, err
+}
+
+// hideAll hides every secret in a check's text, new ones too, and diffs
+// it again: each preview and the apply generate their own new obfuscation
+// password, so the one a preview showed would not be the server's. Only
+// for checks whose text never comes back as a candidate.
+func hideAll(ch *Check, current []byte) error {
+	out, _, err := Mask([]byte(ch.YAML))
+	if err != nil {
+		return err
+	}
+	curMasked, _, err := Mask(current)
+	if err != nil {
+		return err
+	}
+	ch.YAML, ch.Diff = string(out), Diff(string(curMasked), string(out))
+	if c, err := hyconfig.ParseServer(out); err == nil {
+		ch.Fields = FieldsOf(c)
+	}
+	return nil
 }
 
 // PresetPreview is the check and diff of laying the sections of preset p

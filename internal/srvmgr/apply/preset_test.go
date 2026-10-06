@@ -75,6 +75,34 @@ func TestApplyPresetSection(t *testing.T) {
 	}
 }
 
+// A new obfuscation password is hidden in the preview: the apply makes
+// its own, and the preview's would not be the server's.
+func TestPresetPreviewHidesNewObfs(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	src, _ := hyconfig.ParseServer([]byte("listen: :443\nobfs:\n  type: salamander\n  salamander:\n    password: fake-preset-obfs\n"))
+	pc, _ := preset.Extract(src)
+	b, _ := pc.Marshal()
+	p := model.Preset{ID: 2, Name: "Обфускация", Config: string(b), CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	ch, err := (&Editor{Store: h.db, Keys: h.keys}).PresetPreview(ctx, h.server, 1, p, []string{preset.Obfs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shown, err := hyconfig.ParseServer([]byte(ch.YAML))
+	if err != nil || !ch.NewObfs || shown.Obfs.Salamander.Password != Hidden || ch.Fields.ObfsPassword != Hidden || !Changed(ch.Diff) || len(ch.Secrets) != 1 {
+		t.Fatalf("%v %+v\n%s", err, ch, ch.YAML)
+	}
+	j, err := h.app.ApplyPreset(ctx, h.server, 1, p, []string{preset.Obfs}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, log := h.wait(j)
+	after, _ := hyconfig.ParseServer([]byte(h.v.file()))
+	if j.State != model.JobCompleted || after.Obfs.Salamander.Password == Hidden || len(after.Obfs.Salamander.Password) < 16 {
+		t.Fatalf("%s: %s, obfs %+v\n%s", j.State, j.ErrorMessage, after.Obfs, log)
+	}
+}
+
 func TestApplyPresetRefused(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t)
