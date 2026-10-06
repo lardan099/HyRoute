@@ -3,6 +3,7 @@ package divert
 import (
 	"encoding/binary"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"unsafe"
@@ -167,14 +168,51 @@ func TestMainFilterDNS(t *testing.T) {
 	if f := MainFilter(o); strings.Contains(f, "udp.DstPort") || strings.Contains(f, "or fragment") || !strings.Contains(f, "!loopback and tcp and") {
 		t.Fatalf("TCP only: %s", f)
 	}
-	// The term count WinDivert compiles (at most 256): 45 fixed + 2 per
-	// server address, so maxServerIPs (100) fits.
-	o = FilterOptions{RelayPort: 50123, DNS: true}
-	for i := range 100 {
-		o.ServerIPs = append(o.ServerIPs, netip.AddrFrom4([4]byte{203, 0, 113, byte(i)}))
+	// WinDivert compiles at most 256 tests: MaxServerIPs addresses fit in
+	// every mode (filter_wdfilter_test.go checks filterTests against
+	// WinDivert's own count).
+	for _, o := range maxFilters() {
+		if n := filterTests(MainFilter(o)); n > 256 {
+			t.Fatalf("tcpOnly=%v dns=%v: %d tests", o.TCPOnly, o.DNS, n)
+		}
 	}
-	if n := strings.Count(MainFilter(o), "==") + strings.Count(MainFilter(o), "!=") + strings.Count(MainFilter(o), " < ") +
-		strings.Count(MainFilter(o), " > "); n > 256 {
-		t.Fatalf("%d comparisons", n)
+}
+
+// maxFilters are the main filter's options in every mode with
+// MaxServerIPs server addresses, IPv4 and IPv6.
+func maxFilters() []FilterOptions {
+	ips := make([]netip.Addr, MaxServerIPs)
+	for i := range ips {
+		if i%2 == 0 {
+			ips[i] = netip.AddrFrom4([4]byte{203, 0, 113, byte(i)})
+		} else {
+			ips[i] = netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 15: byte(i)})
+		}
 	}
+	var out []FilterOptions
+	for _, tcpOnly := range []bool{false, true} {
+		for _, dns := range []bool{false, true} {
+			out = append(out, FilterOptions{RelayPort: 50123, ServerIPs: ips, TCPOnly: tcpOnly, DNS: dns})
+		}
+	}
+	return out
+}
+
+// filterTests counts the tests WinDivert compiles a filter into: every
+// comparison and every bare field (outbound, !loopback, ip, tcp,
+// fragment...).
+func filterTests(f string) int {
+	toks := strings.Fields(strings.NewReplacer("(", " ", ")", " ").Replace(f))
+	n := 0
+	for i := 0; i < len(toks); i++ {
+		switch toks[i] {
+		case "and", "or", "not", "&&", "||":
+			continue
+		}
+		n++
+		if i+1 < len(toks) && slices.Contains([]string{"==", "!=", "<", ">", "<=", ">="}, toks[i+1]) {
+			i += 2
+		}
+	}
+	return n
 }

@@ -4,10 +4,14 @@
 # Then run: HYROUTE_WDFILTER=$PWD/tools/wdfilter/wdfilter go test ./internal/divert/
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
+# v2.2.2 by commit: a tag can be moved.
+rev=1789526ecfb9ff5397c94f9f54c1a3dc2fb60440
 src=${WINDIVERT_SRC:-}
 if [ -z "$src" ]; then
     src=$(mktemp -d)
-    git clone -q --depth 1 --branch v2.2.2 https://github.com/basil00/WinDivert "$src"
+    git init -q "$src"
+    git -C "$src" fetch -q --depth 1 https://github.com/basil00/WinDivert "$rev"
+    git -C "$src" checkout -q FETCH_HEAD
 fi
 work=$(mktemp -d)
 # windivert.c holds the string helpers the compiler needs; pull out the

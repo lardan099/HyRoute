@@ -27,6 +27,12 @@ var (
 	}
 )
 
+// MaxServerIPs keeps the main filter within the 256 tests WinDivert
+// compiles: the fixed part takes 41 (45 with DNS capture) and every server
+// IP 2, so 105 fit today; the margin leaves room for the fixed part to
+// grow.
+const MaxServerIPs = 100
+
 // FilterOptions describes the main NETWORK handle (H1).
 type FilterOptions struct {
 	RelayPort uint16

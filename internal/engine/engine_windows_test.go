@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/netip"
 	"os"
-	"os/exec"
 	"slices"
 	"strings"
 	"sync"
@@ -315,34 +314,6 @@ func TestSecondFailWaitsForKillSwitch(t *testing.T) {
 	<-done
 	if e.send != nil {
 		t.Fatal("filters not removed")
-	}
-}
-
-// The main filter must compile with maxServerIPs server addresses: WinDivert
-// compiles at most 256 tests. Runs WinDivert's own compiler like the divert
-// filter tests (see internal/divert/filter_wdfilter_test.go).
-func TestMainFilterFitsMaxServerIPs(t *testing.T) {
-	bin := os.Getenv("HYROUTE_WDFILTER")
-	if bin == "" {
-		t.Skip("HYROUTE_WDFILTER not set (see tools/wdfilter/build.sh)")
-	}
-	ips := make([]netip.Addr, maxServerIPs)
-	for i := range ips {
-		if i%2 == 0 {
-			ips[i] = netip.AddrFrom4([4]byte{203, 0, 113, byte(i)})
-		} else {
-			ips[i] = netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 15: byte(i)})
-		}
-	}
-	e := testEngine()
-	for _, tcpOnly := range []bool{false, true} {
-		for _, dns := range []bool{false, true} { // dns: DNS capture adds 4 tests
-			e.cfg.Options.TCPOnly, e.dnsCapture = tcpOnly, dns
-			out, _ := exec.Command(bin, "compile", e.filter(serverExclusions(ips)), "0").CombinedOutput()
-			if got := strings.TrimSpace(string(out)); got != "OK" {
-				t.Errorf("tcpOnly=%v dns=%v: %s", tcpOnly, dns, got)
-			}
-		}
 	}
 }
 

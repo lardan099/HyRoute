@@ -43,7 +43,13 @@ jobs:
         with:
           go-version: '1.27.x'
           check-latest: true
+      - name: WinDivert's filter compiler (tools/wdfilter)
+        run: ./tools/wdfilter/build.sh
       - run: go test -race ./...
+        env:
+          # The filter tests run through WinDivert's own compiler: a main
+          # filter over 256 tests makes «Подключить» fail.
+          HYROUTE_WDFILTER: ${{ github.workspace }}/tools/wdfilter/wdfilter
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22

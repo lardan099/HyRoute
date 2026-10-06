@@ -88,11 +88,8 @@ const (
 	maxStacks = 64 << 10
 	// stopWait bounds how long Stop waits for the engine's goroutines.
 	stopWait = 5 * time.Second
-	// maxServerIPs keeps the main filter within the 256 tests WinDivert
-	// compiles: the fixed part takes 41 (45 with DNS capture) and every
-	// server IP 2, so 105 fit today; the margin leaves room for the fixed
-	// part to grow.
-	maxServerIPs = 100
+	// maxServerIPs: the main filter's limit (see divert.MaxServerIPs).
+	maxServerIPs = divert.MaxServerIPs
 )
 
 // machineLock names the object that marks a running engine. Wails' single

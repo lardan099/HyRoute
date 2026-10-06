@@ -4,6 +4,7 @@
  * be checked without Windows. See build.sh.
  *
  *   wdfilter compile <filter> [layer]      -> "OK" or "ERR <msg> at <pos>"
+ *   wdfilter count <filter> [layer]        -> the number of tests (at most 256)
  *   wdfilter eval <filter> <hex-packet> <outbound 0|1> [loopback 0|1] -> "1" or "0"
  */
 #include <windows.h>
@@ -34,6 +35,18 @@ int main(int argc, char **argv) {
         }
         printf("ERR %s at %u\n", err ? err : "?", pos); return 1;
     }
+    if (argc >= 3 && strcmp(argv[1], "count") == 0) {
+        static WINDIVERT_FILTER obj[WINDIVERT_FILTER_MAXLEN]; UINT len = 0; ERROR err;
+        int layer = argc > 3 ? atoi(argv[3]) : 0;
+        HANDLE pool = HeapCreate(HEAP_NO_SERIALIZE, WINDIVERT_MIN_POOL_SIZE, WINDIVERT_MAX_POOL_SIZE);
+        if (pool == NULL) { printf("ERR no memory\n"); return 2; }
+        err = WinDivertCompileFilter(argv[2], pool, (WINDIVERT_LAYER)layer, obj, &len);
+        HeapDestroy(pool);
+        if (IS_ERROR(err)) {
+            printf("ERR %s at %u\n", WinDivertErrorString(GET_CODE(err)), GET_POS(err)); return 1;
+        }
+        printf("%u\n", len); return 0;
+    }
     if (argc >= 5 && strcmp(argv[1], "eval") == 0) {
         static unsigned char pkt[65536];
         int n = unhex(argv[3], pkt, sizeof(pkt));
@@ -47,6 +60,6 @@ int main(int argc, char **argv) {
         if (!r && GetLastError() != 0) { printf("ERR %u\n", GetLastError()); return 2; }
         printf("%d\n", r ? 1 : 0); return 0;
     }
-    fprintf(stderr, "usage: wdfilter compile <filter> | eval <filter> <hex> <outbound>\n");
+    fprintf(stderr, "usage: wdfilter compile|count <filter> | eval <filter> <hex> <outbound>\n");
     return 2;
 }

@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -129,7 +130,19 @@ func TestMainFilterSemantics(t *testing.T) {
 	}
 }
 
-// dns: the DNS capture filter compiles, with maxServerIPs addresses too,
+// MaxServerIPs addresses fit in every mode, and filterTests (the count
+// TestMainFilterDNS checks without WinDivert) is WinDivert's own.
+func TestMainFilterFitsMaxServerIPs(t *testing.T) {
+	bin := wdfilter(t)
+	for _, o := range maxFilters() {
+		f := MainFilter(o)
+		if got, want := run(t, bin, "count", f, "0"), strconv.Itoa(filterTests(f)); got != want {
+			t.Errorf("tcpOnly=%v dns=%v: WinDivert %s tests, filterTests %s", o.TCPOnly, o.DNS, got, want)
+		}
+	}
+}
+
+// dns: the DNS capture filter compiles, with MaxServerIPs addresses too,
 // and captures DNS and fragments to private destinations.
 func TestMainFilterDNSWinDivert(t *testing.T) {
 	bin := wdfilter(t)
