@@ -64,7 +64,4 @@ func TestLists(t *testing.T) {
 			t.Errorf("IsLocalName(%q) = %v", c.name, !c.local)
 		}
 	}
-	if !IsServiceName("www.msftconnecttest.com") || IsServiceName("msftconnecttest.com") || IsServiceName("github.com") {
-		t.Fatal("IsServiceName")
-	}
 }

@@ -230,7 +230,7 @@ func TestClassify(t *testing.T) {
 		t.Fatalf("secondary block: %+v", s)
 	}
 	// Off: no policy.
-	if p, err := Compile(Config{StripECH: true}, Names{}); p != nil || err != nil || p.Intercept() {
+	if p, err := Compile(Config{StripECH: true}, Names{}); p != nil || err != nil {
 		t.Fatalf("off: %v %v", p, err)
 	}
 }

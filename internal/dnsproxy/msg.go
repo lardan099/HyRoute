@@ -27,7 +27,6 @@ type Query struct {
 	EDNS    bool
 	UDPSize int // from OPT; 0 without EDNS
 	DO, CD  bool
-	Raw     []byte // the query as received (TCP pass-through)
 }
 
 const (
@@ -100,8 +99,7 @@ func parseRest(msg []byte, h dnsmessage.Header, qq dnsmessage.Question) (Query, 
 	if name == "" {
 		return Query{}, false
 	}
-	q := Query{ID: h.ID, Name: name, Wire: qq.Name, Type: qq.Type, Class: qq.Class, RD: h.RecursionDesired, CD: h.CheckingDisabled,
-		Raw: append([]byte(nil), msg...)}
+	q := Query{ID: h.ID, Name: name, Wire: qq.Name, Type: qq.Type, Class: qq.Class, RD: h.RecursionDesired, CD: h.CheckingDisabled}
 	if len(extra) == 1 {
 		if extra[0].Header.Type != dnsmessage.TypeOPT {
 			return Query{}, false
