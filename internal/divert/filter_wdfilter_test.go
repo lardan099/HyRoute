@@ -40,7 +40,7 @@ func TestFiltersCompileWithWinDivert(t *testing.T) {
 		layer        Layer
 	}{
 		{"main", MainFilter(FilterOptions{RelayPort: 50123, ServerIPs: servers}), LayerNetwork},
-		{"main tcp cgnat", MainFilter(FilterOptions{RelayPort: 50123, ServerIPs: servers, TCPOnly: true, ExcludeCGNAT: true}), LayerNetwork},
+		{"main tcp", MainFilter(FilterOptions{RelayPort: 50123, ServerIPs: servers, TCPOnly: true}), LayerNetwork},
 		{"main no servers", MainFilter(FilterOptions{RelayPort: 50123}), LayerNetwork},
 		{"socket", SocketFilter, LayerSocket},
 		{"dns", DNSFilter, LayerNetwork},
@@ -98,8 +98,7 @@ func TestMainFilterSemantics(t *testing.T) {
 		{"link-local v4", opts, tcp(L4, "169.254.1.1:80"), true, false, "0"},
 		{"multicast v4", opts, udp(L4, "224.0.0.251:5353"), true, false, "0"},
 		{"broadcast", opts, udp(L4, "255.255.255.255:67"), true, false, "0"},
-		{"cgnat off by default", opts, tcp(L4, "100.64.1.1:443"), true, false, "1"},
-		{"cgnat excluded", FilterOptions{RelayPort: relay, ExcludeCGNAT: true}, tcp(L4, "100.64.1.1:443"), true, false, "0"},
+		{"cgnat captured", opts, tcp(L4, "100.64.1.1:443"), true, false, "1"},
 		{"server v4", opts, udp(L4, "203.0.113.10:30000"), true, false, "0"},
 		{"server v4 neighbour", opts, udp(L4, "203.0.113.9:30000"), true, false, "1"},
 		{"server v6", opts, udp(L6, "[2001:db8::10]:30000"), true, false, "0"},

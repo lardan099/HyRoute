@@ -25,16 +25,13 @@ var (
 		netip.MustParsePrefix("fc00::/7"),
 		netip.MustParsePrefix("ff00::/8"),
 	}
-	// CGNAT / Tailscale; optional, off by default.
-	CGNAT = netip.MustParsePrefix("100.64.0.0/10")
 )
 
 // FilterOptions describes the main NETWORK handle (H1).
 type FilterOptions struct {
 	RelayPort uint16
 	// ServerIPs are the Hysteria server addresses (all resolved records).
-	ServerIPs    []netip.Addr
-	ExcludeCGNAT bool
+	ServerIPs []netip.Addr
 	// TCPOnly restricts capture to TCP (PoC); UDP comes in step 3.
 	TCPOnly bool
 	// dns
@@ -58,11 +55,7 @@ type FilterOptions struct {
 //     so each exclusion also lets the other family through explicitly.
 func MainFilter(o FilterOptions) string {
 	var excl, servers []string
-	v4 := ExcludedV4
-	if o.ExcludeCGNAT {
-		v4 = append(v4[:len(v4):len(v4)], CGNAT)
-	}
-	for _, p := range v4 {
+	for _, p := range ExcludedV4 {
 		excl = append(excl, outsideRange("ipv6", "ip.DstAddr", p))
 	}
 	for _, p := range ExcludedV6 {

@@ -99,11 +99,13 @@ func TestMainFilter(t *testing.T) {
 	if strings.Contains(f, "not (") || strings.Contains(f, "!(") {
 		t.Fatal("negated group is a WinDivert parse error")
 	}
+	// CGNAT (Tailscale) is captured: the template «Локальная сеть» sends
+	// it direct by the rules.
 	if strings.Contains(f, "100.64.0.0") {
-		t.Fatal("CGNAT must be off by default")
+		t.Fatal("CGNAT excluded in the filter")
 	}
-	f = MainFilter(FilterOptions{RelayPort: 1, ExcludeCGNAT: true, TCPOnly: true})
-	if !strings.Contains(f, "100.127.255.255") || !strings.Contains(f, "!loopback and tcp and") {
+	f = MainFilter(FilterOptions{RelayPort: 1, TCPOnly: true})
+	if !strings.Contains(f, "!loopback and tcp and") {
 		t.Fatal(f)
 	}
 }
