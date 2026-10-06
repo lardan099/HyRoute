@@ -716,6 +716,27 @@ func TestSubscriptionDueAfterClockWasAhead(t *testing.T) {
 	}
 }
 
+// The shown next update is when due first holds, after a failure too.
+func TestSubscriptionNextAtIsDue(t *testing.T) {
+	c, _ := newCtl(t)
+	t0 := time.Now().Truncate(time.Second)
+	for _, s := range []store.Subscription{
+		{Enabled: true, Interval: "24h", LastUpdate: t0.Add(-2 * time.Hour), LastAttempt: t0.Add(-2 * time.Hour)},
+		// The update after the interval failed: retried in 15 minutes.
+		{Enabled: true, Interval: "24h", LastUpdate: t0.Add(-30 * time.Hour), LastAttempt: t0, LastError: "timeout"},
+		// A manual update failed before its time: retried once it is due.
+		{Enabled: true, Interval: "24h", LastUpdate: t0.Add(-2 * time.Hour), LastAttempt: t0, LastError: "timeout"},
+	} {
+		next := nextAt(s)
+		if next.IsZero() || c.due(s, next.Add(-time.Second), t0) || !c.due(s, next, t0) {
+			t.Fatalf("%+v: next %v", s, next.Sub(t0))
+		}
+	}
+	if !nextAt(store.Subscription{Enabled: true, Interval: "manual"}).IsZero() {
+		t.Fatal("a manual subscription has a next update")
+	}
+}
+
 // Subscriptions are downloaded directly, never through a proxy from the
 // environment.
 func TestSubscriptionFetchIgnoresEnvProxy(t *testing.T) {

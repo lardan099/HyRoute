@@ -282,9 +282,7 @@ func (c *Controller) Subscriptions() []SubView {
 				}
 			}
 		}
-		if d, ok := intervals[s.Interval]; ok && s.Enabled {
-			v.NextAt = s.LastAttempt.Add(d)
-		}
+		v.NextAt = nextAt(s)
 		out = append(out, v)
 	}
 	return out
@@ -850,11 +848,35 @@ func (c *Controller) RunScheduler(ctx context.Context) {
 	}
 }
 
+// subRetry: a failed update is tried again sooner, but not more often.
+const subRetry = 15 * time.Minute
+
+// nextAt is when due next holds for s by its interval (zero: never by
+// itself, as for "startup" and "manual").
+func nextAt(s store.Subscription) time.Time {
+	d, ok := intervals[s.Interval]
+	if !s.Enabled || !ok {
+		return time.Time{}
+	}
+	next := s.LastAttempt.Add(d)
+	if s.LastError != "" {
+		// Retried once both 15 minutes since the try and the interval
+		// since the last success are over.
+		retry := s.LastAttempt.Add(subRetry)
+		if u := s.LastUpdate.Add(d); u.After(retry) {
+			retry = u
+		}
+		if retry.Before(next) {
+			next = retry
+		}
+	}
+	return next
+}
+
 // due reports whether s should be updated at now; started is when the
-// scheduler started.
+// scheduler started. nextAt shows the same time.
 func (c *Controller) due(s store.Subscription, now, started time.Time) bool {
-	// Retry failures sooner, but not more than every 15 minutes.
-	const retry = 15 * time.Minute
+	const retry = subRetry
 	if s.Enabled && s.Interval == "startup" {
 		// The update at start failed (at logon the network is often not
 		// up yet): retry until one succeeds.
