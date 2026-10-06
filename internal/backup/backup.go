@@ -107,8 +107,12 @@ var (
 	ErrPassword = message("Неверный пароль или файл повреждён")
 	ErrTooLarge = message("Файл слишком большой для резервной копии HyRoute (больше 96 МБ)")
 	ErrTooBig   = message("Копия получилась больше 96 МБ: снимите «Статистика» и повторите") // Encode
-	ErrSecrets  = message("Без пароля нельзя сохранить пароли, ссылки подписок и статистику")
-	ErrShort    = message("Пароль — не меньше 8 символов")
+	// ErrPayloadBig: the data inside (unpacked) is over MaxPayload, though
+	// the file itself may be small.
+	ErrPayloadBig  = message("Данные копии больше 64 МБ: снимите крупные разделы (статистику, правила с большими списками) и повторите") // Encode
+	ErrPayloadOpen = message("Данные в этой копии больше 64 МБ: HyRoute их не откроет")
+	ErrSecrets     = message("Без пароля нельзя сохранить пароли, ссылки подписок и статистику")
+	ErrShort       = message("Пароль — не меньше 8 символов")
 )
 
 // message is an error text for the user (a sentence, capital first).
@@ -175,6 +179,9 @@ func Encode(p *Payload, password string) ([]byte, error) {
 	body, err := json.Marshal(p)
 	if err != nil {
 		return nil, err
+	}
+	if len(body) > MaxPayload {
+		return nil, ErrPayloadBig // Open would refuse it, however small the file
 	}
 	var z bytes.Buffer
 	zw := gzip.NewWriter(&z)
@@ -300,7 +307,7 @@ func (f *File) Open(password string) (*Payload, error) {
 			return nil, ErrDamaged
 		}
 		if len(body) > MaxPayload {
-			return nil, ErrTooLarge
+			return nil, ErrPayloadOpen
 		}
 	}
 	return decodePayload(body, !f.Encrypted)
