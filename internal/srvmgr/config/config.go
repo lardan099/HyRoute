@@ -125,6 +125,9 @@ func (c Config) validate() error {
 	if c.MonitorInterval != 0 && c.MonitorInterval < 10*time.Second {
 		return fmt.Errorf("monitor-interval %s: at least 10s, or 0 to turn monitoring off", c.MonitorInterval)
 	}
+	if c.GeoInterval < 0 {
+		return fmt.Errorf("geo-interval %s: a positive duration, or 0 to turn the geo schedule off", c.GeoInterval)
+	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":
 	default:

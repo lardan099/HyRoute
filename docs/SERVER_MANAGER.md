@@ -44,7 +44,7 @@ go build -o hyroute-server ./cmd/hyroute-server
 | `-insecure-http` | `HYROUTE_SERVER_INSECURE_HTTP` | выключено |
 | `-trust-proxy` | `HYROUTE_SERVER_TRUST_PROXY` | выключено |
 | `-monitor-interval` | `HYROUTE_SERVER_MONITOR_INTERVAL` | `1m` (`0` — не собирать метрики) |
-| `-geo-interval` | `HYROUTE_SERVER_GEO_INTERVAL` | `168h` (`0` — не обновлять базы geo) |
+| `-geo-interval` | `HYROUTE_SERVER_GEO_INTERVAL` | `168h` (`0` — не обновлять базы geo; отрицательное значение — ошибка запуска) |
 | `-log-level` | `HYROUTE_SERVER_LOG_LEVEL` | `info` |
 
 Мастер-ключ можно передать и переменной `HYROUTE_MASTER_KEY` — тогда файл не читается и не создаётся.

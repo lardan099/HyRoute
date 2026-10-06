@@ -113,4 +113,11 @@ func TestGeoInterval(t *testing.T) {
 	if err != nil || c.GeoInterval != 24*time.Hour {
 		t.Fatalf("env: %v %v", c.GeoInterval, err)
 	}
+	// A negative interval is a typo, not "off".
+	if _, err := Load([]string{"-geo-interval", "-24h"}, env(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "geo-interval") {
+		t.Fatalf("negative: %v", err)
+	}
+	if _, err := Load(nil, env(map[string]string{"HYROUTE_SERVER_GEO_INTERVAL": "-1h"}), io.Discard); err == nil {
+		t.Fatal("negative env passed")
+	}
 }
