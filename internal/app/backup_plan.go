@@ -304,6 +304,7 @@ func planRestore(cur cfgState, p *backup.Payload, ch BackupChoice, env planEnv) 
 	x.planRules()
 	x.planProxies()
 	x.keepReferenced()
+	x.keepReplacedGroups()
 	x.keepGroupMembers()
 	x.finishGroups()
 	x.reportDangling()
@@ -1388,19 +1389,45 @@ func (x *planCtx) keepGroupMembers() {
 	}
 }
 
-// finishGroups keeps the current groups a group replace would drop while
-// still referenced, then prunes members that are not servers of the result
-// (in memory only when «Группы» is not restored) and reports empty groups.
+// keepReplacedGroups keeps the current groups a group replace would drop
+// while still referenced. Before keepGroupMembers, so that the last members
+// of such a group stay too; one whose name a group of the copy took gets
+// " (2)", as in add mode (two groups of one name do not validate).
+func (x *planCtx) keepReplacedGroups() {
+	if x.groupsReplaced == nil {
+		return
+	}
+	next := &x.pl.next
+	refs := x.resultRefs()
+	names := map[string]bool{}
+	for _, g := range next.Groups.Groups {
+		names[strings.ToLower(g.Name)] = true
+	}
+	for _, g := range x.groupsReplaced.Groups {
+		if next.Groups.Find(g.ID) != nil || len(refs[g.ID]) == 0 {
+			continue
+		}
+		name := g.Name
+		for n := 2; names[strings.ToLower(name)]; n++ {
+			name = fmt.Sprintf("%s (%d)", clipRunes(g.Name, groups.MaxNameRunes-5), n)
+		}
+		names[strings.ToLower(name)] = true
+		line := "Группа «" + g.Name + "» останется: на неё ссылается " + strings.Join(refs[g.ID], ", ") + "."
+		if name != g.Name {
+			line = "Группа «" + g.Name + "» останется под именем «" + name + "» (это имя есть в копии): на неё ссылается " + strings.Join(refs[g.ID], ", ") + "."
+			g.Name = name
+		}
+		next.Groups.Groups = append(next.Groups.Groups, g)
+		x.pl.line(msg("groups").t(line))
+	}
+}
+
+// finishGroups prunes members that are not servers of the result (in
+// memory only when «Группы» is not restored) and reports empty groups.
 func (x *planCtx) finishGroups() {
 	next := &x.pl.next
 	refs := x.resultRefs()
 	if x.groupsReplaced != nil {
-		for _, g := range x.groupsReplaced.Groups {
-			if next.Groups.Find(g.ID) == nil && len(refs[g.ID]) > 0 {
-				next.Groups.Groups = append(next.Groups.Groups, g)
-				x.pl.line(msg("groups").t("Группа «" + g.Name + "» останется: на неё ссылается " + strings.Join(refs[g.ID], ", ") + "."))
-			}
-		}
 		if m := x.d.groups.Main; m != "" && next.Groups.Main == "" {
 			fallback := "основным станет сервер «" + next.targetName(next.Profiles.Active) + "»"
 			x.pl.warn(msg("groups").t("Основной группы «" + x.d.groups.Main + "» нет — " + fallback))

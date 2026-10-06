@@ -927,3 +927,29 @@ func TestPlanCopyWithoutPasswordKeepsOwnServers(t *testing.T) {
 		t.Fatalf("%s %+v %s", pl.err, pl.next.Prefs, texts(pl))
 	}
 }
+
+// «Серверы» and «Группы серверов: Заменить» with a current group a rule
+// still names: the group stays with its last members (not emptied), and
+// under " (2)" when a group of the copy has its name.
+func TestPlanReplacedGroupKeepsMembersAndName(t *testing.T) {
+	m1, m2 := srv("aaaaaaaa0001", "M1", "m1.example"), srv("aaaaaaaa0002", "M2", "m2.example")
+	cur := baseState(m1, m2)
+	cur.Groups.Groups = []groups.Group{{ID: "grp-000000000001", Name: "Авто", Strategy: groups.Failover, Members: []string{m1.ID, m2.ID}}}
+	cur.Settings.Rules = []rules.Rule{{Name: "g", Apps: []rules.AppMatch{{Pattern: "g.exe"}}, Action: rules.Tunnel, Profile: "grp-000000000001"}}
+	x := srv("aaaaaaaa0009", "X", "x.example")
+	file := groups.File{Version: 1, Groups: []groups.Group{{ID: "grp-000000000009", Name: "авто", Strategy: groups.Failover, Members: []string{x.ID}}}}
+	p := payload(true).put("servers", bkServers{Main: x.ID, List: []hysteria.Profile{x}}).put("groups", file).p
+	pl := plan(cur, p, map[string]string{"servers": "replace", "groups": "replace"})
+	if pl.err != "" {
+		t.Fatal(pl.err)
+	}
+	for _, id := range []string{m1.ID, m2.ID} {
+		if pl.next.Profiles.Find(id) == nil {
+			t.Fatalf("%s removed: %s", id, texts(pl))
+		}
+	}
+	g := pl.next.Groups.Find("grp-000000000001")
+	if g == nil || g.Name != "Авто (2)" || len(g.Members) != 2 {
+		t.Fatalf("%+v\n%s", g, texts(pl))
+	}
+}
