@@ -367,6 +367,36 @@ func (c *Controller) PreviewSubscription(rawURL string) (Preview, error) {
 	return pv, nil
 }
 
+// subURLTakenLocked refuses a link another subscription (not except) has:
+// a second copy would duplicate every server, and both would be fetched.
+func (c *Controller) subURLTakenLocked(link, except string) error {
+	for _, s := range c.subs {
+		if s.ID != except && sameSubURL(s.URL, link) {
+			return fmt.Errorf("эта подписка уже добавлена: «%s»", s.Name)
+		}
+	}
+	return nil
+}
+
+// sameSubURL: two spellings of one link (the scheme and host in any case).
+func sameSubURL(a, b string) bool {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	if a == b {
+		return true
+	}
+	ua, err := url.Parse(a)
+	if err != nil {
+		return false
+	}
+	ub, err := url.Parse(b)
+	if err != nil {
+		return false
+	}
+	ua.Scheme, ua.Host = strings.ToLower(ua.Scheme), strings.ToLower(ua.Host)
+	ub.Scheme, ub.Host = strings.ToLower(ub.Scheme), strings.ToLower(ub.Host)
+	return ua.String() == ub.String()
+}
+
 // SubInput creates or edits a subscription. Token is a preview's
 // (PreviewSubscription): the link to add, or on edit the subscription's
 // new link (empty = keep). A link is never taken unchecked.
@@ -389,6 +419,12 @@ func (c *Controller) AddSubscription(in SubInput) (SubView, error) {
 	c.mu.Unlock()
 	if !ok {
 		return SubView{}, errors.New("предпросмотр устарел: нажмите «Проверить» ещё раз")
+	}
+	c.mu.Lock()
+	err := c.subURLTakenLocked(pend.url, "")
+	c.mu.Unlock()
+	if err != nil {
+		return SubView{}, err
 	}
 	sub := store.Subscription{ID: newID(), Name: strings.TrimSpace(in.Name), URL: pend.url, Enabled: in.Enabled, Interval: in.Interval}
 	if sub.Name == "" {
@@ -468,6 +504,10 @@ func (c *Controller) EditSubscription(in SubInput) error {
 		if !ok {
 			c.mu.Unlock()
 			return errors.New("проверка ссылки устарела: смените ссылку ещё раз")
+		}
+		if err := c.subURLTakenLocked(pend.url, in.ID); err != nil {
+			c.mu.Unlock()
+			return err
 		}
 		// The old link stays masked too: its token may still work, and it
 		// stays in use if the save fails.

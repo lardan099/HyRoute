@@ -275,6 +275,40 @@ func TestSchedulerRetriesStartupUpdate(t *testing.T) {
 // «Сменить ссылку»: the new link is checked first and its checked body
 // applied, with no second download; a link that did not check out (no
 // token, or a stale one) never replaces the working one.
+// A link that is already a subscription is not added again, nor given to
+// another subscription: every server would be there twice.
+func TestSubscriptionLinkOnce(t *testing.T) {
+	c, _ := newCtl(t)
+	body := "hy2://a@one.example:443#ONE\n"
+	v := addSub(t, c, &body)
+	again := strings.Replace(subURL, "panel.example", "PANEL.example", 1)
+	pv, err := c.PreviewSubscription(again)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AddSubscription(SubInput{Token: pv.Token, Enabled: true, Interval: "manual"}); err == nil || !strings.Contains(err.Error(), "уже добавлена") {
+		t.Fatal(err)
+	}
+	// Another subscription may not take the link either; its own is fine.
+	const other = "https://other.example/sub/OTHERTOKEN789"
+	pv, err = c.PreviewSubscription(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := c.AddSubscription(SubInput{Token: pv.Token, Enabled: true, Interval: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pv, _ = c.PreviewSubscription(subURL)
+	if err := c.EditSubscription(SubInput{ID: w.ID, Token: pv.Token, Enabled: true, Interval: "manual"}); err == nil {
+		t.Fatal("another subscription's link taken")
+	}
+	pv, _ = c.PreviewSubscription(subURL)
+	if err := c.EditSubscription(SubInput{ID: v.ID, Token: pv.Token, Enabled: true, Interval: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEditSubscriptionChangesURLByPreview(t *testing.T) {
 	c, _ := newCtl(t)
 	body := "hy2://a@old.example:443#OLD\n"
