@@ -121,6 +121,27 @@ func TestExportImport(t *testing.T) {
 	}
 }
 
+// A long name in use is shortened for its number: the name stays within
+// 64 characters.
+func TestImportLongName(t *testing.T) {
+	ctx := context.Background()
+	s, srv := service(t)
+	long := strings.Repeat("Пресет ", 9) + "длинный" // 70 characters
+	long = string([]rune(long)[:62])
+	p, err := s.FromServer(ctx, long, srv, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := Export(p.Preset)
+	for i := 2; i <= 11; i++ {
+		in, err := s.Import(ctx, b, 0)
+		suffix := fmt.Sprintf(" (%d)", i)
+		if err != nil || !strings.HasSuffix(in.Name, suffix) || !strings.HasPrefix(long, strings.TrimSuffix(in.Name, suffix)) || len([]rune(in.Name)) > 64 {
+			t.Fatalf("import %d: %q %v", i, in.Name, err)
+		}
+	}
+}
+
 // A preset with an inline ACL as large as the routing editor makes is
 // exported and imported again; one too large for a file is refused when
 // it is created.

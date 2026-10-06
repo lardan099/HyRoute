@@ -1289,7 +1289,7 @@ routing`, ревизия с источником «правка»).
 | POST | `/api/v1/presets` | operator+ | `{name, serverId}` — из конфига сервера, `{name, from}` — копия пресета |
 | PATCH, DELETE | `/api/v1/presets/{id}` | operator+ | переименовать `{name}`, удалить |
 | GET | `/api/v1/presets/{id}/export` | все | файл пресета (JSON с версией формата) |
-| POST | `/api/v1/presets/import` | operator+ | тело — файл пресета; занятое название получает номер |
+| POST | `/api/v1/presets/import` | operator+ | тело — файл пресета; занятое название получает номер « (N)», длинное укорачивается до 64 символов вместе с ним |
 | POST | `/api/v1/servers/{id}/preset/preview` | operator+ | `{base, preset, sections}`: проверка и diff конфига с разделами пресета |
 | POST | `/api/v1/servers/{id}/preset/apply` | operator+ | то же — задание `apply` |
 | GET | `/api/v1/servers/{id}/routing` | operator+ | правила (`acl`), outbounds и resolver без паролей, `file` (acl.file), `cascade` (вход развёрнутого каскада), проверки правил |

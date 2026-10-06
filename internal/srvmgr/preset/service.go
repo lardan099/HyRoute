@@ -87,9 +87,12 @@ func (s *Service) free(ctx context.Context, name string, self int64) error {
 	return nil
 }
 
+// errTaken refuses a name in use.
+var errTaken = &model.FieldError{Field: "name", Msg: "Пресет с таким названием уже есть."}
+
 func taken(err error) error {
 	if errors.Is(err, store.ErrConflict) {
-		return &model.FieldError{Field: "name", Msg: "Пресет с таким названием уже есть."}
+		return errTaken
 	}
 	return err
 }
@@ -231,7 +234,8 @@ func Export(p model.Preset) ([]byte, error) {
 
 // Import stores the preset of an export file. The config is made a
 // preset again, so a file edited by hand brings no secret or address in.
-// A name in use gets a number.
+// A name in use gets a number, the name shortened for it when it would be
+// longer than 64 characters.
 func (s *Service) Import(ctx context.Context, data []byte, actor int64) (Info, error) {
 	if len(data) > MaxImport {
 		return Info{}, &model.FieldError{Field: "file", Msg: fmt.Sprintf("Файл пресета больше %d МБ.", MaxImport>>20)}
@@ -251,14 +255,16 @@ func (s *Service) Import(ctx context.Context, data []byte, actor int64) (Info, e
 	if err != nil {
 		name = "Импорт"
 	}
+	base := []rune(name)
 	for i := 1; ; i++ {
 		n := name
 		if i > 1 {
-			n = fmt.Sprintf("%s (%d)", name, i)
+			suffix := fmt.Sprintf(" (%d)", i)
+			keep := min(len(base), 64-utf8.RuneCountInString(suffix))
+			n = strings.TrimRightFunc(string(base[:keep]), unicode.IsSpace) + suffix
 		}
 		in, err := s.create(ctx, n, c, actor, "preset.import")
-		var fe *model.FieldError
-		if errors.As(err, &fe) && fe.Field == "name" && i < 100 {
+		if errors.Is(err, errTaken) && i < 100 {
 			continue
 		}
 		return in, err
