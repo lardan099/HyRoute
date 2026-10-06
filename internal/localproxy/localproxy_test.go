@@ -406,6 +406,26 @@ func TestHTTP10NotChunked(t *testing.T) {
 	}
 }
 
+// A request without a User-Agent goes on without one, not with Go's.
+func TestHTTPKeepsNoUserAgent(t *testing.T) {
+	o := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, has := r.Header["User-Agent"]
+		fmt.Fprintf(w, "%v %q", has, r.UserAgent())
+	}))
+	t.Cleanup(o.Close)
+	var dials atomic.Int32
+	addr := start(t, &Server{Dial: dialer(&dials)})
+	c, br := client(t, addr)
+	for req, want := range map[string]string{
+		"GET %s/ HTTP/1.1\r\nHost: x\r\n\r\n":                      `false ""`,
+		"GET %s/ HTTP/1.1\r\nHost: x\r\nUser-Agent: app/1\r\n\r\n": `true "app/1"`,
+	} {
+		if resp, b := send(t, c, br, fmt.Sprintf(req, o.URL)); resp.StatusCode != http.StatusOK || b != want {
+			t.Fatalf("%d %s, want %s", resp.StatusCode, b, want)
+		}
+	}
+}
+
 // A kept-alive connection the server has closed (keep-alive timeout) is
 // not used again.
 func TestUpstreamIdleClosed(t *testing.T) {

@@ -825,6 +825,11 @@ func (s *Server) http(c net.Conn, br *bufio.Reader, lim *limitReader) {
 			req.Header.Del("Expect")
 		}
 		req.RequestURI = ""
+		if _, ok := req.Header["User-Agent"]; !ok {
+			// req.Write would add "Go-http-client/1.1", which some sites
+			// answer with a challenge; an empty value writes none.
+			req.Header["User-Agent"] = []string{""}
+		}
 		if up != nil && (up.host != target || up.stale()) {
 			s.drop(up.Conn)
 			up = nil
