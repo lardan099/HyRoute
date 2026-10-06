@@ -226,6 +226,16 @@ func TestExistingHysteria(t *testing.T) {
 		t.Fatalf("%+v %+v", r.Hysteria, r.Checks)
 	}
 
+	// The standard service runs a program by another name: still the
+	// installed Hysteria, which a deploy replaces or imports.
+	r, err = Run(context.Background(), server{os: osDebian12, github: "200", ss: strings.ReplaceAll(ss, `"hysteria"`, `"hy2"`), hysteria: true}.fake(), rootProbe, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if level(r, "port") != Warn || r.Blocked {
+		t.Fatalf("standard service as hy2: %+v", r.Checks)
+	}
+
 	// Another Hysteria holds the port (its own unit, a container): the
 	// standard service is not it, or there is none.
 	other := "udp UNCONN 0 0 *:443 *:* users:((\"hysteria\",pid=777,fd=7))\n"

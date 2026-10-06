@@ -460,6 +460,9 @@ queued → connecting → preflight → downloading → installing → configuri
   не `MainPID` работающей `hysteria-server.service` (своя служба с другим
   именем, контейнер), preflight даёт fail `port-hysteria`, а задание
   отмечает `foreign` (UI предлагает импорт): новая служба порт не займёт.
+  Порт у `MainPID` самой `hysteria-server.service` — установленная
+  Hysteria при любом имени программы (`hysteria2`, `hy2`): warn, и
+  развёртывание её заменяет (с заменой) или предлагает импорт.
 - verify: служба active и UDP-порт слушает hysteria с `MainPID` этой
   службы (`ss`; чужой процесс на порту не засчитывается). Без `ss`
   (`ss` не запустился — `ExitError`; другие ошибки валят шаг) systemd
