@@ -251,6 +251,9 @@ P1-04 сканирует файл БД на открытые значения т
   (временный файл + `rename`, владелец и права), stat, потоковый вывод.
   Файл больше 32 МБ не читается: `remote.ErrFileTooLarge`, а не
   обрезанные данные. Он внутренний: API и UI до него не доходят.
+- Временные каталоги заданий на серверах — `/tmp/hyroute.XXXXXXXXXX` (`remote.TempDir`; удаляет
+  `RemoveTempDir` только такой путь). Задание убирает свой каталог само; каталоги старше суток (от
+  controller, упавшего во время задания) `TempDir` удаляет перед созданием нового.
 - Над ним — **typed operations**: `RunProbe`, `ReadOSRelease`, `Memory`,
   `DiskFree`, `Uptime`, `LoadAverage`, `Listeners`, `ReadFirewall`,
   `Unit`, `ServiceUnits`, `UnitOfPID`, `ActiveState`, `Systemctl`,

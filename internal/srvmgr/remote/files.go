@@ -17,7 +17,13 @@ import (
 var tempDirRe = regexp.MustCompile(`^/tmp/hyroute\.[A-Za-z0-9]{10}$`)
 
 // TempDir creates a private temporary directory (/tmp/hyroute.XXXXXXXXXX).
+// It first removes the ones older than a day: a job removes its own when
+// it ends, so those are of a controller that died during a job (no job
+// runs that long).
 func TempDir(ctx context.Context, ex Executor, sudo bool) (string, error) {
+	// Best effort: a find without -mmin (old BusyBox) only leaves them.
+	ex.Run(ctx, Cmd{Args: []string{"find", "/tmp", "-maxdepth", "1", "-type", "d", "-name", "hyroute.??????????", "-mmin", "+1440",
+		"-exec", "rm", "-rf", "--", "{}", "+"}, Sudo: sudo})
 	out, err := run(ctx, ex, "mktemp", Cmd{Args: []string{"mktemp", "-d", "/tmp/hyroute.XXXXXXXXXX"}, Sudo: sudo})
 	if err != nil {
 		return "", err

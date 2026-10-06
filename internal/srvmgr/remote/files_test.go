@@ -28,7 +28,9 @@ func TestTempDir(t *testing.T) {
 			t.Errorf("removed %q", bad)
 		}
 	}
-	if got := ex.Commands(); !slices.Equal(got, []string{"mktemp -d /tmp/hyroute.XXXXXXXXXX", "rm -rf -- /tmp/hyroute.Ab3dEf7hIj"}) {
+	// The folders of a controller that died during a job go first.
+	sweep := "find /tmp -maxdepth 1 -type d -name hyroute.?????????? -mmin +1440 -exec rm -rf -- {} +"
+	if got := ex.Commands(); !slices.Equal(got, []string{sweep, "mktemp -d /tmp/hyroute.XXXXXXXXXX", "rm -rf -- /tmp/hyroute.Ab3dEf7hIj"}) {
 		t.Fatalf("%q", got)
 	}
 	// mktemp printing something odd is not trusted as a path to delete later.
