@@ -90,6 +90,13 @@ var fileGen atomic.Uint64
 
 func (db *DB) path(k Kind) string { return filepath.Join(db.Dir, k.File()) }
 
+// Missing reports a database file that is not there or empty (deleted by
+// the user, an antivirus or a disk error), whatever geo.json says.
+func (db *DB) Missing(k Kind) bool {
+	fi, err := os.Stat(db.path(k))
+	return err != nil || !fi.Mode().IsRegular() || fi.Size() == 0
+}
+
 // file returns the current index, rebuilding it when the file changed.
 // db.mu must be held.
 func (db *DB) file(k Kind) (*dbFile, error) {
