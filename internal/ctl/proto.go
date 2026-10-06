@@ -327,6 +327,10 @@ type RulesImportView struct {
 	Saved    bool        `json:"saved"`
 	Replace  bool        `json:"replace"`
 	JSON     bool        `json:"json"` // the content was rules JSON (lines are rules)
+	// Of Rules when adding: those the list had already (not added) and
+	// those whose copy was off and is on now.
+	Skipped int `json:"skipped,omitempty"`
+	Enabled int `json:"enabled,omitempty"`
 }
 
 type SubLine struct {

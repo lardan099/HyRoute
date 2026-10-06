@@ -5,6 +5,7 @@
   import { ui, hide } from '../state.svelte';
   import { trackUnsaved } from '../state.svelte'; // backup
   import Icon from './Icon.svelte';
+  import { toast } from '../toast.svelte';
   import { geo, loadGeo, missingText } from '../geo.svelte';
 
   // target (rulesets): the token of the rules the page shows (the active
@@ -137,6 +138,8 @@ instagram.com -> vpn`);
       );
       res = r;
       resText = text;
+      // The window closes: what was left out or switched on says so here.
+      if (mode !== 'all' && (r.skipped || r.enabled)) toast({ text: () => r.summary, ms: 8000 });
       onsaved();
       stale = null;
     } catch (e) {

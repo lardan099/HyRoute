@@ -153,6 +153,7 @@ export interface RulesTextResult {
   warnings: { line: number; text: string }[];
   summary: string;
   skipped?: number; // appended rules the list had already
+  enabled?: number; // appended rules whose copy was off and is on now
   repeats?: number[]; // lines that repeat an earlier line and can go («Убрать повторы»)
 }
 

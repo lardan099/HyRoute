@@ -214,6 +214,16 @@ func TestApplyRulesText(t *testing.T) {
 	if st := c.Settings(); len(st.Rules) != 5 || st.DefaultAction != rules.Direct {
 		t.Fatalf("%+v", st)
 	}
+	// A copy that is off is switched on, not skipped.
+	if _, _, err := c.ApplyRulesText("e.com -> блок | выкл", false, EditGuard{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, res, err = c.ApplyRulesText("e.com -> блок", false, EditGuard{}); err != nil || res.Enabled != 1 || res.Skipped != 0 {
+		t.Fatalf("off copy: %+v %v", res, err)
+	}
+	if st := c.Settings(); len(st.Rules) != 6 || !st.Rules[5].On() {
+		t.Fatalf("%+v", st.Rules)
+	}
 }
 
 func TestRulesTextTypedItems(t *testing.T) {

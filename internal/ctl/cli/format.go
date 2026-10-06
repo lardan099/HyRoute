@@ -753,9 +753,23 @@ func formatImport(b *strings.Builder, v ctl.RulesImportView, dry bool) {
 		b.WriteString("Ошибок нет. Ничего не сохранено (--dry-run).\n")
 	case v.Replace:
 		fmt.Fprintf(b, "Сохранено: правила заменены (%d).\n", v.Rules)
+	case v.Rules > 0 && v.Skipped == v.Rules:
+		// Nothing new: editRulesIn saved nothing.
+		fmt.Fprintf(b, "Ничего не добавлено: все правила уже есть в списке (%d).\n", v.Skipped)
 	default:
-		fmt.Fprintf(b, "Сохранено: правил добавлено %d.\n", v.Rules)
+		fmt.Fprintf(b, "Сохранено: правил добавлено %d.\n", v.Rules-v.Skipped-v.Enabled)
+		if v.Skipped > 0 || v.Enabled > 0 {
+			fmt.Fprintf(b, "Уже были в списке и не добавлены: %d%s.\n", v.Skipped, enabledNote(v.Enabled))
+		}
 	}
+}
+
+// enabledNote: the rules whose copy was off and was switched on.
+func enabledNote(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; были выключены и включены: %d", n)
 }
 
 func formatSubs(b *strings.Builder, list []ctl.SubLine) {

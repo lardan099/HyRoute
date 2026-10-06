@@ -65,6 +65,8 @@ type RulesTextResult struct {
 	// Skipped: appended rules left out because the list has them already
 	// (rules.Duplicate), set by ApplyRulesText.
 	Skipped int `json:"skipped,omitempty"`
+	// Enabled: appended rules whose copy in the list was off and is on now.
+	Enabled int `json:"enabled,omitempty"`
 	// Repeats: lines (rules text only) whose rule repeats an earlier line
 	// and can go without changing what the rules do («Убрать повторы»).
 	Repeats []int `json:"repeats,omitempty"`
