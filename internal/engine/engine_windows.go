@@ -237,7 +237,13 @@ func New(cfg Config) *Engine {
 		if proto == packet.ProtoTCP {
 			return attrib.LookupTCPOwner(local, remote)
 		}
-		return attrib.LookupUDPOwner(local)
+		if pid, ok := attrib.LookupUDPOwner(local); ok || !local.Addr().Unmap().Is4() {
+			return pid, ok
+		}
+		// A dual-stack socket ([::]:port) is only in the IPv6 table; the
+		// strict lookup reads both and refuses to guess between owners.
+		pid, err := attrib.LookupUDPOwnerStrict(local)
+		return pid, err == nil
 	}
 	e.Core.TCPTable = attrib.ReadTCPTable
 	e.Core.Groups = cfg.Groups
