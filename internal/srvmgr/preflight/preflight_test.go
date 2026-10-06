@@ -242,7 +242,7 @@ func TestPreflightJob(t *testing.T) {
 	f := server{os: osDebian12, github: "000", ufw: true}.fake()
 	f.On("id", "-un").Reply("root\n", 0)
 	f.On("id", "-u").Reply("0\n", 0)
-	f.On("hostname").Reply("vps\n", 0)
+	f.On("uname", "-n").Reply("vps\n", 0)
 	f.On("uname", "-sr").Reply("Linux 6.1.0\n", 0)
 	f.On("uname", "-m").Reply("x86_64\n", 0)
 	eng := jobs.New(db, keys, nil, fakeConnector{f}, nil)

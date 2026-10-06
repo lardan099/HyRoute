@@ -70,7 +70,7 @@ func fakeLinux(sudo bool) sshtest.ExecFunc {
 			fmt.Fprintln(out, "deploy")
 		case "id -u":
 			fmt.Fprintln(out, "1000")
-		case "hostname":
+		case "uname -n":
 			fmt.Fprintln(out, "vps1")
 		case "uname -sr":
 			fmt.Fprintln(out, "Linux 6.1.0-18-amd64")

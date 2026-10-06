@@ -49,7 +49,8 @@ func RunProbe(ctx context.Context, ex Executor) (Probe, error) {
 	if n, err := strconv.Atoi(uid); err == nil && n == 0 {
 		p.Root, p.Sudo = true, true
 	}
-	if p.Hostname, err = run(ctx, ex, "hostname", Cmd{Args: []string{"hostname"}}); err != nil {
+	// uname -n: hostname(1) is not on every system (inetutils on Arch).
+	if p.Hostname, err = run(ctx, ex, "uname -n", Cmd{Args: []string{"uname", "-n"}}); err != nil {
 		return p, err
 	}
 	if p.Kernel, err = run(ctx, ex, "uname -sr", Cmd{Args: []string{"uname", "-sr"}}); err != nil {

@@ -23,7 +23,7 @@ func probeExec(_ context.Context, line string, _ io.Reader, out, _ io.Writer) in
 		fmt.Fprintln(out, "root")
 	case "id -u":
 		fmt.Fprintln(out, "0")
-	case "hostname":
+	case "uname -n":
 		fmt.Fprintln(out, "vps")
 	case "uname -sr":
 		fmt.Fprintln(out, "Linux 6.1.0")

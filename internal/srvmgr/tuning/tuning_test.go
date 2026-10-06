@@ -76,7 +76,7 @@ func (k *kernel) Run(_ context.Context, cmd remote.Cmd) (remote.Result, error) {
 		return ok("root\n"), nil
 	case line == "id -u":
 		return ok("0\n"), nil
-	case a[0] == "hostname":
+	case line == "uname -n":
 		return ok("vps\n"), nil
 	case line == "uname -sr":
 		return ok("Linux 6.1.0\n"), nil

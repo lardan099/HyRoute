@@ -59,8 +59,7 @@ func (r readOnly) Close() error { return r.ex.Close() }
 var readFlags = map[string][]string{
 	"true":       {},
 	"id":         {"-u", "-un", "--"},
-	"hostname":   {},
-	"uname":      {"-sr", "-m"},
+	"uname":      {"-sr", "-m", "-n"},
 	"nproc":      {},
 	"df":         {"-Pk"},
 	"test":       {"-e", "-f", "-d", "-x"},

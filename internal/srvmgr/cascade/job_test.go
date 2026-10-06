@@ -138,7 +138,7 @@ func (h *host) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 		return ok("root\n"), nil
 	case line == "id -u":
 		return ok("0\n"), nil
-	case a[0] == "hostname":
+	case line == "uname -n":
 		return ok(h.name + "\n"), nil
 	case line == "uname -sr":
 		return ok("Linux 6.8.0\n"), nil

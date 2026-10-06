@@ -14,7 +14,7 @@ func TestFakeRulesAndRecords(t *testing.T) {
 	f := New()
 	f.On("id", "-un").Reply("deploy\n", 0)
 	f.On("id", "-u").Reply("1000\n", 0)
-	f.On("hostname").Reply("vps\n", 0)
+	f.On("uname", "-n").Reply("vps\n", 0)
 	f.On("uname", "-sr").Reply("Linux 6.1.0\n", 0)
 	f.On("uname", "-m").Reply("x86_64\n", 0)
 	f.On("true").Fail("sudo: a password is required", 1)
@@ -22,7 +22,7 @@ func TestFakeRulesAndRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.User != "deploy" || p.Root || p.Sudo || p.Arch != "x86_64" {
+	if p.User != "deploy" || p.Root || p.Sudo || p.Arch != "x86_64" || p.Hostname != "vps" {
 		t.Fatalf("%+v", p)
 	}
 	if cs := f.Commands(); len(cs) != 6 || cs[5] != "true" {

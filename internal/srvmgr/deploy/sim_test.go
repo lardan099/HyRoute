@@ -120,9 +120,10 @@ func (s *sim) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 			return ok("999\n"), nil
 		}
 		return fail(1, "no such user"), nil
-	case "hostname":
-		return ok("vps\n"), nil
 	case "uname":
+		if a[1] == "-n" {
+			return ok("vps\n"), nil
+		}
 		if a[1] == "-m" {
 			return ok("x86_64\n"), nil
 		}

@@ -19,7 +19,7 @@ func TestReadOnly(t *testing.T) {
 	ex := remote.ReadOnly(inner)
 
 	allowed := [][]string{
-		{"id", "-un"}, {"hostname"}, {"uname", "-m"}, {"true"},
+		{"id", "-un"}, {"uname", "-n"}, {"uname", "-m"}, {"true"},
 		{"test", "-e", "/etc/hysteria"},
 		{"stat", "-L", "-c", "%a %U %G %s", "--", "/etc/hysteria/config.yaml"},
 		{"readlink", "-f", "--", "/usr/local/bin/hysteria"},

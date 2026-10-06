@@ -55,7 +55,7 @@ func newServer() *server {
 	s := &server{Executor: fake.New(), state: "active"}
 	s.On("id", "-un").Reply("root\n", 0)
 	s.On("id", "-u").Reply("0\n", 0)
-	s.On("hostname").Reply("vps\n", 0)
+	s.On("uname", "-n").Reply("vps\n", 0)
 	s.On("uname", "-sr").Reply("Linux 6.8.0\n", 0)
 	s.On("uname", "-m").Reply("x86_64\n", 0)
 	s.On("systemctl", "show").Do(func(remote.Cmd) (remote.Result, error) {

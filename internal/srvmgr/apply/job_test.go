@@ -91,7 +91,7 @@ func (v *vps) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 		return res("root\n"), nil
 	case line == "id -u":
 		return res("0\n"), nil
-	case a[0] == "hostname":
+	case line == "uname -n":
 		return res("vps\n"), nil
 	case line == "uname -sr":
 		return res("Linux 6.8.0\n"), nil

@@ -48,7 +48,7 @@ func newEnv(t *testing.T, m *machine) *env {
 	}
 	m.On("id", "-un").Reply("root\n", 0)
 	m.On("id", "-u").Reply("0\n", 0)
-	m.On("hostname").Reply("vps\n", 0)
+	m.On("uname", "-n").Reply("vps\n", 0)
 	m.On("uname", "-sr").Reply("Linux 6.8.0\n", 0)
 	m.On("uname", "-m").Reply("x86_64\n", 0)
 	eng := jobs.New(db, keys, redact.New(), conn{m}, nil)

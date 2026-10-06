@@ -55,8 +55,6 @@ func (v *vps) Run(_ context.Context, cmd remote.Cmd) (remote.Result, error) {
 			return ok("root\n"), nil
 		}
 		return ok("0\n"), nil
-	case "hostname":
-		return ok("vps\n"), nil
 	case "uname":
 		return ok("Linux\n"), nil
 	case "sh":
