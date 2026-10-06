@@ -53,6 +53,9 @@
   let fileProblems = $state<AclProblem[]>([]);
   let preview = $state<RoutingPreview | null>(null);
   let error = $state<ApiError | null>(null);
+  // checkError: the check of the draft failed, so Apply waits for the next
+  // one; error is of any other action (an import, an export) and does not.
+  let checkError = $state<ApiError | null>(null);
   let loading = $state(true);
   let busy = $state(false);
   let confirming = $state(false);
@@ -176,10 +179,10 @@
       const p = await api.routingPreview(server.id, input());
       if (my !== seq) return;
       preview = p;
-      error = null;
+      error = checkError = null;
     } catch (e) {
       if (my !== seq) return;
-      error = asApiError(e);
+      checkError = asApiError(e);
     } finally {
       if (my === seq) busy = false;
     }
@@ -524,6 +527,7 @@
 
   {/if}
   {#if error}<div class="note error" role="alert">{error.message}</div>{/if}
+  {#if checkError}<div class="note error" role="alert">{checkError.message}</div>{/if}
   {#if !preview}<div class="row actions"><span class="grow"></span><button onclick={onclose}>{t('cfg.cancel')}</button></div>{/if}
 </section>
 
@@ -632,7 +636,7 @@
     <div class="row actions">
       <span class="grow"></span>
       <button onclick={onclose}>{t('cfg.cancel')}</button>
-      <button class="primary" disabled={busy || !changed || !preview.ok || !!error} onclick={() => (confirming = true)}>{t('cfg.apply')}</button>
+      <button class="primary" disabled={busy || !changed || !preview.ok || !!checkError} onclick={() => (confirming = true)}>{t('cfg.apply')}</button>
     </div>
   </section>
 {/if}
