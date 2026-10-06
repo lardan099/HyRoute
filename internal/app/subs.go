@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/geodata"
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/store"
 )
@@ -54,6 +55,14 @@ var directTransport = func() *http.Transport {
 	return tr
 }()
 
+// subClient is the client of subscription downloads. A redirect from
+// https to http would send the token in the link and the servers'
+// passwords in the body in clear text: it is refused, as for the rule
+// databases.
+func subClient() *http.Client {
+	return &http.Client{Timeout: 30 * time.Second, Transport: directTransport, CheckRedirect: geodata.NoDowngrade}
+}
+
 // httpFetch downloads a subscription. HyRoute's own traffic is never
 // routed, so this goes straight to the subscription server (dns: through
 // directTransport, whose OwnDial registers each host it dials, a redirect's
@@ -69,7 +78,7 @@ func (c *Controller) httpFetch(ctx context.Context, rawURL string) (FetchResult,
 	}
 	req.Header.Set("User-Agent", "HyRoute/"+c.Version)
 	req.Header.Set("Accept", "text/plain, */*")
-	resp, err := (&http.Client{Timeout: 30 * time.Second, Transport: directTransport}).Do(req)
+	resp, err := subClient().Do(req)
 	if err != nil {
 		// The error text contains the URL: never show it.
 		var ue *url.Error

@@ -86,3 +86,18 @@ func TestOwnDialRegisters(t *testing.T) {
 		t.Fatal("a name registered after the start")
 	}
 }
+
+// A subscription never follows a redirect from https to http (the token
+// and the passwords would travel in clear text).
+func TestSubscriptionRedirectNoDowngrade(t *testing.T) {
+	cl := subClient()
+	from, _ := http.NewRequest(http.MethodGet, "https://panel.example/sub/token", nil)
+	to, _ := http.NewRequest(http.MethodGet, "http://panel.example/sub/token", nil)
+	same, _ := http.NewRequest(http.MethodGet, "https://cdn.example/sub/token", nil)
+	if cl.CheckRedirect == nil || cl.CheckRedirect(to, []*http.Request{from}) == nil {
+		t.Fatal("https → http followed")
+	}
+	if err := cl.CheckRedirect(same, []*http.Request{from}); err != nil {
+		t.Fatal(err)
+	}
+}
