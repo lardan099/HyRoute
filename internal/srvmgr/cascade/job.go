@@ -1034,7 +1034,8 @@ func (x *linker) cleanup(ctx context.Context, env *jobs.Env, p jobParams) error 
 
 // finished: a failed first deployment leaves the link failed, a failed
 // redeployment as it was; servers whose rollback did not finish need
-// attention.
+// attention, and the link counts as deployed then (stale): parts of it
+// may be on the servers, and only unlink takes them off.
 func (x *linker) finished(ctx context.Context, env *jobs.Env, j model.Job) {
 	var p jobParams
 	if err := env.DecodeParams(&p); err != nil {
@@ -1049,6 +1050,8 @@ func (x *linker) finished(ctx context.Context, env *jobs.Env, j model.Job) {
 				link.State = model.LinkStale // on the servers: a retry finishes the commit
 			case p.Prev == model.LinkActive || p.Prev == model.LinkStale:
 				link.State = p.Prev
+			case env.Rollback() == jobs.RollbackFailed:
+				link.State = model.LinkStale
 			default:
 				link.State = model.LinkFailed
 			}

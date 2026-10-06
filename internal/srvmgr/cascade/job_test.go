@@ -78,8 +78,9 @@ type host struct {
 	need string
 	// pingHook runs at each ping (tests block in it).
 	pingHook func()
-	// failRead: reading this file fails as a broken connection does.
-	failRead string
+	// failRead: reading this file fails as a broken connection does;
+	// fail: so do commands starting with it.
+	failRead, fail string
 }
 
 func newHost(name, cfg string) *host {
@@ -127,6 +128,9 @@ func (h *host) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	line := strings.Join(a, " ")
+	if h.fail != "" && strings.HasPrefix(line, h.fail) {
+		return remote.Result{}, errors.New("ssh: connection lost")
+	}
 	h.cmds = append(h.cmds, line)
 	last := a[len(a)-1]
 	switch {
@@ -546,6 +550,45 @@ func TestLinkClientFailsRollsBack(t *testing.T) {
 	}
 	if l := w.link(); l.State != model.LinkFailed {
 		t.Fatalf("link %+v", l)
+	}
+}
+
+// The rollback of a failed first deployment does not finish: the link's
+// files stay on the entry, so the link counts as deployed (stale), and
+// unlink takes them off.
+func TestLinkUnfinishedRollbackStaysDeployed(t *testing.T) {
+	w := newWorld(t, exitUP)
+	w.exit.down = true
+	w.entry.pingHook = func() {
+		w.entry.mu.Lock()
+		w.entry.fail = "rm "
+		w.entry.mu.Unlock()
+	}
+	j, log := w.wait(w.submit())
+	if j.State != model.JobFailed || !strings.Contains(log, "Откат не удался") {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	unitFile := "/etc/systemd/system/" + UnitName(w.chain, 0)
+	if _, found := w.entry.file(unitFile); !found {
+		t.Fatal("the unit is gone: the rollback finished")
+	}
+	if l := w.link(); l.State != model.LinkStale {
+		t.Fatalf("link %s after an unfinished rollback", l.State)
+	}
+
+	w.entry.mu.Lock()
+	w.entry.fail, w.entry.pingHook = "", nil
+	w.entry.mu.Unlock()
+	w.exit.mu.Lock()
+	w.exit.down = false
+	w.exit.mu.Unlock()
+	if j, log = w.unlink(true); j.State != model.JobCompleted {
+		t.Fatalf("unlink: %s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	_, unitLeft := w.entry.file(unitFile)
+	_, cfgLeft := w.entry.file(linkCfg(w))
+	if unitLeft || cfgLeft {
+		t.Fatalf("left on the entry: unit %v, config %v\n%s", unitLeft, cfgLeft, log)
 	}
 }
 
