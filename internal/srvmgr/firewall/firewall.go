@@ -60,7 +60,8 @@ func Ports(c *hyconfig.Server) ([]remote.PortSpec, error) {
 			}
 			out = append(out, remote.PortSpec{From: port, To: port, Proto: "tcp"})
 		}
-		switch a.Type {
+		// Hysteria takes the type in any case ("HTTP").
+		switch strings.ToLower(a.Type) {
 		case "http":
 			tcp(a.HTTP.AltPort, 80)
 		case "tls":
