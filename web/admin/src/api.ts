@@ -585,7 +585,6 @@ export interface ConfigView {
   sha256: string;
   yaml: string;
   fields: ConfigFields;
-  unknown: string[];
 }
 
 export interface DiffLine {
@@ -605,7 +604,6 @@ export interface ConfigCheck {
   problems: ConfigProblem[];
   diff: DiffLine[];
   secrets: string[];
-  unknown: string[];
   ok: boolean;
 }
 

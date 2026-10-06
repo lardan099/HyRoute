@@ -2,7 +2,6 @@
   import { t, type Key } from './i18n';
   import { route, go, pages, type Page } from './router.svelte';
   import Overview from './pages/Overview.svelte';
-  import Soon from './pages/Soon.svelte';
   import Presets from './pages/Presets.svelte';
   import Cascades from './pages/Cascades.svelte';
   import Rules from './pages/Rules.svelte';
@@ -73,8 +72,6 @@
         <Cascades />
       {:else if route.page === 'rules'}
         <Rules />
-      {:else}
-        <Soon title={title(route.page)} text={t(`soon.${route.page}` as Key)} />
       {/if}
     </div>
   </main>
