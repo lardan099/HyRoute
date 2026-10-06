@@ -26,7 +26,8 @@
   let outbound = $state(start?.outbound ?? untrack(() => outbounds[0]) ?? 'direct');
   let hijack = $state(start?.hijack ?? '');
   let comment = $state(start?.comment ?? '');
-  let group = $state(start?.group ?? '');
+  // A line Hysteria cannot read keeps its group when it is fixed here.
+  let group = $state(untrack(() => rule?.group) ?? '');
   let off = $state(start?.off ?? false);
   let names = $state<string[]>([]);
   let noGeo = $state(false);
