@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
@@ -61,7 +62,12 @@ func (s *server) checkServer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errNotFound)
 		return
 	}
+	release, ok := s.sshSlot(w, r, id, false)
+	if !ok {
+		return
+	}
 	p, err := s.Connect.Check(r.Context(), id)
+	release()
 	if err != nil && !errors.Is(err, remote.ErrSudoRequired) {
 		s.fail(w, r, mapError(err))
 		return
@@ -94,4 +100,71 @@ func (s *server) trustHostKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toHostKeyJSON(&hk))
+}
+
+// sshLimits bounds the SSH connections requests open to a server: each is
+// an sshd, a shell and a sudo there, and a live journal holds its own for
+// as long as the page is open. Jobs and the monitor are bounded on their
+// own.
+type sshLimits struct {
+	mu      sync.Mutex
+	conns   map[int64]int    // by server
+	follows map[[2]int64]int // live journals by user and server
+}
+
+const (
+	// maxServerConns: a server page opens a few at once (status, journal,
+	// tuning, traffic), so several admins can look at one server.
+	maxServerConns = 8
+	// maxFollows: live journals of one server per user (two tabs).
+	maxFollows = 2
+)
+
+var (
+	errTooManyConns   = &Error{Status: http.StatusTooManyRequests, Code: "too_many_connections", Message: "К этому серверу открыто слишком много подключений из панели. Повторите через несколько секунд.", Details: "retry-after=5"}
+	errTooManyFollows = &Error{Status: http.StatusTooManyRequests, Code: "too_many_journals", Message: "Журнал этого сервера у вас уже открыт в других вкладках: закройте лишние."}
+)
+
+// sshSlot takes a connection slot of server id for the request, and a
+// live-journal slot of its user when follow; without one it answers 429.
+// The caller releases the slot when its connection is closed.
+func (s *server) sshSlot(w http.ResponseWriter, r *http.Request, id int64, follow bool) (release func(), ok bool) {
+	l := &s.ssh
+	key := [2]int64{principal(r).User.ID, id}
+	l.mu.Lock()
+	if l.conns == nil {
+		l.conns, l.follows = map[int64]int{}, map[[2]int64]int{}
+	}
+	var refused *Error
+	switch {
+	case l.conns[id] >= maxServerConns:
+		refused = errTooManyConns
+	case follow && l.follows[key] >= maxFollows:
+		refused = errTooManyFollows
+	default:
+		l.conns[id]++
+		if follow {
+			l.follows[key]++
+		}
+	}
+	l.mu.Unlock()
+	if refused != nil {
+		if refused == errTooManyConns {
+			w.Header().Set("Retry-After", "5")
+		}
+		writeError(w, refused)
+		return nil, false
+	}
+	return func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if l.conns[id]--; l.conns[id] <= 0 {
+			delete(l.conns, id)
+		}
+		if follow {
+			if l.follows[key]--; l.follows[key] <= 0 {
+				delete(l.follows, key)
+			}
+		}
+	}, true
 }

@@ -43,6 +43,11 @@ func (s *server) getTuning(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	release, ok := s.sshSlot(w, r, id, false)
+	if !ok {
+		return
+	}
+	defer release()
 	ctx, cancel := context.WithTimeout(r.Context(), statusTimeout)
 	defer cancel()
 	ex, err := s.Connect.Connect(ctx, id)

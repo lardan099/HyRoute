@@ -180,6 +180,11 @@ func (s *server) routingFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.sshSlot(w, r, id, false)
+	if !ok {
+		return
+	}
+	defer release()
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	f, err := s.routing().File(ctx, id)

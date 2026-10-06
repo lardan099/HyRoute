@@ -51,6 +51,11 @@ func (s *server) serviceStatus(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	release, ok := s.sshSlot(w, r, id, false)
+	if !ok {
+		return
+	}
+	defer release()
 	ctx, cancel := context.WithTimeout(r.Context(), statusTimeout)
 	defer cancel()
 	ex, err := s.Connect.Connect(ctx, id)
@@ -129,6 +134,12 @@ func (s *server) journal(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	follow := r.URL.Query().Get("follow") == "1"
+	release, ok := s.sshSlot(w, r, id, follow)
+	if !ok {
+		return
+	}
+	defer release()
 	cctx, cancel := context.WithTimeout(r.Context(), statusTimeout)
 	ex, err := s.Connect.Connect(cctx, id)
 	cancel()
@@ -143,7 +154,7 @@ func (s *server) journal(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, mapError(err))
 		return
 	}
-	if r.URL.Query().Get("follow") != "1" {
+	if !follow {
 		es, err := remote.JournalEntries(r.Context(), ro, in.Unit, lines, !p.Root)
 		if err != nil {
 			s.fail(w, r, mapError(err))

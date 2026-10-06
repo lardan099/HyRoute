@@ -154,6 +154,11 @@ func (s *server) readLive(w http.ResponseWriter, r *http.Request, path remote.St
 		writeError(w, &Error{Status: http.StatusConflict, Code: "stats_exposed", Message: "API статистики в конфиге слушает не только 127.0.0.1, и панель к нему не обращается. Сохраните конфиг с флажком «Статистика трафика»: API перенесётся на 127.0.0.1.", Details: ts.Listen})
 		return nil, false
 	}
+	release, ok := s.sshSlot(w, r, id, false)
+	if !ok {
+		return nil, false
+	}
+	defer release()
 	ctx, cancel := context.WithTimeout(r.Context(), statusTimeout)
 	defer cancel()
 	ex, err := s.Connect.Connect(ctx, id)

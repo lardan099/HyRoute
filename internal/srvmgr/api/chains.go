@@ -368,6 +368,11 @@ func (s *server) checkChain(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, mapError(err))
 		return
 	}
+	release, ok := s.sshSlot(w, r, entry.ID, false)
+	if !ok {
+		return
+	}
+	defer release()
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	ex, err := s.Connect.Connect(ctx, entry.ID)

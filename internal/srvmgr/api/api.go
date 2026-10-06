@@ -61,6 +61,7 @@ type Deps struct {
 
 type server struct {
 	Deps
+	ssh sshLimits
 }
 
 // New returns the HTTP handler of the controller.
