@@ -1107,6 +1107,9 @@ func (x *planCtx) planRules() {
 		}
 	}
 	x.cleanRules(&fileCfg, taken)
+	// «Всё остальное» stays yours in add mode: the copy's own default is
+	// not resolved, so its server gives no lines about it.
+	fileCfg.DefaultProfile, fileCfg.DefaultFallback = "", nil
 	x.resolveConfig(&fileCfg, "")
 	next.Settings.Rules = append(slices.Clone(next.Settings.Rules), fileCfg.Rules...)
 	if next.Rulesets != nil {

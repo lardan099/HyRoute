@@ -487,6 +487,23 @@ func TestPlanMsgParts(t *testing.T) {
 	}
 }
 
+// «Правила: Добавить» keeps your «Всё остальное»: the copy's default
+// server, missing here, gives no line or warning.
+func TestPlanRulesAddIgnoresCopyDefault(t *testing.T) {
+	cur := baseState(srv("aaaaaaaa0001", "DE", "de.example"))
+	b := payload(false).put("rules", bkRules{Config: rules.Config{DefaultAction: rules.Tunnel, DefaultProfile: "444444444444", Rules: []rules.Rule{
+		{Name: "a", Apps: []rules.AppMatch{{Pattern: "a.exe"}}, Action: rules.Block},
+	}}})
+	b.p.Targets = map[string]backup.Target{"444444444444": {Name: "Gone", Host: "gone.example", Ports: "443"}}
+	pl := plan(cur, b.p, map[string]string{"rules": "add"})
+	if tx := texts(pl); strings.Contains(tx, "Gone") || strings.Contains(tx, "отклонять") {
+		t.Fatalf("%s", tx)
+	}
+	if pl.next.Settings.DefaultProfile != cur.Settings.DefaultProfile || len(pl.next.Settings.Rules) != 1 {
+		t.Fatalf("%+v", pl.next.Settings.Config)
+	}
+}
+
 func TestPlanRulesAndSettings(t *testing.T) {
 	cur := baseState()
 	cur.Settings.Rules = []rules.Rule{{ID: "r1", Name: "mine", Apps: []rules.AppMatch{{Pattern: "a.exe"}}, Action: rules.Block}}
