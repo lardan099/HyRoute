@@ -109,6 +109,10 @@ func (x *deployer) steps(p Params) []jobs.Step {
 				return x.binaryDone(ctx, env, p.Version, BinaryPath)
 			},
 			Run: func(ctx context.Context, env *jobs.Env) error {
+				// Another version than the recorded one, older too: say so.
+				if in, err := x.Store.Installation(ctx, env.ServerID); err == nil && in.Version != "" && in.Version != p.Version {
+					env.Logf("Hysteria %s → %s.", in.Version, p.Version)
+				}
 				return x.binary(ctx, env, p.Version, p.Source, p.Via, BinaryPath)
 			},
 			Undo: x.restoreFile(BinaryPath, "binaryBackup")},

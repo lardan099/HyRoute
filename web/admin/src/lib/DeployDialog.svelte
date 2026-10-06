@@ -278,6 +278,8 @@
           fromFields((await api.configEdit(server.id)).fields);
         } catch {}
       }
+      // The version installed now: an upgrade since the deploy is kept.
+      if (cfg.installed) version = cfg.installed;
     }
     loading = false;
   });

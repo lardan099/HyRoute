@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/lardan099/hyroute/internal/hyconfig"
+	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
@@ -38,6 +39,16 @@ func (s *Submitter) Submit(ctx context.Context, serverID int64, p Params, in Inp
 	if p.Preset != nil {
 		// The preset as it is now goes into the job.
 		p.Preset.Name, p.Preset.Config = "", ""
+	}
+	if p.Version == "" {
+		// No version named: the one HyRoute installed stays (an upgrade
+		// may have changed it since the deploy), not the default.
+		in, err := s.Store.Installation(ctx, serverID)
+		if err == nil && in.Managed && hyrelease.CheckVersion(in.Version) == nil {
+			p.Version = in.Version
+		} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return model.Job{}, err
+		}
 	}
 	if err := p.Normalize(); err != nil {
 		return model.Job{}, &model.FieldError{Field: "params", Msg: sentence(err.Error())}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
+	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
 	"github.com/lardan099/hyroute/internal/srvmgr/importer"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
@@ -94,6 +95,10 @@ type configJSON struct {
 	FromRevision int       `json:"fromRevision,omitempty"`
 	JobID        int64     `json:"jobId"`
 	CreatedAt    time.Time `json:"createdAt"`
+	// Installed is the Hysteria version of the server's installation
+	// (when it is a release tag): an upgrade changes it, not the
+	// revision's meta, and the deploy form keeps it.
+	Installed string `json:"installed,omitempty"`
 }
 
 func (s *server) currentConfig(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +119,16 @@ func (s *server) currentConfig(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, configJSON{Revision: c.Revision, SHA256: c.SHA256, Meta: c.Meta, Source: c.Source, FromRevision: c.FromRevision, JobID: c.JobID, CreatedAt: c.At})
+	out := configJSON{Revision: c.Revision, SHA256: c.SHA256, Meta: c.Meta, Source: c.Source, FromRevision: c.FromRevision, JobID: c.JobID, CreatedAt: c.At}
+	if in, err := s.Store.Installation(r.Context(), id); err == nil {
+		if hyrelease.CheckVersion(in.Version) == nil {
+			out.Installed = in.Version
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *server) startImport(w http.ResponseWriter, r *http.Request) {

@@ -80,6 +80,44 @@ func TestUpgrade(t *testing.T) {
 	}
 }
 
+// A redeploy that names no version after an upgrade keeps the upgraded
+// one; an older one named is installed, and the log says so.
+func TestRedeployAfterUpgrade(t *testing.T) {
+	ctx := context.Background()
+	s := newSim()
+	h := deployed(t, s)
+	if j := h.maintain(MaintainParams{Op: OpUpgrade, Version: newVersion}); j.State != model.JobCompleted {
+		t.Fatalf("upgrade: %s %s", j.State, j.ErrorMessage)
+	}
+	sub := &Submitter{Store: h.db, Keys: h.keys, Jobs: h.eng}
+	p := params()
+	p.Version = ""
+	p.Obfs = true
+	j, err := sub.Submit(ctx, h.server, p, Input{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(j.Params), `"version":"`+newVersion+`"`) {
+		t.Fatalf("params: %s", j.Params)
+	}
+	j = h.wait(j.ID)
+	if b, _ := s.file(BinaryPath); j.State != model.JobCompleted || !bytes.Equal(b, newBinary) || h.installation().Version != newVersion {
+		t.Fatalf("redeploy: %s %s %q", j.State, j.ErrorMessage, b)
+	}
+
+	p.Version = testVersion
+	j, err = sub.Submit(ctx, h.server, p, Input{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j = h.wait(j.ID); j.State != model.JobCompleted || h.installation().Version != testVersion {
+		t.Fatalf("older version: %s %s", j.State, j.ErrorMessage)
+	}
+	if l := h.log(j.ID); !strings.Contains(l, newVersion+" → "+testVersion) {
+		t.Fatalf("log:\n%s", l)
+	}
+}
+
 // A version that does not start: the previous binary comes back and the
 // service runs with it again.
 func TestUpgradeRollback(t *testing.T) {

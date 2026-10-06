@@ -63,6 +63,11 @@ func TestDeployAPI(t *testing.T) {
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"pinSHA256":"abab`) || !strings.Contains(rec.Body.String(), `"revision":1`) || strings.Contains(rec.Body.String(), "fake-auth") {
 		t.Fatalf("config: %d %s", rec.Code, rec.Body)
 	}
+	// An upgrade since: the installed version beside the revision's.
+	e.db.SetInstallation(ctx, model.Installation{ServerID: srv.ID, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", Version: "v2.13.0", Managed: true, At: time.Now()})
+	if rec = owner.do("GET", "/api/v1/servers/"+id+"/config", nil, nil); !strings.Contains(rec.Body.String(), `"installed":"v2.13.0"`) {
+		t.Fatalf("config: %d %s", rec.Code, rec.Body)
+	}
 
 	// A config changed in the editor: the deploy, which would rebuild it
 	// from the form, asks first; with the confirmation it goes on (and

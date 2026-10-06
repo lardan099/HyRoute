@@ -66,8 +66,10 @@ const (
 
 // Params are the choices of a deploy (no secrets).
 type Params struct {
-	Version string `json:"version,omitempty"` // "" = hyrelease.DefaultVersion
-	Port    int    `json:"port,omitempty"`    // UDP port, default 443
+	// Version: "" = the version of HyRoute's installation (Submit fills
+	// it in), else hyrelease.DefaultVersion.
+	Version string `json:"version,omitempty"`
+	Port    int    `json:"port,omitempty"` // UDP port, default 443
 	// HopPorts is a port-hopping range ("20000-50000"): the server listens
 	// on the lowest port and redirects the others to it.
 	HopPorts string `json:"hopPorts,omitempty"`

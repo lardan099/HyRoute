@@ -356,6 +356,9 @@ export interface ServerConfig {
   jobId: number;
   createdAt: string;
   meta: ConfigMeta;
+  // installed: the Hysteria version of the server's installation (an
+  // upgrade changes it, not the revision's meta).
+  installed?: string;
 }
 
 // ConfigRevision is a revision in the config history (no config text).
