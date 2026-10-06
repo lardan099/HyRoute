@@ -54,6 +54,10 @@ func fakeHysteria(mode string) {
 		mode = "ok"
 	}
 	switch mode {
+	case "bindfail":
+		// Something refuses the bind every time (not a race for the port).
+		fmt.Fprintf(os.Stderr, `{"level":"fatal","time":1726480000000,"msg":"failed to load client config","error":"invalid config: listen: listen tcp4 %s: bind: An attempt was made to access a socket in a way forbidden by its access permissions."}`+"\n", c.SOCKS5.Listen)
+		os.Exit(1)
 	case "auth":
 		fmt.Fprintf(os.Stderr, `{"level":"fatal","time":1726480000000,"msg":"failed to initialize client","error":"authentication error, HTTP status code: 404 (auth=%s)"}`+"\n", c.Auth)
 		os.Exit(1)
@@ -651,5 +655,32 @@ func TestSupervisorPinnedSurvivesSubsetAnswer(t *testing.T) {
 	}
 	if st := s.Status(); st.State != Connected || st.Restarts != 0 || st.PinnedIP != pinned {
 		t.Fatalf("%+v", st)
+	}
+}
+
+// A bind that fails every time is retried quickly only a few times, then
+// with the normal backoff and a message that says what goes on.
+func TestSupervisorBindKeepsFailing(t *testing.T) {
+	p := Profile{Host: "198.51.100.1", Ports: "443", Auth: "x"}
+	s, ch, _ := newSupervisor(t, "bindfail", p)
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+	for i := 1; ; i++ {
+		st := waitState(t, ch, Failed)
+		if st.Kind != ErrPortBusy {
+			t.Fatalf("%+v", st)
+		}
+		if i <= busyRetries {
+			if st.RetryIn > time.Second {
+				t.Fatalf("retry %d: %v", i, st.RetryIn)
+			}
+			continue
+		}
+		if st.RetryIn < backoffMin || !strings.Contains(st.Message, "повторяется") {
+			t.Fatalf("after %d quick retries: %+v", busyRetries, st)
+		}
+		return
 	}
 }

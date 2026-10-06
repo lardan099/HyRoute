@@ -256,6 +256,10 @@ const (
 	backoffMin  = time.Second
 	backoffMax  = 60 * time.Second
 	stableAfter = 30 * time.Second
+	// busyRetries: quick retries after ErrPortBusy in a row; a bind that
+	// keeps failing (a policy or security software refusing it) is no
+	// race, and each retry is a full connection to the server.
+	busyRetries = 3
 )
 
 func (s *Supervisor) loop(ctx context.Context) {
@@ -266,6 +270,7 @@ func (s *Supervisor) loop(ctx context.Context) {
 		s.mu.Unlock()
 	}()
 	backoff := backoffMin
+	busy := 0 // ErrPortBusy in a row
 	for restarts := 0; ; restarts++ {
 		s.setStatus(func(st *Status) {
 			st.State, st.Kind, st.Message, st.Restarts, st.RetryIn = Connecting, ErrNone, "", restarts, 0
@@ -278,14 +283,21 @@ func (s *Supervisor) loop(ctx context.Context) {
 			backoff = backoffMin
 		}
 		delay := backoff
-		switch kind {
-		case ErrAuth, ErrConfig:
+		if kind == ErrPortBusy {
+			busy++
+		} else {
+			busy = 0
+		}
+		switch {
+		case kind == ErrAuth || kind == ErrConfig:
 			delay = backoffMax
-		case ErrPortBusy:
+		case kind == ErrPortBusy && busy <= busyRetries:
 			// A local race, not the server's fault: retry at once and do
 			// not grow the backoff.
 			delay = 200 * time.Millisecond
 			backoff /= 2
+		case kind == ErrPortBusy:
+			msg = "Hysteria не может открыть локальный порт SOCKS5, и это повторяется: возможно, его не даёт открыть защитная программа"
 		}
 		s.setStatus(func(st *Status) {
 			st.State, st.Kind, st.Message, st.RetryIn = Failed, kind, msg, delay
