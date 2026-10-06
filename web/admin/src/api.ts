@@ -52,7 +52,9 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   if (!res.ok) {
     const err = data?.error;
     const e = new ApiError(res.status, err?.code ?? 'unknown', err?.message ?? t('error.unknown'), err?.details ?? '', err?.data ?? {});
-    if (e.code === 'unauthorized' && !path.startsWith('/session')) onUnauthorized();
+    // Login, the session check and logout handle their own 401; any other
+    // one (/sessions/{id} too) is the end of this session.
+    if (e.code === 'unauthorized' && path !== '/session') onUnauthorized();
     throw e;
   }
   return data as T;
