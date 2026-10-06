@@ -75,6 +75,13 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	if err := datadir.Dir(cfg.DataDir); err != nil {
 		return fmt.Errorf("data directory: %w", err)
 	}
+	// One controller per data directory: jobs the database calls running
+	// are this process's, or a dead one's to recover.
+	lock, err := datadir.Lock(cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("data directory %s: %w", cfg.DataDir, err)
+	}
+	defer lock.Close()
 	keyFile := getenv(secrets.EnvMasterKey) == ""
 	if keyFile {
 		if err := datadir.File(cfg.MasterKeyFile); err != nil {

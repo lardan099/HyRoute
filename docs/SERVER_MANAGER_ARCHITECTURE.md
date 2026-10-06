@@ -121,7 +121,12 @@ third_party/hysteria-acl      компилятор ACL Hysteria v2.12.3 (коп�
 Каталог данных: `--data-dir` / `HYROUTE_SERVER_DATA_DIR`, по умолчанию
 `/var/lib/hyroute-server` (Linux) и `%ProgramData%\HyRoute Server`
 (Windows). В нём `hyroute-server.db`, `master.key` (если ключ не задан в
-env), `setup-token` на время первого запуска.
+env), `setup-token` на время первого запуска и `lock`: controller держит
+на нём эксклюзивную блокировку (`flock`, в Windows `LockFileEx`) до
+выхода, и второй процесс с тем же каталогом не стартует
+(`datadir.ErrLocked`). Поэтому незавершённые задания в базе при старте —
+всегда задания умершего процесса, и recovery забирает их, не глядя на
+аренду.
 
 ### Сущности (SQLite)
 

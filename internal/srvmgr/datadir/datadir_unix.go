@@ -3,6 +3,7 @@
 package datadir
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -23,4 +24,12 @@ func protect(path string, st fs.FileInfo, dir bool) error {
 		return fmt.Errorf("%s is readable by others (mode %04o): the %s holds secrets, run chmod %s %s", path, perm, mode, want, path)
 	}
 	return nil
+}
+
+func lock(f *os.File) error {
+	err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return ErrLocked
+	}
+	return err
 }

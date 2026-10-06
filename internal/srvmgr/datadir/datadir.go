@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 // Dir checks (Unix) or protects (Windows) the data directory, which must
@@ -43,4 +44,23 @@ func File(path string) error {
 		return fmt.Errorf("%s is not a regular file", path)
 	}
 	return protect(path, st, false)
+}
+
+// ErrLocked: another controller process uses the data directory.
+var ErrLocked = errors.New("another hyroute-server process uses this data directory")
+
+// Lock takes the data directory for this process (an exclusive lock on
+// its file "lock"): a second controller on the same database would run
+// the jobs of the first one again. The lock lasts until the file is
+// closed or the process ends, however it ends.
+func Lock(dir string) (*os.File, error) {
+	f, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := lock(f); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
 }

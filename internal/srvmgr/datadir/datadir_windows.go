@@ -1,8 +1,10 @@
 package datadir
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 
 	"golang.org/x/sys/windows"
 )
@@ -35,4 +37,12 @@ func protect(path string, _ fs.FileInfo, dir bool) error {
 		return fmt.Errorf("%s: set access to SYSTEM, Administrators and the current user: %w", path, err)
 	}
 	return nil
+}
+
+func lock(f *os.File) error {
+	err := windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, new(windows.Overlapped))
+	if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+		return ErrLocked
+	}
+	return err
 }

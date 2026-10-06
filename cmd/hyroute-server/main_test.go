@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/srvmgr/datadir"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 )
 
@@ -167,5 +168,39 @@ func TestRunChecksMasterKey(t *testing.T) {
 	}
 	if err := runOnce(dir); err != nil {
 		t.Fatalf("the right key: %v", err)
+	}
+}
+
+// A second controller on the same data directory does not start: it would
+// run the jobs of the first one again.
+func TestRunRefusesSecondProcessOnDataDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan string, 1)
+	done := make(chan error, 1)
+	env := func(k string) string {
+		if k == "HYROUTE_SERVER_DATA_DIR" {
+			return dir
+		}
+		return ""
+	}
+	go func() { done <- run(ctx, []string{"-listen", "127.0.0.1:0"}, env, io.Discard, ready) }()
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatal(err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("not started")
+	}
+	if err := runOnce(dir); !errors.Is(err, datadir.ErrLocked) {
+		t.Fatalf("second process: %v", err)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := runOnce(dir); err != nil {
+		t.Fatalf("after the first one stopped: %v", err)
 	}
 }
