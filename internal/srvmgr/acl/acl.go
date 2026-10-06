@@ -10,6 +10,7 @@
 package acl
 
 import (
+	"encoding/json"
 	"strings"
 
 	hacl "github.com/lardan099/hyroute/third_party/hysteria-acl"
@@ -50,6 +51,19 @@ type Rule struct {
 
 // Bad: the line is not a rule Hysteria can read.
 func (r Rule) Bad() bool { return r.Outbound == "" && r.Address == "" && r.Text != "" }
+
+// UnmarshalJSON reads a rule from the editor or the API with its protocol
+// and port as Hysteria reads them, the way Parse gives them ("TCP" is
+// tcp, "*" is every port): the checks compare them with the line read
+// back.
+func (r *Rule) UnmarshalJSON(b []byte) error {
+	type plain Rule
+	if err := json.Unmarshal(b, (*plain)(r)); err != nil {
+		return err
+	}
+	r.Proto, r.Port = splitProtoPort(joinProtoPort(strings.TrimSpace(r.Proto), strings.TrimSpace(r.Port)))
+	return nil
+}
 
 // Document is a whole ACL.
 type Document struct {

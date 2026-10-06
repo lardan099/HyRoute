@@ -1,6 +1,7 @@
 package acl
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net"
@@ -239,6 +240,30 @@ func TestCheckCompiler(t *testing.T) {
 	d.Rules = append(d.Rules, Rule{Outbound: "direct", Address: "a.com, tcp"}, Rule{Outbound: "my-proxy", Address: "all"}, Rule{Outbound: "direct", Address: "x # y"}, Rule{Outbound: "direct", Address: "all", Group: "a\nb"})
 	if got := codes(Check(d, Env{Outbounds: []string{"my-proxy"}})); !slices.Equal(got[1], []string{"chars"}) || !slices.Equal(got[2], []string{"outbound_name"}) || !slices.Equal(got[3], []string{"chars"}) || !slices.Equal(got[4], []string{"chars"}) {
 		t.Fatalf("fields: %v", got)
+	}
+}
+
+// A rule from the API with its protocol and port spelled another way is
+// the rule Hysteria reads, not a field the line cannot hold.
+func TestRuleFromJSON(t *testing.T) {
+	var d Document
+	in := `{"rules":[{"outbound":"reject","address":"geoip:private"},{"outbound":"direct","address":"all","proto":"TCP","port":"*"},{"outbound":"direct","address":"example.com","proto":"*","port":" 443 "}]}`
+	if err := json.Unmarshal([]byte(in), &d); err != nil {
+		t.Fatal(err)
+	}
+	if r := d.Rules[1]; r.Proto != "tcp" || r.Port != "" {
+		t.Fatalf("%+v", r)
+	}
+	if r := d.Rules[2]; r.Proto != "" || r.Port != "443" {
+		t.Fatalf("%+v", r)
+	}
+	for _, p := range Check(d, Env{}) {
+		if p.Level == Error {
+			t.Fatalf("%+v", p)
+		}
+	}
+	if s := d.Text(); s != "reject(geoip:private)\ndirect(all, tcp)\ndirect(example.com, */443)" {
+		t.Fatalf("%q", s)
 	}
 }
 
