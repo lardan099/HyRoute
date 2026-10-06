@@ -294,8 +294,9 @@ export interface DeployParams {
   udp?: { disable?: boolean; idleTimeout?: number };
   sniff?: { enable?: boolean; timeout?: number; rewriteDomain?: boolean; tcpPorts?: string; udpPorts?: string };
   outbound?: { type?: OutboundType; mode?: string; bindIPv4?: string; bindIPv6?: string; bindDevice?: string; addr?: string; user?: string };
-  // preset: sections of a preset laid over the config (not ports, obfs).
-  preset?: { id: number; sections: PresetSection[] };
+  // preset: sections of a preset laid over the config (not ports, obfs);
+  // name: the preset's in a job's params (Submit reads it again by id).
+  preset?: { id: number; sections: PresetSection[]; name?: string };
   source?: DeploySource;
   via?: number;
   keepFirewall?: boolean;

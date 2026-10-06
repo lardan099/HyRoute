@@ -98,6 +98,12 @@
   let preset = $derived(presets.find((p) => p.id === presetId) ?? null);
   let presetOffer = $derived((preset?.sections ?? []).filter((s) => deploySections.includes(s)));
   let fromPreset = $derived((s: PresetSection) => !!preset && presetOffer.includes(s) && !!presetChosen[s]);
+  // presetsFailed: the list did not load. lost: the sections the deploy
+  // the form comes from took from a preset that is not in the list; a
+  // deploy without them drops them, so it waits for lostOK.
+  let presetsFailed = $state(false);
+  let lost = $state<{ name: string; sections: PresetSection[] } | null>(null);
+  let lostOK = $state(false);
 
   let loading = $state(true);
   // cfg is the server's current config revision (null: none).
@@ -214,6 +220,11 @@
     if (p.preset) {
       presetId = p.preset.id;
       presetChosen = Object.fromEntries(p.preset.sections.map((s) => [s, true]));
+      const id = p.preset.id;
+      if (!presets.some((x) => x.id === id)) {
+        lost = { name: p.preset.name || `#${id}`, sections: p.preset.sections };
+        presetId = 0;
+      }
     }
     const o = p.outbound ?? {};
     outType = o.type ?? '';
@@ -273,7 +284,9 @@
   onMount(async () => {
     try {
       presets = await api.presets();
-    } catch {}
+    } catch {
+      presetsFailed = true;
+    }
     try {
       cfg = await api.serverConfig(server.id);
     } catch {
@@ -545,6 +558,13 @@
               <span class="hint">{t('deploy.presetNothing')}</span>
             {/if}
           {/if}
+        </div>
+      {/if}
+
+      {#if lost && !preset}
+        <div class="note warn small changed" role="alert">
+          <div>{t(presetsFailed ? 'deploy.presetLostLoad' : 'deploy.presetLost', { name: lost.name, sections: lost.sections.map((s) => t(`psec.${s}` as Key)).join(', ') })}</div>
+          <label class="check"><input type="checkbox" bind:checked={lostOK} /> {t('deploy.presetLostOK')}</label>
         </div>
       {/if}
 
@@ -830,7 +850,7 @@
   {/if}
   {#snippet actions()}
     <button type="button" onclick={onclose}>{t('common.cancel')}</button>
-    <button class="primary" type="submit" form="deploy-form" disabled={busy || loading || (changed && !overwrite) || winBad}>{t('deploy.submit')}</button>
+    <button class="primary" type="submit" form="deploy-form" disabled={busy || loading || (changed && !overwrite) || (!!lost && !preset && !lostOK) || winBad}>{t('deploy.submit')}</button>
   {/snippet}
 </Dialog>
 
