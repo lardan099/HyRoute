@@ -20,6 +20,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/geo"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/remote"
 	"github.com/lardan099/hyroute/internal/srvmgr/topology"
 	hacl "github.com/lardan099/hyroute/third_party/hysteria-acl"
@@ -213,7 +214,7 @@ func (s *Service) candidate(ctx context.Context, serverID int64, in Input) (Prev
 	// kept: the outbounds after the edit that were there before (lower-case
 	// name → name before), as the dry run tells them.
 	kept := map[string]string{}
-	file, same := false, false
+	file, same, fromFile := false, false, false
 	ch, cand, cur, err := s.Editor.Candidate(ctx, serverID, in.Base, func(c *hyconfig.Server) error {
 		before, envBefore = acl.ParseInline(c.ACL.Inline), s.env(c, ref)
 		file = c.ACL.File != ""
@@ -237,7 +238,17 @@ func (s *Service) candidate(ctx context.Context, serverID int64, in Input) (Prev
 			kept = nil // the outbounds stay: each is the one of its name
 		}
 		in.Resolver.set(&c.Resolver)
-		after = renamed(restoreDoc(in.ACL, before), renames)
+		after = restoreDoc(in.ACL, before)
+		if file && !in.KeepFile && masked(after) {
+			// The rules of acl.file move into the config: what the file
+			// view redacted comes back from the file itself.
+			fd, err := s.fileDoc(ctx, serverID, c.ACL.File)
+			if err != nil {
+				return err
+			}
+			after, fromFile = restoreDoc(after, fd), true
+		}
+		after = renamed(after, renames)
 		if !in.KeepFile || !file {
 			lines := after.Inline()
 			// A file's last line break is no rule.
@@ -252,6 +263,15 @@ func (s *Service) candidate(ctx context.Context, serverID int64, in Input) (Prev
 	})
 	if err != nil {
 		return Preview{}, nil, cur, err
+	}
+	if fromFile {
+		// The current config does not have the file's secrets, so
+		// HideCurrent left them in the text: they are hidden as in the
+		// file view.
+		ch.YAML = redact.String(ch.YAML)
+		for i := range ch.Diff {
+			ch.Diff[i].Text = redact.String(ch.Diff[i].Text)
+		}
 	}
 	p := Preview{Check: ch, ACL: hiddenDoc(after), Rules: []acl.Problem{}, Changes: []acl.Change{}, Same: same}
 	if !in.KeepFile || !file {
@@ -324,35 +344,14 @@ func (s *Service) File(ctx context.Context, serverID int64) (FileView, error) {
 		return FileView{}, &model.FieldError{Field: "config", Msg: "Текущий конфиг не разобрать: " + err.Error()}
 	}
 	f := FileView{Path: c.ACL.File, Problems: []acl.Problem{}}
-	switch {
-	case f.Path == "":
-		return f, &model.FieldError{Field: "acl.file", Msg: "Правила сервера — в конфиге (acl.inline), файла нет."}
-	case !strings.HasPrefix(f.Path, "/"):
-		return f, &model.FieldError{Field: "acl.file", Msg: "Путь acl.file относительный: непонятно, от какого каталога его читать. Укажите полный путь в конфиге."}
-	case s.Connect == nil:
-		return f, errors.New("routing: no connector")
+	doc, err := s.fileDoc(ctx, serverID, f.Path)
+	if err != nil {
+		return f, err
 	}
 	ref, err := s.entryOf(ctx, serverID)
 	if err != nil {
 		return f, err
 	}
-	ex, err := s.Connect(ctx, serverID)
-	if err != nil {
-		return f, err
-	}
-	defer ex.Close()
-	p, err := remote.RunProbe(ctx, ex)
-	if err != nil {
-		return f, err
-	}
-	data, err := ex.ReadFile(ctx, f.Path, !p.Root)
-	if err != nil {
-		return f, &model.FieldError{Field: "acl.file", Msg: fmt.Sprintf("Не удалось прочитать %s: %v", f.Path, err)}
-	}
-	if len(data) > MaxFile {
-		return f, &model.FieldError{Field: "acl.file", Msg: fmt.Sprintf("%s больше 1 МБ: такой файл редактор не открывает.", f.Path)}
-	}
-	doc := acl.Parse(string(data))
 	// A file that is mostly not rules is not shown: acl.file may name any
 	// file of the server, and lines that are no rules come back as they
 	// are.
@@ -368,4 +367,33 @@ func (s *Service) File(ctx context.Context, serverID int64) (FileView, error) {
 	f.ACL = hiddenDoc(doc)
 	f.Problems = append(f.Problems, acl.Check(doc, s.env(c, ref))...)
 	return f, nil
+}
+
+// fileDoc reads the acl.file name from the server.
+func (s *Service) fileDoc(ctx context.Context, serverID int64, name string) (acl.Document, error) {
+	switch {
+	case name == "":
+		return acl.Document{}, &model.FieldError{Field: "acl.file", Msg: "Правила сервера — в конфиге (acl.inline), файла нет."}
+	case !strings.HasPrefix(name, "/"):
+		return acl.Document{}, &model.FieldError{Field: "acl.file", Msg: "Путь acl.file относительный: непонятно, от какого каталога его читать. Укажите полный путь в конфиге."}
+	case s.Connect == nil:
+		return acl.Document{}, errors.New("routing: no connector")
+	}
+	ex, err := s.Connect(ctx, serverID)
+	if err != nil {
+		return acl.Document{}, err
+	}
+	defer ex.Close()
+	p, err := remote.RunProbe(ctx, ex)
+	if err != nil {
+		return acl.Document{}, err
+	}
+	data, err := ex.ReadFile(ctx, name, !p.Root)
+	if err != nil {
+		return acl.Document{}, &model.FieldError{Field: "acl.file", Msg: fmt.Sprintf("Не удалось прочитать %s: %v", name, err)}
+	}
+	if len(data) > MaxFile {
+		return acl.Document{}, &model.FieldError{Field: "acl.file", Msg: fmt.Sprintf("%s больше 1 МБ: такой файл редактор не открывает.", name)}
+	}
+	return acl.Parse(string(data)), nil
 }

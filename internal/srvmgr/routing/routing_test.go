@@ -364,6 +364,31 @@ func TestFile(t *testing.T) {
 		t.Fatalf("%v %+v", err, c.ACL)
 	}
 
+	// Secrets in the file's comments: the view redacts them, and the move
+	// puts the lines of the file back, not the masks.
+	host.data = []byte("# spare: socks5://u:fake-file-pw@203.0.113.9:1080\ndirect(geoip:ru) # via http://u:fake-rule-pw@203.0.113.9:3128\n# end http://u:fake-tail-pw@203.0.113.9:3128\n")
+	e.svc.Connect = func(context.Context, int64) (remote.Executor, error) { return host, nil }
+	f, err = e.svc.File(ctx, e.server)
+	if b, _ := json.Marshal(f); err != nil || strings.Contains(string(b), "fake-") || !strings.Contains(string(b), redact.Mask) {
+		t.Fatalf("%v %s", err, b)
+	}
+	in = Input{Base: v.Revision, ACL: f.ACL, Resolver: v.Resolver}
+	p, cand, _, err = e.svc.candidate(ctx, e.server, in)
+	if err != nil || strings.Contains(string(cand), redact.Mask) || !strings.Contains(string(cand), "fake-file-pw") ||
+		!strings.Contains(string(cand), "fake-rule-pw") || !strings.Contains(string(cand), "fake-tail-pw") {
+		t.Fatalf("%v\n%s", err, cand)
+	}
+	if pb, _ := json.Marshal(p); strings.Contains(string(pb), "fake-") {
+		t.Fatalf("preview: %s", pb)
+	}
+	// The file cannot be read: no masks go into the config either.
+	host.err = errors.New("gone")
+	e.svc.Connect = func(context.Context, int64) (remote.Executor, error) { return host, nil }
+	if _, _, _, err = e.svc.candidate(ctx, e.server, in); err == nil {
+		t.Fatal("candidate without the file")
+	}
+	host.err = nil
+
 	// Not a rules file: nothing of it comes back.
 	host.data = []byte("root:$6$fake-hash:19000:0:99999:7:::\ndaemon:*:19000:0:99999:7:::\ndirect(all)\n")
 	e.svc.Connect = func(context.Context, int64) (remote.Executor, error) { return host, nil }

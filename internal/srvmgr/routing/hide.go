@@ -2,6 +2,7 @@ package routing
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/acl"
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
@@ -30,6 +31,20 @@ func hiddenLines(ls []string) []string {
 		out[i] = redact.String(l)
 	}
 	return out
+}
+
+// masked: a line of d has a part hiddenDoc redacted (or the mask typed
+// in), which restoreDoc may put back.
+func masked(d acl.Document) bool {
+	has := func(ls []string) bool {
+		return slices.ContainsFunc(ls, func(l string) bool { return strings.Contains(l, redact.Mask) })
+	}
+	for _, r := range d.Rules {
+		if strings.Contains(r.Text, redact.Mask) || has(r.Before) {
+			return true
+		}
+	}
+	return has(d.Tail)
 }
 
 // restoreDoc puts back the lines of current that hiddenDoc redacted, where
