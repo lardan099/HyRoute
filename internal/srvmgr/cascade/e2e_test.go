@@ -381,8 +381,18 @@ func TestEndToEnd(t *testing.T) {
 	if _, found := w.entry.file(linkCfg(w)); found || w.link().State != model.LinkNew {
 		t.Fatalf("link left: %s", w.link().State)
 	}
-	if strings.Contains(cmdLines(w.entry), "fake-e2e-socks-pass") || strings.Contains(cmdLines(w.exit), "fake-exit-pass") {
-		t.Fatal("a secret in a command line")
+	// No secret on a command line of either server (the process list
+	// shows it): the exit's password is in the link client's config on
+	// the entry, where the ping runs, and the SOCKS login too. The raw
+	// SSH lines, also those the simulator takes itself (mktemp, install,
+	// rm -rf); files go by SFTP and are not in them.
+	for _, id := range []int64{w.in, w.out} {
+		lines := strings.Join(conn[id].Lines(), "\n")
+		for _, secret := range []string{"fake-exit-pass", sec.SOCKSPassword} {
+			if strings.Contains(lines, secret) {
+				t.Fatalf("a secret on a command line of server %d", id)
+			}
+		}
 	}
 
 	// It all went by SSH: on the entry uploads by SFTP (mktemp, then
@@ -395,10 +405,4 @@ func TestEndToEnd(t *testing.T) {
 	if out := strings.Join(conn[w.out].Lines(), "\n"); !strings.Contains(out, "sha256sum -- "+cfgPath) || strings.Contains(out, "install") {
 		t.Fatalf("exit by SSH:\n%s", out)
 	}
-}
-
-func cmdLines(h *host) string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return strings.Join(h.cmds, "\n")
 }
