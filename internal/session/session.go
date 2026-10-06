@@ -33,6 +33,7 @@ func RunnerFactory(cfg Config) tunnels.Factory {
 	return func(p hysteria.Profile, h tunnels.Hooks) tunnels.Runner {
 		return &hysteria.Supervisor{
 			Exe:          cfg.HysteriaPath(),
+			ExePath:      cfg.HysteriaPath,
 			RunDir:       cfg.RunDir,
 			Profile:      p,
 			Redactor:     cfg.Redactor,

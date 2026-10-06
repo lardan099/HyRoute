@@ -50,7 +50,11 @@ type Status struct {
 // Supervisor runs hysteria.exe in SOCKS5 mode, restarts it with backoff and
 // exposes the SOCKS5 inbound as a relay.Tunnel.
 type Supervisor struct {
-	Exe     string
+	Exe string
+	// ExePath, when set, is read at every start of Hysteria instead of
+	// Exe: a core update moves hysteria.exe, and the version a session
+	// began with may be pruned by the next one ("" = Exe).
+	ExePath func() string
 	RunDir  string
 	Profile Profile
 	// Redactor gets the current secrets (group RedactGroup); every log line
@@ -430,10 +434,16 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 		"HYSTERIA_LOG_LEVEL=info",
 		"HYSTERIA_DISABLE_UPDATE_CHECK=1",
 	)
-	proc, err := startProcess(s.Exe, []string{"client", "-c", cfgPath}, env, pw)
+	exe := s.Exe
+	if s.ExePath != nil {
+		if p := s.ExePath(); p != "" {
+			exe = p
+		}
+	}
+	proc, err := startProcess(exe, []string{"client", "-c", cfgPath}, env, pw)
 	if err != nil {
 		pw.Close()
-		return 0, ErrOther, "Не удалось запустить " + s.Exe + ": " + err.Error()
+		return 0, ErrOther, "Не удалось запустить " + exe + ": " + err.Error()
 	}
 
 	var (
