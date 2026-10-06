@@ -10,7 +10,7 @@
 | Как трафик попадает в SOCKS5 | TCP: «отражение» пакетов (reflect, как в примере WinDivert `streamdump`) в локальный relay-listener. UDP: на уровне пакетов, без listener'а. Датаграммы уходят через SOCKS5 UDP ASSOCIATE, ответы собираются в пакеты и инжектятся обратно |
 | Что перехватывается | **Только outbound** (+ снифф DNS-ответов). Входящий трафик Direct-соединений в user space не попадает, поэтому скачивание не просаживается |
 | Туннель недоступен | Tunnel-соединения отклоняются (RST/drop), напрямую не уходят. Direct и Block работают как обычно |
-| UI | Wails v2 + Svelte + TS, трей через `energye/systray`, single-instance lock |
+| UI | Wails v2 + Svelte + TS, трей через `fyne.io/systray`, single-instance lock |
 
 ### Почему WinDivert, а не Windows Packet Filter (ndisapi)
 1. **Атрибуция процесса из ядра.** У WinDivert есть слои `SOCKET` и `FLOW` поверх WFP ALE: событие
