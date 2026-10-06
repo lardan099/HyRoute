@@ -144,6 +144,15 @@ func main() {
 	// Configs with passwords a run that ended mid-start left behind.
 	hysteria.CleanRunDir(filepath.Join(dataDir, "run"), time.Minute)
 	ctl := app.New(st, func(cfg session.Config) (app.Session, error) {
+		// The staged copies run with admin rights, and HyRoute may run for
+		// weeks after Stage checked them: each session checks them again.
+		if err := runtimefiles.Verify(runtimeDir, files); err != nil {
+			var mm *runtimefiles.MismatchError
+			if errors.As(err, &mm) {
+				return nil, fmt.Errorf("копия %s изменилась после запуска HyRoute (повреждена или подменена): перезапустите HyRoute, он скопирует её заново", mm.Path)
+			}
+			return nil, fmt.Errorf("копии hysteria.exe и WinDivert не прочитаны: %w", err)
+		}
 		s, err := session.Start(cfg)
 		if err != nil {
 			return nil, err
