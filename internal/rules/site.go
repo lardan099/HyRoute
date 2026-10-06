@@ -7,9 +7,10 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-// One notion of "site" for everything that groups names: a «Весь сайт»
-// rule made from a connection, the sticky key of server groups and the
-// per-site statistics.
+// One notion of "site" for everything that groups names: Registrable for
+// a «Весь сайт» rule made from a connection and the DNS suffixes, Site for
+// the sticky key of server groups (internal/groups/runtime.go). Statistics
+// never keep sites.
 
 // Registrable is the registrable domain of name ("www.bbc.co.uk" ->
 // "bbc.co.uk", "u.github.io" -> "u.github.io"). ok is false for names
@@ -42,7 +43,7 @@ func Site(name string) string {
 // usable DNS host name: not an IP literal, total length ≤ 253, every label
 // 1–63 bytes of [a-z0-9_-], and the last label not all digits (a TLD never
 // is, RFC 3696 §2; Windows reads "1.2.3" or "01.02.03.04" as an IPv4
-// address). Statistics key sites only on such names.
+// address).
 func HostName(name string) (string, bool) {
 	n := NormalizeDomain(name)
 	if n == "" || len(n) > 253 || isIPLiteral(n) {
