@@ -99,6 +99,45 @@ func TestServiceAPI(t *testing.T) {
 	code(t, owner.do("POST", "/api/v1/servers/"+id+"/service/stop", nil, nil), http.StatusConflict, "server_busy")
 }
 
+// A journal read that hangs on the server ends within the status timeout
+// instead of waiting for SSH keepalive.
+func TestJournalReadTimesOut(t *testing.T) {
+	statusTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { statusTimeout = 30 * time.Second })
+	e := newEnv(t)
+	owner := e.setupOwner()
+	srv := sshtest.Start(t, "root", fakeSSHPass)
+	srv.SetExec(func(ctx context.Context, line string, in io.Reader, out, errw io.Writer) int {
+		if strings.Contains(line, "journalctl") {
+			select { // journalctl hangs
+			case <-ctx.Done():
+			case <-time.After(8 * time.Second):
+			}
+			return 1
+		}
+		return statusExec(ctx, line, in, out, errw)
+	})
+	rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": "S", "host": srv.Host, "sshPort": srv.Port, "authType": "password", "password": fakeSSHPass}, nil)
+	var created serverJSON
+	json.Unmarshal(rec.Body.Bytes(), &created)
+	id := strconv.FormatInt(created.ID, 10)
+	e.db.SetInstallation(context.Background(), model.Installation{ServerID: created.ID, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", User: "hysteria", Managed: true, At: time.Now()})
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/check", nil, nil)
+	fp := decodeError(t, rec).Data.(map[string]any)["fingerprint"].(string)
+	owner.do("POST", "/api/v1/servers/"+id+"/host-key", map[string]any{"fingerprint": fp}, nil)
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- owner.do("GET", "/api/v1/servers/"+id+"/journal", nil, nil) }()
+	select {
+	case rec = <-done:
+		if rec.Code == http.StatusOK || !strings.Contains(strings.Join(srv.Lines(), "\n"), "journalctl") {
+			t.Fatalf("%d %s %q", rec.Code, rec.Body, srv.Lines())
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("the journal read outlived the status timeout")
+	}
+}
+
 func TestJournalAPI(t *testing.T) {
 	e := newEnv(t)
 	owner := e.setupOwner()

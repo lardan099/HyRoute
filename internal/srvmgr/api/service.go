@@ -140,22 +140,24 @@ func (s *server) journal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	// A read is bounded as a status read is; a stream only by its session
+	// and its client once it starts.
 	cctx, cancel := context.WithTimeout(r.Context(), statusTimeout)
+	defer cancel()
 	ex, err := s.Connect.Connect(cctx, id)
-	cancel()
 	if err != nil {
 		s.fail(w, r, mapError(err))
 		return
 	}
 	defer ex.Close()
 	ro := remote.ReadOnly(ex)
-	p, err := remote.RunProbe(r.Context(), ro)
+	p, err := remote.RunProbe(cctx, ro)
 	if err != nil {
 		s.fail(w, r, mapError(err))
 		return
 	}
 	if !follow {
-		es, err := remote.JournalEntries(r.Context(), ro, in.Unit, lines, !p.Root)
+		es, err := remote.JournalEntries(cctx, ro, in.Unit, lines, !p.Root)
 		if err != nil {
 			s.fail(w, r, mapError(err))
 			return

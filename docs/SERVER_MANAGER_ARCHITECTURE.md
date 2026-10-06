@@ -1334,7 +1334,7 @@ routing`, ревизия с источником «правка»).
 | POST | `/api/v1/servers/{id}/maintain` | operator+ | `{op: upgrade\|reinstall, version, source, via}`: задание `maintain`; без установки 409 `no_installation`, переустановка импортированной — 409 `not_managed`, служба запускает не `hysteria*` (docker, env, оболочка) — 409 `not_hysteria` |
 | GET | `/api/v1/servers/{id}/status` | любая | статус сервиса |
 | POST | `/api/v1/servers/{id}/service/{start,stop,restart}` | operator+ | с подтверждением в UI |
-| GET | `/api/v1/servers/{id}/journal` | любая | журнал Hysteria через redaction (шаблоны + пароли текущего конфига): JSON последних записей или SSE с `?follow=1`; живых журналов одного сервера — до 2 на пользователя (429 `too_many_journals`) |
+| GET | `/api/v1/servers/{id}/journal` | любая | журнал Hysteria через redaction (шаблоны + пароли текущего конфига): JSON последних записей (не дольше 30 с, как статус) или SSE с `?follow=1` (30 с — на подключение и проверку прав); живых журналов одного сервера — до 2 на пользователя (429 `too_many_journals`) |
 | GET | `/api/v1/servers/{id}/config` | любая | сводка текущей ревизии (версия, порты, TLS, pin, obfs; без конфига и паролей) |
 | GET | `/api/v1/servers/{id}/config/edit` | operator+ | конфиг для редактора: секреты `[REDACTED]` (под секретными ключами, за alias, пароли в URL, шаблоны redactor, комментарии), основные поля |
 | POST | `/api/v1/servers/{id}/config/render` | operator+ | кандидат из текста и полей: проверка, diff, меняющиеся секреты (ничего не сохраняет) |
