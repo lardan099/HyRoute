@@ -567,3 +567,32 @@ func TestKillSwitchOwnedByAnother(t *testing.T) {
 		t.Fatalf("%q %q", st.KillSwitch, st.KillSwitchError)
 	}
 }
+
+// A block that appears after this copy started (a copy of another Windows
+// session exited connected or crashed: the filters are machine-wide) is
+// taken over and removed by a Connect with the kill switch off and by a
+// Disconnect, and by turning the setting off.
+func TestKillSwitchForeignBlockReleased(t *testing.T) {
+	c, _ := newCtl(t)
+	ks := &fakeKS{}
+	c.KillSwitch = ks
+	c.InitKillSwitch()
+	ks.blocks = true
+	if err := c.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	if ks.blocks {
+		t.Fatal("Connect with the kill switch off kept a foreign block")
+	}
+	ks.blocks = true
+	c.Disconnect()
+	if ks.blocks {
+		t.Fatal("Disconnect kept a foreign block")
+	}
+	setKillSwitch(t, c, true)
+	ks.blocks = true
+	setKillSwitch(t, c, false)
+	if ks.blocks {
+		t.Fatal("turning the kill switch off kept a foreign block")
+	}
+}

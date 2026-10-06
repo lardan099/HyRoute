@@ -82,7 +82,7 @@ func (c *Controller) armKillSwitch(s Session) {
 		return // a Connect racing the end of the session sets no block
 	}
 	if !on {
-		if c.ks.blocks && known {
+		if known && c.adoptLocked() {
 			c.releaseLocked()
 		}
 		return
@@ -157,6 +157,7 @@ func (c *Controller) routingStopped(release bool) {
 	defer c.ksMu.Unlock()
 	if release && !c.ks.hold {
 		c.ks.resume = false // a Disconnect while Windows ends the session
+		c.adoptLocked()
 	}
 	if !c.ks.blocks {
 		return
@@ -331,11 +332,35 @@ func (c *Controller) applyKillSwitch() {
 	case !on && known:
 		c.ksMu.Lock()
 		c.ks.resume = false
-		if c.ks.blocks {
+		if c.adoptLocked() {
 			c.releaseLocked()
 		}
 		c.ksMu.Unlock()
 	}
+}
+
+// adoptLocked reports a block, asking the filter engine when this copy
+// tracks none: the filters are machine-wide, and a copy of another Windows
+// session that exited connected (or crashed) leaves its block with no
+// owner. Engaged takes it over then, so a Disconnect, a Connect with the
+// kill switch off or turning it off opens the internet as the GUIDE says.
+// A block another running copy owns stays its own (the error is shown).
+func (c *Controller) adoptLocked() bool {
+	if c.ks.blocks {
+		return true
+	}
+	on, err := c.KillSwitch.Engaged()
+	if err != nil {
+		if on {
+			c.ks.err = err.Error()
+		}
+		return false
+	}
+	if on {
+		c.ks.blocks = true // each caller releases it next
+		c.Log.Warn("kill switch: a block no HyRoute looked after was found and taken over")
+	}
+	return on
 }
 
 // killSwitchStatus: "" (off), "armed" (routing up, the block waits) or
