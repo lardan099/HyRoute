@@ -10,10 +10,17 @@
   let { serverId, source = $bindable(), via = $bindable() }: { serverId: number; source: DeploySource; via: number } = $props();
 
   let others = $state<Server[]>([]);
+  let loaded = $state(false);
   onMount(async () => {
     try {
       others = (await api.servers()).filter((s) => s.id !== serverId);
+      loaded = true;
     } catch {}
+  });
+  // A server deleted since the last deploy (the form restores its via)
+  // is not kept as the choice.
+  $effect(() => {
+    if (loaded && via && !others.some((s) => s.id === via)) via = 0;
   });
 </script>
 
