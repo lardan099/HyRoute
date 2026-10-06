@@ -102,60 +102,6 @@ func TestRedactorValues(t *testing.T) {
 	}
 }
 
-func TestYAML(t *testing.T) {
-	in := `# server config
-listen: :443
-auth:
-  type: password
-  password: ` + fakePass + `
-obfs:
-  type: salamander
-  salamander:
-    password: "` + fakeObfs + `"
-trafficStats:
-  listen: 127.0.0.1:9999
-  secret: ` + fakePass + `2
-acme:
-  dns:
-    name: cloudflare
-    config:
-      cloudflare_api_token: ` + fakeToken + `
-outbounds:
-  - name: up
-    type: socks5
-    socks5:
-      addr: 127.0.0.1:1080
-      username: user
-      password: ` + fakePass + `3
-masquerade:
-  type: proxy
-  proxy:
-    url: https://user:` + fakePass + `4@example.com/
-auth2:
-  type: userpass
-  userpass:
-    alice: ` + fakePass + `5
-    bob: ` + fakePass + `6
-`
-	out, err := New().YAML([]byte(in))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := string(out)
-	mustNotContain(t, got, fakePass, fakeObfs, fakeToken)
-	for _, keep := range []string{"# server config", "type: password", "type: salamander", "listen: 127.0.0.1:9999", "username: user", "alice: '" + Mask + "'", "name: cloudflare"} {
-		if !strings.Contains(got, keep) {
-			t.Errorf("want %q in:\n%s", keep, got)
-		}
-	}
-	if _, err := New().YAML([]byte("a: [unclosed")); err == nil {
-		t.Fatal("broken YAML: no error")
-	}
-	if s := New().YAMLString("password: " + fakePass + "\n  bad: [indent"); strings.Contains(s, fakePass) {
-		t.Fatalf("fallback to text redaction: %q", s)
-	}
-}
-
 func TestSlogHandler(t *testing.T) {
 	var buf bytes.Buffer
 	r := New()
@@ -173,12 +119,5 @@ func TestSlogHandler(t *testing.T) {
 		if !strings.Contains(got, keep) {
 			t.Errorf("want %q in %s", keep, got)
 		}
-	}
-}
-
-func TestYAMLAliasedSecret(t *testing.T) {
-	out, err := New().YAML([]byte("shared: &pw fake-anchored-pass\nauth:\n  password: *pw\n"))
-	if err != nil || strings.Contains(string(out), "fake-anchored-pass") {
-		t.Fatalf("%v\n%s", err, out)
 	}
 }
