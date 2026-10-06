@@ -100,7 +100,7 @@
 
 {#if list && list.length === 0}
   <div class="card empty">
-    <p>{t('servers.empty')}</p>
+    <p>{writable ? t('servers.empty') : t('servers.emptyReadonly')}</p>
   </div>
 {:else if list}
   <div class="card table">

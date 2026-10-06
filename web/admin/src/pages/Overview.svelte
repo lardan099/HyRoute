@@ -3,7 +3,10 @@
   import { api, asApiError, type ApiError, type Health, type Job, type LatestMetric, type Server, type ServerState } from '../api';
   import { t, tOr, type Key } from '../i18n';
   import { go } from '../router.svelte';
+  import { canWrite, session } from '../session.svelte';
   import { flag, jobTone, pct, stateTone, when } from '../lib/format';
+
+  let writable = $derived(canWrite(session.user));
 
   let health = $state<Health | null>(null);
   let error = $state<ApiError | null>(null);
@@ -43,8 +46,12 @@
   <section class="card">
     <h2>{t('overview.servers')}</h2>
     {#if servers && servers.length === 0}
-      <p class="muted">{t('overview.serversEmpty')}</p>
-      <button class="primary add" onclick={() => go('servers')}>{t('servers.add')}</button>
+      {#if writable}
+        <p class="muted">{t('overview.serversEmpty')}</p>
+        <button class="primary add" onclick={() => go('servers')}>{t('servers.add')}</button>
+      {:else}
+        <p class="muted">{t('servers.emptyReadonly')}</p>
+      {/if}
     {:else if servers}
       <div class="counts">
         {#each counts as c (c.state)}
