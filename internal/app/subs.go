@@ -229,6 +229,13 @@ func MaskURL(raw string) string {
 	return u.Scheme + "://" + u.Host + "/…"
 }
 
+// pathWords are path segments of panels and DoH servers that are words,
+// not tokens: the Redactor replaces a secret wherever it appears, and
+// "subscription" masked in every log line made the log unreadable.
+var pathWords = map[string]bool{
+	"subscription": true, "subscriptions": true, "subscribe": true, "download": true, "dns-query": true,
+}
+
 // urlSecrets are the redactor entries for a subscription URL: the URL and
 // every path segment and query value long enough to be a token.
 func urlSecrets(raw string) []string {
@@ -238,7 +245,7 @@ func urlSecrets(raw string) []string {
 		return out
 	}
 	for _, seg := range strings.Split(u.Path, "/") {
-		if len(seg) >= 8 {
+		if len(seg) >= 8 && !pathWords[strings.ToLower(seg)] {
 			out = append(out, seg)
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -713,6 +714,25 @@ func TestSubscriptionDueAfterClockWasAhead(t *testing.T) {
 	s.LastAttempt, s.LastUpdate, s.LastError = now.Add(time.Minute), now.Add(time.Minute), ""
 	if c.due(s, now, now) {
 		t.Fatal("updated again right after a try")
+	}
+}
+
+// The words of a link's path are not secrets: the Redactor would mask
+// them in every log line. Its token is.
+func TestURLSecretsSkipWords(t *testing.T) {
+	got := urlSecrets("https://panel.example/subscription/Abc123TokenXyz/download?key=k3y-v4lue-99")
+	for _, w := range []string{"subscription", "download"} {
+		if slices.Contains(got, w) {
+			t.Fatalf("%q in %q", w, got)
+		}
+	}
+	for _, w := range []string{"Abc123TokenXyz", "k3y-v4lue-99"} {
+		if !slices.Contains(got, w) {
+			t.Fatalf("%q not in %q", w, got)
+		}
+	}
+	if slices.Contains(urlSecrets("https://doh.example/dns-query"), "dns-query") {
+		t.Fatal("dns-query is a secret")
 	}
 }
 
