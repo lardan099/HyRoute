@@ -209,7 +209,9 @@ func parseTypedDomain(s string, g Geo) (d domPat, warn string, ok bool, err erro
 		w := strings.ToLower(rest)
 		return domPat{kind: domKeyword, dom: w, src: "keyword:" + w, uni: !isASCII(w)}, "", true, nil
 	case "regexp":
-		re, rerr := regexp.Compile(rest)
+		// Names are matched in lower case: (?i), as geosite's regexps, so
+		// that "regexp:YouTube" matches youtube.com.
+		re, rerr := regexp.Compile("(?i)" + rest)
 		if rerr != nil || rest == "" {
 			return d, "", true, fmt.Errorf("неверное регулярное выражение %q", rest)
 		}
