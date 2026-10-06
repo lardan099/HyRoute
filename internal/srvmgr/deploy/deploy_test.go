@@ -50,6 +50,8 @@ type harness struct {
 	// noBinary: the release server gives hashes.txt but not the binary
 	// (the controller cannot download it).
 	noBinary bool
+	// fetched counts the binaries the release server gave.
+	fetched int
 	// nodes are the other managed servers (source node): ID → simulator.
 	nodes map[int64]*sim
 }
@@ -117,13 +119,17 @@ func newHarness(t *testing.T, s *sim) *harness {
 		h.mu.Lock()
 		b, found := h.bins[f[len(f)-2]]
 		noBinary := h.noBinary
+		binary := found && f[len(f)-1] == "hysteria-linux-amd64" && !noBinary
+		if binary {
+			h.fetched++
+		}
 		h.mu.Unlock()
 		switch {
 		case !found:
 			http.NotFound(w, r)
 		case f[len(f)-1] == "hashes.txt":
 			w.Write([]byte(sum(b) + "  build/hysteria-linux-amd64\n"))
-		case f[len(f)-1] == "hysteria-linux-amd64" && !noBinary:
+		case binary:
 			w.Write(b)
 		default:
 			http.NotFound(w, r)
@@ -141,7 +147,8 @@ func newHarness(t *testing.T, s *sim) *harness {
 func (h *harness) startEngine() {
 	h.eng = jobs.New(h.db, h.keys, redact.New(), conn{h.sim}, nil)
 	h.eng.Poll = 10 * time.Millisecond
-	d := Deps{Store: h.db, Keys: h.keys, Resolver: h.res, Nodes: h.connectNode, VerifyTimeout: 200 * time.Millisecond, Poll: 10 * time.Millisecond}
+	// One relay for both kinds, as in the controller.
+	d := Deps{Store: h.db, Keys: h.keys, Resolver: h.res, Relay: hyrelease.NewRelay(h.res), Nodes: h.connectNode, VerifyTimeout: 200 * time.Millisecond, Poll: 10 * time.Millisecond}
 	h.eng.Register(Kind(d))
 	h.eng.Register(Maintenance(d))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -517,6 +524,21 @@ func TestRelayDownload(t *testing.T) {
 	}
 	if !strings.Contains(h.log(j.ID), "через controller") {
 		t.Fatal(h.log(j.ID))
+	}
+
+	// The maintenance jobs share the relay: a reinstall of the same build
+	// takes the file the controller downloaded for the deploy.
+	s.mu.Lock()
+	s.files[BinaryPath] = []byte("garbage")
+	s.mu.Unlock()
+	j = h.maintain(MaintainParams{Op: OpReinstall})
+	if b, _ := s.file(BinaryPath); j.State != model.JobCompleted || !bytes.Equal(b, fakeBinary) {
+		t.Fatalf("reinstall: %s %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.fetched != 1 {
+		t.Fatalf("the controller downloaded the binary %d times", h.fetched)
 	}
 }
 

@@ -44,7 +44,9 @@ type Deps struct {
 	Keys     *secrets.Keyring
 	Resolver *hyrelease.Resolver
 	Direct   hyrelease.Source
-	Relay    hyrelease.Source
+	// Relay (nil: one of its own) keeps the binary it downloaded last:
+	// the Deps of Kind and Maintenance share it only when it is set.
+	Relay hyrelease.Source
 	// Nodes connects to another managed server that provides the binary
 	// (source node; connect.Connector.Connect).
 	Nodes func(ctx context.Context, serverID int64) (remote.Executor, error)

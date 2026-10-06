@@ -139,7 +139,10 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	conn := connect.New(inventory, db, red)
 	engine := jobs.New(db, keys, red, conn, log)
 	engine.Register(preflight.Kind())
-	deployDeps := deploy.Deps{Store: db, Keys: keys, Resolver: &hyrelease.Resolver{}, Nodes: conn.Connect}
+	// One relay for the deploy and the maintenance: it keeps the binary it
+	// downloaded last for both.
+	releases := &hyrelease.Resolver{}
+	deployDeps := deploy.Deps{Store: db, Keys: keys, Resolver: releases, Relay: hyrelease.NewRelay(releases), Nodes: conn.Connect}
 	engine.Register(deploy.Kind(deployDeps))
 	engine.Register(deploy.Maintenance(deployDeps))
 	engine.Register(importer.Kind(importer.Deps{Store: db, Keys: keys}))

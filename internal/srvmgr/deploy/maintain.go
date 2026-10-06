@@ -111,7 +111,8 @@ func (s *Submitter) Maintain(ctx context.Context, serverID int64, p MaintainPara
 }
 
 // Maintenance is the maintenance job. Its Deps are those of the deploy
-// (the same relay source keeps the downloaded binary for both).
+// (with Deps.Relay set, the same relay source keeps the downloaded binary
+// for both).
 func Maintenance(d Deps) *jobs.Kind {
 	m := &deployer{withDefaults(d)}
 	return &jobs.Kind{
