@@ -2,6 +2,8 @@ package hysteria
 
 import (
 	"encoding/base64"
+	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -50,5 +52,36 @@ func TestSameConnectionNoSecrets(t *testing.T) {
 	b.TLS.SNI = "other"
 	if SameConnectionNoSecrets(a, b) {
 		t.Fatal("sni")
+	}
+}
+
+// A link names ECH only inline: a file path from a link or a
+// subscription is dropped with a warning.
+func TestParseURIECH(t *testing.T) {
+	inline := base64.StdEncoding.EncodeToString(echList([]byte("contents")))
+	p, warn, err := ParseURI("hysteria2://pw@example.com:443/?ech=" + url.QueryEscape(inline))
+	if err != nil || p.TLS.ECH != inline || len(warn) != 0 {
+		t.Fatalf("inline: %q %v %v", p.TLS.ECH, warn, err)
+	}
+	for _, v := range []string{`\host\share\x`, `C:\ech.pem`, "ech.pem"} {
+		p, warn, err := ParseURI("hysteria2://pw@example.com:443/?ech=" + url.QueryEscape(v))
+		if err != nil || p.TLS.ECH != "" || len(warn) != 1 || !strings.Contains(warn[0], "ech") {
+			t.Fatalf("%q: %q %v %v", v, p.TLS.ECH, warn, err)
+		}
+	}
+}
+
+// Validate (and with it BuildConfig) takes a non-inline ECH only as a
+// full path on a drive letter.
+func TestValidateECHPath(t *testing.T) {
+	for v, ok := range map[string]bool{
+		`C:\Users\me\ech.pem`: true, `d:\ech`: true,
+		`\host\share\x`: false, `\?\UNC\h\s\x`: false, `\.\pipe\x`: false, `//host/share/x`: false,
+		`ech.pem`: false, `C:ech`: false, `C:/ech`: false, `C:\a:b`: false, ` C:\ech`: false,
+	} {
+		p := Profile{Host: "example.com", Ports: "443", TLS: TLS{ECH: v}}
+		if err := p.Validate(); (err == nil) != ok {
+			t.Fatalf("%q: %v", v, err)
+		}
 	}
 }

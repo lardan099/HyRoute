@@ -132,6 +132,11 @@ func (p *Profile) Validate() error {
 			return fmt.Errorf("bad duration %q", d)
 		}
 	}
+	// Hysteria reads a non-inline ECH value as a file (see ECHInline):
+	// only a full path on a drive letter, never a network or device path.
+	if e := p.TLS.ECH; e != "" && !ECHInline(e) && !localDrivePath(e) {
+		return errors.New("ECH: нужен список ECHConfigList в base64 или полный путь к файлу на локальном диске")
+	}
 	// Hysteria refuses to start with a shorter one (0 is its default).
 	for _, d := range []string{p.Hop.Interval, p.Hop.MinInterval, p.Hop.MaxInterval} {
 		if v, _ := time.ParseDuration(d); v != 0 && v < hy2uri.MinHopInterval {
@@ -139,6 +144,16 @@ func (p *Profile) Validate() error {
 		}
 	}
 	return nil
+}
+
+// localDrivePath: "X:\..." with no second colon and no forward slashes;
+// UNC (\\host\share), device (\\?\, \\.\) and relative paths fail.
+func localDrivePath(s string) bool {
+	if len(s) < 4 || s != strings.TrimSpace(s) || strings.ContainsAny(s, "/") {
+		return false
+	}
+	c := s[0] | 0x20
+	return c >= 'a' && c <= 'z' && s[1] == ':' && s[2] == '\\' && !strings.Contains(s[2:], ":")
 }
 
 // ValidPin accepts the formats Hysteria normalizes: hex with optional ':'

@@ -32,6 +32,12 @@ func ParseURI(s string) (p Profile, warnings []string, err error) {
 			warnings = append(warnings, "ignored parameter "+k.name)
 		}
 	}
+	// A link carries ECH only inline: any other value is a file path to
+	// Hysteria, and a link or a subscription has no business naming files.
+	if p.TLS.ECH != "" && !ECHInline(p.TLS.ECH) {
+		p.TLS.ECH = ""
+		warnings = append(warnings, "ignored parameter ech: not an inline ECH config list")
+	}
 	p.PinServerIP = true
 	return p, warnings, p.Validate()
 }
