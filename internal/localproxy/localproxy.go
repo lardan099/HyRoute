@@ -118,6 +118,10 @@ type Server struct {
 	Sent, Recv   atomic.Int64 // bytes to / from the internet (UDP payloads included)
 	AuthFailures atomic.Int64
 	Refused      atomic.Int64 // connections closed over MaxConns
+	// OnAuthFail reports failed logins: one address that failed and the
+	// failures since the last report, at most once per limitReport;
+	// called without locks held; may be nil; must not block.
+	OnAuthFail func(from netip.Addr, count int64)
 
 	ln     net.Listener
 	ctx    context.Context // cancelled by Close: stops dials
@@ -136,6 +140,11 @@ type Server struct {
 	// Refusals not reported yet and the last report (serve only).
 	unreported int64
 	reportedAt time.Time
+	// Failed logins by address (see noteAuth). failMu is a leaf lock.
+	failMu    sync.Mutex
+	fails     map[netip.Addr]*authFails
+	failUnrep int64
+	failAt    time.Time
 }
 
 // Listen starts serving on addr ("127.0.0.1:1080", "0.0.0.0:1080"). An
@@ -239,6 +248,10 @@ func (s *Server) serve() {
 			continue
 		}
 		retry = 0
+		if s.authBlocked(c) {
+			c.Close() // waits after failed logins
+			continue
+		}
 		// Only this loop adds to Active, so the cap holds.
 		if s.Active.Load() >= int64(s.maxConns()) {
 			s.refuse()
@@ -424,9 +437,11 @@ func (s *Server) socks(c net.Conn) {
 			return
 		}
 		if !s.okCreds(string(u), string(p)) {
+			s.noteAuth(c, false)
 			c.Write([]byte{1, 1})
 			return
 		}
+		s.noteAuth(c, true)
 		c.Write([]byte{1, 0})
 	}
 	var r [3]byte
@@ -522,21 +537,110 @@ func dropHop(h http.Header, upgrade bool) {
 	}
 }
 
-func (s *Server) httpAuth(req *http.Request) bool {
+// httpAuth checks the request's credentials; tried is false when it has
+// none (a browser asks without them first and answers the 407).
+func (s *Server) httpAuth(req *http.Request) (ok, tried bool) {
 	if s.Username == "" {
-		return true
+		return true, false
 	}
 	h := req.Header.Get("Proxy-Authorization")
+	if h == "" {
+		return false, false
+	}
 	const prefix = "Basic "
 	if !strings.HasPrefix(h, prefix) {
-		return false
+		return false, true
 	}
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(h[len(prefix):]))
 	if err != nil {
-		return false
+		return false, true
 	}
 	u, p, _ := strings.Cut(string(raw), ":")
-	return s.okCreds(u, p)
+	return s.okCreds(u, p), true
+}
+
+// authFails: an address's failed logins in a row, and until when it waits.
+type authFails struct {
+	n     int
+	until time.Time
+}
+
+// authFree is how many failed logins in a row an address gets before it
+// waits; the wait doubles with every further one up to authWaitMax.
+// authTrack bounds the addresses remembered.
+const (
+	authFree    = 5
+	authWaitMax = 5 * time.Minute
+	authTrack   = 4096
+)
+
+func remoteIP(c net.Conn) (netip.Addr, bool) {
+	ap, err := netip.ParseAddrPort(c.RemoteAddr().String())
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return ap.Addr().Unmap(), true
+}
+
+// authBlocked: c's address waits after failed logins (new connections
+// from it are closed at once, so guesses cannot run in parallel).
+func (s *Server) authBlocked(c net.Conn) bool {
+	if s.Username == "" {
+		return false
+	}
+	ip, ok := remoteIP(c)
+	if !ok {
+		return false
+	}
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	f := s.fails[ip]
+	return f != nil && time.Now().Before(f.until)
+}
+
+// noteAuth records a login on c: a success forgets the address's
+// failures, a failure counts and from authFree on makes it wait.
+func (s *Server) noteAuth(c net.Conn, ok bool) {
+	ip, valid := remoteIP(c)
+	if !valid {
+		return
+	}
+	s.failMu.Lock()
+	if ok {
+		delete(s.fails, ip)
+		s.failMu.Unlock()
+		return
+	}
+	if s.fails == nil {
+		s.fails = map[netip.Addr]*authFails{}
+	}
+	f := s.fails[ip]
+	if f == nil {
+		if len(s.fails) >= authTrack {
+			for k, v := range s.fails { // forget one that no longer waits
+				if time.Now().After(v.until) {
+					delete(s.fails, k)
+					break
+				}
+			}
+		}
+		f = &authFails{}
+		s.fails[ip] = f
+	}
+	f.n++
+	if f.n >= authFree {
+		f.until = time.Now().Add(min(time.Second<<min(f.n-authFree, 20), authWaitMax))
+	}
+	s.failUnrep++
+	report := s.OnAuthFail != nil && (s.failAt.IsZero() || time.Since(s.failAt) >= limitReport)
+	var n int64
+	if report {
+		n, s.failUnrep, s.failAt = s.failUnrep, 0, time.Now()
+	}
+	s.failMu.Unlock()
+	if report {
+		s.OnAuthFail(ip, n)
+	}
 }
 
 func respond(c net.Conn, code int, headers string) {
@@ -680,7 +784,11 @@ func (s *Server) http(c net.Conn, br *bufio.Reader, lim *limitReader) {
 		// Only the wait for a request is timed (both ways: the handshake
 		// deadline covers writes too).
 		c.SetDeadline(time.Time{})
-		if !s.httpAuth(req) {
+		ok, tried := s.httpAuth(req)
+		if tried {
+			s.noteAuth(c, ok)
+		}
+		if !ok {
 			respond(c, http.StatusProxyAuthRequired, "Proxy-Authenticate: Basic realm=\"HyRoute\"\r\n")
 			return
 		}

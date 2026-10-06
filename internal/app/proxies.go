@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"slices"
 	"sort"
 	"strings"
@@ -41,12 +42,14 @@ type ProxyView struct {
 
 	// socks-udp. Active and Total count TCP connections only: every UDP
 	// session holds a control connection, which the server counts too.
-	UDPEffective bool   `json:"udpOn"`                // the switch's effective value (LocalProxy.UDPOn)
-	UDPServed    bool   `json:"udpServed"`            // UDP ASSOCIATE served now (listening, UDP on, socket open)
-	UDPActive    int64  `json:"udpActive"`            // open UDP sessions
-	UDPTotal     int64  `json:"udpTotal"`             // UDP sessions served
-	UDPDropped   int64  `json:"udpDropped"`           // datagrams dropped
-	UDPError     string `json:"udpError,omitempty"`   // LAN: the shared UDP port did not open (retrying)
+	UDPEffective bool   `json:"udpOn"`              // the switch's effective value (LocalProxy.UDPOn)
+	UDPServed    bool   `json:"udpServed"`          // UDP ASSOCIATE served now (listening, UDP on, socket open)
+	UDPActive    int64  `json:"udpActive"`          // open UDP sessions
+	UDPTotal     int64  `json:"udpTotal"`           // UDP sessions served
+	UDPDropped   int64  `json:"udpDropped"`         // datagrams dropped
+	UDPError     string `json:"udpError,omitempty"` // LAN: the shared UDP port did not open (retrying)
+	// AuthFailures: wrong logins or passwords since the proxy opened.
+	AuthFailures int64  `json:"authFailures"`
 	UDPBlocked   string `json:"udpBlocked,omitempty"` // "server" | "group": the target cannot carry UDP now
 }
 
@@ -377,6 +380,9 @@ func (c *Controller) syncProxies() {
 		srv.OnAcceptError = func(err error) {
 			c.Log.Error("local proxy accept failed", "name", p.Name, "port", p.Port, "err", err)
 		}
+		srv.OnAuthFail = func(from netip.Addr, n int64) {
+			c.Log.Warn("local proxy: wrong login or password; an address waits after 5 in a row", "name", p.Name, "port", p.Port, "from", from, "count", n)
+		}
 		r := &proxyRun{cfg: p, udpErr: udpErr}
 		if err := srv.Listen(fmt.Sprintf("%s:%d", host, p.Port)); err != nil {
 			r.err = fmt.Sprintf("порт %d не открылся: %v (занят другой программой?)", p.Port, err)
@@ -565,6 +571,7 @@ func proxyUDPView(v *ProxyView, srv *localproxy.Server) {
 	v.Total = max(0, srv.Total.Load()-srv.UDPCtlTotal.Load())
 	v.UDPServed = srv.UDP()
 	v.UDPActive, v.UDPTotal, v.UDPDropped = udpActive, udpTotal, srv.UDPDropped.Load()
+	v.AuthFailures = srv.AuthFailures.Load()
 	if err := srv.UDPError(); err != nil {
 		v.UDPError = fmt.Sprintf("UDP-порт %d не открылся: %v. TCP работает, UDP через этот прокси — нет (порт занят другой программой?). HyRoute пробует снова каждые 30 секунд.", v.Port, err)
 	}

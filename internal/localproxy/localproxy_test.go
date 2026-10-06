@@ -10,8 +10,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -871,5 +873,44 @@ func TestAcceptErrorRetried(t *testing.T) {
 	}
 	if n := len(reported); n != 1 {
 		t.Fatalf("accept error reported %d times", n)
+	}
+}
+
+// An address that failed the login authFree times in a row waits: its new
+// connections close at once, the right password included, and every
+// failure is reported (once per limitReport).
+func TestLoginFailuresWait(t *testing.T) {
+	var seen []string
+	var reports []int64
+	var mu sync.Mutex
+	s := &Server{Username: "u", Password: "p", Dial: direct(&seen), OnAuthFail: func(from netip.Addr, n int64) {
+		mu.Lock()
+		reports = append(reports, n)
+		mu.Unlock()
+		if !from.IsLoopback() {
+			t.Errorf("from %v", from)
+		}
+	}}
+	addr := start(t, s)
+	dst := socks5.Addr{Host: "localhost", Port: 9}
+	for i := range authFree {
+		bad := socks5.Client{Server: addr, Username: "u", Password: fmt.Sprintf("wrong%d", i)}
+		if c, err := bad.Connect(context.Background(), dst); err == nil {
+			c.Close()
+			t.Fatal("wrong password accepted")
+		}
+	}
+	good := socks5.Client{Server: addr, Username: "u", Password: "p"}
+	if c, err := good.Connect(context.Background(), dst); err == nil {
+		c.Close()
+		t.Fatal("a waiting address got through")
+	}
+	if n := s.AuthFailures.Load(); n != authFree {
+		t.Fatalf("%d failures", n)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reports) != 1 || reports[0] != 1 {
+		t.Fatalf("reports %v", reports)
 	}
 }

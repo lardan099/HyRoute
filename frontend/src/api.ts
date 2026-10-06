@@ -271,6 +271,7 @@ export interface ProxyView extends ProxyInput {
   udpTotal: number;
   udpDropped: number;
   udpError?: string; // LAN: the UDP port did not open (retrying) or has no firewall rule; TCP works
+  authFailures: number; // wrong logins or passwords since the proxy opened
   udpBlocked?: 'server' | 'group'; // the target cannot carry UDP right now
 }
 
