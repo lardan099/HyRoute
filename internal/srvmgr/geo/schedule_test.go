@@ -3,14 +3,18 @@ package geo
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
 )
 
 // addServer is another server with config cfg, an installation and, when
@@ -113,6 +117,48 @@ func TestScheduleRound(t *testing.T) {
 	}
 	if q := s.Round(ctx); q != nil {
 		t.Fatalf("tried again: %v", q)
+	}
+}
+
+// failInstallation is a database whose installations cannot be read
+// while fail is set.
+type failInstallation struct {
+	*sqlite.DB
+	fail *atomic.Bool
+}
+
+func (d failInstallation) Installation(ctx context.Context, id int64) (model.Installation, error) {
+	if d.fail.Load() {
+		return model.Installation{}, errors.New("database is locked")
+	}
+	return d.DB.Installation(ctx, id)
+}
+
+// A job the controller could not queue is no try: the next round queues
+// it.
+func TestScheduleRoundSubmitFails(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	h.files.HTTP = &http.Client{Transport: roundTrip(func(*http.Request) (*http.Response, error) { return nil, errors.New("no network in tests") })}
+	h.put("R1", testDB(t, "one"))
+	if j := h.run(SourceAuto, 0); j.State != model.JobCompleted {
+		t.Fatal(j.ErrorMessage)
+	}
+	h.put("R2", testDB(t, "two"))
+	var fail atomic.Bool
+	fail.Store(true)
+	inst := New(Deps{DB: failInstallation{h.db, &fail}, Keys: h.keys, Files: h.files, Jobs: h.inst.x.Jobs})
+	s := &Scheduler{Files: h.files, Jobs: inst, DB: h.db, Keys: h.keys, Interval: time.Hour}
+	if q := s.Round(ctx); q != nil {
+		t.Fatalf("queued %v", q)
+	}
+	fail.Store(false)
+	if q := s.Round(ctx); !slices.Equal(q, []int64{h.server}) {
+		t.Fatalf("not queued again: %v", q)
+	}
+	h.wait()
+	if !h.has("R2") {
+		t.Fatal("R2 not installed")
 	}
 }
 

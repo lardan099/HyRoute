@@ -120,7 +120,10 @@ func (s *Scheduler) Round(ctx context.Context) []int64 {
 		case errors.Is(err, jobs.ErrBusy):
 			continue // the next look
 		case err != nil:
+			// The controller's database or files: not a try, the next
+			// look queues it.
 			s.log().Warn("geo databases: job not queued", "server", id, "err", err)
+			continue
 		default:
 			s.log().Info("geo databases: job queued", "server", id, "job", j.ID, "release", info.Release)
 			queued = append(queued, id)
