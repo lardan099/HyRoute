@@ -11,12 +11,14 @@ import (
 	"testing"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/lardan099/hyroute/internal/socks5"
 )
 
 // While a proxy's UDP socket holds a port, no other socket can bind it,
 // not even with SO_REUSEADDR (SO_EXCLUSIVEADDRUSE).
 func TestListenUDPExclusive(t *testing.T) {
-	pc, err := listenUDP("udp4", "127.0.0.1:0")
+	pc, err := socks5.ListenUDP("udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}

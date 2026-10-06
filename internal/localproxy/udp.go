@@ -224,7 +224,7 @@ func (s *Server) startUDP() {
 		return
 	}
 	hp := s.tcpHostPort()
-	pc, err := listenUDP(udpNetwork(hp.Addr()), hp.String())
+	pc, err := socks5.ListenUDP(udpNetwork(hp.Addr()), hp.String())
 	s.udpMu.Lock()
 	defer s.udpMu.Unlock()
 	if err != nil {
@@ -248,7 +248,7 @@ func (s *Server) retryUDP(hp netip.AddrPort) {
 			return
 		case <-time.After(udpRetryEvery):
 		}
-		pc, err := listenUDP(udpNetwork(hp.Addr()), hp.String())
+		pc, err := socks5.ListenUDP(udpNetwork(hp.Addr()), hp.String())
 		if err != nil {
 			continue
 		}
@@ -397,7 +397,7 @@ func (s *Server) associate(c net.Conn, req socks5.Addr) {
 	p := shared
 	if p == nil {
 		h := s.tcpHostPort().Addr()
-		pc, err := listenUDP(udpNetwork(h), netip.AddrPortFrom(h, 0).String())
+		pc, err := socks5.ListenUDP(udpNetwork(h), netip.AddrPortFrom(h, 0).String())
 		if err != nil {
 			s.releaseUDP()
 			s.udpPortErr(err)
