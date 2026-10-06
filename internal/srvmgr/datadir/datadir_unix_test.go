@@ -43,9 +43,17 @@ func TestUnixModes(t *testing.T) {
 	}
 }
 
+// Another user's directory or file is refused, whatever its mode: as
+// root a key given away, as anyone else (CI) root's own files.
 func TestUnixOwner(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("needs root to give a file away")
+		if err := File("/etc/passwd"); err == nil || !strings.Contains(err.Error(), "chown") {
+			t.Fatalf("root's file: %v", err)
+		}
+		if err := Dir("/"); err == nil || !strings.Contains(err.Error(), "chown") {
+			t.Fatalf("root's directory: %v", err)
+		}
+		return
 	}
 	key := filepath.Join(t.TempDir(), "master.key")
 	os.WriteFile(key, []byte("fake"), 0o600)
