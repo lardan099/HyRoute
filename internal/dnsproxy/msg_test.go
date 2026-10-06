@@ -242,6 +242,19 @@ func TestReply(t *testing.T) {
 	if m := unpack(t, out); !trunc || !m.Header.Truncated || len(m.Answers) != 0 || len(m.Questions) != 1 || len(m.Additionals) != 1 {
 		t.Fatalf("truncated: %v %+v", trunc, m)
 	}
+	// NoTC (the retry over TCP would not come back): as many addresses as
+	// fit, no TC; a CNAME on the way stays.
+	chain := append([]rr{{"www.example.com.", dnsmessage.TypeCNAME, 60, "cdn.example.net."}}, many...)
+	for i := range chain[1:] {
+		chain[1+i].name = "cdn.example.net."
+	}
+	out, trunc, err = Reply(qe, answer(t, qe, dnsmessage.RCodeSuccess, chain, soa, 60, false), ReplyOpts{Max: 512, NoTC: true})
+	if m := unpack(t, out); err != nil || trunc || m.Header.Truncated || len(out) > 512 || len(m.Answers) < 2 || len(m.Answers) > 30 || m.Answers[0].Header.Type != dnsmessage.TypeCNAME {
+		t.Fatalf("no TC: %v %v %d answers", err, trunc, len(m.Answers))
+	}
+	if _, _, err := Reply(qe, big, ReplyOpts{Max: 40, NoTC: true}); err == nil {
+		t.Fatal("NoTC: nothing fits, yet an answer")
+	}
 	// Mismatches are errors.
 	other := mustQuery(t, query(t, "other.example.", dnsmessage.TypeA, 0, false))
 	if _, _, err := Reply(q, answer(t, other, dnsmessage.RCodeSuccess, nil, nil, 0, false), ReplyOpts{}); err == nil {

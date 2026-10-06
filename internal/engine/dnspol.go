@@ -361,7 +361,11 @@ func (c *Core) resolveUDP(j *udpQuery, d dnspolicy.Decision) {
 		return
 	}
 	if err == nil {
-		out, trunc, rerr := dnsproxy.Reply(j.q, msg, dnsproxy.ReplyOpts{Max: j.q.MaxUDP(), Age: age, Tunnel: d.Via == dnspolicy.ViaTunnel})
+		// TCP to an IPv6 link-local server is not intercepted (dnsTarget):
+		// a TC answer would send the retry there, past the policy.
+		a := j.p.Dst().Addr().Unmap()
+		noTC := a.Is6() && a.IsLinkLocalUnicast()
+		out, trunc, rerr := dnsproxy.Reply(j.q, msg, dnsproxy.ReplyOpts{Max: j.q.MaxUDP(), Age: age, Tunnel: d.Via == dnspolicy.ViaTunnel, NoTC: noTC})
 		if rerr == nil {
 			c.DNS.AddAnswerFor(dnsproxy.UpstreamQuery(j.q), msg)
 			outcome := dnspolicy.OutDirect

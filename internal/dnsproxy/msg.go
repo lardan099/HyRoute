@@ -154,6 +154,11 @@ type ReplyOpts struct {
 	Max    int           // the client's size limit (q.MaxUDP() or 65535 on TCP)
 	Age    time.Duration // how long the answer sat in the resolver cache
 	Tunnel bool          // a tunnel answer: clamp TTLs
+	// NoTC: the client's retry over TCP would not come back to us (an
+	// IPv6 link-local server: TCP to it is not intercepted), so an answer
+	// over the limit keeps as many records of the asked type as fit
+	// instead of TC; when even one does not fit, Reply fails.
+	NoTC bool
 }
 
 var errAnswer = errors.New("dns: bad upstream answer")
@@ -264,12 +269,38 @@ func Reply(q Query, up []byte, o ReplyOpts) (out []byte, truncated bool, err err
 	if len(b) <= limit {
 		return b, false, nil
 	}
+	if o.NoTC {
+		// Drop records of the asked type from the end; the chain to them
+		// (CNAMEs) stays.
+		for n := len(m.Answers) - 1; n >= 0; n-- {
+			if m.Answers[n].Header.Type != q.Type || !hasType(m.Answers[:n], q.Type) {
+				continue
+			}
+			m.Answers = append(m.Answers[:n], m.Answers[n+1:]...)
+			if b, err = m.Pack(); err != nil {
+				return nil, false, errAnswer
+			}
+			if len(b) <= limit {
+				return b, false, nil
+			}
+		}
+		return nil, false, errAnswer
+	}
 	m.Header.Truncated = true
 	m.Answers = nil
 	if b, err = m.Pack(); err != nil {
 		return nil, false, errAnswer
 	}
 	return b, true, nil
+}
+
+func hasType(rs []dnsmessage.Resource, t dnsmessage.Type) bool {
+	for _, r := range rs {
+		if r.Header.Type == t {
+			return true
+		}
+	}
+	return false
 }
 
 func keepOPT(rs []dnsmessage.Resource) []dnsmessage.Resource {
