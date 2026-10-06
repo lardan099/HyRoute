@@ -763,3 +763,21 @@ func TestRulesTextRepeats(t *testing.T) {
 		t.Fatalf("%v", res.Repeats)
 	}
 }
+
+// A quote without its pair is an error of the line, not a program with a
+// quote in its name that never matches.
+func TestRulesTextUnpairedQuote(t *testing.T) {
+	for _, text := range []string{
+		`"C:\Program Files\App\app.exe -> vpn`,
+		`"chrome.exe -> vpn`,
+		"[\"C:\\Program Files\\App\\app.exe]\nexample.com -> vpn",
+	} {
+		res := parseRulesText(text, serverTargets(textProfiles))
+		if len(res.Errors) == 0 || !strings.Contains(res.Errors[0].Text, "кавычка без пары") {
+			t.Errorf("%q: %+v", text, res.Errors)
+		}
+	}
+	if res := parseRulesText(`"C:\Program Files\App\app.exe" -> vpn`, serverTargets(textProfiles)); len(res.Errors) != 0 {
+		t.Fatalf("%+v", res.Errors)
+	}
+}

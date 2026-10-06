@@ -125,6 +125,10 @@ func parseRulesText(text string, ts []target) RulesTextResult {
 			}
 			sectionText = line
 			items, quoted := splitQuoted(inner)
+			if msg := unpairedQuote(items, quoted); msg != "" {
+				fail(n, "%s", msg)
+				continue
+			}
 			if msg := splitPath(items, quoted); msg != "" {
 				fail(n, "%s", msg)
 				continue
@@ -209,6 +213,10 @@ func parseRulesText(text string, ts []target) RulesTextResult {
 		items, quoted := splitQuoted(lhs)
 		if strings.TrimSpace(lhs) == "*" && len(r.Ports) > 0 {
 			items, quoted = nil, nil // a rule with ports only
+		}
+		if msg := unpairedQuote(items, quoted); msg != "" {
+			fail(n, "%s", msg)
+			continue
 		}
 		if msg := splitPath(items, quoted); msg != "" {
 			fail(n, "%s", msg)
@@ -450,6 +458,18 @@ func splitPath(items []string, quoted []bool) string {
 			if b, ok := rel(j); ok && strings.ContainsAny(b, `\/`) {
 				return msg(j)
 			}
+		}
+	}
+	return ""
+}
+
+// unpairedQuote finds an item with a quote that has no pair: the item
+// was cut at spaces with the quote in it ("C:\Program), and a program of
+// that name never runs.
+func unpairedQuote(items []string, quoted []bool) string {
+	for i, it := range items {
+		if !quoted[i] && strings.Contains(it, `"`) {
+			return fmt.Sprintf("«%s» — кавычка без пары: путь с пробелами пишется в кавычках целиком: \"C:\\Program Files\\…\\app.exe\"", it)
 		}
 	}
 	return ""
