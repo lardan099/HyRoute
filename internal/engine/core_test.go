@@ -961,3 +961,30 @@ func TestTCPDirectSYNOnlyExpires(t *testing.T) {
 		t.Fatalf("%d active records", n)
 	}
 }
+
+// A flow that needs its domain but collides with a live reflect key
+// (R's IP, local port) is decided by the DNS cache, as the relay does
+// without SNI: a cached tunnel site is refused, not sent direct.
+func TestReflectCollisionUsesDNSCache(t *testing.T) {
+	set, err := rules.Compile(appRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.ExactWeb = true
+	h := newHarness(t, appRules, Options{})
+	h.c.Rules.Swap(set)
+	h.c.DNS.AddResponse(dnsResponse(t, "www.youtube.com.", netip.MustParseAddrPort(R).Addr().String()))
+	const other = "10.0.0.9:40000"
+	h.own(6, L, R, 200)
+	h.own(6, other, R, 200)
+	h.sendTCP(L, R, packet.FlagSYN, "")
+	if i := h.next(t); i.pkt.DstPort() != relayPort {
+		t.Fatal("first flow not reflected for sniffing")
+	}
+	h.sendTCP(other, R, packet.FlagSYN, "")
+	i := h.next(t)
+	v := lastRecord(t, h.c)
+	if i.pkt.TCPFlags()&packet.FlagRST == 0 || v.Route != "tunnel" || v.Outcome != "rst: reflect key collision" || h.c.KeyCollisions.Load() != 1 {
+		t.Fatalf("flags %x: %+v", i.pkt.TCPFlags(), v)
+	}
+}

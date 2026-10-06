@@ -103,6 +103,9 @@ type Stats struct {
 	// UntrackedReset: connections the engine held no state for (opened
 	// before start) that the rules send through the tunnel or block, reset.
 	UntrackedReset atomic.Int64
+	// KeyCollisions: flows that needed the domain but could not be
+	// reflected, their (remote, local port) taken by a live entry.
+	KeyCollisions atomic.Int64
 	// bigudp
 	// FragReassembled: UDP datagrams reassembled from fragments and routed
 	// whole. FragIncomplete: datagrams whose fragments were dropped
@@ -975,8 +978,21 @@ func (c *Core) applyTCP(p *packet.Packet, addr *divert.Address, key nat.FlowKey,
 			c.injectInbound(p, addr)
 			return false
 		}
-		// Cannot reflect this flow: decide without the domain.
-		res = set.EvaluateNoDomain(sub)
+		// Cannot reflect this flow: decide by the DNS cache, as the relay
+		// does without SNI, else without the domain.
+		if r := set.EvaluateSites(sub, c.DNS.Sites(key.Dst.Addr())); !r.NeedsDomain {
+			res = r
+		} else {
+			res = set.EvaluateNoDomain(sub)
+		}
+		if n := c.KeyCollisions.Add(1); n <= 20 || n%100 == 0 {
+			var name string
+			if proc != nil {
+				name = proc.Name
+			}
+			c.Log.Info("reflect key in use: connection decided without the sniffed domain",
+				"process", name, "dst", key.Dst, "route", res.Action.String(), "rule", res.Rule, "count", n)
+		}
 		res, pk = c.pick(res, false, c.hint(res, proc, "", key.Dst.Addr()))
 		rec.Set(func(f *flows.Fields) {
 			f.Rule = res.Rule + " (reflect collision)"
