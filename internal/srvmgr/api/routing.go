@@ -278,7 +278,13 @@ func (s *server) chainTemplate(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, configError(err))
 		return
 	}
-	t, err := routing.ChainOf(c, v)
+	var own []string // the hosts of the cascade's servers
+	for _, n := range c.Nodes {
+		if srv, err := s.Store.ServerByID(r.Context(), n); err == nil {
+			own = append(own, srv.Host)
+		}
+	}
+	t, err := routing.ChainOf(c, v, own)
 	if err != nil {
 		s.fail(w, r, err)
 		return

@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/netip"
+	"net/url"
+	"strings"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/acl"
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
@@ -77,8 +81,13 @@ func ChainBuiltins() []ChainTemplate {
 // ChainOf is the template of a cascade: its link's settings and the
 // entry's current routing (a resolver other than the system one). Rules
 // kept in an acl.file are not in the view: such an entry is refused.
-func ChainOf(c model.Chain, entry View) (ChainTemplate, error) {
-	t := ChainTemplate{Format: ChainFormat, Version: ChainVersion, Name: c.Name, Description: c.Notes}
+//
+// The file is made to be passed on, so what belongs to this cascade
+// alone stays out: its notes (private text; the admin may give the file
+// a description), a check target or a resolver at one of own (the hosts
+// of its servers), and a resolver at a loopback or private address.
+func ChainOf(c model.Chain, entry View, own []string) (ChainTemplate, error) {
+	t := ChainTemplate{Format: ChainFormat, Version: ChainVersion, Name: c.Name}
 	if entry.File != "" {
 		return t, &model.FieldError{Field: "acl.file", Msg: "Правила входа в файле " + entry.File + ": шаблон их не возьмёт. Перенесите их в конфиг (маршрутизация входа), потом сохраните шаблон."}
 	}
@@ -88,6 +97,9 @@ func ChainOf(c model.Chain, entry View) (ChainTemplate, error) {
 			return t, err
 		}
 		p.LocalPort = 0
+		if p.CheckTarget != "" && !portable(p.CheckTarget, own) {
+			p.CheckTarget = "" // the default: the exit's own address, worked out per cascade
+		}
 		t.Link = p
 	}
 	if len(entry.ACL.Rules) > 0 || entry.Resolver.Type != "system" {
@@ -97,13 +109,47 @@ func ChainOf(c model.Chain, entry View) (ChainTemplate, error) {
 				e.Outbounds = append(e.Outbounds, o.public())
 			}
 		}
-		if entry.Resolver.Type != "system" {
+		if entry.Resolver.Type != "system" && portable(entry.Resolver.Addr, own) {
 			r := entry.Resolver
 			e.Resolver = &r
 		}
-		t.Entry = e
+		if len(e.ACL.Rules) > 0 || e.Resolver != nil {
+			t.Entry = e
+		}
 	}
 	return t, nil
+}
+
+// portable reports whether addr (host:port, a host or a URL) means the
+// same on another cascade: not a host of own, not localhost, not a
+// loopback, private or link-local address.
+func portable(addr string, own []string) bool {
+	host := strings.TrimSpace(addr)
+	if strings.Contains(host, "://") {
+		u, err := url.Parse(host)
+		if err != nil {
+			return false
+		}
+		host = u.Hostname()
+	} else if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return false
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		ip = ip.Unmap()
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+			return false
+		}
+	}
+	for _, o := range own {
+		if strings.EqualFold(strings.TrimSuffix(o, "."), host) {
+			return false
+		}
+	}
+	return true
 }
 
 // ImportChain reads a chain template file.

@@ -35,10 +35,15 @@
   let offering = $state(false);
 
   // saveTemplate saves the cascade as a template file: the link's
-  // settings and the entry's rules, no servers and no secrets.
+  // settings and the entry's rules, no servers and no secrets. The notes
+  // stay out (private); the admin may give the file a description.
+  let tplOpen = $state(false);
+  let tplDesc = $state('');
   async function saveTemplate() {
     try {
       const data = await api.chainTemplate(id);
+      if (tplDesc.trim()) data.description = tplDesc.trim();
+      tplOpen = false;
       const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
       const a = document.createElement('a');
       a.href = url;
@@ -132,7 +137,7 @@
         {#if deployed(chain)}<button onclick={() => (confirm = 'unlink')}>{t('cascades.unlink')}</button>{/if}
       {/if}
       <button onclick={edit}>{t('cascades.rename')}</button>
-      <button onclick={saveTemplate}>{t('ctpl.save')}</button>
+      <button onclick={() => ((tplDesc = ''), (tplOpen = true))}>{t('ctpl.save')}</button>
       {#if !busy(chain)}<button class="danger" onclick={() => (confirm = 'delete')}>{t('cascades.delete')}</button>{/if}
     {/if}
   </div>
@@ -228,6 +233,22 @@
       else go('cascades');
     }}
   />
+{/if}
+
+{#if tplOpen}
+  <Dialog title={t('ctpl.save')} onclose={() => (tplOpen = false)}>
+    <form id="chain-tpl" class="form" onsubmit={(e) => (e.preventDefault(), saveTemplate())}>
+      <p class="muted">{t('ctpl.saveNote')}</p>
+      <label>
+        <span>{t('ctpl.description')}</span>
+        <textarea rows="3" maxlength="4000" bind:value={tplDesc}></textarea>
+      </label>
+    </form>
+    {#snippet actions()}
+      <button type="button" onclick={() => (tplOpen = false)}>{t('common.cancel')}</button>
+      <button type="submit" form="chain-tpl" class="primary">{t('ctpl.saveFile')}</button>
+    {/snippet}
+  </Dialog>
 {/if}
 
 {#if editing}

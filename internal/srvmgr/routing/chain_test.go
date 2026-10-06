@@ -52,19 +52,20 @@ func TestChainExport(t *testing.T) {
 	}
 	p := cascade.Params{LocalPort: 40001, Up: "100 mbps", Down: "200 mbps", NoUDP: true, CheckTarget: "www.example.com:443"}
 	c := model.Chain{ID: 7, Name: "RU→NL", Notes: "мой каскад", Nodes: []int64{e.server, 99}, Links: []model.ChainLink{{Params: p.Raw(), State: model.LinkActive}}}
-	tp, err := ChainOf(c, v)
+	tp, err := ChainOf(c, v, []string{"entry.example.com", "exit.example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, _ := json.Marshal(tp)
 	// The entry's own outbounds come along (its rules name them), without
 	// passwords and without the cascade's.
-	for _, s := range []string{"fake-", "localPort", "127.0.0.1", "192.0.2.", redactMask(), `"cascade"`} {
+	for _, s := range []string{"fake-", "localPort", "127.0.0.1", "192.0.2.", redactMask(), `"cascade"`, "мой каскад"} {
 		if strings.Contains(string(b), s) {
 			t.Errorf("%q in %s", s, b)
 		}
 	}
-	if tp.Link.Up != "100 mbps" || !tp.Link.NoUDP || tp.Entry == nil || len(tp.Entry.ACL.Rules) != 3 || tp.Entry.Resolver.Type != "udp" || tp.Description != "мой каскад" || len(tp.Entry.Outbounds) != 3 {
+	if tp.Link.Up != "100 mbps" || !tp.Link.NoUDP || tp.Entry == nil || len(tp.Entry.ACL.Rules) != 3 || tp.Entry.Resolver.Type != "udp" || tp.Description != "" || len(tp.Entry.Outbounds) != 3 ||
+		tp.Link.CheckTarget != "www.example.com:443" {
 		t.Fatalf("%+v", tp)
 	}
 	back, err := ImportChain(b)
@@ -89,6 +90,38 @@ func TestChainExport(t *testing.T) {
 	// A local port in a file is not taken: it is the entry's.
 	if tp, err := ImportChain([]byte(`{"format":"hyroute-chain","version":1,"name":"x","link":{"localPort":40002},"id":"builtin:all","builtin":true}`)); err != nil || tp.Link.LocalPort != 0 || tp.Builtin || tp.ID != "" {
 		t.Fatalf("%v %+v", err, tp)
+	}
+}
+
+// What belongs to one cascade stays out of its template: a check target
+// at one of its servers, a resolver at one of them or at a local address.
+// Public ones come along.
+func TestChainExportLeavesOwnAddresses(t *testing.T) {
+	own := []string{"entry.example.com", "exit.example.com"}
+	for addr, want := range map[string]bool{
+		"exit.example.com:22": false, "EXIT.example.com.:443": false, "127.0.0.1:53": false, "[::1]:53": false,
+		"192.168.1.1:53": false, "10.0.0.1": false, "fe80::1": false, "localhost:53": false, "": false,
+		"https://entry.example.com/dns-query": false, "https://dns.example.net/dns-query": true,
+		"1.1.1.1:443": true, "www.example.com:443": true, "dns.example.net": true,
+	} {
+		if got := portable(addr, own); got != want {
+			t.Errorf("portable(%q) = %v", addr, got)
+		}
+	}
+	e := newEnv(t, config, true)
+	v, err := e.svc.Open(context.Background(), e.server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.Resolver = Resolver{Type: "udp", Addr: "192.168.1.1:53"}
+	p := cascade.Params{CheckTarget: "exit.example.com:22"}
+	c := model.Chain{ID: 7, Name: "x", Notes: "заметки", Nodes: []int64{e.server, 99}, Links: []model.ChainLink{{Params: p.Raw(), State: model.LinkActive}}}
+	tp, err := ChainOf(c, v, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tp.Link.CheckTarget != "" || tp.Entry == nil || tp.Entry.Resolver != nil || tp.Description != "" {
+		t.Fatalf("%+v %+v", tp.Link, tp.Entry)
 	}
 }
 

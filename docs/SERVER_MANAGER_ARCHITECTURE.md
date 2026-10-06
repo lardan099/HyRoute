@@ -1368,7 +1368,7 @@ routing`, ревизия с источником «правка»).
 | GET | `/api/v1/routing/templates` | любая | шаблоны правил: встроенные (`builtin:local`, `builtin:ads`, `builtin:ru`) и пресеты с `acl.inline` (`preset:<id>`, outbounds без паролей) |
 | GET | `/api/v1/chain-templates` | любая | встроенные шаблоны каскадов: «Всё через exit», «RU напрямую» |
 | POST | `/api/v1/chain-templates/import` | operator+ | `{data}` — файл шаблона каскада → шаблон (без локального порта); ничего не сохраняется |
-| GET | `/api/v1/chains/{id}/template` | operator+ | каскад как файл шаблона: параметры связи без локального порта, правила и resolver входа; без серверов и секретов |
+| GET | `/api/v1/chains/{id}/template` | operator+ | каскад как файл шаблона: параметры связи без локального порта, правила и resolver входа; без серверов и секретов; без заметок, адреса проверки и resolver, указывающих на серверы каскада (или resolver в локальную сеть) |
 | POST | `/api/v1/routing/import` | operator+ | `{data}` — экспорт HyRoute или текст ACL → черновик для редактора, без паролей; ничего не сохраняется |
 | GET | `/api/v1/geo` | любая | базы geo controller: релиз, файлы (SHA-256, размер, URL), когда скачаны и проверены |
 | POST | `/api/v1/geo/update` | operator+ | скачать последний релиз (3 мин), `{info, changed}`; релиз не скачался или не прошёл проверку — 502 `geo_download` (`geo.DownloadError`), ошибка у самого controller (его диск) — 500 `internal`; другое обновление ещё идёт — сразу 409 `geo_busy` |
