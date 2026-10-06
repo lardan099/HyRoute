@@ -153,8 +153,10 @@
 
   let users = $derived(usersText.split(/[\s,;]+/).filter(Boolean));
   let removedUsers = $derived(authMode === 'userpass' && curAuth === 'userpass' ? curUsers.filter((u) => !users.includes(u)) : []);
-  // The deploy drops the users of cascade links unless typed in.
-  let droppedLinks = $derived(authMode !== '' ? curLinks.filter((u) => !users.includes(u)) : []);
+  // The users of cascade links go with the request unseen, so their
+  // passwords stay; only password auth drops them (and the cascade).
+  let sentUsers = $derived([...users, ...curLinks.filter((u) => !users.includes(u))]);
+  let droppedLinks = $derived(authMode === 'password' ? curLinks : []);
   let authChanges = $derived(!!cfg && !!curAuth && authMode !== '' && authMode !== curAuth);
   // TCP 80 and 443 are the ACME http and tls challenges' too.
   let tcpBlocked = $derived(tls === 'acme' && challenge !== 'dns');
@@ -376,7 +378,7 @@
       replace: replace || (changed && overwrite && cfg?.source === 'import'),
       overwrite: changed && overwrite ? true : undefined,
       auth: authMode || undefined,
-      users: authMode === 'userpass' ? users : undefined,
+      users: authMode === 'userpass' ? sentUsers : undefined,
       bandwidth: compact({ upMbps: num(up), downMbps: num(down), ignoreClient }),
       quic: compact({ streamWindowMB: num(streamWin), connWindowMB: num(connWin), idleTimeout: num(quicIdle), maxStreams: num(maxStreams), disableMTUDiscovery: noMTU }),
       udp: compact({ disable: udpOff, idleTimeout: num(udpIdle) }),
