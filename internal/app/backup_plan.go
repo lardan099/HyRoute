@@ -369,7 +369,11 @@ func (x *planCtx) selection() string {
 		}
 		for _, f := range x.sectionWrites(def.key) {
 			if broken(f) && !covered[f] {
-				return fmt.Sprintf("%s не загружен: чтобы восстановить его, отметьте «%s» в режиме «Заменить»", f, coverBy[f])
+				by := "«" + coverBy[f] + "»"
+				if f == "profiles.json" && broken("subscriptions.json") {
+					by = "«Серверы» и «Подписки»" // each holds part of the file
+				}
+				return fmt.Sprintf("%s не загружен: чтобы восстановить его, отметьте %s в режиме «Заменить»", f, by)
 			}
 		}
 	}

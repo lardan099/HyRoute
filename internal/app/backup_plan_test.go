@@ -606,6 +606,13 @@ func TestPlanBrokenCoverage(t *testing.T) {
 	if !strings.Contains(pl.err, "profiles.json не загружен") {
 		t.Fatal(pl.err)
 	}
+	// Both files broken: the servers alone do not bring profiles.json
+	// back, and the refusal names both sections.
+	cur.Broken["subscriptions.json"] = fmt.Errorf("x")
+	pl = plan(cur, payload(false).put("servers", bkServers{List: []hysteria.Profile{}}).put("subscriptions", []bkSub{}).p, map[string]string{"servers": "replace"})
+	if !strings.Contains(pl.err, "отметьте «Серверы» и «Подписки»") {
+		t.Fatal(pl.err)
+	}
 	cur = baseState()
 	cur.Broken["prefs.json"] = fmt.Errorf("x")
 	pl = plan(cur, payload(false).put("geo", bkGeo{GeoSource: "v2fly"}).p, map[string]string{"geo": "replace"})
