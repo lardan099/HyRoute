@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -682,5 +683,25 @@ func TestSupervisorBindKeepsFailing(t *testing.T) {
 			t.Fatalf("after %d quick retries: %+v", busyRetries, st)
 		}
 		return
+	}
+}
+
+// Configs a run left behind go at the next start; a fresh one (another
+// session of the same user may be starting Hysteria) and other files stay.
+func TestCleanRunDir(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"hy-old.yaml", "hy-new.yaml", "other.yaml"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("auth: x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-2 * time.Minute)
+	os.Chtimes(filepath.Join(dir, "hy-old.yaml"), old, old)
+	os.Chtimes(filepath.Join(dir, "other.yaml"), old, old)
+	CleanRunDir(dir, time.Minute)
+	for n, want := range map[string]bool{"hy-old.yaml": false, "hy-new.yaml": true, "other.yaml": true} {
+		if _, err := os.Stat(filepath.Join(dir, n)); (err == nil) != want {
+			t.Errorf("%s: exists %v", n, err == nil)
+		}
 	}
 }

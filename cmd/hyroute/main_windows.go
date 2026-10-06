@@ -141,6 +141,8 @@ func main() {
 	if *verbose {
 		level = slog.LevelDebug
 	}
+	// Configs with passwords a run that ended mid-start left behind.
+	hysteria.CleanRunDir(filepath.Join(dataDir, "run"), time.Minute)
 	ctl := app.New(st, func(cfg session.Config) (app.Session, error) {
 		s, err := session.Start(cfg)
 		if err != nil {

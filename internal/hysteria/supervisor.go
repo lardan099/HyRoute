@@ -719,3 +719,16 @@ func configName() string {
 	rand.Read(b[:])
 	return fmt.Sprintf("hy-%x.yaml", b)
 }
+
+// CleanRunDir removes the configs a run that ended mid-start left in dir
+// (killed, crashed, the power gone while Hysteria connected): they hold
+// the servers' passwords in clear text. Only files older than minAge go,
+// and one a running Hysteria holds open cannot be removed.
+func CleanRunDir(dir string, minAge time.Duration) {
+	names, _ := filepath.Glob(filepath.Join(dir, "hy-*.yaml"))
+	for _, n := range names {
+		if fi, err := os.Lstat(n); err == nil && fi.Mode().IsRegular() && time.Since(fi.ModTime()) >= minAge {
+			os.Remove(n)
+		}
+	}
+}
