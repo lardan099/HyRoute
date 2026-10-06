@@ -161,7 +161,7 @@ func (i *Installer) Kind() *jobs.Kind {
 				{Name: "dir", Phase: model.JobInstalling, Run: x.dir},
 				{Name: "files", Phase: model.JobInstalling, Done: d(x.filesDone), Run: w(x.files), Undo: w(x.undoFiles)},
 				{Name: "config", Phase: model.JobConfiguring, Done: x.configDone, Run: x.config, Undo: x.undoConfig},
-				{Name: "restart", Phase: model.JobStarting, Done: restarted, Run: x.restart},
+				{Name: "restart", Phase: model.JobStarting, Done: restarted, Run: w(x.restart)},
 				{Name: "verify", Phase: model.JobVerifying, Run: x.verify},
 				{Name: "commit", Phase: model.JobVerifying, Safe: true, Done: d(x.committed), Run: w(x.commit)},
 				{Name: "cleanup", Phase: model.JobVerifying, Safe: true, Run: w(x.cleanup)},
@@ -590,9 +590,17 @@ func (x *installer) undoConfig(ctx context.Context, env *jobs.Env) error {
 	return nil
 }
 
-func (x *installer) restart(ctx context.Context, env *jobs.Env) error {
+// restart restarts the service when the job changed something, or when
+// the files were there already but HyRoute has no record of them:
+// Hysteria reads them only at start and may run others.
+func (x *installer) restart(ctx context.Context, env *jobs.Env, p Params) error {
+	unknown := false
 	if env.Get("changed") != "1" {
-		return nil
+		known, err := x.recorded(ctx, env, p)
+		if err != nil || known {
+			return err
+		}
+		unknown = true
 	}
 	_, _, in, err := x.base(ctx, env)
 	if err != nil {
@@ -611,6 +619,9 @@ func (x *installer) restart(ctx context.Context, env *jobs.Env) error {
 		env.Logf("Служба %s не запущена (%s): новые базы она прочтёт при запуске.", in.Unit, st)
 		return nil
 	}
+	if unknown {
+		env.Logf("Базы этого релиза уже были на сервере, но ставил их не HyRoute: служба перезапускается, чтобы читать именно их.")
+	}
 	if err := env.Set("restarted", "1"); err != nil {
 		return err
 	}
@@ -619,6 +630,28 @@ func (x *installer) restart(ctx context.Context, env *jobs.Env) error {
 	}
 	env.Logf("Служба %s перезапущена.", in.Unit)
 	return env.Set("restarted:done", "1")
+}
+
+// recorded: HyRoute's record says the server has the job's files (a job
+// of HyRoute put them there and restarted the service with them, or left
+// a stopped one to read them at start).
+func (x *installer) recorded(ctx context.Context, env *jobs.Env, p Params) (bool, error) {
+	g, err := x.DB.ServerGeo(ctx, env.ServerID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	for _, f := range p.Files {
+		have := g.GeoSite
+		if f.Name == GeoIP {
+			have = g.GeoIP
+		}
+		if have != f.SHA256 {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // restarted: the service runs what this job put there (the restart is

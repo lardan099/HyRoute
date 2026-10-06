@@ -350,6 +350,34 @@ func TestInstallResumesAfterRestart(t *testing.T) {
 	}
 }
 
+// The release's files and their paths are on the server already, but not
+// from HyRoute: Hysteria may run others, so it is restarted and checked
+// before the release is recorded. Once recorded, a repeat touches nothing.
+func TestInstallFilesInPlace(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	one := testDB(t, "one")
+	h.put("R1", one)
+	cfg := config + paths
+	c := model.ServerConfig{ServerID: h.server, SHA256: sha([]byte(cfg)), Source: model.ConfigEdit, At: time.Now()}
+	h.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return h.keys.Seal([]byte(cfg), model.ConfigContext(h.server, rev)) })
+	h.v.mu.Lock()
+	h.v.files[cfgPath] = []byte(cfg)
+	h.v.files[ServerDir+"/"+GeoIP], h.v.files[ServerDir+"/"+GeoSite] = one[GeoIP], one[GeoSite]
+	h.v.mu.Unlock()
+	j := h.run(SourceAuto, 0)
+	if j.State != model.JobCompleted || h.v.count("systemctl restart") != 1 || !strings.Contains(h.log(j.ID), "ставил их не HyRoute") {
+		t.Fatalf("%s: %s, %d restarts\n%s", j.State, j.ErrorMessage, h.v.count("systemctl restart"), h.log(j.ID))
+	}
+	if g, _ := h.db.ServerGeo(ctx, h.server); g.Release != "R1" || len(h.v.writes) != 0 {
+		t.Fatalf("%+v, writes %q", g, h.v.writes)
+	}
+	h.v.reset()
+	if j = h.run(SourceAuto, 0); j.State != model.JobCompleted || h.v.ran("systemctl restart") {
+		t.Fatalf("again: %s %q", j.State, h.v.cmds)
+	}
+}
+
 // With ACME Hysteria may get its certificate before it listens: verify
 // waits three times as long, as the link job does.
 func TestInstallWaitsForACME(t *testing.T) {
