@@ -120,6 +120,10 @@ func TestParseSubscriptionErrors(t *testing.T) {
 		`{"outbounds":[]}`:           "JSON",
 		"proxies:\n  - name: x":      "Clash",
 		"vless://a@b:1\nvmess://abc": "только другие протоколы",
+		// Its own links' errors come first, and a short answer in words is
+		// quoted; a web address in it is no protocol.
+		"vless://a@b:1\nhy2://pw@h.example:443/?obfs=salamander": "ни одна ссылка Hysteria 2 не разобрана (1)",
+		"Подписка истекла, продлите: https://t.me/example_bot":   "ответил текстом",
 	} {
 		if _, err := parseSubscription([]byte(body)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: %v", body, err)

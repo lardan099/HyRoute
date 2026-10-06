@@ -44,6 +44,9 @@ func ParseLinks(text string) Links {
 	for _, f := range splitLinks(text) {
 		scheme, _, _ := strings.Cut(f, "://")
 		scheme = strings.ToLower(scheme)
+		if scheme == "http" || scheme == "https" {
+			continue // a web address in a text, not a share link
+		}
 		if scheme != "hysteria2" && scheme != "hy2" {
 			res.Ignored[scheme]++
 			continue

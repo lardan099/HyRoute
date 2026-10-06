@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lardan099/hyroute/internal/geodata"
 	"github.com/lardan099/hyroute/internal/hysteria"
@@ -147,10 +148,19 @@ func parseSubscription(body []byte) (Links, error) {
 		return l, errors.New("похоже на конфиг Clash: нужна подписка со списком ссылок hysteria2://")
 	case strings.HasPrefix(strings.ToLower(t), "<!doctype") || strings.HasPrefix(strings.ToLower(t), "<html"):
 		return l, errors.New("сервер вернул веб-страницу, а не подписку: проверьте ссылку")
+	case len(l.Errors) > 0:
+		// Its own links come first: the other protocols are not the issue.
+		msg := fmt.Sprintf("ни одна ссылка Hysteria 2 не разобрана (%d): %s", len(l.Errors), l.Errors[0])
+		if l.IgnoredTotal() > 0 {
+			msg += "; других протоколов: " + ignoredText(l.Ignored)
+		}
+		return l, errors.New(msg)
 	case l.IgnoredTotal() > 0:
 		return l, fmt.Errorf("в подписке нет профилей Hysteria 2, только другие протоколы (%s)", ignoredText(l.Ignored))
-	case len(l.Errors) > 0:
-		return l, fmt.Errorf("ни одна ссылка не разобрана: %s", l.Errors[0])
+	case !strings.ContainsAny(t, "\r\n") && utf8.RuneCountInString(t) <= 200:
+		// A panel's short answer in words ("подписка истекла…") says more
+		// than any guess.
+		return l, fmt.Errorf("сервер подписки ответил текстом, а не ссылками: «%s»", t)
 	}
 	return l, errors.New("в ответе нет ссылок hysteria2:// или hy2://")
 }
