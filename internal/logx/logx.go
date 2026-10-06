@@ -28,8 +28,9 @@ const minSecretLen = 4
 // Set replaces the default group.
 func (r *Redactor) Set(secrets ...string) { r.SetGroup("", secrets...) }
 
-// SetGroup replaces one group's secrets. Raw, URL-escaped, JSON- and
-// Go-quoted forms are redacted. No secrets removes the group.
+// SetGroup replaces one group's secrets. Raw, URL-escaped (query, path,
+// userinfo), JSON- and Go-quoted forms are redacted. No secrets removes
+// the group.
 func (r *Redactor) SetGroup(group string, secrets ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -54,6 +55,12 @@ func (r *Redactor) SetGroup(group string, secrets ...string) {
 			add(s)
 			add(url.QueryEscape(s))
 			add(url.PathEscape(s))
+			// The userinfo of a share URI (pass@ or user:pass@), as Hysteria
+			// prints one: "@", "/", "?" and ":" escaped.
+			add(url.User(s).String())
+			if u, p, ok := strings.Cut(s, ":"); ok {
+				add(url.UserPassword(u, p).String())
+			}
 			// JSON (Hysteria's log format) and Go %q escape quotes,
 			// backslashes and control characters.
 			if j, err := json.Marshal(s); err == nil {

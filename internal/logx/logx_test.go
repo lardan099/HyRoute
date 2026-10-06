@@ -17,6 +17,16 @@ func TestRedactor(t *testing.T) {
 	if got := r.Redact(in); got != want {
 		t.Fatalf("got %q", got)
 	}
+	// Share URIs: a password, or user:password, in userinfo form.
+	r.Set("user:p@ss", "P@ss=word")
+	for in, want := range map[string]string{
+		"hysteria2://user:p%40ss@host:443/": "hysteria2://***@host:443/",
+		"hysteria2://P%40ss=word@host:443/": "hysteria2://***@host:443/",
+	} {
+		if got := r.Redact(in); got != want {
+			t.Fatalf("%s: got %q", in, got)
+		}
+	}
 	var nilR *Redactor
 	if nilR.Redact("x") != "x" {
 		t.Fatal("nil redactor")
