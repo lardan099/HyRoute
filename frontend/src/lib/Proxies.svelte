@@ -167,7 +167,7 @@
           <div class="name"><b>{p.name}</b> <span class="dot {tone(p)}"></span> <span class="muted small">{stateText[p.state]}</span></div>
           <div class="muted small">
             через {via(p)}
-            {#if p.username}· с паролем{:else}· без пароля{/if}
+            {#if p.username && p.password}· с паролем{:else}· без пароля{/if}
             {#if p.udpOn}· UDP{/if}
             {#if p.lan}· доступен из локальной сети{/if}
           </div>
