@@ -430,6 +430,11 @@ func (e *Engine) Start() error {
 // the same list tries again.
 func (e *Engine) SetServerIPs(ips []netip.Addr) error {
 	ips = serverExclusions(ips)
+	if e.running.Load() && e.failed.Load() {
+		// Not even mainMu: a swap stuck behind a send that never returns
+		// may hold it, and Stop and the reconnect must not wait for it.
+		return nil
+	}
 	e.mainMu.Lock()
 	defer e.mainMu.Unlock()
 	if !e.running.Load() {
@@ -508,8 +513,10 @@ func (e *Engine) reopenMain(serverIPs []netip.Addr) error {
 		prio = PrioMainAlt
 	}
 	paused := e.mainPrio != 0 && prio < e.mainPrio
-	if paused {
-		e.swapMu.Lock()
+	if paused && !lockWithin(&e.swapMu, swapWait) {
+		// A send that does not return holds swapMu (the watchdog fails
+		// the engine); waiting for ever would keep mainMu with it.
+		return errors.New("главный фильтр не заменён: отправка пакета не завершается")
 	}
 	resume := func() {
 		if paused {
@@ -568,6 +575,25 @@ func (e *Engine) reopenMain(serverIPs []netip.Addr) error {
 	}
 	e.log.Info("main filter active", "priority", prio, "serverIPs", serverIPs)
 	return nil
+}
+
+// swapWait bounds how long a swap waits for the sends on their way.
+const swapWait = 3 * time.Second
+
+// lockWithin takes mu for writing, waiting at most d. A Lock that comes
+// late (the send returned after all) is released at once.
+func lockWithin(mu *sync.RWMutex, d time.Duration) bool {
+	got := make(chan struct{})
+	go func() { mu.Lock(); close(got) }()
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-got:
+		return true
+	case <-t.C:
+		go func() { <-got; mu.Unlock() }()
+		return false
+	}
 }
 
 // inject holds swapMu through the send: a hot swap that pauses injection
@@ -823,6 +849,9 @@ func allStacks() string {
 // (dns). While running it hot-swaps the main handle like SetServerIPs; a
 // failed swap leaves the capture as it was.
 func (e *Engine) SetDNSCapture(on bool) error {
+	if e.running.Load() && e.failed.Load() {
+		return nil // as SetServerIPs: there is no filter to update
+	}
 	e.mainMu.Lock()
 	defer e.mainMu.Unlock()
 	if e.dnsCapture == on {
