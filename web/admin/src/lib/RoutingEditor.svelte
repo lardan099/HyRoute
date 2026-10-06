@@ -576,7 +576,7 @@
         {#if resolver.type !== 'system'}
           <label>
             <span>{t('rs.addr')}</span>
-            <input type="text" bind:value={resolver.addr} oninput={changedRules} placeholder={resolver.type === 'https' ? 'https://1.1.1.1/dns-query' : resolver.type === 'tls' ? '1.1.1.1:853' : '1.1.1.1:53'} spellcheck="false" />
+            <input type="text" bind:value={resolver.addr} oninput={changedRules} placeholder={resolver.type === 'https' ? '1.1.1.1:443' : resolver.type === 'tls' ? '1.1.1.1:853' : '1.1.1.1:53'} spellcheck="false" />
           </label>
           <label><span>{t('rs.timeout')}</span><input type="text" bind:value={resolver.timeout} oninput={changedRules} placeholder="10s" /></label>
           {#if resolver.type === 'tls' || resolver.type === 'https'}

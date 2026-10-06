@@ -27,7 +27,7 @@ func TestRoutingAPI(t *testing.T) {
 	code(t, owner.do("GET", base, nil, nil), http.StatusNotFound, "no_config")
 
 	cfg := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-routing-api-auth\n" +
-		"resolver:\n  type: https\n  https:\n    addr: https://1.1.1.1/dns-query\n" +
+		"resolver:\n  type: https\n  https:\n    addr: 1.1.1.1:443\n" +
 		"acl:\n  inline:\n    - reject(geoip:private)\n    - nl(suffix:example.com)\n" +
 		"outbounds:\n  - name: direct\n    type: direct\n  - name: nl\n    type: socks5\n    socks5:\n      addr: 203.0.113.5:1080\n      password: fake-routing-api-socks\n")
 	c := model.ServerConfig{ServerID: srv.ID, SHA256: "x", Source: model.ConfigImport, At: time.Now()}

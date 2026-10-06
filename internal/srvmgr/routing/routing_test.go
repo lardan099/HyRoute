@@ -175,7 +175,7 @@ func TestEdit(t *testing.T) {
 	in.Outbounds[1].Name = "nl"
 	in.Outbounds = append(in.Outbounds[:2], in.Outbounds[3], Outbound{Name: "extra", Type: "socks5", SOCKS5: &SOCKS5{Addr: "203.0.113.7:1080", Password: "fake-new-pass"}})
 	in.ACL.Rules = append(in.ACL.Rules[:2], acl.Rule{Outbound: "isp", Address: "geoip:ru"})
-	in.Resolver = Resolver{Type: "https", Addr: "https://1.1.1.1/dns-query"}
+	in.Resolver = Resolver{Type: "https", Addr: "1.1.1.1:443"}
 	in.Requests = []acl.Request{{Host: "www.example.com", Port: 443}}
 	p, cand, _, err := e.svc.candidate(ctx, e.server, in)
 	if err != nil {
@@ -199,7 +199,7 @@ func TestEdit(t *testing.T) {
 		c.Outbounds[1].SOCKS5.Unknown == nil {
 		t.Fatalf("outbounds %+v", c.Outbounds)
 	}
-	if c.Resolver.Type != "https" || c.Resolver.HTTPS.Addr != "https://1.1.1.1/dns-query" || c.Resolver.UDP.Addr != "1.1.1.1:53" {
+	if c.Resolver.Type != "https" || c.Resolver.HTTPS.Addr != "1.1.1.1:443" || c.Resolver.UDP.Addr != "1.1.1.1:53" {
 		t.Fatalf("resolver %+v", c.Resolver)
 	}
 	// DoH on the entry: no plain DNS lint. The web rule is gone: port 80

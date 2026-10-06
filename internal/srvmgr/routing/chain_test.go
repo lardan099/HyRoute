@@ -22,6 +22,10 @@ func TestChainBuiltins(t *testing.T) {
 		if c.Entry == nil {
 			continue
 		}
+		// The DoH address as every Hysteria version reads it: host:port.
+		if r := c.Entry.Resolver; r != nil && strings.Contains(r.Addr, "://") {
+			t.Errorf("%s: resolver address %q", c.ID, r.Addr)
+		}
 		for _, p := range acl.Check(c.Entry.ACL, acl.Env{Entry: true, Resolver: hyconfig.Resolver{Type: c.Entry.Resolver.Type}, GeoIPPath: "/g", GeoSitePath: "/s"}) {
 			t.Errorf("%s: %+v", c.ID, p)
 		}

@@ -45,8 +45,9 @@ type ChainEntry struct {
 
 // EncryptedResolver is the resolver "RU direct" gives the entry: DoH by
 // address, so the entry's ISP does not see the domains its clients open
-// and nothing has to be resolved to reach it.
-var EncryptedResolver = Resolver{Type: "https", Addr: "https://1.1.1.1/dns-query"}
+// and nothing has to be resolved to reach it. The address is host:port,
+// the form every Hysteria version reads (a full URL only from v2.9.2).
+var EncryptedResolver = Resolver{Type: "https", Addr: "1.1.1.1:443"}
 
 // ChainBuiltins are the chain templates HyRoute ships.
 func ChainBuiltins() []ChainTemplate {
