@@ -284,6 +284,37 @@ func TestInstallRollback(t *testing.T) {
 	}
 }
 
+// The connection breaks as Hysteria fails with the new files: the
+// rollback does not finish and the server needs attention. A retry that
+// brings Hysteria up with them makes it healthy again.
+func TestInstallRetryClearsAttention(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	two := testDB(t, "two")
+	h.v.bad = func(f map[string][]byte) bool { return bytes.Equal(f[ServerDir+"/"+GeoSite], two[GeoSite]) }
+	h.v.hook = func(a []string) {
+		if a[0] == "journalctl" {
+			h.v.mu.Lock()
+			h.v.down = true
+			h.v.mu.Unlock()
+		}
+	}
+	h.put("R2", two)
+	j := h.run(SourceAuto, 0)
+	if s, _ := h.db.ServerByID(ctx, h.server); j.State != model.JobFailed || s.State != model.StateNeedsAttention {
+		t.Fatalf("%s, server %s\n%s", j.State, s.State, h.log(j.ID))
+	}
+	h.v.mu.Lock()
+	h.v.down, h.v.hook, h.v.bad = false, nil, nil
+	h.v.mu.Unlock()
+	if j = h.retry(j); j.State != model.JobCompleted || !h.has("R2") {
+		t.Fatalf("retry: %s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, h.log(j.ID))
+	}
+	if s, _ := h.db.ServerByID(ctx, h.server); s.State != model.StateHealthy {
+		t.Fatalf("server %s after the retry", s.State)
+	}
+}
+
 // A retry after the rollback checks again before it writes anything: the
 // controller has other databases now (the upload would not match the
 // job's), then the config was edited over SSH.

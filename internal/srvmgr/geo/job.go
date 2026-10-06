@@ -610,12 +610,14 @@ func (x *installer) restart(ctx context.Context, env *jobs.Env, p Params) error 
 	if err != nil {
 		return err
 	}
-	// The service as it is now: one the admin stopped stays stopped.
+	// The service as it is now: one the admin stopped stays stopped. One
+	// this job restarted in an attempt whose rollback did not finish may
+	// be down because of it: it is restarted again.
 	st, err := remote.ActiveState(ctx, ex, in.Unit)
 	if err != nil {
 		return err
 	}
-	if st != "active" {
+	if st != "active" && env.Get("restarted") != "1" {
 		env.Logf("Служба %s не запущена (%s): новые базы она прочтёт при запуске.", in.Unit, st)
 		return nil
 	}
@@ -824,10 +826,17 @@ func (x *installer) removeCopies(ctx context.Context, env *jobs.Env, ex remote.E
 	}
 }
 
-// finished: a server whose rollback did not finish needs attention.
+// finished: a server whose rollback did not finish needs attention; it
+// is healthy again once a job completed that restarted Hysteria and saw
+// it listen with the config and databases HyRoute has recorded.
 func (x *installer) finished(ctx context.Context, env *jobs.Env, j model.Job) {
-	if j.State == model.JobFailed && env.Rollback() == jobs.RollbackFailed {
+	switch {
+	case j.State == model.JobFailed && env.Rollback() == jobs.RollbackFailed:
 		x.DB.SetServerState(ctx, env.ServerID, model.StateNeedsAttention, x.Now())
+	case j.State == model.JobCompleted && env.Get("restarted") == "1":
+		if srv, err := x.DB.ServerByID(ctx, env.ServerID); err == nil && srv.State == model.StateNeedsAttention {
+			x.DB.SetServerState(ctx, env.ServerID, model.StateHealthy, x.Now())
+		}
 	}
 }
 
