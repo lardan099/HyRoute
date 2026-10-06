@@ -250,6 +250,11 @@ func TestKillSwitchArmFailure(t *testing.T) {
 		t.Fatalf("filters of the failed arm left: %+v", ks)
 	}
 	c.Disconnect()
+	// Turning the setting off takes the error along.
+	setKillSwitch(t, c, false)
+	if st := c.Status(); st.KillSwitchError != "" {
+		t.Fatalf("stale error %q", st.KillSwitchError)
+	}
 
 	// They cannot be removed either: the pass goes, so what stays blocks,
 	// as the status says.

@@ -82,8 +82,11 @@ func (c *Controller) armKillSwitch(s Session) {
 		return // a Connect racing the end of the session sets no block
 	}
 	if !on {
-		if known && c.adoptLocked() {
-			c.releaseLocked()
+		if known {
+			c.ks.err = "" // a failed Arm of the setting that is off now
+			if c.adoptLocked() {
+				c.releaseLocked()
+			}
 		}
 		return
 	}
@@ -331,7 +334,9 @@ func (c *Controller) applyKillSwitch() {
 		c.armKillSwitch(s)
 	case !on && known:
 		c.ksMu.Lock()
-		c.ks.resume = false
+		// «Kill switch не включился» of a failed Arm goes with the setting;
+		// a block another copy owns sets its own error again.
+		c.ks.resume, c.ks.err = false, ""
 		if c.adoptLocked() {
 			c.releaseLocked()
 		}
