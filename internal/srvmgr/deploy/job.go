@@ -102,10 +102,11 @@ func Kind(d Deps) *jobs.Kind {
 }
 
 func (x *deployer) steps(p Params) []jobs.Step {
+	u := x.uncommitted
 	return []jobs.Step{
 		{Name: "connect", Phase: model.JobConnecting, Safe: true, Run: x.connect},
 		{Name: "preflight", Phase: model.JobPreflight, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.preflight(ctx, env, p) }},
-		{Name: "prepare", Phase: model.JobInstalling, Safe: true, Run: x.prepare, Undo: x.undoPrepare},
+		{Name: "prepare", Phase: model.JobInstalling, Safe: true, Run: x.prepare, Undo: u(x.undoPrepare)},
 		{Name: "binary", Phase: model.JobDownloading, Safe: true,
 			Done: func(ctx context.Context, env *jobs.Env) (bool, error) {
 				return x.binaryDone(ctx, env, p.Version, BinaryPath)
@@ -117,24 +118,49 @@ func (x *deployer) steps(p Params) []jobs.Step {
 				}
 				return x.binary(ctx, env, p.Version, p.Source, p.Via, BinaryPath)
 			},
-			Undo: x.restoreFile(BinaryPath, "binaryBackup")},
+			Undo: u(x.restoreFile(BinaryPath, "binaryBackup"))},
 		{Name: "user", Phase: model.JobInstalling, Safe: true, Done: x.userDone, Run: x.user},
 		{Name: "tls", Phase: model.JobConfiguring, Safe: true,
 			Done: func(ctx context.Context, env *jobs.Env) (bool, error) { return x.tlsDone(ctx, env, p) },
 			Run:  func(ctx context.Context, env *jobs.Env) error { return x.tls(ctx, env, p) },
-			Undo: x.undoTLS},
+			Undo: u(x.undoTLS)},
 		{Name: "config", Phase: model.JobConfiguring, Safe: true,
 			Done: func(ctx context.Context, env *jobs.Env) (bool, error) { return x.configDone(ctx, env, p) },
 			Run:  func(ctx context.Context, env *jobs.Env) error { return x.config(ctx, env, p) },
-			Undo: x.restoreFile(ConfigPath, "configBackup")},
-		{Name: "unit", Phase: model.JobConfiguring, Safe: true, Done: x.unitDone, Run: x.unit, Undo: x.undoUnit},
-		{Name: "firewall", Phase: model.JobFirewall, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.firewall(ctx, env, p) }, Undo: x.undoFirewall},
-		{Name: "start", Phase: model.JobStarting, Safe: true, Done: x.startDone, Run: x.start, Undo: x.undoStart},
+			Undo: u(x.restoreFile(ConfigPath, "configBackup"))},
+		{Name: "unit", Phase: model.JobConfiguring, Safe: true, Done: x.unitDone, Run: x.unit, Undo: u(x.undoUnit)},
+		{Name: "firewall", Phase: model.JobFirewall, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.firewall(ctx, env, p) }, Undo: u(x.undoFirewall)},
+		{Name: "start", Phase: model.JobStarting, Safe: true, Done: x.startDone, Run: x.start, Undo: u(x.undoStart)},
 		{Name: "verify", Phase: model.JobVerifying, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.verify(ctx, env, p) }},
 		{Name: "commit", Phase: model.JobVerifying, Safe: true,
 			Done: func(ctx context.Context, env *jobs.Env) (bool, error) { return x.commitDone(ctx, env, p) },
 			Run:  func(ctx context.Context, env *jobs.Env) error { return x.commit(ctx, env, p) }},
 		{Name: "cleanup", Phase: model.JobVerifying, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.cleanup(ctx, env, p) }},
+	}
+}
+
+// committed: the controller's current revision is this job's.
+func (x *deployer) committed(ctx context.Context, env *jobs.Env) (bool, error) {
+	cur, err := x.Store.CurrentConfig(ctx, env.ServerID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil && cur.JobID == env.JobID, err
+}
+
+// uncommitted is a step's undo until the commit stores the job's
+// revision. After that the server keeps what it runs: a rollback would
+// part it from the revision client links and the monitor go by, and a
+// retry of the job finishes the commit instead.
+func (x *deployer) uncommitted(undo func(context.Context, *jobs.Env) error) func(context.Context, *jobs.Env) error {
+	return func(ctx context.Context, env *jobs.Env) error {
+		switch done, err := x.committed(ctx, env); {
+		case err != nil:
+			return err
+		case done:
+			return jobs.ErrNothingToUndo
+		}
+		return undo(ctx, env)
 	}
 }
 
@@ -987,7 +1013,19 @@ func (x *deployer) commit(ctx context.Context, env *jobs.Env, p Params) error {
 			return err
 		}
 		env.Logf("Конфиг сохранён в controller как ревизия %d.", c.Revision)
+		cur = c
 	}
+	err = x.record(ctx, env, p, now)
+	if err != nil && cur.JobID == env.JobID {
+		// The rollback leaves the server as it is (uncommitted), and a
+		// retry starts at this step.
+		return jobs.Fail("Hysteria работает с новым конфигом, и он сохранён в controller, но установку записать не удалось. Повторите задание: сервер оно больше не изменит.", err)
+	}
+	return err
+}
+
+// record stores the installation and the firewall rules the deploy left.
+func (x *deployer) record(ctx context.Context, env *jobs.Env, p Params, now time.Time) error {
 	prev, err := x.Store.Installation(ctx, env.ServerID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
@@ -1002,9 +1040,9 @@ func (x *deployer) finished(ctx context.Context, env *jobs.Env, j model.Job) {
 	state := model.StateHealthy
 	if j.State == model.JobFailed {
 		// Something on the server changed and was rolled back (or could
-		// not be): look at it.
+		// not be, or stays for a retry of the commit): look at it.
 		state = model.StateNeedsAttention
-		if env.Get("changed") != "1" || env.Rollback() == jobs.RollbackNothing {
+		if committed, _ := x.committed(ctx, env); !committed && (env.Get("changed") != "1" || env.Rollback() == jobs.RollbackNothing) {
 			state = model.ServerState(env.Get("prevState"))
 			if state == "" {
 				return

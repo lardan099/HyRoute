@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,6 +53,8 @@ type harness struct {
 	noBinary bool
 	// fetched counts the binaries the release server gave.
 	fetched int
+	// store replaces db as the jobs' store (startEngine).
+	store Store
 	// nodes are the other managed servers (source node): ID → simulator.
 	nodes map[int64]*sim
 }
@@ -147,8 +150,12 @@ func newHarness(t *testing.T, s *sim) *harness {
 func (h *harness) startEngine() {
 	h.eng = jobs.New(h.db, h.keys, redact.New(), conn{h.sim}, nil)
 	h.eng.Poll = 10 * time.Millisecond
+	var st Store = h.db
+	if h.store != nil {
+		st = h.store
+	}
 	// One relay for both kinds, as in the controller.
-	d := Deps{Store: h.db, Keys: h.keys, Resolver: h.res, Relay: hyrelease.NewRelay(h.res), Nodes: h.connectNode, VerifyTimeout: 200 * time.Millisecond, Poll: 10 * time.Millisecond}
+	d := Deps{Store: st, Keys: h.keys, Resolver: h.res, Relay: hyrelease.NewRelay(h.res), Nodes: h.connectNode, VerifyTimeout: 200 * time.Millisecond, Poll: 10 * time.Millisecond}
 	h.eng.Register(Kind(d))
 	h.eng.Register(Maintenance(d))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -692,6 +699,62 @@ func TestControllerRestartMidDeploy(t *testing.T) {
 	}
 	if !strings.Contains(h.log(j.ID), "перезапущен") || len(h.revisions()) != 1 || s.state != "active" || h.state() != model.StateHealthy {
 		t.Fatalf("revisions %d, service %s, server %s\n%s", len(h.revisions()), s.state, h.state(), h.log(j.ID))
+	}
+}
+
+// fullDisk is the controller's database refusing to record installations
+// while full is set.
+type fullDisk struct {
+	*sqlite.DB
+	full atomic.Bool
+}
+
+func (d *fullDisk) SetInstallation(ctx context.Context, in model.Installation) error {
+	if d.full.Load() {
+		return errors.New("database or disk is full")
+	}
+	return d.DB.SetInstallation(ctx, in)
+}
+
+// The database fails right after the commit stored the revision: the
+// server keeps the config clients now get instead of going back to the
+// previous one, and a retry records the installation without touching
+// the server.
+func TestCommitFailsAfterRevision(t *testing.T) {
+	ctx := context.Background()
+	s := newSim()
+	h := newHarness(t, s)
+	db := &fullDisk{DB: h.db}
+	db.full.Store(true)
+	h.kill()
+	h.store = db
+	h.startEngine()
+	j := h.deploy(params(), nil)
+	if j.State != model.JobFailed || j.CurrentStep != "commit" || !strings.Contains(j.ErrorMessage, "Повторите задание") {
+		t.Fatalf("%s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, h.log(j.ID))
+	}
+	cfg, _ := s.file(ConfigPath)
+	revs := h.revisions()
+	if len(revs) != 1 || revs[0].JobID != j.ID || revs[0].SHA256 != sum(cfg) || s.state != "active" {
+		t.Fatalf("server and controller parted: %d revisions, service %s\n%s", len(revs), s.state, h.log(j.ID))
+	}
+	if h.state() != model.StateNeedsAttention {
+		t.Fatalf("state %s", h.state())
+	}
+
+	db.full.Store(false)
+	s.reset()
+	if _, err := h.eng.Retry(ctx, j.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if j = h.wait(j.ID); j.State != model.JobCompleted {
+		t.Fatalf("retry: %s %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
+	}
+	if in, err := h.db.Installation(ctx, h.server); err != nil || !in.Managed || len(h.revisions()) != 1 || len(s.writes) != 0 || s.ran("systemctl restart") {
+		t.Fatalf("installation %+v %v, %d revisions, writes %q", in, err, len(h.revisions()), s.writes)
+	}
+	if h.state() != model.StateHealthy {
+		t.Fatalf("state %s", h.state())
 	}
 }
 
