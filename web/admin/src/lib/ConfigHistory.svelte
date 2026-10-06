@@ -22,6 +22,9 @@
   let loading = $state(false);
   let confirming = $state(false);
   let busy = $state(false);
+  // seq numbers the selections: only the latest one may show its answer (a
+  // late answer for the revision chosen before would sit under this one).
+  let seq = 0;
   let current = $derived(revs?.find((r) => r.current) ?? null);
 
   const sourceKey: Record<ConfigSource, Key> = {
@@ -45,20 +48,25 @@
 
   async function select(r: ConfigRevision) {
     if (!writable || !current) return;
+    const my = ++seq;
     selected = r;
+    tab = r.current ? 'yaml' : 'diff';
     cmp = view = null;
     error = null;
     loading = true;
     try {
-      [cmp, view] = await Promise.all([
+      const [c, v] = await Promise.all([
         r.current ? Promise.resolve(null) : api.compareConfigs(server.id, current.revision, r.revision),
         api.configRevision(server.id, r.revision),
       ]);
-      if (r.current) tab = 'yaml';
+      if (my !== seq) return;
+      cmp = c;
+      view = v;
     } catch (e) {
+      if (my !== seq) return;
       error = asApiError(e);
     } finally {
-      loading = false;
+      if (my === seq) loading = false;
     }
   }
 
