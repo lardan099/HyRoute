@@ -179,8 +179,8 @@ func TestRollbackInterruptedByRestart(t *testing.T) {
 }
 
 // The service does not restart in the rollback (it fails once); a retry
-// starts at the install, which keeps a fresh copy of the previous config,
-// so its rollback brings that config back.
+// checks the server again and installs with a fresh copy of the previous
+// config, so its rollback brings that config back.
 func TestRetryAfterFailedRollback(t *testing.T) {
 	h := newHarness(t)
 	h.stop()
@@ -217,5 +217,40 @@ func TestRetryAfterFailedRollback(t *testing.T) {
 	h.back(log)
 	if h.state() != model.StateHealthy {
 		t.Fatalf("state %s after a clean rollback", h.state())
+	}
+}
+
+// The config fails and is rolled back; the admin then edits the file
+// over SSH. A retry checks the file again and stops before writing: the
+// edit stays, and nothing is rolled back.
+func TestRetryChecksConfigAgain(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	j, err := h.app.Submit(ctx, h.server, 1, h.edit(func(s string) string { return s + "crash: true\n" }), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, log := h.wait(j)
+	if j.State != model.JobFailed || j.CurrentStep != "verify" {
+		t.Fatalf("%s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, log)
+	}
+	h.back(log)
+	edited := deployed + "# edited over SSH\n"
+	h.v.mu.Lock()
+	h.v.files[cfgPath] = []byte(edited)
+	h.v.mu.Unlock()
+
+	if j, err = h.app.x.Jobs.Retry(ctx, j.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	j, log = h.wait(j)
+	if j.State != model.JobFailed || j.CurrentStep != "validate" || !strings.Contains(j.ErrorMessage, "Импортируйте сервер заново") {
+		t.Fatalf("retry: %s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, log)
+	}
+	if h.v.file() != edited || len(h.v.writes) != 1 || strings.Contains(log, "Откат не удался") {
+		t.Fatalf("the edit is gone (%d writes):\n%s\n%s", len(h.v.writes), h.v.file(), log)
+	}
+	if h.state() != model.StateHealthy {
+		t.Fatalf("state %s", h.state())
 	}
 }

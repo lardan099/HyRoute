@@ -134,20 +134,23 @@ func (a *Applier) Kind() *jobs.Kind {
 			if err := json.Unmarshal(raw, &p); err != nil {
 				return nil, err
 			}
+			// A retry of prepare, cert or install starts at validate: the
+			// config on the server is checked again (a rollback brought
+			// the previous one back, and it may have been edited since).
 			steps := []jobs.Step{
 				{Name: "connect", Phase: model.JobConnecting, Safe: true, Run: x.connect},
 				{Name: "validate", Phase: model.JobPreflight, Safe: true, Run: func(ctx context.Context, env *jobs.Env) error { return x.validate(ctx, env, p) }},
-				{Name: "prepare", Phase: model.JobConfiguring, Safe: true, Run: x.prepare, Undo: x.undoPrepare},
+				{Name: "prepare", Phase: model.JobConfiguring, Run: x.prepare, Undo: x.undoPrepare},
 			}
 			if p.Pin != "" {
 				// A rotation of the certificate.
-				steps = append(steps, jobs.Step{Name: "cert", Phase: model.JobConfiguring, Safe: true,
+				steps = append(steps, jobs.Step{Name: "cert", Phase: model.JobConfiguring,
 					Done: func(ctx context.Context, env *jobs.Env) (bool, error) { return x.certDone(ctx, env, p) },
 					Run:  func(ctx context.Context, env *jobs.Env) error { return x.cert(ctx, env, p) },
 					Undo: x.undoCert})
 			}
 			return append(steps, []jobs.Step{
-				{Name: "install", Phase: model.JobConfiguring, Safe: true,
+				{Name: "install", Phase: model.JobConfiguring,
 					Done: func(ctx context.Context, env *jobs.Env) (bool, error) { return x.installed(ctx, env, p) },
 					Run:  func(ctx context.Context, env *jobs.Env) error { return x.install(ctx, env, p) },
 					Undo: x.undoInstall},
@@ -500,7 +503,7 @@ func (x *applier) undoCert(ctx context.Context, env *jobs.Env) error {
 }
 
 // install writes the candidate, with a copy of the config it replaces
-// made right before (also when a retry starts here after a rollback).
+// made right before (also when a retry runs it again after a rollback).
 func (x *applier) install(ctx context.Context, env *jobs.Env, p Params) error {
 	b, _, err := candidate(env)
 	if err != nil {
