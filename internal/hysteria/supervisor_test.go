@@ -610,3 +610,46 @@ func TestSupervisorPinsNextAddressAfterTimeout(t *testing.T) {
 		t.Fatalf("%+v", st)
 	}
 }
+
+// With a pinned IP an answer without it (a DNS pool handing out a subset)
+// neither restarts Hysteria nor drops the pinned IP from the exclusion.
+func TestSupervisorPinnedSurvivesSubsetAnswer(t *testing.T) {
+	p := Profile{Host: "hy.example", Ports: "443", Auth: "x", PinServerIP: true}
+	s, ch, _ := newSupervisor(t, "ok", p)
+	s.ReResolveEvery = 20 * time.Millisecond
+	var mu sync.Mutex
+	var sets [][]netip.Addr
+	n := 0
+	pinned := netip.MustParseAddr("198.51.100.1")
+	s.Resolve = func(ctx context.Context, host string) ([]netip.Addr, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		n++
+		if n == 1 {
+			return []netip.Addr{pinned}, nil
+		}
+		return []netip.Addr{netip.AddrFrom4([4]byte{198, 51, 100, byte(1 + n%2 + 1)})}, nil // .2 and .3 in turn
+	}
+	s.SetServerIPs = func(ips []netip.Addr) error {
+		mu.Lock()
+		sets = append(sets, slices.Clone(ips))
+		mu.Unlock()
+		return nil
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+	waitState(t, ch, Connected)
+	time.Sleep(200 * time.Millisecond) // several ticks without the pinned IP
+	mu.Lock()
+	defer mu.Unlock()
+	for _, set := range sets {
+		if !slices.Contains(set, pinned) {
+			t.Fatalf("pinned IP left the exclusion: %v", sets)
+		}
+	}
+	if st := s.Status(); st.State != Connected || st.Restarts != 0 || st.PinnedIP != pinned {
+		t.Fatalf("%+v", st)
+	}
+}

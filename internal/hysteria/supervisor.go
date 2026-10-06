@@ -569,15 +569,18 @@ wait:
 				}
 				continue
 			}
-			// Filter first, then restart: keep the pinned IP excluded
-			// until the old process is gone.
+			// The pinned IP stays excluded while this process uses it. An
+			// answer without it (a DNS pool that hands out a subset, short
+			// TTLs) is no reason to cut every connection: a server that is
+			// really gone Hysteria reports itself (Lost, then a restart),
+			// and the next start pins an address of the new set.
 			if s.SetServerIPs != nil {
 				s.SetServerIPs(union)
 			}
 			ips = newIPs
-			if !slices.Contains(newIPs, pinned) {
-				restartReason = "IP сервера изменился, переподключение"
-				proc.Kill()
+			if !slices.Contains(ips, pinned) {
+				ips = append(slices.Clone(ips), pinned)
+				slices.SortFunc(ips, netip.Addr.Compare)
 			}
 		}
 	}
