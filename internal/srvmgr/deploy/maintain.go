@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -69,7 +70,14 @@ var (
 	// ErrNotManaged: a reinstall of an installation HyRoute did not make
 	// (its unit and paths are someone else's).
 	ErrNotManaged = errors.New("deploy: the installation is not HyRoute's")
+	// ErrNotHysteria: the service runs a program not named hysteria*
+	// (docker, env, a shell), which an upgrade would replace.
+	ErrNotHysteria = errors.New("deploy: the service's program is not Hysteria")
 )
+
+// isHysteria: the program at p is named hysteria*, as import and status
+// require before they run it.
+func isHysteria(p string) bool { return strings.HasPrefix(path.Base(p), "hysteria") }
 
 // Maintain queues a maintenance job of serverID. A reinstall keeps the
 // recorded version (DefaultVersion when it is unknown) and needs an
@@ -80,6 +88,9 @@ func (s *Submitter) Maintain(ctx context.Context, serverID int64, p MaintainPara
 		return model.Job{}, ErrNoInstallation
 	} else if err != nil {
 		return model.Job{}, err
+	}
+	if !isHysteria(in.Binary) {
+		return model.Job{}, ErrNotHysteria
 	}
 	if p.Op == OpReinstall {
 		if !in.Managed {
@@ -184,6 +195,9 @@ func (x *deployer) maintainCheck(ctx context.Context, env *jobs.Env, p MaintainP
 	}
 	if p.Op == OpReinstall && (!in.Managed || in.Binary != BinaryPath || in.Unit != Unit || in.Config != ConfigPath) {
 		return jobs.Fail("Переустановить можно только Hysteria, которую установил HyRoute. Импортированную установку заменяет развёртывание с заменой.", nil)
+	}
+	if !isHysteria(in.Binary) {
+		return jobs.Fail("Служба запускает "+in.Binary+", а не программу hysteria*: HyRoute не заменяет незнакомую программу. Обновите Hysteria там, откуда она запускается, или разверните её с заменой.", nil)
 	}
 	var pr remote.Probe
 	if err := json.Unmarshal([]byte(env.Get("probe")), &pr); err != nil {

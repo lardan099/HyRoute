@@ -399,6 +399,23 @@ func TestMaintainRefused(t *testing.T) {
 			t.Errorf("%+v: %v", p, err)
 		}
 	}
+
+	// A service that runs another program (docker, env): it is not
+	// replaced, by Submit or by a job queued before the import changed.
+	h.db.SetInstallation(ctx, model.Installation{ServerID: h.server, Binary: "/usr/bin/docker", Config: ConfigPath, Unit: "hysteria.service", At: time.Now()})
+	if _, err := sub.Maintain(ctx, h.server, MaintainParams{Op: OpUpgrade}, 0); !errors.Is(err, ErrNotHysteria) {
+		t.Fatalf("docker: %v", err)
+	}
+	j, err := h.eng.Submit(ctx, MaintainKind, h.server, MaintainParams{Op: OpUpgrade, Version: testVersion, Source: SourceAuto}, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j = h.wait(j.ID); j.State != model.JobFailed || !strings.Contains(j.ErrorMessage, "/usr/bin/docker") {
+		t.Fatalf("%s: %s", j.State, j.ErrorMessage)
+	}
+	if s.ran("/usr/bin/docker") || s.ran("install") || s.ran("cp") {
+		t.Fatalf("touched the program: %q", s.cmds)
+	}
 }
 
 // An imported installation is upgraded where it is.

@@ -77,6 +77,8 @@ func (s *server) startMaintain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errNoInstallation)
 	case errors.Is(err, deploy.ErrNotManaged):
 		writeError(w, &Error{Status: http.StatusConflict, Code: "not_managed", Message: "Hysteria на этом сервере импортирована: переустановить можно только установку HyRoute. Обновить версию можно и у импортированной."})
+	case errors.Is(err, deploy.ErrNotHysteria):
+		writeError(w, &Error{Status: http.StatusConflict, Code: "not_hysteria", Message: "Служба этого сервера запускает не программу hysteria* (например, docker или оболочку): HyRoute её не заменяет. Обновите Hysteria там, откуда она запускается, или разверните её с заменой."})
 	case err != nil:
 		s.fail(w, r, jobError(err))
 	default:

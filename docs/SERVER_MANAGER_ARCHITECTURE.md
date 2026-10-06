@@ -649,7 +649,10 @@ Phase 4.
 
 Задание `maintain` (пакет `deploy`, общие с развёртыванием шаги и
 `Deps`): `{op: upgrade|reinstall, version, source, via}`. Submit требует
-записанной установки; `reinstall` — только своей (`Managed`, стандартные
+записанной установки, программа которой названа `hysteria*` (импорт
+записывает `argv[0]` из `ExecStart` любой службы: docker, `env` или
+оболочку обслуживание не заменяет — `ErrNotHysteria`, и шаг check
+проверяет то же); `reinstall` — только своей (`Managed`, стандартные
 пути) и всегда с записанной версией (`DefaultVersion`, если она
 неизвестна). Шаги: connect → check (архитектура по `uname -m`, сборка
 и хеш релиза найдены, доступ к GitHub для `auto`, текущая версия в журнал)
@@ -1265,7 +1268,7 @@ routing`, ревизия с источником «правка»).
 | POST | `/api/v1/servers/{id}/ports` | operator+ | `{base, ports, host, hopInterval}`: новые порты — задание `apply` (202, `{job}`); только интервал — сохраняется сразу (200, `{job: null}`) |
 | POST | `/api/v1/servers/{id}/deploy` | operator+ | job Quick Deploy: тело — `deploy.Params` и `secrets` (`dns`, `outPassword`; в params задания не попадают); нужен подтверждённый ключ SSH; пароли прежней ревизии (любой `auth`, если `auth` не меняется) сохраняются; текущий конфиг не из развёртывания (правка, возврат, импорт) заменяется только с `"overwrite": true`, иначе 409 `config_changed` |
 | POST | `/api/v1/servers/{id}/import` | operator+ | job импорта |
-| POST | `/api/v1/servers/{id}/maintain` | operator+ | `{op: upgrade\|reinstall, version, source, via}`: задание `maintain`; без установки 409 `no_installation`, переустановка импортированной — 409 `not_managed` |
+| POST | `/api/v1/servers/{id}/maintain` | operator+ | `{op: upgrade\|reinstall, version, source, via}`: задание `maintain`; без установки 409 `no_installation`, переустановка импортированной — 409 `not_managed`, служба запускает не `hysteria*` (docker, env, оболочка) — 409 `not_hysteria` |
 | GET | `/api/v1/servers/{id}/status` | любая | статус сервиса |
 | POST | `/api/v1/servers/{id}/service/{start,stop,restart}` | operator+ | с подтверждением в UI |
 | GET | `/api/v1/servers/{id}/journal` | любая | журнал Hysteria через redaction (шаблоны + пароли текущего конфига): JSON последних записей или SSE с `?follow=1`; живых журналов одного сервера — до 2 на пользователя (429 `too_many_journals`) |
