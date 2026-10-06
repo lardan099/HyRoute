@@ -3,6 +3,7 @@ package cascade
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -143,6 +144,38 @@ func TestCheckLink(t *testing.T) {
 	c := CheckLink(ctx, tunneled{&entryBox{service: "active", ping: pingOK, tunnel: dialTo(good)}}, probe(), time.Unix(1_700_000_000, 0))
 	if c.HandshakeMillis != 42 || c.TCPMillis != 12 || c.Service != "active" || c.ChainID != 3 {
 		t.Fatalf("%+v", c)
+	}
+}
+
+// noDeadline is a connection like an SSH channel: no deadlines.
+type noDeadline struct{ net.Conn }
+
+func (noDeadline) SetDeadline(time.Time) error      { return errors.ErrUnsupported }
+func (noDeadline) SetReadDeadline(time.Time) error  { return errors.ErrUnsupported }
+func (noDeadline) SetWriteDeadline(time.Time) error { return errors.ErrUnsupported }
+
+// Another program on the link's port takes the connection and stays
+// silent: the probe gives up on its own, without deadlines.
+func TestCheckLinkSilentPort(t *testing.T) {
+	defer func(d time.Duration) { tunnelProbe = d }(tunnelProbe)
+	tunnelProbe = 200 * time.Millisecond
+	silent := func(context.Context, int) (net.Conn, error) {
+		a, b := net.Pipe()
+		go io.Copy(io.Discard, b) // reads, never answers
+		t.Cleanup(func() { b.Close() })
+		return noDeadline{a}, nil
+	}
+	done := make(chan model.LinkCheck, 1)
+	go func() {
+		done <- CheckLink(context.Background(), tunneled{&entryBox{service: "active", ping: pingOK, tunnel: silent}}, probe(), time.Unix(1_700_000_000, 0))
+	}()
+	select {
+	case c := <-done:
+		if c.Status != model.StateOffline || !strings.Contains(c.Reason, "не отвечает на 127.0.0.1:41000") {
+			t.Fatalf("%s %q", c.Status, c.Reason)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the probe hangs")
 	}
 }
 

@@ -19,6 +19,10 @@ import (
 // degraded.
 const SlowHandshake = 2 * time.Second
 
+// tunnelProbe bounds the SOCKS5 probe through the SSH tunnel, with room
+// for the exit to dial the check target.
+var tunnelProbe = 15 * time.Second
+
 // Probe is what a check of a link needs.
 type Probe struct {
 	Chain   int64
@@ -71,10 +75,21 @@ func CheckLink(ctx context.Context, ex remote.Executor, pr Probe, now time.Time)
 		if derr != nil {
 			return off("адрес проверки связи не подходит")
 		}
-		cl := socks5.Client{Username: pr.Secrets.SOCKSUser, Password: pr.Secrets.SOCKSPassword, HandshakeTimeout: 10 * time.Second,
-			Dial: func(ctx context.Context) (net.Conn, error) { return remote.DialLoopback(ctx, ex, pr.Params.LocalPort) }}
+		pctx, cancel := context.WithTimeout(ctx, tunnelProbe)
+		cl := socks5.Client{Username: pr.Secrets.SOCKSUser, Password: pr.Secrets.SOCKSPassword, HandshakeTimeout: tunnelProbe,
+			Dial: func(ctx context.Context) (net.Conn, error) {
+				conn, err := remote.DialLoopback(ctx, ex, pr.Params.LocalPort)
+				if err == nil {
+					// An SSH channel has no deadlines: the end of the
+					// probe closes it.
+					context.AfterFunc(ctx, func() { conn.Close() })
+				}
+				return conn, err
+			}}
 		start := time.Now()
-		conn, err := cl.Connect(ctx, dst)
+		conn, err := cl.Connect(pctx, dst)
+		took := time.Since(start)
+		cancel()
 		var rep socks5.ReplyError
 		switch {
 		case errors.Is(err, remote.ErrNoTunnel):
@@ -87,7 +102,7 @@ func CheckLink(ctx context.Context, ex remote.Executor, pr Probe, now time.Time)
 			return off("клиент связи не отвечает на 127.0.0.1:%d сервера входа: %v", pr.Params.LocalPort, err)
 		default:
 			conn.Close()
-			tunnelTCP, tunnelTook = true, time.Since(start)
+			tunnelTCP, tunnelTook = true, took
 		}
 	}
 
