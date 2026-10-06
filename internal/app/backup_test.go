@@ -1065,12 +1065,11 @@ func TestBackupLegacyBadSettings(t *testing.T) {
 	}
 }
 
-// After restoring only «Настройки», a new rule profile (rulesets.json
-// alone) is lost by «Вернуть как было», which puts rulesets.json back with
-// settings.json: the undo dialog names «Правила».
+// After restoring only «Настройки», a new rule profile (rulesets.json, a
+// file of the record) is named: «Вернуть как было» would drop it.
 func TestBackupUndoNamesRulesets(t *testing.T) {
 	a, _ := richCtl(t)
-	setKillSwitch(t, a, true) // the copy differs: the restore writes settings.json
+	setKillSwitch(t, a, false) // the copy differs: the restore writes settings.json
 	b := exportAll(t, a, bkPass, "settings")
 	c, _ := richCtl(t)
 	pv := openBk(t, c, b, bkPass)
@@ -1082,6 +1081,27 @@ func TestBackupUndoNamesRulesets(t *testing.T) {
 		t.Fatal(err)
 	}
 	if info := c.RestoreUndoInfo(); !slices.Contains(info.ChangedSince, "Правила") {
+		t.Fatalf("%+v", info)
+	}
+}
+
+// After restoring only «Правила» (settings.json and rulesets.json), the
+// kill switch turned off is in settings.json too: «Вернуть как было» puts
+// that file back whole, so the undo dialog names «Настройки» as well.
+func TestBackupUndoNamesSharedFiles(t *testing.T) {
+	a, _ := richCtl(t)
+	if _, _, err := a.ApplyRulesText("x.example -> блок", false, EditGuard{}); err != nil {
+		t.Fatal(err) // the copy's rules differ: the restore writes them
+	}
+	b := exportAll(t, a, bkPass, "rules")
+	c, _ := richCtl(t)
+	pv := openBk(t, c, b, bkPass)
+	restore(t, c, pv, replaceAll(pv))
+	if info := c.RestoreUndoInfo(); !info.Available || len(info.ChangedSince) != 0 {
+		t.Fatalf("%+v", info)
+	}
+	setKillSwitch(t, c, false) // richCtl turns it on
+	if info := c.RestoreUndoInfo(); !slices.Contains(info.ChangedSince, "Настройки") {
 		t.Fatalf("%+v", info)
 	}
 }
