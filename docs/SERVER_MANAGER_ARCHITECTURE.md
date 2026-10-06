@@ -1282,7 +1282,7 @@ routing`, ревизия с источником «правка»).
 | GET | `/api/v1/chains/{id}/template` | operator+ | каскад как файл шаблона: параметры связи без локального порта, правила и resolver входа; без серверов и секретов |
 | POST | `/api/v1/routing/import` | operator+ | `{data}` — экспорт HyRoute или текст ACL → черновик для редактора, без паролей; ничего не сохраняется |
 | GET | `/api/v1/geo` | любая | базы geo controller: релиз, файлы (SHA-256, размер, URL), когда скачаны и проверены |
-| POST | `/api/v1/geo/update` | operator+ | скачать последний релиз (3 мин), `{info, changed}`; не скачалось — 502 `geo_download` |
+| POST | `/api/v1/geo/update` | operator+ | скачать последний релиз (3 мин), `{info, changed}`; не скачалось — 502 `geo_download`; другое обновление ещё идёт — сразу 409 `geo_busy` |
 | GET | `/api/v1/servers/{id}/geo` | любая | `{release, at, latest, paths, rules}`: что HyRoute поставил, новее ли у controller нет, читает ли конфиг эти файлы, есть ли geo-правила в `acl.inline` |
 | POST | `/api/v1/servers/{id}/geo` | operator+ | `{source, via}` — задание `geo`; без установки — 409 `no_installation`, без баз у controller — 409 `no_geo` |
 | GET | `/api/v1/geo/categories` | любая | `kind=geoip\|geosite`, `q` — до 200 имён по алфавиту; без баз — 404 `no_geo` |

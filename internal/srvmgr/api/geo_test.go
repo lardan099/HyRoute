@@ -4,12 +4,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,6 +40,44 @@ func (e *testEnv) putGeo() {
 	}
 	b, _ := json.Marshal(i)
 	os.WriteFile(filepath.Join(e.geo.Dir, "info.json"), b, 0o600)
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A second update while one runs is 409 geo_busy at once.
+func TestGeoUpdateBusy(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	e.geo.HTTP = &http.Client{Transport: roundTrip(func(*http.Request) (*http.Response, error) {
+		once.Do(func() { close(entered) })
+		<-release
+		return nil, errors.New("no network in tests")
+	})}
+	done := make(chan struct{})
+	go func() { e.geo.Update(t.Context()); close(done) }()
+	<-entered
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	busy := make(chan *httptest.ResponseRecorder, 1)
+	go func() { busy <- owner.do("POST", "/api/v1/geo/update", nil, nil) }()
+	select {
+	case rec := <-busy:
+		code(t, rec, http.StatusConflict, "geo_busy")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second update waits for the first")
+	}
+	close(release)
+	<-done
+	code(t, owner.do("POST", "/api/v1/geo/update", nil, nil), http.StatusBadGateway, "geo_download")
 }
 
 func TestGeoAPI(t *testing.T) {

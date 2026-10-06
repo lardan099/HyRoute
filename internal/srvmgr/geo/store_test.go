@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -189,6 +190,59 @@ func TestUpdate(t *testing.T) {
 	}
 	if i, _ := s.Info(); i.Release != "202610030000" {
 		t.Fatalf("replaced: %+v", i)
+	}
+}
+
+// roundTrip is an HTTP transport that never leaves the process.
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// stalled is a client whose first request waits until release is closed
+// (entered is closed once it waits); every request then fails.
+func stalled() (c *http.Client, entered, release chan struct{}) {
+	entered, release = make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	return &http.Client{Transport: roundTrip(func(*http.Request) (*http.Response, error) {
+		once.Do(func() { close(entered) })
+		<-release
+		return nil, errors.New("no network in tests")
+	})}, entered, release
+}
+
+// An update while another runs is ErrBusy at once, without waiting for
+// it; once that one ended, the next runs.
+func TestUpdateBusy(t *testing.T) {
+	ctx := context.Background()
+	c, entered, release := stalled()
+	s := &Store{Dir: filepath.Join(t.TempDir(), "geo"), Base: "http://127.0.0.1:1/releases", HTTP: c}
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := s.Update(ctx)
+		done <- err
+	}()
+	<-entered
+	second := make(chan error, 1)
+	go func() {
+		_, _, err := s.Update(ctx)
+		second <- err
+	}()
+	select {
+	case err := <-second:
+		if !errors.Is(err, ErrBusy) {
+			close(release)
+			t.Fatalf("second update: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the second update waits for the first")
+	}
+	close(release)
+	if err := <-done; err == nil || errors.Is(err, ErrBusy) {
+		t.Fatalf("first update: %v", err)
+	}
+	if _, _, err := s.Update(ctx); err == nil || errors.Is(err, ErrBusy) {
+		t.Fatalf("after it: %v", err)
 	}
 }
 

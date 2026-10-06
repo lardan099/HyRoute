@@ -1,9 +1,12 @@
 package geo
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -110,6 +113,57 @@ func TestScheduleRound(t *testing.T) {
 	}
 	if q := s.Round(ctx); q != nil {
 		t.Fatalf("tried again: %v", q)
+	}
+}
+
+// syncBuffer is a log the test reads while others may write.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// The admin updates the databases right now: the round goes on without
+// them and logs nothing; an update of its own that fails is logged.
+func TestScheduleRoundBusy(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	h.put("R1", testDB(t, "one"))
+	c, entered, release := stalled()
+	h.files.Base, h.files.HTTP = "http://127.0.0.1:1/releases", c
+	var logs syncBuffer
+	s := &Scheduler{Files: h.files, Jobs: h.inst, DB: h.db, Keys: h.keys, Interval: time.Hour, Log: slog.New(slog.NewTextHandler(&logs, nil))}
+	done := make(chan struct{})
+	go func() { h.files.Update(ctx); close(done) }()
+	<-entered
+	rounded := make(chan struct{})
+	go func() { s.Round(ctx); close(rounded) }()
+	select {
+	case <-rounded:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the round waits for the admin's update")
+	}
+	if strings.Contains(logs.String(), "no update") {
+		close(release)
+		t.Fatalf("busy logged:\n%s", logs.String())
+	}
+	close(release)
+	<-done
+	s.Round(ctx)
+	if !strings.Contains(logs.String(), "geo databases: no update") {
+		t.Fatalf("a failed update not logged:\n%s", logs.String())
 	}
 }
 
