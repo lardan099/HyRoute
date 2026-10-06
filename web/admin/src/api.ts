@@ -795,6 +795,15 @@ export interface ChainLink {
   check: LinkCheck | null;
 }
 
+// UnreachableNode is a server «Удалить каскад» could not reach, with what
+// the link leaves there when the cascade is deleted without it.
+export interface UnreachableNode {
+  serverId: number;
+  name: string;
+  role: ServerRole;
+  left: string[];
+}
+
 // Chain is a cascade: servers in order, entry first, and the links.
 export interface Chain {
   id: number;
@@ -805,6 +814,8 @@ export interface Chain {
   egress: string;
   nodes: ChainNode[];
   links: ChainLink[];
+  // unreachable: only in the answers about one cascade.
+  unreachable?: UnreachableNode[];
   createdAt: string;
   updatedAt: string;
 }
@@ -981,6 +992,7 @@ export const api = {
   deleteChain: (id: number) => request<void>('DELETE', `/chains/${id}`),
   linkChain: (id: number) => request<Job>('POST', `/chains/${id}/link`),
   unlinkChain: (id: number, del: boolean) => request<Job>('POST', `/chains/${id}/unlink`, { delete: del }),
+  forceDeleteChain: (id: number) => request<Job>('POST', `/chains/${id}/unlink`, { delete: true, force: true }),
   checkChain: (id: number) => request<Chain>('POST', `/chains/${id}/check`),
   chainChecks: (id: number, idx = 0, limit = 100) => request<LinkCheck[]>('GET', `/chains/${id}/checks?idx=${idx}&limit=${limit}`),
   routing: (serverId: number) => request<RoutingView>('GET', `/servers/${serverId}/routing`),

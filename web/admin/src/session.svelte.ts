@@ -42,3 +42,5 @@ export async function loadSession() {
 
 export const canWrite = (u: User | null) => !!u && u.role !== 'readonly';
 export const canManageUsers = (u: User | null) => !!u && (u.role === 'owner' || u.role === 'admin');
+// canForce: may delete a cascade without its unreachable server.
+export const canForce = (u: User | null) => !!u && (u.role === 'owner' || u.role === 'admin');

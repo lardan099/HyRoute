@@ -5,7 +5,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { api, asApiError, type ApiError, type Chain, type LinkCheck, type RoutingTemplate, type Server } from '../api';
   import { t, type Key } from '../i18n';
-  import { canWrite, session } from '../session.svelte';
+  import { canForce, canWrite, session } from '../session.svelte';
   import { go } from '../router.svelte';
   import { flag, stateTone, when } from './format';
   import { busy, deployed, linkStateText, linkTone, pendingEntry } from './chain';
@@ -19,12 +19,15 @@
   let servers = $state<Record<number, Server>>({});
   let checks = $state<LinkCheck[]>([]);
   let error = $state<ApiError | null>(null);
-  let confirm = $state<'delete' | 'unlink' | null>(null);
+  let confirm = $state<'delete' | 'unlink' | 'force' | null>(null);
   let editing = $state(false);
   let name = $state('');
   let notes = $state('');
   let editError = $state<ApiError | null>(null);
   let writable = $derived(canWrite(session.user));
+  // unreachable: the servers «Удалить каскад» could not reach; owners and
+  // admins may delete the cascade without them.
+  let unreachable = $derived(chain && !busy(chain) ? (chain.unreachable ?? []) : []);
   let link = $derived(chain?.links[0] ?? null);
   let timer: ReturnType<typeof setInterval> | undefined;
   // gone: the view is destroyed before the reads of onMount ended.
@@ -142,6 +145,15 @@
     {/if}
   </div>
   {#if link?.state === 'stale'}<div class="note warn">{t('cascades.staleNote')}</div>{/if}
+  {#if unreachable.length && writable}
+    <div class="note warn row offer">
+      <span class="grow">
+        {t('cascades.unreachableNote', { names: unreachable.map((u) => `«${u.name}»`).join(', ') })}
+        {#if !canForce(session.user)}{t('cascades.unreachableOwner')}{/if}
+      </span>
+      {#if canForce(session.user)}<button class="danger" onclick={() => (confirm = 'force')}>{t('cascades.forceDelete')}</button>{/if}
+    </div>
+  {/if}
   {#if offer && writable}
     <div class="note info row offer">
       <span class="grow">{t('ctpl.offer', { name: offer.name })}</span>
