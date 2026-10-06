@@ -737,7 +737,7 @@ export const ru = {
   'deploy.viaHint': 'Он отдаст свою Hysteria, если это та же сборка, или скачает релиз сам. Controller перенесёт файл, хеш сверяется на обоих серверах.',
   'deploy.keepFirewall': 'Не открывать порты в ufw / firewalld',
   'deploy.replace': 'Заменить Hysteria, установленную не HyRoute',
-  'deploy.replaceHint': 'Прежние файлы сохранятся рядом с суффиксом .hyroute-prev. Чтобы управлять такой установкой как есть, лучше импортировать сервер.',
+  'deploy.replaceHint': 'Прежние файлы сохранятся рядом с суффиксом .hyroute-orig: HyRoute их потом не меняет и не удаляет. Чтобы управлять такой установкой как есть, лучше импортировать сервер.',
   'deploy.submit': 'Развернуть',
   'deploy.continue': 'Далее: развернуть',
   'deploy.addAndDeploy': 'Добавить и развернуть',

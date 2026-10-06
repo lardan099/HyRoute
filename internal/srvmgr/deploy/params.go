@@ -49,6 +49,10 @@ const (
 	Home       = "/var/lib/hysteria"
 	// Backup is the suffix of the previous file kept while a deploy runs.
 	Backup = ".hyroute-prev"
+	// Original is the suffix of a file of the installation a deploy
+	// replaced (Params.Replace): kept for good. Later jobs reuse
+	// .hyroute-prev; nothing of HyRoute changes or removes this copy.
+	Original = ".hyroute-orig"
 )
 
 // TLS modes.
@@ -114,7 +118,7 @@ type Params struct {
 	// KeepFirewall: do not open ports in ufw or firewalld.
 	KeepFirewall bool `json:"keepFirewall,omitempty"`
 	// Replace an installation HyRoute did not make (its files are kept
-	// with the .hyroute-prev suffix).
+	// with the .hyroute-orig suffix).
 	Replace bool `json:"replace,omitempty"`
 	// Overwrite a current config that no deploy made (edited, rolled back
 	// or imported): the deploy builds the config from these params alone,

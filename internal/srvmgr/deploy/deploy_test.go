@@ -536,6 +536,22 @@ func TestForeignInstallation(t *testing.T) {
 	if b, _ := s.file(BinaryPath + Backup); string(b) != "someone else's hysteria" {
 		t.Fatal("foreign binary not kept")
 	}
+	// The next change of HyRoute's files reuses .hyroute-prev; the copies
+	// of the replaced installation stay.
+	p = params()
+	p.Port = 8443
+	if j := h.deploy(p, nil); j.State != model.JobCompleted {
+		t.Fatalf("%s\n%s", j.ErrorMessage, h.log(j.ID))
+	}
+	if b, _ := s.file(ConfigPath + Backup); bytes.Equal(b, foreign) {
+		t.Fatal("the second deploy kept no copy of its own config")
+	}
+	if b, _ := s.file(ConfigPath + Original); !bytes.Equal(b, foreign) {
+		t.Fatal("foreign config lost")
+	}
+	if b, _ := s.file(BinaryPath + Original); string(b) != "someone else's hysteria" {
+		t.Fatal("foreign binary lost")
+	}
 }
 
 func TestParams(t *testing.T) {

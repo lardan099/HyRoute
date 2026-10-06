@@ -255,7 +255,10 @@ func (x *deployer) preflight(ctx context.Context, env *jobs.Env, p Params) error
 	case managed:
 		env.Logf("Hysteria на сервере установлена HyRoute: повторное развёртывание изменит только то, что отличается.")
 	case p.Replace:
-		env.Warnf("Hysteria на сервере установлена не HyRoute; её файлы будут заменены, прежние сохранятся с суффиксом %s.", Backup)
+		if err := env.Set("replacing", "1"); err != nil {
+			return err
+		}
+		env.Warnf("Hysteria на сервере установлена не HyRoute; её файлы будут заменены, прежние сохранятся с суффиксом %s (HyRoute их потом не меняет и не удаляет).", Original)
 	case imported:
 		return jobs.Fail("Hysteria на этом сервере импортирована, и HyRoute управляет ею как есть. Чтобы поставить вместо неё свою, разверните с заменой: прежние файлы сохранятся.", nil)
 	default:
@@ -414,7 +417,8 @@ func (x *deployer) binary(ctx context.Context, env *jobs.Env, version, source st
 }
 
 // backup records the state of the file at path (its SHA-256 or
-// remote.Absent) under flag, then keeps a copy as path.hyroute-prev. The
+// remote.Absent) under flag, then keeps a copy as path.hyroute-prev (and
+// path.hyroute-orig when the job replaces a foreign installation). The
 // record reaches the database before the copy and before the caller
 // changes path, so the rollback of an interrupted job knows what was
 // there. It also marks the job as changing the server.
@@ -441,6 +445,17 @@ func (x *deployer) backup(ctx context.Context, env *jobs.Env, ex remote.Executor
 	}
 	if err := remote.CopyFile(ctx, ex, path, path+Backup, sudo(env)); err != nil {
 		return jobs.Fail("Не удалось сохранить копию "+path+".", err)
+	}
+	// The files of a replaced installation stay for good: the next change
+	// of the file reuses .hyroute-prev.
+	if env.Get("replacing") == "1" {
+		if ok, err := remote.PathExists(ctx, ex, path+Original, sudo(env)); err != nil {
+			return err
+		} else if !ok {
+			if err := remote.CopyFile(ctx, ex, path, path+Original, sudo(env)); err != nil {
+				return jobs.Fail("Не удалось сохранить копию "+path+".", err)
+			}
+		}
 	}
 	return nil
 }
