@@ -189,6 +189,11 @@ func TestGeoWithoutData(t *testing.T) {
 	if len(issues) != 1 || !strings.Contains(issues[0].Text, "не скачана") {
 		t.Fatalf("%+v", issues)
 	}
+	// Explain says the same, not «категория недоступна».
+	ex := Explain(Config{DefaultAction: Direct, Rules: []Rule{{Name: "yt", Domains: []string{"geosite:youtube"}, Action: Block}}}, "main", Query{Domain: "youtube.com", Proto: 6, Port: 443})
+	if !strings.Contains(ex.Steps[0].Reason, "база правил ещё не скачана") {
+		t.Fatalf("%+v", ex.Steps[0])
+	}
 }
 
 func TestExplainAddress(t *testing.T) {

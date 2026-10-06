@@ -420,6 +420,9 @@ func (d *domPat) descr() string {
 	case domRegex:
 		return "имена по регулярному выражению"
 	case domGeo:
+		if d.geo == nil && d.pending {
+			return "база правил ещё не скачана"
+		}
 		if d.geo == nil {
 			return "категория недоступна"
 		}
