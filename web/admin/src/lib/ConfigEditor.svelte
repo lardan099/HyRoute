@@ -26,6 +26,12 @@
   let warnings = $derived(check?.problems.filter((p) => p.warning) ?? []);
   let timer: ReturnType<typeof setTimeout> | undefined;
   let seq = 0;
+  // pending: the check that waits for a pause in typing (withFields), or
+  // null; running: the latest check sent. synced: the main settings and
+  // the text are the same config (no edit since the last good check).
+  let pending: boolean | null = null;
+  let running: Promise<void> = Promise.resolve();
+  let synced = true;
 
   onMount(async () => {
     try {
@@ -57,6 +63,7 @@
       if (my !== seq) return; // a newer edit is on its way
       check = ch;
       error = null;
+      synced = true;
       if (withFields) yaml = ch.yaml;
       if (!withFields || tab === 'yaml') setFields(ch.fields);
     } catch (e) {
@@ -69,8 +76,30 @@
 
   function later(withFields: boolean) {
     busy = true; // Apply waits for the check of this edit
+    synced = false;
+    seq++; // the answer to a check sent before this edit is stale
     clearTimeout(timer);
-    timer = setTimeout(() => render(withFields), 500);
+    pending = withFields;
+    timer = setTimeout(() => {
+      pending = null;
+      running = render(withFields);
+    }, 500);
+  }
+
+  // show opens the other tab once the edit of this one is checked: the
+  // other tab then holds it (main settings from before an edit of the
+  // text would be written back over it). After a failed check the tab
+  // stays: its error says what to fix.
+  async function show(to: 'main' | 'yaml') {
+    if (to === tab) return;
+    clearTimeout(timer);
+    if (pending !== null) {
+      const withFields = pending;
+      pending = null;
+      running = render(withFields);
+    }
+    await running;
+    if (!busy && synced) tab = to;
   }
 
   function field() {
@@ -104,8 +133,8 @@
   <div class="row">
     <h2 class="grow">{t('cfg.title', { name: server.name })} <span class="faint small">{revision ? t('cfg.revision', { n: revision }) : ''}</span></h2>
     <div class="seg" role="tablist">
-      <button class:on={tab === 'main'} onclick={() => (tab = 'main')}>{t('cfg.tabMain')}</button>
-      <button class:on={tab === 'yaml'} onclick={() => (tab = 'yaml')}>{t('cfg.tabYAML')}</button>
+      <button class:on={tab === 'main'} onclick={() => show('main')}>{t('cfg.tabMain')}</button>
+      <button class:on={tab === 'yaml'} onclick={() => show('yaml')}>{t('cfg.tabYAML')}</button>
     </div>
   </div>
 
