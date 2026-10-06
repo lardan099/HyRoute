@@ -308,7 +308,7 @@ func TestNoSS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if level(r, "port") != Warn || r.Blocked {
+	if level(r, UncheckedPortCheck) != Warn || level(r, "port") != "" || r.Blocked {
 		t.Fatalf("%+v", r.Checks)
 	}
 }

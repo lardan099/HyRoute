@@ -194,6 +194,9 @@ func (x *deployer) preflight(ctx context.Context, env *jobs.Env, p Params) error
 		return jobs.Fail("Сервер не готов: "+strings.Join(why, "; ")+".", nil)
 	}
 	for _, c := range r.Checks {
+		// The Hysteria found, and the port it holds, are dealt with below;
+		// a port nothing could look at (preflight.UncheckedPortCheck) is
+		// for the admin to know.
 		if c.Level == preflight.Warn && c.ID != "hysteria" && c.ID != "port" {
 			env.Warnf("%s. %s", c.Title, c.Details)
 		}
@@ -220,9 +223,12 @@ func (x *deployer) preflight(ctx context.Context, env *jobs.Env, p Params) error
 			return err
 		}
 		var he *hopping.Error
-		if err := hopping.Check(ctx, ex, spec, rs, sudo(env)); errors.As(err, &he) {
+		switch err := hopping.Check(ctx, ex, spec, rs, sudo(env)); {
+		case errors.As(err, &he):
 			return jobs.Fail(he.Msg, nil)
-		} else if err != nil && !errors.Is(err, hopping.ErrNoSS) {
+		case errors.Is(err, hopping.ErrNoSS):
+			env.Warnf("Не проверено, свободны ли порты %s: на сервере нет ss.", p.HopPorts)
+		case err != nil:
 			return err
 		}
 	}

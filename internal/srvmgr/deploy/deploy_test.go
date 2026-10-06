@@ -365,22 +365,31 @@ func TestStartFailsRollsBackFreshInstall(t *testing.T) {
 	}
 }
 
-// Without ss the port cannot be looked at: the deploy waits until the
-// running process says it serves, and a service that stays "active"
-// without saying so (a certificate never issued) is rolled back.
+// Without ss the port cannot be looked at: the log says the ports were
+// not checked, the deploy waits until the running process says it
+// serves, and a service that stays "active" without saying so (a
+// certificate never issued) is rolled back.
 func TestVerifyWithoutSS(t *testing.T) {
 	s := newSim()
 	s.noSS = true
 	h := newHarness(t, s)
-	if j := h.deploy(params(), nil); j.State != model.JobCompleted || !strings.Contains(h.log(j.ID), "server up and running") {
+	p := params()
+	p.HopPorts = "20000-50000"
+	j := h.deploy(p, nil)
+	if j.State != model.JobCompleted || !strings.Contains(h.log(j.ID), "server up and running") {
 		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
+	}
+	for _, w := range []string{"Не удалось проверить, свободен ли порт UDP 443", "Не проверено, свободны ли порты 20000-50000"} {
+		if !strings.Contains(h.log(j.ID), w) {
+			t.Errorf("no %q in the log:\n%s", w, h.log(j.ID))
+		}
 	}
 
 	s = newSim()
 	s.noSS = true
 	s.silent = true
 	h = newHarness(t, s)
-	j := h.deploy(params(), nil)
+	j = h.deploy(params(), nil)
 	if j.State != model.JobFailed || j.CurrentStep != "verify" || h.steps(j.ID)["start"] != model.StepRolledBack {
 		t.Fatalf("%s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, h.log(j.ID))
 	}

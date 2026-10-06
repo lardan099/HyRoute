@@ -226,7 +226,7 @@ func Run(ctx context.Context, ex remote.Executor, probe remote.Probe, opt Option
 		return r, err
 	}
 	if !hasSS {
-		r.add("port", Warn, fmt.Sprintf("Не удалось проверить, свободен ли порт UDP %d", opt.UDPPort), "На сервере нет утилиты ss (пакет iproute2).")
+		r.add(UncheckedPortCheck, Warn, fmt.Sprintf("Не удалось проверить, свободен ли порт UDP %d", opt.UDPPort), "На сервере нет утилиты ss (пакет iproute2).")
 		return r, nil
 	}
 	ls, err := remote.Listeners(ctx, ex, sudo)
@@ -274,6 +274,10 @@ func rateOS(o remote.OSRelease) (Level, string) {
 // ForeignPortCheck is the check of a needed port held by a Hysteria that
 // is not the standard service.
 const ForeignPortCheck = "port-hysteria"
+
+// UncheckedPortCheck is the warning that the ports could not be looked
+// at: the server has no ss.
+const UncheckedPortCheck = "port-unchecked"
 
 // Standard places of an installation made by the official script (and by
 // HyRoute Server).
