@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -325,6 +326,13 @@ func ValidateProbe(p Probe) error {
 		}
 		if localHost(u.Hostname()) {
 			return Errorf("Адрес проверки не должен вести в локальную сеть или на этот компьютер")
+		}
+		if ps := u.Port(); ps != "" {
+			// As probeOnce reads it: a port past 65535, or 0, fails every
+			// probe before it connects.
+			if n, err := strconv.Atoi(ps); err != nil || n < 1 || n > 65535 {
+				return Errorf("Адрес проверки: порт — от 1 до 65535")
+			}
 		}
 	}
 	if n := p.IntervalSec; n != 0 && (n < minInterval || n > maxInterval) {
