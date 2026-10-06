@@ -131,13 +131,22 @@ func TestImportJob(t *testing.T) {
 		}
 	}
 
-	// Again, unchanged: nothing new.
-	j = e.run()
-	if j.State != model.JobCompleted || e.steps(j.ID)["save"] != model.StepSkipped {
-		t.Fatalf("%s %v", j.State, e.steps(j.ID))
-	}
-	if cs, _ := e.db.ListConfigs(ctx, e.server); len(cs) != 1 {
-		t.Fatalf("%d revisions", len(cs))
+	// Again, unchanged: nothing new, also with the firewall rules HyRoute
+	// recorded (a deploy or apply opened them).
+	for _, fw := range []model.Firewall{{}, {Tool: "ufw", Ports: "443/udp"}} {
+		if err := e.db.SetFirewall(ctx, e.server, fw); err != nil {
+			t.Fatal(err)
+		}
+		j = e.run()
+		if j.State != model.JobCompleted || e.steps(j.ID)["save"] != model.StepSkipped {
+			t.Fatalf("firewall %+v: %s %v", fw, j.State, e.steps(j.ID))
+		}
+		if cs, _ := e.db.ListConfigs(ctx, e.server); len(cs) != 1 {
+			t.Fatalf("%d revisions", len(cs))
+		}
+		if in, _ := e.db.Installation(ctx, e.server); in.Firewall != fw {
+			t.Fatalf("firewall record %+v", in.Firewall)
+		}
 	}
 
 	// The config changed on the server: a new revision.

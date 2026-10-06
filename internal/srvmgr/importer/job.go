@@ -153,6 +153,8 @@ func (x *importer) saved(ctx context.Context, env *jobs.Env) (bool, error) {
 	} else if err != nil {
 		return false, err
 	}
+	// The firewall record is not the import's (SetInstallation keeps it).
+	in.Firewall = model.Firewall{}
 	want := f.installation(env.ServerID, in.Managed, in.At)
 	return cur.SHA256 == f.ConfigSHA256 && in == want, nil
 }
