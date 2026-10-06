@@ -403,3 +403,60 @@ func mustParse(t *testing.T, b []byte) *hyconfig.Server {
 func hasProblem(ps []hyconfig.Problem, field string) bool {
 	return slices.ContainsFunc(ps, func(p hyconfig.Problem) bool { return p.Field == field && !p.Warning })
 }
+
+// Secrets in the comments of the whole file and above and below entries.
+const commented = `# old: hysteria2://fake-doc-pass@203.0.113.5:443
+
+# password: fake-head-pass
+listen: :443
+auth:
+  type: password
+  password: fake-auth-pass
+  # password: fake-foot-pass
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+
+# end: hysteria2://fake-end-pass@203.0.113.5:443
+`
+
+// The editor's text has every comment masked; a candidate made from it
+// gets them back as they were, and the diff shows only the edit.
+func TestUnmaskKeyAndDocumentComments(t *testing.T) {
+	fakes := []string{"fake-doc-pass", "fake-head-pass", "fake-foot-pass", "fake-end-pass"}
+	m, _, err := Mask([]byte(commented))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range fakes {
+		if strings.Contains(string(m), s) {
+			t.Fatalf("%s visible:\n%s", s, m)
+		}
+	}
+	text := strings.Replace(string(m), "listen: :443", "listen: :8443", 1)
+	back, err := Unmask([]byte(text), []byte(commented))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range fakes {
+		if !strings.Contains(string(back), s) {
+			t.Fatalf("%s lost:\n%s", s, back)
+		}
+	}
+	if strings.Contains(string(back), Hidden) {
+		t.Fatalf("a mask went into the candidate:\n%s", back)
+	}
+	ch, _, err := Build([]byte(commented), text, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var changed []string
+	for _, l := range ch.Diff {
+		if l.Op != " " {
+			changed = append(changed, l.Op+l.Text)
+		}
+	}
+	if !slices.Equal(changed, []string{"-listen: :443", "+listen: :8443"}) {
+		t.Fatalf("diff %q", changed)
+	}
+}

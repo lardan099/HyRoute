@@ -30,7 +30,7 @@ var (
 	hyURIRe    = regexp.MustCompile(`(?i)\b(hysteria2\+realm(?:\+http)?|hysteria2|hy2)://[^\s"'<>]+`)
 	urlPassRe  = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^/\s:@"'<>]*):[^/\s@"'<>]+@`) // the user may be empty
 	authHdrRe  = regexp.MustCompile(`(?i)\b((?:proxy-)?authorization["']?\s*[:=]\s*)("[^"]*"|[^\r\n,}]+)`)
-	keyValueRe = regexp.MustCompile(`(?i)(["']?\b` + secretKey + `["']?[ \t]*[:=][ \t]*)("(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|[^\s,;&}\]"']+)`)
+	keyValueRe = regexp.MustCompile(`(?i)(["']?\b` + secretKey + `["']?[ \t]*[:=][ \t]*)(` + regexp.QuoteMeta(Mask) + `|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|[^\s,;&}\]"']+)`)
 	telegramRe = regexp.MustCompile(`\b\d{6,12}:[A-Za-z0-9_-]{30,}\b`)
 )
 
@@ -46,6 +46,7 @@ func String(s string) string {
 	s = hyURIRe.ReplaceAllString(s, "${1}://"+Mask)
 	s = urlPassRe.ReplaceAllString(s, "${1}:"+Mask+"@")
 	s = authHdrRe.ReplaceAllString(s, "${1}"+Mask)
+	// The pattern takes the mask whole: text redacted once stays as it is.
 	s = keyValueRe.ReplaceAllStringFunc(s, func(m string) string {
 		sub := keyValueRe.FindStringSubmatch(m)
 		if sub[2] == Mask || strings.Trim(sub[2], `"'`) == Mask {

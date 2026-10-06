@@ -238,15 +238,20 @@ func Unmask(candidate, current []byte) ([]byte, error) {
 		return nil, fmt.Errorf("текущий конфиг: %w", err)
 	}
 	var bad []string
+	unmaskComments(cand, cur) // above and below the whole file
 	walk(cand, "", "", func(n *yaml.Node, p, key, parent string) {
 		if n.Kind == yaml.DocumentNode {
 			return
 		}
 		v := lookup(cur, p)
 		if v != nil {
-			for _, c := range [][2]*string{{&n.HeadComment, &v.HeadComment}, {&n.LineComment, &v.LineComment}, {&n.FootComment, &v.FootComment}} {
-				if *c[0] != *c[1] && *c[0] == redact.String(*c[1]) {
-					*c[0] = *c[1]
+			unmaskComments(n, v)
+			// The keys hold the comments above and below their entries.
+			if n.Kind == yaml.MappingNode && v.Kind == yaml.MappingNode {
+				for i := 0; i+1 < len(n.Content); i += 2 {
+					if k := keyOf(v, n.Content[i].Value); k != nil {
+						unmaskComments(n.Content[i], k)
+					}
 				}
 			}
 		}
@@ -263,6 +268,26 @@ func Unmask(candidate, current []byte) ([]byte, error) {
 		return nil, &model.FieldError{Field: bad[0], Msg: "Значение скрыто, но в текущем конфиге его нет: введите его в поле " + bad[0] + "."}
 	}
 	return encode(cand)
+}
+
+// unmaskComments gives n back the comments of v that n keeps in their
+// masked form.
+func unmaskComments(n, v *yaml.Node) {
+	for _, c := range [][2]*string{{&n.HeadComment, &v.HeadComment}, {&n.LineComment, &v.LineComment}, {&n.FootComment, &v.FootComment}} {
+		if *c[0] != *c[1] && *c[0] == redact.String(*c[1]) {
+			*c[0] = *c[1]
+		}
+	}
+}
+
+// keyOf is the key node of mapping m named k (as paths match keys).
+func keyOf(m *yaml.Node, k string) *yaml.Node {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if strings.EqualFold(m.Content[i].Value, k) {
+			return m.Content[i]
+		}
+	}
+	return nil
 }
 
 // ChangedSecrets are the paths of secrets that differ between two

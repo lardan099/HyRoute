@@ -57,6 +57,10 @@ func TestStringPatterns(t *testing.T) {
 				t.Errorf("%q: want %q in %q", c.in, k, got)
 			}
 		}
+		// Redacted text stays as it is (the editor masks comments again).
+		if again := String(got); again != got {
+			t.Errorf("%q: redacted again %q became %q", c.in, got, again)
+		}
 	}
 }
 
