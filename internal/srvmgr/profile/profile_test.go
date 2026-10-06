@@ -85,6 +85,25 @@ func TestACMEServer(t *testing.T) {
 	}
 }
 
+// With several ACME domains the summary shows the SNI the links carry:
+// none when the address is any of the domains, else the first one.
+func TestACMEDomainsSNI(t *testing.T) {
+	cfg := []byte("listen: :443\nacme:\n  domains: [a.example.com, b.example.com]\nauth:\n  type: password\n  password: fake-profile-pass\n")
+	for host, sni := range map[string]string{"B.example.com": "", "a.example.com": "", "192.0.2.70": "a.example.com"} {
+		s := srv
+		s.Host = host
+		pr, err := Build(s, cfg, model.ConfigMeta{TLS: "acme", Ports: "443"}, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		l, _, err := hy2uri.Parse(pr.URI)
+		cc, _ := hyconfig.ParseClient([]byte(pr.Config))
+		if err != nil || pr.SNI != sni || l.SNI != sni || cc.TLS.SNI != sni {
+			t.Fatalf("%s: summary %q, link %q, config %q", host, pr.SNI, l.SNI, cc.TLS.SNI)
+		}
+	}
+}
+
 func TestUserPass(t *testing.T) {
 	cfg := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: userpass\n  userpass:\n    bob: fake-bob-pass\n    alice: fake-alice-pass\n")
 	meta := model.ConfigMeta{TLS: "acme", Ports: "443"}

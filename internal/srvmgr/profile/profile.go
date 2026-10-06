@@ -93,7 +93,8 @@ func Summarize(srv model.Server, cfg []byte, meta model.ConfigMeta, links []stri
 	}
 	o := ClientOptions(srv, c, meta, "")
 	s.SNI, s.PinSHA256, s.Insecure = o.SNI, o.PinSHA256, o.PinSHA256 != ""
-	if c.ACME != nil && len(c.ACME.Domains) > 0 && s.SNI == "" && !strings.EqualFold(c.ACME.Domains[0], srv.Host) {
+	// The first domain unless the address is one of them, as ClientFor.
+	if c.ACME != nil && len(c.ACME.Domains) > 0 && s.SNI == "" && !slices.ContainsFunc(c.ACME.Domains, func(d string) bool { return strings.EqualFold(d, srv.Host) }) {
 		s.SNI = c.ACME.Domains[0]
 	}
 	for u := range c.Auth.UserPass {
