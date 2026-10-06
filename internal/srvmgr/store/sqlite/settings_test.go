@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -82,4 +84,46 @@ func TestSealedData(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(d, true, "", "")
+}
+
+// SealedVersions reads the key version of the sealed values of every
+// table that has them.
+func TestSealedVersions(t *testing.T) {
+	ctx := context.Background()
+	d, _ := openTemp(t)
+	sealedAs := func(v uint32) []byte {
+		return append(binary.BigEndian.AppendUint32([]byte("HRS1"), v), "the rest of the value"...)
+	}
+	versions := func(want ...uint32) {
+		t.Helper()
+		vs, err := d.SealedVersions(ctx)
+		slices.Sort(vs)
+		if err != nil || !slices.Equal(vs, want) {
+			t.Fatalf("%v %v, want %v", vs, err, want)
+		}
+	}
+	versions()
+	srv := model.Server{Name: "a", Host: "192.0.2.1", SSHPort: 22, SSHUser: "root", AuthType: model.AuthPassword, Role: model.RoleStandalone, State: model.StateNew}
+	if err := d.CreateServer(ctx, &srv, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []uint32{1, 1} {
+		c := model.ServerConfig{ServerID: srv.ID, SHA256: "sum", Source: model.ConfigImport, At: time.Now()}
+		if err := d.AddConfig(ctx, &c, func(int) ([]byte, error) { return sealedAs(v), nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	versions(1)
+	seal := func(int64) ([]model.Credential, error) {
+		return []model.Credential{{Kind: model.CredSSHPassword, Sealed: sealedAs(2)}}, nil
+	}
+	if err := d.UpdateServer(ctx, &srv, seal, nil); err != nil {
+		t.Fatal(err)
+	}
+	versions(1, 2)
+	j := model.Job{Kind: "deploy", ServerID: srv.ID, State: model.JobCompleted, Params: []byte("{}"), CreatedAt: time.Now()}
+	if err := d.CreateJob(ctx, &j, []model.JobStep{{Idx: 0, Name: "connect"}}, func(int64) ([]byte, error) { return sealedAs(3), nil }); err != nil {
+		t.Fatal(err)
+	}
+	versions(1, 2, 3)
 }

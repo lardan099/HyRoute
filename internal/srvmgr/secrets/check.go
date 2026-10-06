@@ -42,6 +42,9 @@ type Database interface {
 	// SealedSample is one sealed value and the context it was sealed for
 	// (store.ErrNotFound: none).
 	SealedSample(ctx context.Context) ([]byte, string, error)
+	// SealedVersions are the master key versions of the stored sealed
+	// values.
+	SealedVersions(ctx context.Context) ([]uint32, error)
 }
 
 // Open gives the controller its master key (Load) and checks it against
@@ -51,7 +54,10 @@ type Database interface {
 //   - the key must open the check value (ErrKeyMismatch); after a
 //     rotation the check value moves to the current version;
 //   - a database without a check value (new, or from a build before it)
-//     gets one, once a sealed value it has opens with the key.
+//     gets one, once a sealed value it has opens with the key;
+//   - every version the stored values are sealed with must be loaded
+//     (ErrKeyMismatch): they keep their version after a rotation, so the
+//     old one stays needed although the check value moved on.
 func Open(ctx context.Context, getenv func(string) string, file string, db Database) (*Keyring, Source, error) {
 	keys, src, err := Load(getenv, file)
 	missing := errors.Is(err, fs.ErrNotExist)
@@ -99,6 +105,9 @@ func Open(ctx context.Context, getenv func(string) string, file string, db Datab
 		if _, err := keys.Open(b, checkContext); err != nil {
 			return nil, 0, mismatch(err, from)
 		}
+		if err := versionsLoaded(ctx, db, keys, from); err != nil {
+			return nil, 0, err
+		}
 		if keys.NeedsRewrap(b) {
 			if err := storeCheck(ctx, db, keys); err != nil {
 				return nil, 0, err
@@ -116,10 +125,28 @@ func Open(ctx context.Context, getenv func(string) string, file string, db Datab
 	case !errors.Is(err, store.ErrNotFound):
 		return nil, 0, err
 	}
+	if err := versionsLoaded(ctx, db, keys, from); err != nil {
+		return nil, 0, err
+	}
 	if err := storeCheck(ctx, db, keys); err != nil {
 		return nil, 0, err
 	}
 	return keys, src, nil
+}
+
+// versionsLoaded: the keyring has every version the stored values are
+// sealed with.
+func versionsLoaded(ctx context.Context, db Database, keys *Keyring, from string) error {
+	vs, err := db.SealedVersions(ctx)
+	if err != nil {
+		return err
+	}
+	for _, v := range vs {
+		if _, ok := keys.keys[v]; !ok {
+			return mismatch(&UnknownVersionError{v}, from)
+		}
+	}
+	return nil
 }
 
 // mismatch explains why the key from `from` does not open the database.

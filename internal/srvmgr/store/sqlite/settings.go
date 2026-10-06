@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"time"
 
@@ -32,6 +33,34 @@ func (d *DB) HasSealed(ctx context.Context) (bool, error) {
 		OR EXISTS (SELECT 1 FROM server_configs)
 		OR EXISTS (SELECT 1 FROM jobs WHERE secret IS NOT NULL)`).Scan(&has)
 	return has, err
+}
+
+// SealedVersions are the master key versions the stored sealed values
+// need: SSH credentials, config revisions, job and link secrets. A sealed
+// value starts with 4 bytes of magic and the version (big-endian, see
+// package secrets); only those 8 bytes are read.
+func (d *DB) SealedVersions(ctx context.Context) ([]uint32, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT DISTINCT substr(v, 5, 4) FROM (
+		SELECT sealed AS v FROM server_credentials
+		UNION ALL SELECT config FROM server_configs
+		UNION ALL SELECT secret FROM jobs WHERE secret IS NOT NULL
+		UNION ALL SELECT secrets FROM chain_links WHERE secrets IS NOT NULL
+	) WHERE substr(v, 1, 4) = CAST('HRS1' AS BLOB)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []uint32
+	for rows.Next() {
+		var b []byte
+		if err := rows.Scan(&b); err != nil {
+			return nil, err
+		}
+		if len(b) == 4 {
+			out = append(out, binary.BigEndian.Uint32(b))
+		}
+	}
+	return out, rows.Err()
 }
 
 // SealedSample is one value sealed with the master key and the context it

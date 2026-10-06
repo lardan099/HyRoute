@@ -21,7 +21,10 @@ type fakeDB struct {
 	sealed    bool   // some row holds a sealed value
 	sample    []byte // one of them, with its context
 	sampleCtx string
+	versions  []uint32 // the key versions they are sealed with
 }
+
+func (d *fakeDB) SealedVersions(context.Context) ([]uint32, error) { return d.versions, nil }
 
 func (d *fakeDB) Setting(_ context.Context, key string) (string, error) {
 	v, ok := d.settings[key]
@@ -174,9 +177,9 @@ func TestOpenWrongKey(t *testing.T) {
 	}
 }
 
-// After a rotation the check value moves to the new version, so the old
-// one can go once the data has moved too; a key without the version the
-// database needs is refused with that version in the message.
+// After a rotation the check value moves to the new version, but the old
+// one stays needed while stored values are sealed with it; a key without a
+// version the database needs is refused with that version in the message.
 func TestOpenRotation(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -186,6 +189,7 @@ func TestOpenRotation(t *testing.T) {
 	if _, _, err := Open(ctx, env(nil), file, db); err != nil {
 		t.Fatal(err)
 	}
+	db.sealed, db.versions = true, []uint32{1}
 	writeKey(t, file, keyText(1, 1)+keyText(2, 2))
 	if _, _, err := Open(ctx, env(nil), file, db); err != nil {
 		t.Fatal(err)
@@ -193,7 +197,12 @@ func TestOpenRotation(t *testing.T) {
 	if v := checkVersion(t, db); v != 2 {
 		t.Fatalf("check value version %d after rotation", v)
 	}
+	db.versions = []uint32{1, 2}
 	writeKey(t, file, keyText(2, 2))
+	if _, _, err := Open(ctx, env(nil), file, db); !errors.Is(err, ErrKeyMismatch) || !strings.Contains(err.Error(), "версией 1") || !strings.Contains(err.Error(), "«1:<ключ>»") {
+		t.Fatalf("old version dropped while data needs it: %v", err)
+	}
+	db.versions = []uint32{2} // the data has moved
 	if _, _, err := Open(ctx, env(nil), file, db); err != nil {
 		t.Fatalf("new version only: %v", err)
 	}
