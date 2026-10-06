@@ -3,7 +3,10 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/hyconfig"
@@ -25,11 +28,24 @@ type chainJSON struct {
 	Health model.ServerState `json:"health"`
 	// Egress is the exit's address out, when the exit sends straight out
 	// (its first outbound is direct) and the chain is not offline.
-	Egress    string          `json:"egress"`
-	Nodes     []chainNodeJSON `json:"nodes"`
-	Links     []chainLinkJSON `json:"links"`
-	CreatedAt time.Time       `json:"createdAt"`
-	UpdatedAt time.Time       `json:"updatedAt"`
+	Egress string          `json:"egress"`
+	Nodes  []chainNodeJSON `json:"nodes"`
+	Links  []chainLinkJSON `json:"links"`
+	// Unreachable are the servers the latest «Удалить каскад» could not
+	// reach (cascade.Linker.Unreached): owners and admins may delete the
+	// chain without them. Only in the answers about one chain.
+	Unreachable []unreachableJSON `json:"unreachable,omitempty"`
+	CreatedAt   time.Time         `json:"createdAt"`
+	UpdatedAt   time.Time         `json:"updatedAt"`
+}
+
+// unreachableJSON is a server the chain is deleted without, with what the
+// link leaves there.
+type unreachableJSON struct {
+	ServerID int64            `json:"serverId"`
+	Name     string           `json:"name"`
+	Role     model.ServerRole `json:"role"`
+	Left     []string         `json:"left"`
 }
 
 // linkCheckJSON is one check of a link (P3-03).
@@ -154,7 +170,33 @@ func (s *server) writeChain(w http.ResponseWriter, r *http.Request, status int, 
 	}
 	j := toChainJSON(c, names)
 	s.linkHealth(r, &j, c.Chain)
+	s.unreachable(r, &j, c.Chain, names)
 	writeJSON(w, status, j)
+}
+
+// unreachable adds the servers the latest «Удалить каскад» of the chain
+// could not reach, with what the link leaves on them; a failure only
+// leaves them out.
+func (s *server) unreachable(r *http.Request, out *chainJSON, c model.Chain, names map[int64]string) {
+	if s.Cascade == nil || len(c.Links) == 0 {
+		return
+	}
+	un, err := s.Cascade.Unreached(r.Context(), c, 0)
+	if err != nil {
+		s.Log.Warn("cascade: unreachable servers not looked up", "chain", c.ID, "err", err)
+		return
+	}
+	for _, u := range un {
+		role := model.RoleExit
+		if u.Entry {
+			role = model.RoleEntry
+		}
+		left := u.Left
+		if left == nil {
+			left = []string{}
+		}
+		out.Unreachable = append(out.Unreachable, unreachableJSON{ServerID: u.Server, Name: names[u.Server], Role: role, Left: left})
+	}
 }
 
 func (s *server) createChain(w http.ResponseWriter, r *http.Request) {
@@ -238,7 +280,8 @@ func (s *server) linkChain(w http.ResponseWriter, r *http.Request) {
 }
 
 // unlinkChain queues the job that takes the chain's link off its servers
-// ({"delete": true}: the chain goes too).
+// ({"delete": true}: the chain goes too; with "force": true, without the
+// servers the latest delete could not reach, forceDelete).
 func (s *server) unlinkChain(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok || s.Cascade == nil {
@@ -247,6 +290,7 @@ func (s *server) unlinkChain(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		Delete bool `json:"delete"`
+		Force  bool `json:"force"`
 	}
 	if r.ContentLength != 0 {
 		if err := readJSON(r, &in); err != nil {
@@ -254,20 +298,67 @@ func (s *server) unlinkChain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if in.Force {
+		s.forceDelete(w, r, id, in.Delete)
+		return
+	}
 	j, err := s.Cascade.Unlink(r.Context(), id, 0, in.Delete, principal(r).User.ID)
+	if err != nil {
+		s.fail(w, r, unlinkError(err))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, toJobJSON(j))
+}
+
+// unlinkError is the answer to an unlink job that was not queued.
+func unlinkError(err error) error {
 	switch {
 	case errors.Is(err, cascade.ErrNotDeployed):
-		s.fail(w, r, &Error{Status: http.StatusConflict, Code: "not_deployed", Message: "Связь каскада не развёрнута на серверах: каскад удаляется без задания."})
-		return
+		return &Error{Status: http.StatusConflict, Code: "not_deployed", Message: "Связь каскада не развёрнута на серверах: каскад удаляется без задания."}
+	case errors.Is(err, cascade.ErrReached):
+		return &Error{Status: http.StatusConflict, Code: "servers_reached", Message: "Удалить каскад без недоступного сервера можно, только когда «Удалить каскад» не смогло подключиться к одному из его серверов. Сначала удалите каскад обычным способом."}
 	case errors.Is(err, cascade.ErrNoConfig):
-		s.fail(w, r, &Error{Status: http.StatusConflict, Code: "no_config", Message: "HyRoute не знает конфиг одного из серверов каскада: импортируйте его."})
-		return
+		return &Error{Status: http.StatusConflict, Code: "no_config", Message: "HyRoute не знает конфиг одного из серверов каскада: импортируйте его."}
 	case errors.Is(err, cascade.ErrNoInstallation):
-		s.fail(w, r, &Error{Status: http.StatusConflict, Code: "no_installation", Message: "HyRoute не знает, где Hysteria на одном из серверов каскада: импортируйте сервер."})
+		return &Error{Status: http.StatusConflict, Code: "no_installation", Message: "HyRoute не знает, где Hysteria на одном из серверов каскада: импортируйте сервер."}
+	}
+	return jobError(err)
+}
+
+// forceDelete queues the job that deletes the chain without the servers
+// its latest «Удалить каскад» could not reach (cascade.Linker.ForceDelete):
+// owners and admins only, written to the audit log.
+func (s *server) forceDelete(w http.ResponseWriter, r *http.Request, id int64, del bool) {
+	p := principal(r)
+	if !p.User.Role.CanForce() {
+		writeError(w, errForbidden)
 		return
-	case err != nil:
-		s.fail(w, r, jobError(err))
+	}
+	if !del {
+		writeError(w, &Error{Status: http.StatusBadRequest, Code: "bad_request", Message: "force — только вместе с delete: каскад удаляется."})
 		return
+	}
+	c, err := s.Store.ChainByID(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	j, un, err := s.Cascade.ForceDelete(r.Context(), id, 0, p.User.ID)
+	if err != nil {
+		s.fail(w, r, unlinkError(err))
+		return
+	}
+	names, err := s.serverNames(r)
+	if err != nil {
+		names = map[int64]string{}
+	}
+	without := make([]string, 0, len(un))
+	for _, u := range un {
+		without = append(without, "«"+names[u.Server]+"»")
+	}
+	details := fmt.Sprintf("«%s» без %s, задание %d", c.Name, strings.Join(without, ", "), j.ID)
+	if err := s.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), UserID: p.User.ID, Action: "chain_force_delete", Target: "chain/" + strconv.FormatInt(id, 10), Details: details}); err != nil {
+		s.Log.Error("audit: chain_force_delete", "chain", id, "err", err)
 	}
 	writeJSON(w, http.StatusAccepted, toJobJSON(j))
 }

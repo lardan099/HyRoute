@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/preflight"
@@ -167,6 +168,12 @@ func (s *server) retryJob(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
 		writeError(w, errNotFound)
+		return
+	}
+	// A cascade deleted without its unreachable server is for owners and
+	// admins, its retry too.
+	if j, err := s.Store.JobByID(r.Context(), id); err == nil && cascade.Forced(j) && !principal(r).User.Role.CanForce() {
+		writeError(w, errForbidden)
 		return
 	}
 	j, err := s.Jobs.Retry(r.Context(), id, principal(r).User.ID)

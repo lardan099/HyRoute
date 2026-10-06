@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
+	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 )
 
@@ -121,6 +122,95 @@ func TestChainsAPI(t *testing.T) {
 	}
 	if rec = owner.do("GET", "/api/v1/servers/"+strconv.FormatInt(ids[1], 10), nil, nil); !strings.Contains(rec.Body.String(), `"role":"standalone"`) {
 		t.Fatalf("role after delete: %s", rec.Body)
+	}
+}
+
+// A deployed chain is deleted without the server «Удалить каскад» could
+// not reach: only by owners and admins, only after that failure, and the
+// request is audited. The chain lists what stays on the server.
+func TestChainForceDeleteAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	var u model.User
+	u.Username, u.Role = "op", model.RoleOperator
+	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
+	e.db.CreateUser(ctx, &u)
+	op := e.login("op")
+	var ids []int64
+	for i, name := range []string{"Entry", "Exit"} {
+		rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": name, "host": "192.0.2.6" + strconv.Itoa(i), "authType": "password", "password": fakeSSHPass}, nil)
+		var srv serverJSON
+		json.Unmarshal(rec.Body.Bytes(), &srv)
+		c := model.ServerConfig{ServerID: srv.ID, SHA256: "x", Meta: model.ConfigMeta{Auth: "userpass"}, Source: model.ConfigDeploy, At: time.Now()}
+		e.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) {
+			return e.keys.Seal([]byte("listen: :443\nauth:\n  type: userpass\n  userpass:\n    alice: fake-force-api\n"), model.ConfigContext(srv.ID, rev))
+		})
+		e.db.SetInstallation(ctx, model.Installation{ServerID: srv.ID, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", User: "hysteria", At: time.Now()})
+		ids = append(ids, srv.ID)
+	}
+	rec := owner.do("POST", "/api/v1/chains", map[string]any{"name": "DE", "nodes": ids}, nil)
+	var ch chainJSON
+	json.Unmarshal(rec.Body.Bytes(), &ch)
+	id := strconv.FormatInt(ch.ID, 10)
+	c, _ := e.db.ChainByID(ctx, ch.ID)
+	l := c.Links[0]
+	l.State = model.LinkActive
+	e.db.UpdateLink(ctx, l)
+	// The exit got the link's user when the link was deployed.
+	user := cascade.User(ch.ID, 0)
+	cx := model.ServerConfig{ServerID: ids[1], SHA256: "y", Meta: model.ConfigMeta{Auth: "userpass"}, Source: model.ConfigCascade, At: time.Now()}
+	e.db.AddConfig(ctx, &cx, func(rev int) ([]byte, error) {
+		return e.keys.Seal([]byte("listen: :443\nauth:\n  type: userpass\n  userpass:\n    alice: fake-force-api\n    "+user+": fake-link-api\n"), model.ConfigContext(ids[1], rev))
+	})
+	force := map[string]any{"delete": true, "force": true}
+
+	// Not before «Удалить каскад» failed for want of the server.
+	code(t, op.do("POST", "/api/v1/chains/"+id+"/unlink", force, nil), http.StatusForbidden, "forbidden")
+	code(t, owner.do("POST", "/api/v1/chains/"+id+"/unlink", force, nil), http.StatusConflict, "servers_reached")
+	rec = owner.do("POST", "/api/v1/chains/"+id+"/unlink", map[string]any{"delete": true}, nil)
+	var job jobJSON
+	json.Unmarshal(rec.Body.Bytes(), &job)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	failed, _ := e.db.JobByID(ctx, job.ID)
+	failed.State, failed.CurrentStep = model.JobFailed, "connect"
+	e.db.UpdateJob(ctx, failed)
+	if rec = owner.do("GET", "/api/v1/chains/"+id, nil, nil); strings.Contains(rec.Body.String(), `"unreachable"`) {
+		t.Fatalf("failed with both servers reached: %s", rec.Body)
+	}
+	code(t, owner.do("POST", "/api/v1/chains/"+id+"/unlink", force, nil), http.StatusConflict, "servers_reached")
+	e.db.SetJobData(ctx, job.ID, map[string]string{"unreached:" + strconv.FormatInt(ids[1], 10): "1"})
+
+	rec = owner.do("GET", "/api/v1/chains/"+id, nil, nil)
+	json.Unmarshal(rec.Body.Bytes(), &ch)
+	if len(ch.Unreachable) != 1 || ch.Unreachable[0].ServerID != ids[1] || ch.Unreachable[0].Name != "Exit" || ch.Unreachable[0].Role != model.RoleExit ||
+		len(ch.Unreachable[0].Left) != 1 || !strings.Contains(ch.Unreachable[0].Left[0], user+" в /etc/hysteria/config.yaml") {
+		t.Fatalf("%s", rec.Body)
+	}
+	if rec = owner.do("GET", "/api/v1/chains", nil, nil); strings.Contains(rec.Body.String(), `"unreachable"`) {
+		t.Fatalf("list: %s", rec.Body)
+	}
+	code(t, op.do("POST", "/api/v1/chains/"+id+"/unlink", force, nil), http.StatusForbidden, "forbidden")
+	code(t, owner.do("POST", "/api/v1/chains/"+id+"/unlink", map[string]any{"force": true}, nil), http.StatusBadRequest, "bad_request")
+	rec = owner.do("POST", "/api/v1/chains/"+id+"/unlink", force, nil)
+	json.Unmarshal(rec.Body.Bytes(), &job)
+	if rec.Code != http.StatusAccepted || job.Kind != "unlink" || !strings.Contains(string(job.Params), `"force":true`) || job.ServerID != ids[0] {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	as, _ := e.db.ListAudit(ctx, 5)
+	if len(as) == 0 || as[0].Action != "chain_force_delete" || as[0].Target != "chain/"+id || !strings.Contains(as[0].Details, "«DE» без «Exit»") {
+		t.Fatalf("audit %+v", as)
+	}
+
+	// Its retry is for owners and admins too.
+	forced, _ := e.db.JobByID(ctx, job.ID)
+	forced.State = model.JobFailed
+	e.db.UpdateJob(ctx, forced)
+	code(t, op.do("POST", "/api/v1/jobs/"+strconv.FormatInt(job.ID, 10)+"/retry", nil, nil), http.StatusForbidden, "forbidden")
+	if rec = owner.do("POST", "/api/v1/jobs/"+strconv.FormatInt(job.ID, 10)+"/retry", nil, nil); rec.Code != http.StatusOK {
+		t.Fatalf("owner retry: %d %s", rec.Code, rec.Body)
 	}
 }
 

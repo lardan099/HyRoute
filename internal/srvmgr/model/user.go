@@ -30,6 +30,10 @@ func (r Role) CanWrite() bool { return r.Valid() && r != RoleReadOnly }
 // CanManageUsers: may create users and revoke other users' sessions.
 func (r Role) CanManageUsers() bool { return r == RoleOwner || r == RoleAdmin }
 
+// CanForce: may remove what HyRoute cannot take off a server that does not
+// answer (a cascade deleted without its unreachable server).
+func (r Role) CanForce() bool { return r == RoleOwner || r == RoleAdmin }
+
 // User is an admin account. PasswordHash is a PHC argon2id string.
 type User struct {
 	ID           int64
