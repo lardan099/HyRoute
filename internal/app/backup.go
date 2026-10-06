@@ -889,10 +889,11 @@ func (c *Controller) RestoreUndoInfo() BackupUndoInfo {
 	}
 	c.mu.Unlock()
 	info.Available, info.Created, info.FileName, info.Sections = true, m.Created, m.File, sectionTitles(m.Sections)
+	// Every file of the record goes back whole, so a change to any of them
+	// is lost, whichever section it belongs to: rulesets.json rides along
+	// with settings.json, and prefs.json or profiles.json hold more than
+	// one section.
 	for _, def := range backupSections {
-		if !slices.Contains(m.Sections, def.key) {
-			continue
-		}
 		for _, f := range def.files {
 			if changed[f] {
 				info.ChangedSince = append(info.ChangedSince, def.title)

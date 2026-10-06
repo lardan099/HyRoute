@@ -1064,3 +1064,24 @@ func TestBackupLegacyBadSettings(t *testing.T) {
 		t.Fatalf("%+v", c.Profiles())
 	}
 }
+
+// After restoring only «Настройки», a new rule profile (rulesets.json
+// alone) is lost by «Вернуть как было», which puts rulesets.json back with
+// settings.json: the undo dialog names «Правила».
+func TestBackupUndoNamesRulesets(t *testing.T) {
+	a, _ := richCtl(t)
+	setKillSwitch(t, a, true) // the copy differs: the restore writes settings.json
+	b := exportAll(t, a, bkPass, "settings")
+	c, _ := richCtl(t)
+	pv := openBk(t, c, b, bkPass)
+	restore(t, c, pv, replaceAll(pv))
+	if info := c.RestoreUndoInfo(); !info.Available || len(info.ChangedSince) != 0 {
+		t.Fatalf("%+v", info)
+	}
+	if _, err := c.CreateRuleset(RulesetInput{Name: "Игры", From: "active"}, SourceUser); err != nil {
+		t.Fatal(err)
+	}
+	if info := c.RestoreUndoInfo(); !slices.Contains(info.ChangedSince, "Правила") {
+		t.Fatalf("%+v", info)
+	}
+}
