@@ -359,6 +359,8 @@ export interface ServerConfig {
   // installed: the Hysteria version of the server's installation (an
   // upgrade changes it, not the revision's meta).
   installed?: string;
+  // keepFirewall: the deploy was told to leave the firewall alone.
+  keepFirewall?: boolean;
 }
 
 // ConfigRevision is a revision in the config history (no config text).

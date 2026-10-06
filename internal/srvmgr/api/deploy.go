@@ -99,6 +99,9 @@ type configJSON struct {
 	// (when it is a release tag): an upgrade changes it, not the
 	// revision's meta, and the deploy form keeps it.
 	Installed string `json:"installed,omitempty"`
+	// KeepFirewall: the deploy was told to leave the firewall alone (a
+	// later deploy form keeps it, whatever made the revision).
+	KeepFirewall bool `json:"keepFirewall,omitempty"`
 }
 
 func (s *server) currentConfig(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +127,7 @@ func (s *server) currentConfig(w http.ResponseWriter, r *http.Request) {
 		if hyrelease.CheckVersion(in.Version) == nil {
 			out.Installed = in.Version
 		}
+		out.KeepFirewall = in.Firewall.Keep
 	} else if !errors.Is(err, store.ErrNotFound) {
 		s.fail(w, r, err)
 		return

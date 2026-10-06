@@ -65,7 +65,12 @@ func TestDeployAPI(t *testing.T) {
 	}
 	// An upgrade since: the installed version beside the revision's.
 	e.db.SetInstallation(ctx, model.Installation{ServerID: srv.ID, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", Version: "v2.13.0", Managed: true, At: time.Now()})
-	if rec = owner.do("GET", "/api/v1/servers/"+id+"/config", nil, nil); !strings.Contains(rec.Body.String(), `"installed":"v2.13.0"`) {
+	if rec = owner.do("GET", "/api/v1/servers/"+id+"/config", nil, nil); !strings.Contains(rec.Body.String(), `"installed":"v2.13.0"`) || strings.Contains(rec.Body.String(), "keepFirewall") {
+		t.Fatalf("config: %d %s", rec.Code, rec.Body)
+	}
+	// The firewall left alone at the deploy: the form keeps it so.
+	e.db.SetFirewall(ctx, srv.ID, model.Firewall{Keep: true})
+	if rec = owner.do("GET", "/api/v1/servers/"+id+"/config", nil, nil); !strings.Contains(rec.Body.String(), `"keepFirewall":true`) {
 		t.Fatalf("config: %d %s", rec.Code, rec.Body)
 	}
 

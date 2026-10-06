@@ -1,6 +1,7 @@
 <script lang="ts">
   // Deploy Hysteria 2 on a server. The form starts from the server's
-  // current config: the params of the deploy that made it, else what the
+  // current config: the params of the deploy that made it (or the one
+  // before password rotations, geo paths and cascades), else what the
   // config says; a server without one gets the defaults. A redeploy keeps
   // the client passwords. A config no deploy made (edited, rolled back,
   // imported) is replaced only after the admin confirms that what the form
@@ -16,6 +17,8 @@
     type ApiError,
     type ConfigFields,
     type ConfigMeta,
+    type ConfigRevision,
+    type ConfigSource,
     type DeployParams,
     type DeploySecrets,
     type DeploySource,
@@ -105,6 +108,9 @@
   // changed: the current config was not made by a deploy; the deploy
   // replaces it only with overwrite.
   let changed = $state(false);
+  // based: the form of a changed config holds the params of the deploy
+  // it came from.
+  let based = $state(false);
   let overwrite = $state(false);
   let busy = $state(false);
   let error = $state<ApiError | null>(null);
@@ -117,6 +123,9 @@
     cascade: 'deploy.changedCascade',
     geo: 'deploy.changedGeo',
   };
+  // Revisions that change only what a redeploy keeps or drops on purpose:
+  // passwords and the certificate, geo paths, a cascade.
+  const layered: ConfigSource[] = ['rotate', 'geo', 'cascade'];
   const outModes: [string, Key][] = [
     ['', 'deploy.outModeDefault'],
     ['46', 'deploy.outMode46'],
@@ -216,6 +225,21 @@
     outUser = o.user ?? '';
   }
 
+  // baseJob is the deploy job whose params made the current config but
+  // for what layered revisions changed since (revs newest first; a
+  // rollback stands for the revision it brought back); 0 when an edit or
+  // an import is in between.
+  function baseJob(revs: ConfigRevision[]): number {
+    for (let i = 0; i >= 0 && i < revs.length; ) {
+      const r = revs[i];
+      if (r.source === 'deploy') return r.jobId ?? 0;
+      if (r.source === 'rollback') i = revs.findIndex((x) => x.revision === r.fromRevision && x.revision < r.revision);
+      else if (layered.includes(r.source)) i++;
+      else return 0;
+    }
+    return 0;
+  }
+
   // seconds reads "60s" (and a bare number) of a config.
   function seconds(v: string): number | null {
     const m = /^(\d+)s?$/.exec(v.trim());
@@ -268,18 +292,27 @@
       // The current auth unless the deploy said otherwise.
       authMode = curAuth === 'password' || curAuth === 'userpass' ? curAuth : '';
       usersText = curUsers.join('\n');
-      if (cfg.source === 'deploy') {
-        try {
-          if (cfg.jobId) fromParams((await api.job(cfg.jobId)).params as Partial<DeployParams>);
-        } catch {}
-      } else {
+      let job = cfg.source === 'deploy' ? cfg.jobId : 0;
+      if (cfg.source !== 'deploy') {
         changed = true;
+        try {
+          job = baseJob(await api.configRevisions(server.id));
+        } catch {}
+      }
+      try {
+        if (job) {
+          fromParams((await api.job(job)).params as Partial<DeployParams>);
+          based = changed;
+        }
+      } catch {}
+      if (changed && !based) {
         try {
           fromFields((await api.configEdit(server.id)).fields);
         } catch {}
       }
       // The version installed now: an upgrade since the deploy is kept.
       if (cfg.installed) version = cfg.installed;
+      if (cfg.keepFirewall) keepFirewall = true;
     }
     loading = false;
   });
@@ -413,7 +446,7 @@
         <div class="note warn small changed" role="alert">
           <div>
             {cfg && changedKey[cfg.source] ? t(changedKey[cfg.source], { rev: cfg.revision }) : t('deploy.changedOther')}
-            {t('deploy.changedText')}
+            {based ? t('deploy.changedTextBased') : t('deploy.changedText')}
           </div>
           <label class="check"><input type="checkbox" bind:checked={overwrite} /> {cfg?.source === 'import' ? t('deploy.overwriteImport') : t('deploy.overwrite')}</label>
         </div>
