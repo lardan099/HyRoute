@@ -123,6 +123,9 @@ type Audit interface {
 	AddAudit(ctx context.Context, e model.AuditEntry) error
 	// ListAudit returns the newest entries first.
 	ListAudit(ctx context.Context, limit int) ([]model.AuditEntry, error)
+	// TrimAudit deletes the entries with one of actions except the newest
+	// keep of them.
+	TrimAudit(ctx context.Context, actions []string, keep int) error
 }
 
 // SealFunc seals the credentials of a server once its ID is known; it runs

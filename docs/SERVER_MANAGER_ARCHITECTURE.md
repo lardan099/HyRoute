@@ -138,7 +138,7 @@ env), `setup-token` на время первого запуска.
 | `jobs` | id, kind, server_id, state, current_step, params (json без секретов), secret_params (envelope), attempt, error_message, error_details, created_by, created_at, started_at, finished_at, lease_owner, lease_until | |
 | `job_steps` | job_id, idx, name, state, attempt, started_at, finished_at, error | |
 | `job_logs` | job_id, seq, ts, level, step, message | message уже прошёл redaction |
-| `audit_log` | id, ts, user_id, action, target, details | кто что сделал (вход, выход, пользователи, подтверждение ключа, показ ссылок) |
+| `audit_log` | id, ts, user_id, action, target, details | кто что сделал (вход, выход, пользователи, подтверждение ключа, показ ссылок); из неудачных входов и попыток setup хранятся последние 10 000 |
 | `chains` | id, name (unique), notes, created_by, created_at, updated_at | каскад (P3-01), миграция 0016 |
 | `chain_nodes` | chain_id, idx, server_id | серверы цепочки по порядку, entry — idx 0; сервер из цепочки не удаляется |
 | `chain_links` | chain_id, idx, params (json без секретов), secrets (envelope, контекст `chain/<id>/link/<idx>`), state (new/linking/active/stale/unlinking/failed), from_revision, to_revision, config_sha256, updated_at | связь узлов idx и idx + 1 |

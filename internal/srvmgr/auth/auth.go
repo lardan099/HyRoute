@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -87,8 +88,9 @@ type Service struct {
 	IdleTimeout time.Duration
 	MaxAge      time.Duration
 
-	limits *guard
-	slots  chan struct{} // one per argon2id run in progress
+	limits   *guard
+	slots    chan struct{} // one per argon2id run in progress
+	failures atomic.Int64  // failed attempts audited (see auditFailure)
 
 	mu        sync.Mutex
 	setupHash []byte // SHA-256 of the one-time setup token, nil if none
@@ -219,7 +221,7 @@ func (s *Service) Setup(ctx context.Context, token, username, password string, m
 	}
 	if subtle.ConstantTimeCompare(tokenHash(strings.TrimSpace(token)), want) != 1 {
 		// The reserved attempt stays as the failure.
-		s.audit(ctx, 0, "setup_failed", "", "wrong setup token from "+m.IP)
+		s.auditFailure(ctx, "setup_failed", "", "wrong setup token from "+m.IP)
 		return Issued{}, ErrBadSetupToken
 	}
 	s.limits.succeeded(a)
@@ -294,7 +296,7 @@ func (s *Service) Login(ctx context.Context, username, password string, m Meta) 
 	release()
 	if !ok {
 		// The reserved attempt stays as the failure.
-		s.audit(ctx, 0, "login_failed", username, "from "+m.IP)
+		s.auditFailure(ctx, "login_failed", username, "from "+m.IP)
 		return Issued{}, ErrBadCredentials
 	}
 	s.limits.succeeded(a)
@@ -463,11 +465,32 @@ func (s *Service) Users(ctx context.Context) ([]model.User, error) {
 	return s.Store.ListUsers(ctx)
 }
 
-// Cleanup deletes sessions that ended more than a day ago.
+// Cleanup deletes sessions that ended more than a day ago and the failed
+// attempts beyond the newest maxFailures.
 func (s *Service) Cleanup(ctx context.Context) error {
-	return s.Store.DeleteSessionsBefore(ctx, s.Now().Add(-24*time.Hour))
+	if err := s.Store.DeleteSessionsBefore(ctx, s.Now().Add(-24*time.Hour)); err != nil {
+		return err
+	}
+	return s.Store.TrimAudit(ctx, failureActions, maxFailures)
 }
 
 func (s *Service) audit(ctx context.Context, uid int64, action, target, details string) {
 	s.Store.AddAudit(ctx, model.AuditEntry{Time: s.Now(), UserID: uid, Action: action, Target: target, Details: details})
+}
+
+// Failed logins and setup attempts come from anyone who reaches the admin,
+// from any number of addresses: the audit log keeps the newest maxFailures
+// of them, trimmed every trimFailures, so a flood does not fill the disk.
+// Everything else stays.
+var (
+	maxFailures    = 10000
+	trimFailures   = int64(1000)
+	failureActions = []string{"login_failed", "setup_failed"}
+)
+
+func (s *Service) auditFailure(ctx context.Context, action, target, details string) {
+	s.audit(ctx, 0, action, target, details)
+	if s.failures.Add(1)%trimFailures == 0 {
+		s.Store.TrimAudit(ctx, failureActions, maxFailures)
+	}
 }

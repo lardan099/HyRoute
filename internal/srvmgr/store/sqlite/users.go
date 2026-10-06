@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	sqlite3 "modernc.org/sqlite"
@@ -230,6 +231,24 @@ func (d *DB) DeleteSessionsBefore(ctx context.Context, t time.Time) error {
 func (d *DB) AddAudit(ctx context.Context, e model.AuditEntry) error {
 	_, err := d.db.ExecContext(ctx, `INSERT INTO audit_log (ts, user_id, action, target, details) VALUES (?, ?, ?, ?, ?)`,
 		unixTime(e.Time), sql.NullInt64{Int64: e.UserID, Valid: e.UserID != 0}, e.Action, e.Target, e.Details)
+	return err
+}
+
+func (d *DB) TrimAudit(ctx context.Context, actions []string, keep int) error {
+	if len(actions) == 0 {
+		return nil
+	}
+	in := strings.Repeat(",?", len(actions))[1:]
+	var args []any
+	for range 2 {
+		for _, a := range actions {
+			args = append(args, a)
+		}
+	}
+	// The id of the newest entry beyond keep; NULL (nothing deleted) when
+	// there are no more than keep.
+	_, err := d.db.ExecContext(ctx, `DELETE FROM audit_log WHERE action IN (`+in+`) AND id <= (
+		SELECT id FROM audit_log WHERE action IN (`+in+`) ORDER BY id DESC LIMIT 1 OFFSET ?)`, append(args, keep)...)
 	return err
 }
 

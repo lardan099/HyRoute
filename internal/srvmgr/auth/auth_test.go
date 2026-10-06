@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -569,5 +570,45 @@ func TestRoles(t *testing.T) {
 	all, err := s.Sessions(ctx, owner, true)
 	if err != nil || len(all) != 1 {
 		t.Fatalf("owner sees %d sessions, %v", len(all), err)
+	}
+}
+
+// Failed attempts from many addresses keep only the newest of their audit
+// entries; other entries stay.
+func TestFailuresTrimmed(t *testing.T) {
+	s, db, _ := newService(t)
+	ctx := context.Background()
+	defer func(m int, e int64) { maxFailures, trimFailures = m, e }(maxFailures, trimFailures)
+	maxFailures, trimFailures = 5, 2
+	mustNoErr(t, db.AddAudit(ctx, model.AuditEntry{Time: time.Now(), Action: "host_key_trusted", Target: "1"}))
+	if _, err := s.PrepareSetup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 12 {
+		if _, err := s.Setup(ctx, "wrong", "owner", goodPass, meta(fmt.Sprintf("203.0.113.%d", i))); !errors.Is(err, ErrBadSetupToken) {
+			t.Fatal(err)
+		}
+	}
+	setupOwner(t, s)
+	for i := range 3 {
+		if _, err := s.Login(ctx, "owner", "wrong password", meta(fmt.Sprintf("198.51.100.%d", i))); !errors.Is(err, ErrBadCredentials) {
+			t.Fatal(err)
+		}
+	}
+	mustNoErr(t, s.Cleanup(ctx))
+	es, err := db.ListAudit(ctx, 100)
+	mustNoErr(t, err)
+	var got []string
+	for _, e := range es {
+		got = append(got, e.Action+" "+e.Details)
+	}
+	want := []string{
+		"login_failed from 198.51.100.2", "login_failed from 198.51.100.1", "login_failed from 198.51.100.0",
+		"setup owner created",
+		"setup_failed wrong setup token from 203.0.113.11", "setup_failed wrong setup token from 203.0.113.10",
+		"host_key_trusted ",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("%q", got)
 	}
 }
