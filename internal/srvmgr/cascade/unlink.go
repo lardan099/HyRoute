@@ -7,7 +7,6 @@ import (
 	"io/fs"
 
 	"github.com/lardan099/hyroute/internal/hyconfig"
-	"github.com/lardan099/hyroute/internal/srvmgr/importer"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
@@ -299,7 +298,7 @@ func (x *linker) unService(ctx context.Context, env *jobs.Env, p unlinkParams) e
 // already: the link-config undo runs first).
 func (x *linker) undoUnService(ctx context.Context, env *jobs.Env, p unlinkParams) error {
 	state := env.Get("linkUnit")
-	if state == "" || state == remote.Absent {
+	if state == "" || state == remote.Absent || committedRevision(env) {
 		return jobs.ErrNothingToUndo
 	}
 	ex, err := execOn(ctx, env, p.Entry)
@@ -349,7 +348,7 @@ func (x *linker) unConfig(ctx context.Context, env *jobs.Env, p unlinkParams) er
 }
 
 func (x *linker) undoUnConfig(ctx context.Context, env *jobs.Env, p unlinkParams) error {
-	if env.Get("linkConfig") == "" {
+	if env.Get("linkConfig") == "" || committedRevision(env) {
 		return jobs.ErrNothingToUndo
 	}
 	u, err := x.unplan(ctx, p)
@@ -425,35 +424,8 @@ func (x *linker) unCommit(ctx context.Context, env *jobs.Env, p unlinkParams) er
 	if err != nil {
 		return err
 	}
-	for _, s := range []struct {
-		id        int64
-		in        model.Installation
-		cfg, base []byte
-		c         *hyconfig.Server
-	}{{p.Entry, u.inEntry, u.entryCfg, u.entryBase, u.entryParsed}, {p.Exit, u.inExit, u.exitCfg, u.exitBase, u.exitParsed}} {
-		if sha(s.cfg) == sha(s.base) {
-			continue
-		}
-		cur, err := x.Store.CurrentConfig(ctx, s.id)
-		if err != nil {
-			return err
-		}
-		if cur.SHA256 == sha(s.cfg) {
-			continue
-		}
-		ex, err := execOn(ctx, env, s.id)
-		if err != nil {
-			return err
-		}
-		meta, err := importer.ConfigMeta(ctx, remote.ReadOnly(ex), s.c, s.in.Version, sudo(env, s.id), x.Now())
-		if err != nil {
-			return err
-		}
-		rev := model.ServerConfig{ServerID: s.id, SHA256: sha(s.cfg), Meta: meta, Source: model.ConfigCascade, JobID: env.JobID, By: env.CreatedBy, At: x.Now()}
-		cfg, id := s.cfg, s.id
-		if err := x.Store.AddConfig(ctx, &rev, func(r int) ([]byte, error) { return x.Keys.Seal(cfg, model.ConfigContext(id, r)) }); err != nil {
-			return err
-		}
+	if _, err := x.addRevisions(ctx, env, []newConfig{{p.Entry, u.inEntry, u.entryCfg, u.entryBase, u.entryParsed}, {p.Exit, u.inExit, u.exitCfg, u.exitBase, u.exitParsed}}); err != nil {
+		return err
 	}
 	if p.Delete {
 		if err := x.Store.DeleteChain(ctx, p.Chain, x.Now()); err != nil && !errors.Is(err, store.ErrNotFound) {

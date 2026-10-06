@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,6 +78,8 @@ type host struct {
 	need string
 	// pingHook runs at each ping (tests block in it).
 	pingHook func()
+	// failRead: reading this file fails as a broken connection does.
+	failRead string
 }
 
 func newHost(name, cfg string) *host {
@@ -251,6 +254,9 @@ func (h *host) Stream(context.Context, remote.Cmd, func(string)) error {
 func (h *host) ReadFile(_ context.Context, p string, _ bool) ([]byte, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if p == h.failRead {
+		return nil, errors.New("ssh: connection lost")
+	}
 	b, found := h.files[p]
 	if !found {
 		return nil, fmt.Errorf("%s: %w", p, fs.ErrNotExist)
@@ -558,6 +564,97 @@ func TestLinkRefusesForeignParts(t *testing.T) {
 	}
 	if now, _ := w.exit.file(cfgPath); now != foreign {
 		t.Fatal("exit changed")
+	}
+}
+
+// The commit cannot read the entry's certificate (the connection broke):
+// no revision is stored, and the rollback leaves server and controller
+// agreeing. A retry then finishes the link.
+func TestLinkCommitReadsServersFirst(t *testing.T) {
+	w := newWorld(t, exitUP)
+	ctx := context.Background()
+	entryTLS := strings.Replace(entryYAML, "acme:\n  domains:\n    - entry.example.com\n", "tls:\n  cert: /etc/hysteria/server.crt\n  key: /etc/hysteria/server.key\n", 1)
+	w.rev(w.in, w.entry, entryTLS)
+	w.entry.mu.Lock()
+	w.entry.failRead = "/etc/hysteria/server.crt"
+	w.entry.mu.Unlock()
+	j, log := w.wait(w.submit())
+	if j.State != model.JobFailed || j.CurrentStep != "commit" {
+		t.Fatalf("%s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, log)
+	}
+	if n := len(w.revs(w.out)); n != 1 {
+		t.Fatalf("the exit has %d revisions after the rollback\n%s", n, log)
+	}
+	if now, _ := w.exit.file(cfgPath); now != exitUP {
+		t.Fatalf("exit not restored:\n%s", now)
+	}
+	if l := w.link(); l.State != model.LinkFailed {
+		t.Fatalf("link %s", l.State)
+	}
+
+	w.entry.mu.Lock()
+	w.entry.failRead = ""
+	w.entry.mu.Unlock()
+	if j, err := w.linker.x.Jobs.Retry(ctx, j.ID, 1); err != nil {
+		t.Fatal(err)
+	} else if j, log = w.wait(j); j.State != model.JobCompleted {
+		t.Fatalf("retry: %s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	if l := w.link(); l.State != model.LinkActive || len(w.revs(w.out)) != 2 {
+		t.Fatalf("after the retry: %s, %d exit revisions", l.State, len(w.revs(w.out)))
+	}
+}
+
+// failRevision is a database that cannot store a revision of one server
+// while fail is set.
+type failRevision struct {
+	*sqlite.DB
+	server int64
+	fail   *atomic.Bool
+}
+
+func (d failRevision) AddConfig(ctx context.Context, c *model.ServerConfig, seal func(int) ([]byte, error)) error {
+	if c.ServerID == d.server && d.fail.Load() {
+		return errors.New("disk full")
+	}
+	return d.DB.AddConfig(ctx, c, seal)
+}
+
+// Once the exit's revision is stored, a failure to store the entry's does
+// not roll the servers back (they would part from the controller): the
+// link stays on them, stale, and a retry finishes the commit.
+func TestLinkCommitKeepsServersOnceStored(t *testing.T) {
+	w := newWorld(t, exitUP)
+	w.stop()
+	var fail atomic.Bool
+	fail.Store(true)
+	eng := jobs.New(w.db, w.keys, redact.New(), hosts{w.in: w.entry, w.out: w.exit}, nil)
+	eng.Poll = 10 * time.Millisecond
+	w.linker = New(Deps{Store: failRevision{w.db, w.in, &fail}, Keys: w.keys, Jobs: eng, VerifyTimeout: 300 * time.Millisecond, Poll: 10 * time.Millisecond})
+	eng.Register(w.linker.Kind())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { eng.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	j, log := w.wait(w.submit())
+	if j.State != model.JobFailed || j.CurrentStep != "commit" {
+		t.Fatalf("%s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, log)
+	}
+	if now, _ := w.exit.file(cfgPath); now == exitUP || len(w.revs(w.out)) != 2 || strings.Contains(log, "Откачено") {
+		t.Fatalf("rolled back after the exit's revision was stored:\n%s", log)
+	}
+	if l := w.link(); l.State != model.LinkStale {
+		t.Fatalf("link %s", l.State)
+	}
+	fail.Store(false)
+	if j, err := eng.Retry(context.Background(), j.ID, 1); err != nil {
+		t.Fatal(err)
+	} else if j, log = w.wait(j); j.State != model.JobCompleted {
+		t.Fatalf("retry: %s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	if l := w.link(); l.State != model.LinkActive || len(w.revs(w.in)) != 2 {
+		t.Fatalf("after the retry: %s, %d entry revisions", l.State, len(w.revs(w.in)))
 	}
 }
 

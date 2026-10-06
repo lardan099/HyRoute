@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -550,7 +551,7 @@ func (x *linker) undoExitConfig(ctx context.Context, env *jobs.Env, p jobParams)
 // undoConfig puts a server's config back and restarts its service with it
 // when this job changed it.
 func (x *linker) undoConfig(ctx context.Context, env *jobs.Env, server int64, flag, changedFlag, role string) error {
-	if env.Get(flag) == "" {
+	if env.Get(flag) == "" || committedRevision(env) {
 		return jobs.ErrNothingToUndo
 	}
 	in, err := x.Store.Installation(ctx, server)
@@ -713,7 +714,7 @@ func (x *linker) linkConfig(ctx context.Context, env *jobs.Env, p jobParams) err
 // undoLinkConfig puts the link client's config back (or removes it) and,
 // when the link service was there before the job, restarts it with that.
 func (x *linker) undoLinkConfig(ctx context.Context, env *jobs.Env, p jobParams) error {
-	if env.Get("linkConfig") == "" {
+	if env.Get("linkConfig") == "" || committedRevision(env) {
 		return jobs.ErrNothingToUndo
 	}
 	in, err := x.Store.Installation(ctx, p.Entry)
@@ -769,7 +770,7 @@ func (x *linker) linkService(ctx context.Context, env *jobs.Env, p jobParams) er
 
 func (x *linker) undoLinkService(ctx context.Context, env *jobs.Env, p jobParams) error {
 	state := env.Get("linkUnit")
-	if state == "" {
+	if state == "" || committedRevision(env) {
 		return jobs.ErrNothingToUndo
 	}
 	ex, err := execOn(ctx, env, p.Entry)
@@ -916,6 +917,63 @@ func (x *linker) committed(ctx context.Context, env *jobs.Env, p jobParams) (boo
 	return pl.link.State == model.LinkActive && pl.link.ConfigSHA256 == sha(pl.client), nil
 }
 
+// newConfig is a server's config a commit stores as a revision.
+type newConfig struct {
+	id        int64
+	in        model.Installation
+	cfg, base []byte
+	c         *hyconfig.Server
+}
+
+// committedRevision: a commit stored a revision. The servers keep what
+// they run from then on (a rollback would part them from the controller),
+// and a retry finishes the commit.
+func committedRevision(env *jobs.Env) bool { return env.Get("committed") == "1" }
+
+// addRevisions stores the configs that changed and are not the current
+// revisions yet (source cascade) and returns the revisions they are. The
+// summaries come first, as they read the servers (the certificate of a
+// TLS file): a broken connection there leaves the database as it was.
+func (x *linker) addRevisions(ctx context.Context, env *jobs.Env, cs []newConfig) (map[int64]int, error) {
+	revs := map[int64]int{}
+	var add []model.ServerConfig
+	var cfgs [][]byte
+	for _, s := range cs {
+		if sha(s.cfg) == sha(s.base) {
+			continue
+		}
+		cur, err := x.Store.CurrentConfig(ctx, s.id)
+		if err != nil {
+			return nil, err
+		}
+		if cur.SHA256 == sha(s.cfg) {
+			revs[s.id] = cur.Revision
+			continue
+		}
+		ex, err := execOn(ctx, env, s.id)
+		if err != nil {
+			return nil, err
+		}
+		meta, err := importer.ConfigMeta(ctx, remote.ReadOnly(ex), s.c, s.in.Version, sudo(env, s.id), x.Now())
+		if err != nil {
+			return nil, err
+		}
+		add = append(add, model.ServerConfig{ServerID: s.id, SHA256: sha(s.cfg), Meta: meta, Source: model.ConfigCascade, JobID: env.JobID, By: env.CreatedBy, At: x.Now()})
+		cfgs = append(cfgs, s.cfg)
+	}
+	for i := range add {
+		rev, cfg := &add[i], cfgs[i]
+		if err := x.Store.AddConfig(ctx, rev, func(r int) ([]byte, error) { return x.Keys.Seal(cfg, model.ConfigContext(rev.ServerID, r)) }); err != nil {
+			return nil, err
+		}
+		if err := env.Set("committed", "1"); err != nil {
+			return nil, err
+		}
+		revs[rev.ServerID] = rev.Revision
+	}
+	return revs, nil
+}
+
 // commit stores the new revisions of both servers (source cascade) and
 // marks the link active. A revision stored already is not stored again.
 func (x *linker) commit(ctx context.Context, env *jobs.Env, p jobParams) error {
@@ -924,39 +982,11 @@ func (x *linker) commit(ctx context.Context, env *jobs.Env, p jobParams) error {
 		return err
 	}
 	revs := map[int64]int{p.Exit: p.ExitBase, p.Entry: p.EntryBase}
-	for _, s := range []struct {
-		id   int64
-		in   model.Installation
-		cfg  []byte
-		c    *hyconfig.Server
-		base []byte
-	}{{p.Exit, pl.inExit, pl.exitCfg, pl.exitParsed, pl.exitBase}, {p.Entry, pl.inEntry, pl.entryCfg, pl.entryParsed, pl.entryBase}} {
-		if sha(s.cfg) == sha(s.base) {
-			continue
-		}
-		cur, err := x.Store.CurrentConfig(ctx, s.id)
-		if err != nil {
-			return err
-		}
-		if cur.SHA256 == sha(s.cfg) {
-			revs[s.id] = cur.Revision
-			continue
-		}
-		ex, err := execOn(ctx, env, s.id)
-		if err != nil {
-			return err
-		}
-		meta, err := importer.ConfigMeta(ctx, remote.ReadOnly(ex), s.c, s.in.Version, sudo(env, s.id), x.Now())
-		if err != nil {
-			return err
-		}
-		rev := model.ServerConfig{ServerID: s.id, SHA256: sha(s.cfg), Meta: meta, Source: model.ConfigCascade, JobID: env.JobID, By: env.CreatedBy, At: x.Now()}
-		cfg, id := s.cfg, s.id
-		if err := x.Store.AddConfig(ctx, &rev, func(r int) ([]byte, error) { return x.Keys.Seal(cfg, model.ConfigContext(id, r)) }); err != nil {
-			return err
-		}
-		revs[s.id] = rev.Revision
+	added, err := x.addRevisions(ctx, env, []newConfig{{p.Exit, pl.inExit, pl.exitCfg, pl.exitBase, pl.exitParsed}, {p.Entry, pl.inEntry, pl.entryCfg, pl.entryBase, pl.entryParsed}})
+	if err != nil {
+		return err
 	}
+	maps.Copy(revs, added)
 	link := pl.link
 	link.State, link.FromRevision, link.ToRevision, link.ConfigSHA256, link.UpdatedAt = model.LinkActive, revs[p.Entry], revs[p.Exit], sha(pl.client), x.Now()
 	if err := x.Store.UpdateLink(ctx, link); err != nil {
@@ -1014,9 +1044,13 @@ func (x *linker) finished(ctx context.Context, env *jobs.Env, j model.Job) {
 		c, err := x.Store.ChainByID(ctx, p.Chain)
 		if err == nil && p.Idx < len(c.Links) {
 			link := c.Links[p.Idx]
-			link.State = model.LinkFailed
-			if p.Prev == model.LinkActive || p.Prev == model.LinkStale {
+			switch {
+			case committedRevision(env):
+				link.State = model.LinkStale // on the servers: a retry finishes the commit
+			case p.Prev == model.LinkActive || p.Prev == model.LinkStale:
 				link.State = p.Prev
+			default:
+				link.State = model.LinkFailed
 			}
 			link.UpdatedAt = x.Now()
 			x.Store.UpdateLink(ctx, link)
