@@ -403,3 +403,21 @@ func TestServerDuplicates(t *testing.T) {
 		t.Fatalf("rename of an old duplicate: %v", err)
 	}
 }
+
+// The groups runtime logs through the logger the controller has at Load:
+// main gives it the one that also writes hyroute.log after New.
+func TestGroupsRuntimeTakesLoadLogger(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := New(st, nil, session.Config{}, slog.LevelInfo)
+	l := slog.New(slog.DiscardHandler)
+	c.Log = l
+	if err := c.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if c.groupsRT.Log != l {
+		t.Fatal("the groups runtime keeps the logger of New")
+	}
+}

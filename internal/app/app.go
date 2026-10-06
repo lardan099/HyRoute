@@ -235,6 +235,7 @@ func (c *Controller) Load() error {
 		c.flushDNSAsync("start") // dns: answers of a run that crashed
 	}
 	c.loadStats() // stats: the collection mode (creates nothing)
+	c.groupsLog.Do(func() { c.groupsRT.Log = c.Log })
 	if loadErr != "" {
 		return errors.New(loadErr)
 	}

@@ -38,6 +38,10 @@ type groupsState struct {
 	groupsBroken error
 	// groupsRT is the live selector (its own lock, innermost).
 	groupsRT *groups.Runtime
+	// groupsLog gives groupsRT the controller's logger at the first Load:
+	// New makes the runtime before main sets the logger that also writes
+	// hyroute.log.
+	groupsLog sync.Once
 	// probeStop stops the prober of the session (guarded by lifeMu).
 	probeStop context.CancelFunc
 	// probing: running «Проверить» per group (ProbeGroup).
