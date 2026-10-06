@@ -41,8 +41,10 @@ func init() {
 	}
 }
 
-// Popular categories; all present in the runetfreedom databases (the
-// default). Russian lists (ru-*) are missing from the other sources.
+// Popular categories. Those not in every source are listed in onlyIn
+// (Russian lists come only from runetfreedom, some only from
+// hysteria-geodata); a new one missing from a source needs its entry
+// there, or GeoInfo shows it in a source that lacks it.
 var Popular = []Category{
 	{"ru-blocked", "site", "Заблокированное в России", "Сайты из реестра блокировок (РКН и др.), без мусорных записей. Обычно — через VPN.", "Россия", nil},
 	{"ru-blocked", "ip", "Заблокированные IP в России", "Адреса из реестра блокировок: сервисы, к которым обращаются по IP.", "Россия", nil},
