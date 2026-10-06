@@ -256,3 +256,22 @@ func TestPortsAPI(t *testing.T) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 }
+
+// The config editor takes the body of a config with a big inline ACL
+// (what the routing editor makes of a 1 MB acl.file); a body over the
+// limit gets 413 with the limit named.
+func TestConfigEditBodyLimit(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	big := "acl:\n  inline:\n" + strings.Repeat("    - direct(suffix:host.example.com)\n", 40000)
+	for _, op := range []string{"render", "apply"} {
+		code(t, owner.do("POST", "/api/v1/servers/999/config/"+op, map[string]any{"revision": 1, "yaml": big}, nil), http.StatusNotFound, "not_found")
+	}
+	huge := strings.Repeat("# padding\n", 700000)
+	rec := owner.do("POST", "/api/v1/servers/999/config/render", map[string]any{"revision": 1, "yaml": huge}, nil)
+	code(t, rec, http.StatusRequestEntityTooLarge, "too_large")
+	if m := decodeError(t, rec).Message; !strings.Contains(m, "6 МБ") {
+		t.Fatalf("%q", m)
+	}
+	code(t, owner.do("PATCH", "/api/v1/servers/999", map[string]any{"notes": huge[:2<<20]}, nil), http.StatusRequestEntityTooLarge, "too_large")
+}

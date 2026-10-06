@@ -210,6 +210,33 @@ func TestDiff(t *testing.T) {
 	}
 }
 
+// A config with a big inline ACL: a local edit is exact, a change too
+// large for the table comes as removed and added lines.
+func TestDiffLarge(t *testing.T) {
+	var a, b strings.Builder
+	for i := range 100000 {
+		fmt.Fprintf(&a, "    - direct(10.%d.%d.0/24)\n", i>>8&255, i&255)
+		if i == 50000 {
+			b.WriteString("    - reject(all)\n")
+		}
+		fmt.Fprintf(&b, "    - direct(10.%d.%d.0/24)\n", i>>8&255, i&255)
+	}
+	d := Diff(a.String(), b.String())
+	if len(d) != 100001 || d[50000] != (Line{"+", "    - reject(all)"}) {
+		t.Fatalf("local edit: %d lines, %v", len(d), d[50000])
+	}
+	var c strings.Builder
+	for i := range 5000 {
+		fmt.Fprintf(&c, "    - proxy(10.%d.%d.0/24)\n", i>>8&255, i&255)
+	}
+	x := "acl:\n  inline:\n" + strings.Join(strings.SplitAfter(a.String(), "\n")[:5000], "") + "outbounds: []\n"
+	y := "acl:\n  inline:\n" + c.String() + "outbounds: []\n"
+	d = Diff(x, y)
+	if len(d) != 10003 || d[1].Op != " " || d[2].Op != "-" || d[5002].Op != "+" || d[10002] != (Line{" ", "outbounds: []"}) {
+		t.Fatalf("large change: %d lines, %v %v %v", len(d), d[2], d[5002], d[10002])
+	}
+}
+
 // Secrets that do not sit under a secret-named key: an anchored value
 // used as a password through an alias, a userpass map behind an alias, a
 // password inside a URL of an unknown field, a share link in a comment.

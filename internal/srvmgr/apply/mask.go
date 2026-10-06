@@ -397,6 +397,18 @@ func lookup(doc *yaml.Node, p string) *yaml.Node {
 				visit(n.Content[i+1], join(q, k), k, key)
 			}
 		case yaml.SequenceNode:
+			// Only the item at index i can be [i] (a named one is
+			// [name=…]): a long list (an inline ACL) is not scanned for it.
+			if id, ok := strings.CutPrefix(p[len(q):], "["); ok {
+				if id, _, ok = strings.Cut(id, "]"); ok {
+					if i, err := strconv.Atoi(id); err == nil {
+						if i >= 0 && i < len(n.Content) && itemID(n.Content[i], i) == id {
+							visit(n.Content[i], q+"["+id+"]", key, parent)
+						}
+						return
+					}
+				}
+			}
 			for i, c := range n.Content {
 				visit(c, q+"["+itemID(c, i)+"]", key, parent)
 			}

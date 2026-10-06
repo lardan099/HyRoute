@@ -230,8 +230,9 @@ func securityHeaders(next http.Handler) http.Handler {
 // (a Hysteria config is a few KB).
 const maxBody = 1 << 20
 
-// maxRoutingBody bounds the routing editor's bodies: a draft of a 1 MB
-// ACL (acl.file moved into the config) is a few times larger as JSON.
+// maxRoutingBody bounds the bodies of the routing editor and of the config
+// editor: a draft of a 1 MB ACL (acl.file moved into the config) is a few
+// times larger as JSON, and the config editor sends the config with it.
 const maxRoutingBody = 6 << 20
 
 // bodyTimeout bounds the time a body takes to arrive (a few MB fit even
@@ -244,7 +245,8 @@ func limitBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
 			limit := int64(maxBody)
-			if strings.Contains(r.URL.Path, "/routing") || strings.HasPrefix(r.URL.Path, "/api/v1/chain-templates/") {
+			if strings.Contains(r.URL.Path, "/routing") || strings.HasPrefix(r.URL.Path, "/api/v1/chain-templates/") ||
+				strings.HasSuffix(r.URL.Path, "/config/render") || strings.HasSuffix(r.URL.Path, "/config/apply") {
 				limit = maxRoutingBody
 			}
 			if r.ContentLength != 0 {

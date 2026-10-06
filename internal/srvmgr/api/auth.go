@@ -82,11 +82,23 @@ func readJSON(r *http.Request, v any) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
+		var big *http.MaxBytesError
+		if errors.As(err, &big) {
+			return &Error{Status: http.StatusRequestEntityTooLarge, Code: "too_large", Message: "Запрос слишком большой: больше " + sizeText(big.Limit) + "."}
+		}
 		e := *errBadJSON
 		e.Details = err.Error()
 		return &e
 	}
 	return nil
+}
+
+// sizeText is a body limit for messages: 6 МБ, 256 КиБ.
+func sizeText(n int64) string {
+	if n%(1<<20) == 0 {
+		return strconv.FormatInt(n>>20, 10) + " МБ"
+	}
+	return strconv.FormatInt(n>>10, 10) + " КиБ"
 }
 
 // crossSite reports a request sent by another site: browsers mark them
