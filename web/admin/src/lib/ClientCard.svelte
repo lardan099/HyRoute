@@ -16,6 +16,12 @@
   let error = $state<ApiError | null>(null);
   let copied = $state('');
   let busy = $state(false);
+  // open: the admin asked to see the profile, and it follows the chosen
+  // user. seq numbers the reveals: only the latest one may show its answer
+  // (a late answer for the user chosen before would put that user's link
+  // under the new choice).
+  let open = $state(false);
+  let seq = 0;
   let link = $derived(profile ? (form === 'official' ? profile.uri : profile.compat) : '');
 
   onMount(async () => {
@@ -29,15 +35,29 @@
   });
 
   async function reveal() {
+    const my = ++seq;
+    open = true;
+    profile = null; // the link of the user chosen before does not stay
     busy = true;
     try {
-      profile = await api.clientProfile(serverId, user);
+      const p = await api.clientProfile(serverId, user);
+      if (my !== seq) return;
+      profile = p;
       error = null;
     } catch (e) {
+      if (my !== seq) return;
+      open = false;
       error = asApiError(e);
     } finally {
-      busy = false;
+      if (my === seq) busy = false;
     }
+  }
+
+  function hide() {
+    seq++; // an answer on its way is not shown
+    open = false;
+    profile = null;
+    busy = false;
   }
 
   async function copy(text: string, what: string) {
@@ -67,7 +87,7 @@
 <section class="card client">
   <div class="row">
     <h2 class="grow">{t('client.title')}</h2>
-    {#if profile}<button class="ghost" onclick={() => (profile = null)}>{t('client.hide')}</button>{/if}
+    {#if open}<button class="ghost" onclick={hide}>{t('client.hide')}</button>{/if}
   </div>
   {#if error}<div class="note error">{error.message}</div>{/if}
   {#if !summary && !error}
@@ -83,7 +103,7 @@
       {#if summary.users?.length}
         <dt>{t('client.user')}</dt>
         <dd>
-          <select bind:value={user} onchange={() => profile && reveal()}>
+          <select bind:value={user} onchange={() => open && reveal()}>
             {#each summary.users as u (u)}<option value={u}>{u}</option>{/each}
           </select>
         </dd>
@@ -91,13 +111,15 @@
     </dl>
     {#each summary.warnings as w, i (i)}<div class="note warn small">{w}</div>{/each}
 
-    {#if !profile}
+    {#if !open}
       {#if canWrite(session.user)}
         <div class="row actions">
           <button class="primary" disabled={busy} onclick={reveal}>{t('client.reveal')}</button>
           <span class="small faint">{t('client.revealNote')}</span>
         </div>
       {/if}
+    {:else if !profile}
+      <p class="small muted loading">{t('client.loading')}</p>
     {:else}
       <div class="seg forms" role="tablist">
         <button class:on={form === 'official'} onclick={() => (form = 'official')}>{t('client.official')}</button>
@@ -107,6 +129,7 @@
       <div class="linkbox">
         <QRCode rows={form === 'official' ? profile.qr : profile.qrCompat} label={t('client.qr')} />
         <div class="grow col">
+          {#if profile.user}<p class="small">{t('client.linkOf')} <b class="mono">{profile.user}</b></p>{/if}
           <div class="uri mono">{link}</div>
           <div class="row">
             <button onclick={() => copy(link, form)}>{copied === form ? t('client.copied') : t('client.copy')}</button>
@@ -127,6 +150,7 @@
   dd { margin: 0; word-break: break-all; }
   .pin { user-select: all; }
   .actions { margin-top: 12px; gap: 12px; }
+  .loading { margin-top: 12px; }
   .forms { margin: 14px 0 6px; }
   .linkbox { display: flex; gap: 18px; align-items: flex-start; margin-top: 10px; flex-wrap: wrap; }
   .col { display: flex; flex-direction: column; gap: 10px; min-width: 260px; }

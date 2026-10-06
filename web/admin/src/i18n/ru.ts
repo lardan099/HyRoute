@@ -567,6 +567,8 @@ export const ru = {
   'client.user': 'Пользователь',
   'client.reveal': 'Показать ссылку и QR',
   'client.hide': 'Скрыть',
+  'client.loading': 'Загрузка…',
+  'client.linkOf': 'Ссылка пользователя',
   'client.revealNote': 'Ссылка содержит пароль. Её показ записывается в журнал аудита.',
   'client.official': 'Ссылка',
   'client.compat': 'Для v2rayN и похожих',
