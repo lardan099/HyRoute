@@ -292,7 +292,6 @@ export const ru = {
   'presets.empty': 'Пресетов пока нет. Создайте пресет из конфига сервера или импортируйте файл пресета.',
   'presets.create': 'Создать из сервера',
   'presets.import': 'Импорт',
-  'presets.badFile': 'Это не файл пресета HyRoute.',
   'presets.apply': 'Применить к серверу',
   'presets.clone': 'Копировать',
   'presets.copyOf': '{name} — копия',

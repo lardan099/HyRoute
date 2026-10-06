@@ -263,11 +263,10 @@ func securityHeaders(next http.Handler) http.Handler {
 // (a Hysteria config is a few KB).
 const maxBody = 1 << 20
 
-// maxRoutingBody bounds the bodies of the routing editor, of the config
-// editor and of a preset import: a draft of a 1 MB ACL (acl.file moved
-// into the config) is a few times larger as JSON, and the config editor
-// and a preset file carry the config with it (the preset handler bounds
-// its file by preset.MaxImport).
+// maxRoutingBody bounds the bodies of the routing editor and of the
+// config editor: a draft of a 1 MB ACL (acl.file moved into the config)
+// is a few times larger as JSON, and the config editor carries the config
+// with it.
 const maxRoutingBody = 6 << 20
 
 // bodyTimeout bounds the time a body takes to arrive (a few MB fit even
@@ -281,9 +280,10 @@ func limitBody(next http.Handler) http.Handler {
 		if r.Body != nil {
 			limit := int64(maxBody)
 			if strings.Contains(r.URL.Path, "/routing") || strings.HasPrefix(r.URL.Path, "/api/v1/chain-templates/") ||
-				strings.HasSuffix(r.URL.Path, "/config/render") || strings.HasSuffix(r.URL.Path, "/config/apply") ||
-				r.URL.Path == "/api/v1/presets/import" {
+				strings.HasSuffix(r.URL.Path, "/config/render") || strings.HasSuffix(r.URL.Path, "/config/apply") {
 				limit = maxRoutingBody
+			} else if r.URL.Path == "/api/v1/presets/import" {
+				limit = maxPresetBody
 			}
 			if r.ContentLength != 0 {
 				// It also covers the rest of a body the handler did not

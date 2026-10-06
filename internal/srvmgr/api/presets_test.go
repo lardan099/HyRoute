@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -66,22 +67,49 @@ func TestPresetsAPI(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Disposition"), "attachment") || !strings.Contains(rec.Body.String(), `"format": "hyroute-preset"`) {
 		t.Fatalf("%d %v %s", rec.Code, rec.Header(), rec.Body)
 	}
-	var file map[string]any
-	json.Unmarshal(rec.Body.Bytes(), &file)
-	rec = owner.do("POST", "/api/v1/presets/import", file, nil)
-	var imp presetJSON
-	json.Unmarshal(rec.Body.Bytes(), &imp)
-	if rec.Code != http.StatusCreated || imp.Name != "Очень быстрый (2)" || imp.Config != p.Config {
+	// The file comes as text: what is wrong with it is said by Import.
+	imp := func(file any) *httptest.ResponseRecorder {
+		b, _ := json.Marshal(file)
+		return owner.do("POST", "/api/v1/presets/import", map[string]any{"data": string(b)}, nil)
+	}
+	refused := func(rec *httptest.ResponseRecorder, msg string) {
+		t.Helper()
+		code(t, rec, http.StatusBadRequest, "invalid")
+		if m := decodeError(t, rec).Message; !strings.Contains(m, msg) {
+			t.Fatalf("message %q, want %q", m, msg)
+		}
+	}
+	rec = owner.do("POST", "/api/v1/presets/import", map[string]any{"data": rec.Body.String()}, nil)
+	var imported presetJSON
+	json.Unmarshal(rec.Body.Bytes(), &imported)
+	if rec.Code != http.StatusCreated || imported.Name != "Очень быстрый (2)" || imported.Config != p.Config {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
+	var file map[string]any
+	json.Unmarshal(owner.do("GET", "/api/v1/presets/"+id+"/export", nil, nil).Body.Bytes(), &file)
+	// A rules file, a file of a later version, or not JSON at all.
+	refused(imp(map[string]any{"format": "hyroute-routing", "version": 1, "acl": map[string]any{"rules": []any{}}}), "не файл пресета")
+	refused(owner.do("POST", "/api/v1/presets/import", map[string]any{"data": "listen: :443"}, nil), "не файл пресета")
 	file["version"] = 9
-	code(t, owner.do("POST", "/api/v1/presets/import", file, nil), http.StatusBadRequest, "invalid")
-	// A file over 1 MB is read (a preset with a big ACL); over the limit
-	// of preset files it gets 413.
+	file["later"] = true
+	refused(imp(file), "версии 9")
+	// A file over 1 MB is read (a preset with a big ACL); one over the
+	// limit of preset files is refused by Import, and a body far over it
+	// gets 413.
 	file["notes"] = []string{strings.Repeat("x", 2<<20)}
-	code(t, owner.do("POST", "/api/v1/presets/import", file, nil), http.StatusBadRequest, "invalid")
+	refused(imp(file), "версии 9")
 	file["notes"] = []string{strings.Repeat("x", 5<<20)}
-	code(t, owner.do("POST", "/api/v1/presets/import", file, nil), http.StatusRequestEntityTooLarge, "too_large")
+	refused(imp(file), "больше 4 МБ")
+	file["notes"] = []string{strings.Repeat("x", 10<<20)}
+	code(t, imp(file), http.StatusRequestEntityTooLarge, "too_large")
+	// Escaping can double a file as a JSON string: a file just under the
+	// limit full of quotes still gets to Import.
+	delete(file, "later")
+	file["version"] = 1
+	file["notes"] = []string{strings.Repeat(`"`, (4<<20-len(p.Config))/2-1<<10)}
+	if rec = imp(file); rec.Code != http.StatusCreated {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
 
 	if rec = owner.do("DELETE", "/api/v1/presets/"+id, nil, nil); rec.Code != http.StatusNoContent {
 		t.Fatalf("%d %s", rec.Code, rec.Body)

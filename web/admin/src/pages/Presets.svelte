@@ -97,14 +97,7 @@
     (e.currentTarget as HTMLInputElement).value = '';
     if (!f) return;
     try {
-      let data: unknown;
-      try {
-        data = JSON.parse(await f.text());
-      } catch {
-        error = { message: t('presets.badFile') } as ApiError;
-        return;
-      }
-      const p = await api.importPreset(data);
+      const p = await api.importPreset(await f.text());
       await load();
       open = p.id;
     } catch (err) {

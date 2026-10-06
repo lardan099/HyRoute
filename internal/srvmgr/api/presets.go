@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -157,16 +156,23 @@ func (s *server) exportPreset(w http.ResponseWriter, r *http.Request) {
 	w.Write(b)
 }
 
-// importPreset stores the preset of an export file (the body).
+// maxPresetBody bounds the body of a preset import (limitBody): a file of
+// up to preset.MaxImport as a JSON string, which escaping at most doubles.
+// Import itself refuses a larger file, with a message of its own.
+const maxPresetBody = 2*preset.MaxImport + 1<<20
+
+// importPreset stores the preset of an export file (the file's text in
+// data): Import says what is wrong with a file of another kind or
+// version.
 func (s *server) importPreset(w http.ResponseWriter, r *http.Request) {
-	var f preset.File
-	r.Body = http.MaxBytesReader(w, r.Body, preset.MaxImport)
-	if err := readJSON(r, &f); err != nil {
+	var in struct {
+		Data string `json:"data"`
+	}
+	if err := readJSON(r, &in); err != nil {
 		writeError(w, err)
 		return
 	}
-	b, _ := json.Marshal(f)
-	p, err := s.presets().Import(r.Context(), b, principal(r).User.ID)
+	p, err := s.presets().Import(r.Context(), []byte(in.Data), principal(r).User.ID)
 	if err != nil {
 		s.fail(w, r, presetError(err))
 		return
