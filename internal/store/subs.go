@@ -29,10 +29,13 @@ type Subscription struct {
 	Warnings    []string       `json:"warnings"` // import warnings of the last update
 	// Errors: the first messages of the links the last update could not
 	// read (ErrorCount of them in all); their servers were left out.
-	Errors      []string `json:"errors,omitempty"`
-	ErrorCount  int      `json:"errorCount,omitempty"`
-	UserInfo    string   `json:"userInfo"` // Subscription-Userinfo header
-	HasPrevious bool     `json:"hasPrevious"`
+	Errors     []string `json:"errors,omitempty"`
+	ErrorCount int      `json:"errorCount,omitempty"`
+	// ViaVPN: the last update came through the main server's tunnel (the
+	// panel did not answer directly).
+	ViaVPN      bool   `json:"viaVPN,omitempty"`
+	UserInfo    string `json:"userInfo"` // Subscription-Userinfo header
+	HasPrevious bool   `json:"hasPrevious"`
 	// subinfo: UserInfo holds the header's canonical form. InfoAt is when
 	// it was reported (zero in files of v1.0.0). Support is the panel's
 	// support-url: public, one contact link for the whole panel, stored in

@@ -366,7 +366,7 @@
           <button class="danger" onclick={() => remove(s)}>Удалить</button>
         </div>
         <div class="meta small">
-          <span>Обновлено: {fmtDateTime(s.lastUpdate)}</span>
+          <span>Обновлено: {fmtDateTime(s.lastUpdate)}{#if s.viaVPN} <span class="muted" title="Сервер подписки не ответил напрямую (возможно, его блокирует сеть), и HyRoute скачал её через основной сервер">через VPN</span>{/if}</span>
           <span>Профилей: {s.profiles}{s.missing ? ` (нет в подписке: ${s.missing})` : ''}</span>
           {#if total(s.ignored)}<span class="muted">пропущено других протоколов: {total(s.ignored)}</span>{/if}
           {#if s.enabled && s.nextAt && !s.nextAt.startsWith('0001')}<span class="muted">следующее: {fmtDateTime(s.nextAt)}</span>{/if}

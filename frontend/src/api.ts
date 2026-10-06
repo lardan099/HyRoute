@@ -479,6 +479,7 @@ export interface Subscription {
   warnings: string[] | null;
   errors?: string[]; // first messages of the links the last update could not read
   errorCount?: number;
+  viaVPN?: boolean; // the last update came through the VPN: the panel did not answer directly
   userInfo: string;
   hasPrevious: boolean;
   profiles: number;

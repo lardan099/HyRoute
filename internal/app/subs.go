@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/geodata"
 	"github.com/lardan099/hyroute/internal/hysteria"
+	"github.com/lardan099/hyroute/internal/socks5"
 	"github.com/lardan099/hyroute/internal/store"
 )
 
@@ -40,6 +43,9 @@ type FetchResult struct {
 	UpdateHours int
 	Support     string
 	At          time.Time
+	// ViaVPN: the direct download failed and this one went through the
+	// main server's tunnel.
+	ViaVPN bool
 }
 
 // directTransport is http.DefaultTransport without a proxy: HyRoute's own
@@ -68,6 +74,29 @@ func subClient() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second, Transport: directTransport, CheckRedirect: geodata.NoDowngrade}
 }
 
+// subTunnelClient downloads a subscription through tun (the main
+// server's tunnel), for a panel the network blocks: as subClient, with
+// the same header bound.
+func subTunnelClient(tun interface {
+	Dial(context.Context, socks5.Addr) (net.Conn, error)
+}) *http.Client {
+	return &http.Client{Timeout: 30 * time.Second, CheckRedirect: geodata.NoDowngrade, Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			pn, err := strconv.Atoi(port)
+			if err != nil {
+				return nil, err
+			}
+			return tun.Dial(ctx, socks5.Addr{Host: host, Port: uint16(pn)})
+		},
+		TLSHandshakeTimeout:    20 * time.Second,
+		MaxResponseHeaderBytes: 64 << 10,
+	}}
+}
+
 // httpFetch downloads a subscription. HyRoute's own traffic is never
 // routed, so this goes straight to the subscription server (dns: through
 // directTransport, whose OwnDial registers each host it dials, a redirect's
@@ -84,6 +113,22 @@ func (c *Controller) httpFetch(ctx context.Context, rawURL string) (FetchResult,
 	req.Header.Set("User-Agent", "HyRoute/"+c.Version)
 	req.Header.Set("Accept", "text/plain, */*")
 	resp, err := subClient().Do(req)
+	viaVPN := false
+	if failed := err != nil || resp.StatusCode >= 500; failed && u.Scheme == "https" {
+		// A panel the network blocks: once more through the main server's
+		// tunnel, as the rule databases do (https only: the VPN server
+		// must not see the token).
+		if tun := c.mainEndpoint(); tun != nil {
+			if r2, err2 := subTunnelClient(tun).Do(req.Clone(ctx)); err2 == nil {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				resp, err, viaVPN = r2, nil, true
+			} else if err != nil {
+				err = err2 // both failed: the tunnel's error is as good
+			}
+		}
+	}
 	if err != nil {
 		// The error text contains the URL: never show it.
 		var ue *url.Error
@@ -104,7 +149,7 @@ func (c *Controller) httpFetch(ctx context.Context, rawURL string) (FetchResult,
 		return FetchResult{}, errors.New("ответ подписки больше 5 МБ")
 	}
 	res := panelHeaders(resp.Header)
-	res.Body = body
+	res.Body, res.ViaVPN = body, viaVPN
 	return res, nil
 }
 
@@ -638,6 +683,7 @@ func (c *Controller) applyFetched(id string, res FetchResult, rollback bool, tag
 	}
 	if !rollback {
 		s.Support = res.Support // subinfo: "" clears (the panel stopped sending it)
+		s.ViaVPN = res.ViaVPN
 	}
 	s.HasPrevious = c.Store.HasPrevious(id)
 	err = c.saveSubsLocked(subs)
