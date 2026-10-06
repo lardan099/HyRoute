@@ -22,6 +22,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/remote"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
+	"github.com/lardan099/hyroute/third_party/hysteria-acl/v2geo"
 )
 
 const config = `listen: :443
@@ -461,6 +462,40 @@ func TestRuleSecretsHidden(t *testing.T) {
 	}
 	if pb, _ := json.Marshal(p); strings.Contains(string(pb), "fake-comment-pw") {
 		t.Fatalf("preview: %s", pb)
+	}
+}
+
+// controllerGeo is the controller's databases: geosite has google only.
+type controllerGeo struct{}
+
+func (controllerGeo) LoadGeoIP() (map[string]*v2geo.GeoIP, error) {
+	return map[string]*v2geo.GeoIP{}, nil
+}
+
+func (controllerGeo) LoadGeoSite() (map[string]*v2geo.GeoSite, error) {
+	return map[string]*v2geo.GeoSite{"google": {CountryCode: "GOOGLE", Domain: []*v2geo.Domain{{Type: v2geo.Domain_RootDomain, Value: "google.com"}}}}, nil
+}
+
+// The rules are checked against the controller's databases only when the
+// server reads the same ones: a server with databases of its own may
+// have categories the controller's lack.
+func TestGeoOfServer(t *testing.T) {
+	base := "listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-geo-pass\noutbounds:\n  - name: exit\n    type: direct\n"
+	for paths, unknown := range map[string]bool{
+		"": true,
+		"  geoip: /etc/hysteria/geo/geoip.dat\n  geosite: /etc/hysteria/geo/geosite.dat\n": true,
+		"  geosite: /etc/hysteria/geosite-ru.dat\n":                                        false,
+	} {
+		e := newEnv(t, base+"acl:\n"+paths+"  inline:\n    - exit(geosite:ru-blocked)\n", false)
+		e.svc.Geo = controllerGeo{}
+		v, err := e.svc.Open(context.Background(), e.server)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := slices.ContainsFunc(v.Problems, func(p acl.Problem) bool { return p.Code == "unknown_geo" })
+		if p, err := e.svc.Preview(context.Background(), e.server, e.input()); err != nil || got != unknown || p.OK == unknown {
+			t.Errorf("paths %q: unknown_geo %v, preview ok %v (%v): %+v", paths, got, p.OK, err, v.Problems)
+		}
 	}
 }
 

@@ -104,7 +104,8 @@ type routingCheckInput struct {
 
 // checkRouting says which rule a request matches, as the server would.
 func (s *server) checkRouting(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.routingServer(w, r); !ok {
+	id, ok := s.routingServer(w, r)
+	if !ok {
 		return
 	}
 	var in routingCheckInput
@@ -112,7 +113,12 @@ func (s *server) checkRouting(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	v, err := acl.Match(in.ACL, acl.Env{Outbounds: in.Outbounds, Geo: s.Geo.Loader()}, in.Request)
+	g, err := s.routing().GeoOf(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, configError(err))
+		return
+	}
+	v, err := acl.Match(in.ACL, acl.Env{Outbounds: in.Outbounds, Geo: g}, in.Request)
 	if err != nil {
 		writeError(w, &Error{Status: http.StatusBadRequest, Code: "invalid", Message: err.Error(), Details: "request"})
 		return

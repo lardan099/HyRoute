@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/acl"
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
+	"github.com/lardan099/hyroute/internal/srvmgr/geo"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/remote"
 	"github.com/lardan099/hyroute/internal/srvmgr/topology"
@@ -105,8 +107,39 @@ func (s *Service) entryOf(ctx context.Context, serverID int64) (*ChainRef, error
 
 func (s *Service) env(c *hyconfig.Server, ref *ChainRef) acl.Env {
 	e := acl.EnvOf(c)
-	e.Geo, e.Entry = s.Geo, ref != nil
+	e.Geo, e.Entry = s.geoOf(c), ref != nil
 	return e
+}
+
+// geoOf is the geo databases the rules of c are checked against: the
+// controller's when the server reads the same release (no paths set:
+// Hysteria downloads it itself; or the files the geo job put in
+// geo.ServerDir). Databases of its own may have other categories: their
+// names are not checked (nil).
+func (s *Service) geoOf(c *hyconfig.Server) hacl.GeoLoader {
+	for _, p := range []string{c.ACL.GeoIP, c.ACL.GeoSite} {
+		if p != "" && path.Dir(p) != geo.ServerDir {
+			return nil
+		}
+	}
+	return s.Geo
+}
+
+// GeoOf is the geo databases the server's rules are checked against
+// (nil: names are not checked), for a check of one request. A server
+// without a config yet gets the controller's.
+func (s *Service) GeoOf(ctx context.Context, serverID int64) (hacl.GeoLoader, error) {
+	_, b, err := s.Editor.Current(ctx, serverID)
+	if errors.Is(err, apply.ErrNoConfig) {
+		return s.Geo, nil
+	} else if err != nil {
+		return nil, err
+	}
+	c, err := hyconfig.ParseServer(b)
+	if err != nil {
+		return nil, nil
+	}
+	return s.geoOf(c), nil
 }
 
 // Input is the editor's routing.
