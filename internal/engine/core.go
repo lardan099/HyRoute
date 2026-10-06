@@ -729,6 +729,19 @@ func (c *Core) newFlow(p *packet.Packet, addr *divert.Address, proto uint8, key 
 		return
 	}
 	pid, ok := c.Conns.Lookup(attrib.Key5{Proto: proto, Local: key.Src, Remote: key.Dst})
+	if ok && proto == packet.ProtoUDP {
+		// DNS goroutines route datagrams too (udpRoute): one of the same
+		// key that comes while this one is decided waits as for a parked
+		// flow, instead of deciding again and opening a second record
+		// that nothing would close.
+		pf := &pendingFlow{}
+		c.pending[pk] = pf
+		c.mu.Unlock()
+		defer c.dropParked(pk, pf) // after a panic too
+		c.decide(p, addr, proto, key, pid, true, "packet")
+		c.unpark(pk, pf, 0)
+		return
+	}
 	if ok {
 		c.mu.Unlock()
 		c.decide(p, addr, proto, key, pid, true, "packet")
@@ -763,16 +776,9 @@ func (c *Core) newFlow(p *packet.Packet, addr *divert.Address, proto uint8, key 
 	c.mu.Unlock()
 	go func() {
 		defer func() { <-c.sem }()
-		defer func() {
-			// Also after a panic: a flow left parked would swallow its
-			// packets for good.
-			c.mu.Lock()
-			if c.pending[pk] == pf {
-				delete(c.pending, pk)
-				c.pendBytes -= pf.bytes
-			}
-			c.mu.Unlock()
-		}()
+		// Also after a panic: a flow left parked would swallow its packets
+		// for good.
+		defer c.dropParked(pk, pf)
 		// A panic while deciding costs the parked packets, not the process
 		// (the packet loop is guarded the same way).
 		defer c.guard("pending")
@@ -786,24 +792,41 @@ func (c *Core) newFlow(p *packet.Packet, addr *divert.Address, proto uint8, key 
 			}
 			c.decide(&fp, &first.addr, proto, key, pid, ok, stage)
 		}
-		// Tables are populated now: replay the rest through the normal path.
-		c.mu.Lock()
-		rest := pf.pkts[1:]
-		if c.pending[pk] == pf {
-			delete(c.pending, pk)
-			c.pendBytes -= pf.bytes
-		}
-		c.mu.Unlock()
-		for i := range rest {
-			if rest[i].orig != nil {
-				// A reassembled datagram is not fragment-shaped:
-				// HandlePacket would lose its originals.
-				c.replayWhole(&rest[i])
-				continue
-			}
-			c.HandlePacket(rest[i].raw, &rest[i].addr)
-		}
+		c.unpark(pk, pf, 1)
 	}()
+}
+
+// dropParked ends the parked flow pf, if it still is.
+func (c *Core) dropParked(pk pendKey, pf *pendingFlow) {
+	c.mu.Lock()
+	c.dropParkedLocked(pk, pf)
+	c.mu.Unlock()
+}
+
+func (c *Core) dropParkedLocked(pk pendKey, pf *pendingFlow) {
+	if c.pending[pk] == pf {
+		delete(c.pending, pk)
+		c.pendBytes -= pf.bytes
+	}
+}
+
+// unpark ends the parked flow pf once its decision is in and replays the
+// packets that waited, from pf.pkts[from], through the normal path (the
+// tables are populated now).
+func (c *Core) unpark(pk pendKey, pf *pendingFlow, from int) {
+	c.mu.Lock()
+	rest := pf.pkts[from:]
+	c.dropParkedLocked(pk, pf)
+	c.mu.Unlock()
+	for i := range rest {
+		if rest[i].orig != nil {
+			// A reassembled datagram is not fragment-shaped:
+			// HandlePacket would lose its originals.
+			c.replayWhole(&rest[i])
+			continue
+		}
+		c.HandlePacket(rest[i].raw, &rest[i].addr)
+	}
 }
 
 func (c *Core) waitOwner(proto uint8, key nat.FlowKey) (uint32, bool, string) {

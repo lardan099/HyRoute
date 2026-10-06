@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/flows"
+	"github.com/lardan099/hyroute/internal/procinfo"
 	"github.com/lardan099/hyroute/internal/rules"
 	"github.com/lardan099/hyroute/internal/socks5"
 )
@@ -214,4 +215,41 @@ func TestUDPTooBig(t *testing.T) {
 		t.Fatalf("too big counted against the server: %d", a)
 	}
 	relay.waitRelay(t, 1)
+}
+
+// A datagram of a key whose first one is being decided (DNS goroutines
+// route datagrams too) waits for that decision: one record, both
+// datagrams on its route.
+func TestUDPDatagramDuringDecisionWaits(t *testing.T) {
+	h := newHarness(t, appRules, Options{})
+	const dst = "93.184.216.34:3478"
+	first := true
+	h.c.Procs = procinfo.NewCacheWith(procinfo.System{Query: func(pid uint32) (string, int64, bool) {
+		if first {
+			first = false
+			h.sendUDP(L, dst, []byte("two")) // while "one" is decided
+		}
+		p, ok := procs[pid]
+		return p, 1, ok
+	}})
+	h.own(17, L, dst, 200) // chrome, not 443: Direct
+	h.sendUDP(L, dst, []byte("one"))
+	for _, want := range []string{"one", "two"} {
+		if i := h.next(t); !i.addr.Outbound() || string(i.pkt.Payload()) != want {
+			t.Fatalf("got %q, want %q", i.pkt.Payload(), want)
+		}
+	}
+	h.none(t)
+	var n int
+	for _, v := range h.c.Flows.Active(time.Now()) {
+		if v.Dst == dst {
+			n++
+			if v.Sent != 6 {
+				t.Fatalf("%+v", v)
+			}
+		}
+	}
+	if n != 1 || len(h.c.Flows.Closed()) != 0 {
+		t.Fatalf("%d records, %d closed", n, len(h.c.Flows.Closed()))
+	}
 }
