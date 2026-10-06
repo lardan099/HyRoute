@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -188,5 +189,44 @@ func TestJobEventsStream(t *testing.T) {
 		case <-timeout:
 			t.Fatalf("stream did not end: %q", got)
 		}
+	}
+}
+
+// A stream ends once its session is gone: authed checked the session only
+// when the stream opened.
+func TestJobEventsEndWithSession(t *testing.T) {
+	sseKeepalive = 50 * time.Millisecond
+	t.Cleanup(func() { sseKeepalive = 20 * time.Second })
+	e := newEnv(t)
+	release := make(chan struct{})
+	defer close(release)
+	var broken atomic.Bool
+	e.jobs.Register(demoKind(release, &broken))
+	owner := e.setupOwner()
+	e.runJobs()
+	j, _ := e.jobs.Submit(context.Background(), "demo", 0, nil, nil, 1)
+	e.waitJob(j.ID, model.JobInstalling)
+
+	ts := httptest.NewServer(e.h)
+	defer ts.Close()
+	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/jobs/"+strconv.FormatInt(j.ID, 10)+"/events", nil)
+	req.AddCookie(owner.cookie)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	closed := make(chan struct{})
+	go func() { io.Copy(io.Discard, res.Body); close(closed) }()
+	select {
+	case <-closed:
+		t.Fatal("the stream ended while its session holds")
+	case <-time.After(5 * sseKeepalive):
+	}
+	code(t, owner.do("DELETE", "/api/v1/session", nil, nil), http.StatusNoContent, "")
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream outlived the logout")
 	}
 }

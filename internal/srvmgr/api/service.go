@@ -200,6 +200,9 @@ func (s *server) journal(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-keep.C:
+			if !s.sessionHolds(r) {
+				return
+			}
 			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
 				return
 			}

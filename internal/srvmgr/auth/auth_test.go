@@ -506,6 +506,27 @@ func disable(t *testing.T, db *sqlite.DB, id int64) {
 	}
 }
 
+// Recheck follows the session like Authenticate but does not count as its
+// use: an event stream does not keep an idle session alive.
+func TestRecheck(t *testing.T) {
+	s, _, c := newService(t)
+	ctx := context.Background()
+	is := setupOwner(t, s)
+	c.add(s.IdleTimeout / 2)
+	mustNoErr(t, s.Recheck(ctx, is.Token))
+	c.add(s.IdleTimeout/2 + time.Minute)
+	if err := s.Recheck(ctx, is.Token); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("idle session holds: %v", err)
+	}
+	is2, _ := s.Login(ctx, "owner", goodPass, meta("127.0.0.1"))
+	p2, _ := s.Authenticate(ctx, is2.Token)
+	mustNoErr(t, s.Recheck(ctx, is2.Token))
+	mustNoErr(t, s.Logout(ctx, p2))
+	if err := s.Recheck(ctx, is2.Token); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("logged out session holds: %v", err)
+	}
+}
+
 func TestCSRF(t *testing.T) {
 	a, b := CSRFToken("token-a"), CSRFToken("token-b")
 	if a == b || !CheckCSRF("token-a", a) || CheckCSRF("token-a", b) || CheckCSRF("token-a", "") {

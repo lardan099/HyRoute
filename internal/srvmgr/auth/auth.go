@@ -338,6 +338,19 @@ const touchEvery = time.Minute
 
 // Authenticate resolves a session token to its user.
 func (s *Service) Authenticate(ctx context.Context, token string) (Principal, error) {
+	return s.authenticate(ctx, token, true)
+}
+
+// Recheck tells a long request (an event stream) whether its session still
+// holds: ErrUnauthenticated after a logout, a revocation, the end of the
+// session or a disabled user. It is not activity of the session: an open
+// stream does not keep an idle session alive.
+func (s *Service) Recheck(ctx context.Context, token string) error {
+	_, err := s.authenticate(ctx, token, false)
+	return err
+}
+
+func (s *Service) authenticate(ctx context.Context, token string, touch bool) (Principal, error) {
 	if token == "" || len(token) > 128 {
 		return Principal{}, ErrUnauthenticated
 	}
@@ -359,7 +372,7 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Principal, er
 	if err != nil {
 		return Principal{}, err
 	}
-	if now.Sub(sess.LastSeenAt) >= touchEvery {
+	if touch && now.Sub(sess.LastSeenAt) >= touchEvery {
 		if err := s.Store.TouchSession(ctx, sess.ID, now); err == nil {
 			sess.LastSeenAt = now
 		}

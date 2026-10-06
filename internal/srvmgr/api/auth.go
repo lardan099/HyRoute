@@ -250,6 +250,13 @@ func (s *server) authed(need access, h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// sessionHolds re-checks the session of a running event stream, which
+// authed checked only when it opened: a stream ends once its session is
+// gone (the browser reconnects and gets 401).
+func (s *server) sessionHolds(r *http.Request) bool {
+	return s.Auth.Recheck(r.Context(), principal(r).Token) == nil
+}
+
 type userJSON struct {
 	ID        int64      `json:"id"`
 	Username  string     `json:"username"`

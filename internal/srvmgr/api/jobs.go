@@ -177,7 +177,7 @@ func (s *server) retryJob(w http.ResponseWriter, r *http.Request) {
 }
 
 // sseKeepalive is how often an idle stream gets a comment line, so proxies
-// do not close it.
+// do not close it; the session of a stream is checked as often.
 var sseKeepalive = 20 * time.Second
 
 // jobEvents streams a job as server-sent events: the stored log lines
@@ -280,6 +280,9 @@ func (s *server) jobEvents(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-keep.C:
+			if !s.sessionHolds(r) {
+				return
+			}
 			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
 				return
 			}
