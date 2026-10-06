@@ -791,9 +791,8 @@ func (x *applier) verify(ctx context.Context, env *jobs.Env) error {
 			switch {
 			case errors.As(err, &noSS) || lerr != nil:
 				// ss is missing (or cannot list), or Realms has no port:
-				// systemd is trusted, as in the deploy, once the service
-				// stayed up for a poll; a config Hysteria rejects stops it
-				// right away.
+				// systemd is trusted once the service stayed up for a
+				// poll; a config Hysteria rejects stops it right away.
 				if steady {
 					why := "порт проверить нечем: на сервере нет ss"
 					if lerr != nil {

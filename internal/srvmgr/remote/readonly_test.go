@@ -155,17 +155,17 @@ func TestJournal(t *testing.T) {
 	ctx := context.Background()
 	ex := fake.New()
 	lines := []string{
-		`{"__REALTIME_TIMESTAMP":"1790000000000000","PRIORITY":"6","MESSAGE":"2026-09-21T10:13:20Z\tINFO\tserver up and running\t{\"listen\": \":443\"}"}`,
+		`{"__REALTIME_TIMESTAMP":"1790000000000000","PRIORITY":"6","_PID":"4242","MESSAGE":"2026-09-21T10:13:20Z\tINFO\tserver up and running\t{\"listen\": \":443\"}"}`,
 		`{"__REALTIME_TIMESTAMP":"1790000001000000","PRIORITY":"3","MESSAGE":[104,105,255]}`,
 		`-- No entries --`,
 		`{"__REALTIME_TIMESTAMP":"1790000002000000"}`,
 	}
-	ex.On("journalctl", "-u", "hysteria-server.service", "-n", "50", "--no-pager", "-o", "json", "--output-fields=MESSAGE,PRIORITY").Reply(strings.Join(lines, "\n")+"\n", 0)
+	ex.On("journalctl", "-u", "hysteria-server.service", "-n", "50", "--no-pager", "-o", "json", "--output-fields=MESSAGE,PRIORITY,_PID").Reply(strings.Join(lines, "\n")+"\n", 0)
 	es, err := remote.JournalEntries(ctx, remote.ReadOnly(ex), "hysteria-server.service", 50, true)
 	if err != nil || len(es) != 2 {
 		t.Fatalf("%+v %v", es, err)
 	}
-	if es[0].Priority != 6 || !strings.Contains(es[0].Message, "server up and running") || es[0].Time.Unix() != 1_790_000_000 {
+	if es[0].Priority != 6 || !strings.Contains(es[0].Message, "server up and running") || es[0].Time.Unix() != 1_790_000_000 || es[0].PID != 4242 {
 		t.Fatalf("%+v", es[0])
 	}
 	if es[1].Priority != 3 || es[1].Message != "hi�" {
@@ -177,7 +177,7 @@ func TestJournal(t *testing.T) {
 	if err != nil || len(got) != 2 {
 		t.Fatalf("%d %v", len(got), err)
 	}
-	if !slices.Contains(ex.Commands(), "journalctl -u hysteria-server.service -n 10 --no-pager -o json --output-fields=MESSAGE,PRIORITY -f") {
+	if !slices.Contains(ex.Commands(), "journalctl -u hysteria-server.service -n 10 --no-pager -o json --output-fields=MESSAGE,PRIORITY,_PID -f") {
 		t.Fatalf("%q", ex.Commands())
 	}
 	if _, err := remote.JournalEntries(ctx, ex, "bad unit", 10, false); err == nil {

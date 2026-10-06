@@ -40,6 +40,11 @@ type sim struct {
 	badConfig func(cfg []byte) bool
 	// badBinary: the service dies with this binary.
 	badBinary func(bin []byte) bool
+	// silent: the service runs but never says it serves (a certificate
+	// that is not issued).
+	silent bool
+	// noSS: iproute2 is not installed.
+	noSS bool
 	// before sees every command before it runs (outside the lock).
 	before func(line string)
 	// written sees every written path after the write (outside the lock).
@@ -140,10 +145,10 @@ func (s *sim) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 	case "getent":
 		return ok("192.0.2.200 github.com\n"), nil
 	case "sh":
-		switch last {
-		case "curl", "ss":
+		switch {
+		case last == "curl", last == "ss" && !s.noSS:
 			return ok(""), nil
-		case "ufw":
+		case last == "ufw":
 			if s.ufw {
 				return ok(""), nil
 			}
@@ -184,6 +189,9 @@ func (s *sim) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 			return ok("Rule deleted\n"), nil
 		}
 	case "ss":
+		if s.noSS {
+			return fail(127, "env: 'ss': No such file or directory"), nil
+		}
 		if s.state == "active" {
 			port := 443
 			if c, err := hyconfig.ParseServer(s.running); err == nil {
@@ -196,6 +204,14 @@ func (s *sim) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 	case "systemctl":
 		return s.systemctl(a[1:])
 	case "journalctl":
+		if strings.Contains(line, " -o json ") {
+			// The running process says it serves, unless it never gets
+			// that far.
+			if s.state != "active" || s.silent {
+				return ok(""), nil
+			}
+			return ok(`{"MESSAGE":"2026-01-01T00:00:00Z\tINFO\tserver up and running","PRIORITY":"6","_PID":"4242"}` + "\n"), nil
+		}
 		return ok("server up and running\nfatal error: simulated crash\n"), nil
 	case "sha256sum":
 		b, found := s.files[last]
@@ -310,7 +326,11 @@ func (s *sim) systemctl(a []string) (remote.Result, error) {
 		if s.unitLoaded == "" {
 			return ok("LoadState=not-found\nActiveState=inactive\nFragmentPath=\nExecStart=\nUser=\n"), nil
 		}
-		return ok("LoadState=loaded\nActiveState=" + s.state + "\nFragmentPath=" + UnitPath + "\nExecStart=\nUser=hysteria\n"), nil
+		pid := "0"
+		if s.state == "active" {
+			pid = "4242"
+		}
+		return ok("LoadState=loaded\nActiveState=" + s.state + "\nFragmentPath=" + UnitPath + "\nExecStart=\nUser=hysteria\nMainPID=" + pid + "\n"), nil
 	case "is-active":
 		if s.state == "active" {
 			return ok("active\n"), nil

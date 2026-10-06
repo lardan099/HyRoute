@@ -365,6 +365,30 @@ func TestStartFailsRollsBackFreshInstall(t *testing.T) {
 	}
 }
 
+// Without ss the port cannot be looked at: the deploy waits until the
+// running process says it serves, and a service that stays "active"
+// without saying so (a certificate never issued) is rolled back.
+func TestVerifyWithoutSS(t *testing.T) {
+	s := newSim()
+	s.noSS = true
+	h := newHarness(t, s)
+	if j := h.deploy(params(), nil); j.State != model.JobCompleted || !strings.Contains(h.log(j.ID), "server up and running") {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, h.log(j.ID))
+	}
+
+	s = newSim()
+	s.noSS = true
+	s.silent = true
+	h = newHarness(t, s)
+	j := h.deploy(params(), nil)
+	if j.State != model.JobFailed || j.CurrentStep != "verify" || h.steps(j.ID)["start"] != model.StepRolledBack {
+		t.Fatalf("%s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, h.log(j.ID))
+	}
+	if h.state() == model.StateHealthy || len(h.revisions()) != 0 {
+		t.Fatalf("state %s, %d revisions", h.state(), len(h.revisions()))
+	}
+}
+
 func TestFailedUpgradeRestoresPrevious(t *testing.T) {
 	s := newSim()
 	h := newHarness(t, s)

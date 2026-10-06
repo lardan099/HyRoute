@@ -14,11 +14,12 @@ type JournalEntry struct {
 	Time     time.Time
 	Priority int // syslog priority: 3 error, 4 warning, 6 info, 7 debug
 	Message  string
+	PID      int // the process that logged it (0: not known)
 }
 
 // journalFields are the fields asked for; the cursor and timestamps come
 // with every record anyway.
-const journalFields = "--output-fields=MESSAGE,PRIORITY"
+const journalFields = "--output-fields=MESSAGE,PRIORITY,_PID"
 
 func journalArgs(unit string, lines int, follow bool) ([]string, error) {
 	if err := CheckUnitName(unit); err != nil {
@@ -74,6 +75,7 @@ func ParseJournalJSON(line string) (JournalEntry, bool) {
 	var r struct {
 		Message  json.RawMessage `json:"MESSAGE"`
 		Priority string          `json:"PRIORITY"`
+		PID      string          `json:"_PID"`
 		Realtime string          `json:"__REALTIME_TIMESTAMP"`
 	}
 	if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &r) != nil || len(r.Message) == 0 {
@@ -94,6 +96,7 @@ func ParseJournalJSON(line string) (JournalEntry, bool) {
 	if p, err := strconv.Atoi(r.Priority); err == nil {
 		e.Priority = p
 	}
+	e.PID, _ = strconv.Atoi(r.PID)
 	if us, err := strconv.ParseInt(r.Realtime, 10, 64); err == nil {
 		e.Time = time.UnixMicro(us).UTC()
 	}

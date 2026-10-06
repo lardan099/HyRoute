@@ -855,10 +855,23 @@ func (x *deployer) verify(ctx context.Context, env *jobs.Env, p Params) error {
 		}
 		if st == "active" {
 			ls, err := remote.Listeners(ctx, ex, sudo(env))
-			if err != nil {
-				// No ss: trust systemd.
-				env.Logf("Служба работает (порт проверить нечем: нет ss).")
-				return nil
+			var noSS *remote.ExitError
+			switch {
+			case errors.As(err, &noSS):
+				// No ss to look at the port with. systemd calls a service
+				// "active" also while it still gets its certificate or
+				// between the restarts of a crash loop: its own process
+				// must have said it serves.
+				up, err := serving(ctx, ex, sudo(env))
+				if err != nil {
+					return err
+				}
+				if up {
+					env.Logf("Hysteria работает: служба сообщила «server up and running» (порт проверить нечем: нет ss).")
+					return nil
+				}
+			case err != nil:
+				return err
 			}
 			for _, li := range ls {
 				if li.Proto == "udp" && li.Port == l.First && li.Process == "hysteria" {
@@ -877,6 +890,25 @@ func (x *deployer) verify(ctx context.Context, env *jobs.Env, p Params) error {
 		case <-time.After(x.Poll):
 		}
 	}
+}
+
+// serving: the unit's running process logged "server up and running",
+// which Hysteria does once it has its certificate and takes clients.
+func serving(ctx context.Context, ex remote.Executor, su bool) (bool, error) {
+	u, err := remote.Unit(ctx, ex, Unit)
+	if err != nil || u.MainPID == 0 {
+		return false, err
+	}
+	es, err := remote.JournalEntries(ctx, ex, Unit, 200, su)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range es {
+		if e.PID == u.MainPID && strings.Contains(e.Message, "server up and running") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (x *deployer) commitDone(ctx context.Context, env *jobs.Env, p Params) (bool, error) {

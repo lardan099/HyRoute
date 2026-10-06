@@ -149,7 +149,7 @@ func TestJournalAPI(t *testing.T) {
 	if strings.Contains(stream, "fake-journal-auth-pass") || strings.Contains(stream, "fake-journal-obfs-pass") {
 		t.Fatalf("secret in the stream: %s", stream)
 	}
-	if !strings.Contains(strings.Join(srv.Lines(), "\n"), "-o json --output-fields=MESSAGE,PRIORITY -f") {
+	if !strings.Contains(strings.Join(srv.Lines(), "\n"), "-o json --output-fields=MESSAGE,PRIORITY,_PID -f") {
 		t.Fatalf("%q", srv.Lines())
 	}
 }
