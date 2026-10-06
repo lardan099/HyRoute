@@ -198,6 +198,11 @@ func TestFailureRetryFromSafeStep(t *testing.T) {
 	if got := h.steps(j.ID); got[2] != model.StepFailed || got[3] != model.StepPending {
 		t.Fatalf("steps %v", got)
 	}
+	// The failed step keeps its attempt and its start.
+	rows, _ := h.db.JobSteps(context.Background(), j.ID)
+	if rows[2].Attempt != 1 || rows[2].StartedAt.IsZero() || rows[2].FinishedAt.IsZero() {
+		t.Fatalf("failed step %+v", rows[2])
+	}
 	if _, err := h.eng.Retry(context.Background(), j.ID+100, 1); err == nil {
 		t.Fatal("retry of a missing job")
 	}

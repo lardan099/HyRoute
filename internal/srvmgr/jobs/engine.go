@@ -367,6 +367,7 @@ func (e *Engine) runJob(ctx context.Context, id int64) {
 		e.save(ctx, &j, env)
 		env.step = st.Name
 		row.State, row.Attempt, row.StartedAt, row.FinishedAt, row.Error = model.StepRunning, row.Attempt+1, e.Now(), time.Time{}, ""
+		rows[i] = row // a failure keeps the attempt and the start
 		e.saveStep(ctx, row)
 
 		skipped := false
