@@ -543,6 +543,10 @@ func TestParams(t *testing.T) {
 		{TLS: TLSSelfSigned},
 		{TLS: TLSSelfSigned, Port: 8443, HopPorts: "20000-50000", SNI: "www.example.com", Obfs: true},
 		{TLS: TLSACME, Domain: "VPN.Example.com", Email: "admin@example.com", Challenge: "tls"},
+		// International zones: punycode as is, Unicode converted.
+		{TLS: TLSACME, Domain: "vpn.xn--80ak6aa92e.xn--p1ai"},
+		{TLS: TLSACME, Domain: "VPN.Пример.РФ"},
+		{TLS: TLSSelfSigned, SNI: "cdn.пример.москва"},
 	}
 	for i := range good {
 		if err := good[i].Normalize(); err != nil {
@@ -551,6 +555,9 @@ func TestParams(t *testing.T) {
 	}
 	if p := good[2]; p.Domain != "vpn.example.com" || p.TCPPorts()[0] != 443 {
 		t.Errorf("%+v", p)
+	}
+	if good[3].Domain != "vpn.xn--80ak6aa92e.xn--p1ai" || good[4].Domain != "vpn.xn--e1afmkfd.xn--p1ai" || good[5].SNI != "cdn.xn--e1afmkfd.xn--80adxhks" {
+		t.Errorf("punycode: %q %q %q", good[3].Domain, good[4].Domain, good[5].SNI)
 	}
 	if p := good[0]; p.Version != hyrelease.DefaultVersion || p.Port != 443 || p.Source != SourceAuto || p.Listen() != ":443" {
 		t.Errorf("defaults %+v", p)

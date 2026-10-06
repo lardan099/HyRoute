@@ -26,6 +26,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/idna"
+
 	"github.com/lardan099/hyroute/internal/hy2uri"
 	"github.com/lardan099/hyroute/internal/hyconfig"
 	"github.com/lardan099/hyroute/internal/srvmgr/hopping"
@@ -122,9 +124,22 @@ type Params struct {
 }
 
 var (
-	domainRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
+	// domainRe: a host name in ASCII; the top-level label is letters or
+	// punycode (xn--p1ai is .рф), never digits (an IP address).
+	domainRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})$`)
 	emailRe  = regexp.MustCompile(`^[^@\s]{1,64}@[a-z0-9.-]{1,253}$`)
 )
+
+// asciiName is a host name as entered, lower case, its international
+// labels in punycode ("vpn.пример.рф" → "vpn.xn--e1afmkfd.xn--p1ai"): the
+// form ACME, SNI and client links take.
+func asciiName(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if a, err := idna.Lookup.ToASCII(s); err == nil && s != "" {
+		return a
+	}
+	return s
+}
 
 // Normalize fills the defaults and checks the params.
 func (p *Params) Normalize() error {
@@ -149,8 +164,8 @@ func (p *Params) Normalize() error {
 	if _, err := (hopping.Spec{Ports: strings.Split(p.Ports(), ",")}).Parse(); err != nil {
 		return fmt.Errorf("порты: %w", err)
 	}
-	p.Domain = strings.ToLower(strings.TrimSpace(p.Domain))
-	p.SNI = strings.ToLower(strings.TrimSpace(p.SNI))
+	p.Domain = asciiName(p.Domain)
+	p.SNI = asciiName(p.SNI)
 	switch p.TLS {
 	case TLSSelfSigned:
 		if p.SNI != "" && !domainRe.MatchString(p.SNI) {
