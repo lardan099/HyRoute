@@ -23,6 +23,13 @@ func TestHideRenamedOutbound(t *testing.T) {
 	if !strings.Contains(string(out), "fake-renamed-pass") {
 		t.Fatalf("candidate lost the password:\n%s", out)
 	}
+	// The password moved with its outbound: no secret changes.
+	if len(ch.Secrets) != 0 {
+		t.Fatalf("changed secrets %q", ch.Secrets)
+	}
+	if s := ChangedSecrets([]byte(current), []byte(strings.Replace(cand, "fake-renamed-pass", "fake-other-pass", 1))); len(s) != 2 {
+		t.Fatalf("a new password on the rename: %q", s)
+	}
 	if err := HideCurrent(&ch, []byte(current)); err != nil {
 		t.Fatal(err)
 	}

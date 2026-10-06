@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -294,6 +295,8 @@ func keyOf(m *yaml.Node, k string) *yaml.Node {
 
 // ChangedSecrets are the paths of secrets that differ between two
 // configs (both unmasked): the diff of masked texts does not show them.
+// A secret that only moved to another path with its item (a renamed
+// outbound) did not change.
 func ChangedSecrets(before, after []byte) []string {
 	a, err1 := parse(before)
 	b, err2 := parse(after)
@@ -302,6 +305,7 @@ func ChangedSecrets(before, after []byte) []string {
 	}
 	var out []string
 	seen := map[string]bool{}
+	alone := map[string]string{} // path → value, of a path the other side has not
 	check := func(x, y *yaml.Node) {
 		for _, s := range secretsOf(x) {
 			if seen[s.path] {
@@ -310,12 +314,30 @@ func ChangedSecrets(before, after []byte) []string {
 			seen[s.path] = true
 			if o := lookup(y, s.path); o == nil || o.Kind != yaml.ScalarNode || o.Value != s.node.Value {
 				out = append(out, s.path)
+				if o == nil {
+					alone[s.path] = s.node.Value
+				}
 			}
 		}
 	}
 	check(b, a)
+	n := len(out) // after's paths first, then those only before has
 	check(a, b)
-	return out
+	// A path gone and a new one with the same value are one move.
+	moved := map[string]bool{}
+	for _, gone := range out[n:] {
+		v, ok := alone[gone]
+		if !ok {
+			continue
+		}
+		for _, p := range out[:n] {
+			if w, ok := alone[p]; ok && w == v && !moved[p] {
+				moved[gone], moved[p] = true, true
+				break
+			}
+		}
+	}
+	return slices.DeleteFunc(out, func(p string) bool { return moved[p] })
 }
 
 func parse(b []byte) (*yaml.Node, error) {
