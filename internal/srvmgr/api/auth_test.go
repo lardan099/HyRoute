@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -405,4 +407,36 @@ func TestClientIPBehindProxy(t *testing.T) {
 	if got := s.clientIP(r); got != "127.0.0.1" {
 		t.Errorf("without -trust-proxy: %q", got)
 	}
+}
+
+// A proxy that rewrites Host: Origin is checked against X-Forwarded-Host
+// from a trusted proxy, and a refused write is logged with what to fix.
+func TestOriginBehindProxy(t *testing.T) {
+	e := newEnv(t)
+	e.setupOwner()
+	var logs bytes.Buffer
+	login := func(trust bool, peer string, hdr map[string]string) *httptest.ResponseRecorder {
+		h := New(Deps{Store: e.db, Auth: e.auth, Servers: e.servers, TrustProxy: trust, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+		b, _ := json.Marshal(map[string]string{"username": "owner", "password": pass})
+		r := httptest.NewRequest("POST", "http://127.0.0.1:8480/api/v1/session", bytes.NewReader(b))
+		r.RemoteAddr = net.JoinHostPort(peer, "50000")
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Origin", "https://panel.example.com")
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
+		for k, v := range hdr {
+			r.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+	code(t, login(true, "127.0.0.1", nil), http.StatusForbidden, "csrf")
+	if !strings.Contains(logs.String(), "proxy_set_header Host") || !strings.Contains(logs.String(), "panel.example.com") {
+		t.Fatalf("no warning: %s", logs.String())
+	}
+	code(t, login(true, "127.0.0.1", map[string]string{"X-Forwarded-Host": "panel.example.com"}), http.StatusOK, "")
+	code(t, login(true, "::1", map[string]string{"X-Forwarded-Host": "proxy.internal, panel.example.com"}), http.StatusOK, "")
+	// Only a trusted proxy on this machine is believed.
+	code(t, login(true, "203.0.113.5", map[string]string{"X-Forwarded-Host": "panel.example.com"}), http.StatusForbidden, "csrf")
+	code(t, login(false, "127.0.0.1", map[string]string{"X-Forwarded-Host": "panel.example.com"}), http.StatusForbidden, "csrf")
 }

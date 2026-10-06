@@ -102,7 +102,20 @@ panel.example.com {
 }
 ```
 
-Запустите controller с `-trust-proxy`: тогда он верит заголовкам `X-Forwarded-For` и `X-Forwarded-Proto` от прокси на этой машине (для журнала входов и защиты от перебора), и cookie сессии помечаются как только для HTTPS.
+Для nginx:
+
+```nginx
+location / {
+	proxy_pass http://127.0.0.1:8480;
+	proxy_set_header Host $host;
+	proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+	proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+Прокси должен передавать панели адрес, который набран в браузере: заголовок `Host` (Caddy делает это сам, nginx — только с `proxy_set_header Host $host`) или `X-Forwarded-Host`. Иначе вход и любые изменения отклоняются с ошибкой защиты от подделки, а в журнале controller появляется предупреждение «write refused: Origin is not the host».
+
+Запустите controller с `-trust-proxy`: тогда он верит заголовкам `X-Forwarded-For`, `X-Forwarded-Proto` и `X-Forwarded-Host` от прокси на этой машине (для журнала входов и защиты от перебора), и cookie сессии помечаются как только для HTTPS.
 
 **Свой TLS** — без прокси: укажите сертификат и ключ в формате PEM, и панель будет отвечать по HTTPS на любом адресе.
 

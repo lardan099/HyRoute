@@ -11,6 +11,7 @@ import (
 	"path"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
@@ -48,8 +49,8 @@ type Deps struct {
 	Logs    *logbuf.Buffer
 	Log     *slog.Logger
 	Version string
-	// TrustProxy: believe X-Forwarded-For/-Proto from a reverse proxy on
-	// a loopback address.
+	// TrustProxy: believe X-Forwarded-For/-Proto/-Host from a reverse
+	// proxy on a loopback address.
 	TrustProxy bool
 	// OnSetupDone runs after the first owner is created (main removes the
 	// setup token file).
@@ -61,7 +62,8 @@ type Deps struct {
 
 type server struct {
 	Deps
-	ssh sshLimits
+	ssh          sshLimits
+	originWarned atomic.Int64 // unix time of the last warnOrigin line
 }
 
 // New returns the HTTP handler of the controller.

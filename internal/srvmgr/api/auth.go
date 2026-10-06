@@ -102,23 +102,50 @@ func sizeText(n int64) string {
 }
 
 // crossSite reports a request sent by another site: browsers mark them
-// with Sec-Fetch-Site, and Origin (when present) must be this host.
-func crossSite(r *http.Request) bool {
+// with Sec-Fetch-Site, and Origin (when present) must be the host the
+// browser talked to: Host, or from a trusted proxy that rewrites Host
+// (Apache without ProxyPreserveHost) X-Forwarded-Host. A browser cannot
+// add that header to a request of another site.
+func (s *server) crossSite(r *http.Request) bool {
 	switch r.Header.Get("Sec-Fetch-Site") {
 	case "", "same-origin", "none":
 	default:
 		return true
 	}
-	if o := r.Header.Get("Origin"); o != "" {
-		host := o
-		if _, rest, ok := strings.Cut(o, "://"); ok {
-			host = rest
-		}
-		if !strings.EqualFold(host, r.Host) {
-			return true
+	o := r.Header.Get("Origin")
+	if o == "" {
+		return false
+	}
+	host := o
+	if _, rest, ok := strings.Cut(o, "://"); ok {
+		host = rest
+	}
+	if strings.EqualFold(host, r.Host) {
+		return false
+	}
+	if s.fromProxy(r) {
+		for _, v := range r.Header.Values("X-Forwarded-Host") {
+			for _, h := range strings.Split(v, ",") {
+				if strings.EqualFold(host, strings.TrimSpace(h)) {
+					return false
+				}
+			}
 		}
 	}
-	return false
+	s.warnOrigin(r, host)
+	return true
+}
+
+// warnOrigin logs, at most once a minute, a write refused because Origin
+// is not the host: behind a proxy that rewrites Host (nginx by default)
+// every write is refused so, and the client only sees «csrf».
+func (s *server) warnOrigin(r *http.Request, origin string) {
+	now := time.Now().Unix()
+	last := s.originWarned.Load()
+	if now-last < 60 || !s.originWarned.CompareAndSwap(last, now) {
+		return
+	}
+	s.Log.Warn("write refused: Origin is not the host of the request; a reverse proxy must pass the Host header on (nginx: proxy_set_header Host $host)", "origin", origin, "host", r.Host)
 }
 
 func mutating(method string) bool {
@@ -136,7 +163,7 @@ func (s *server) clientIP(r *http.Request) string {
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if s.TrustProxy && isLoopback(host) {
+	if s.fromProxy(r) {
 		if ip := lastForwarded(r.Header.Values("X-Forwarded-For")); ip != "" {
 			return ip
 		}
@@ -166,13 +193,19 @@ func isLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// fromProxy: the request came through a trusted reverse proxy on this
+// machine, so its X-Forwarded-* headers count.
+func (s *server) fromProxy(r *http.Request) bool {
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return s.TrustProxy && isLoopback(host)
+}
+
 // secureRequest: the browser talks HTTPS to us or to our reverse proxy.
 func (s *server) secureRequest(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
-	host, _, _ := net.SplitHostPort(r.RemoteAddr)
-	return s.TrustProxy && isLoopback(host) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	return s.fromProxy(r) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func (s *server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string, maxAge time.Duration) {
@@ -199,7 +232,7 @@ func (s *server) meta(r *http.Request) auth.Meta {
 // writes.
 func (s *server) public(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if mutating(r.Method) && crossSite(r) {
+		if mutating(r.Method) && s.crossSite(r) {
 			writeError(w, errCSRF)
 			return
 		}
@@ -241,7 +274,7 @@ func (s *server) authed(need access, h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if mutating(r.Method) {
-			if crossSite(r) || !auth.CheckCSRF(p.Token, r.Header.Get("X-CSRF-Token")) {
+			if s.crossSite(r) || !auth.CheckCSRF(p.Token, r.Header.Get("X-CSRF-Token")) {
 				writeError(w, errCSRF)
 				return
 			}

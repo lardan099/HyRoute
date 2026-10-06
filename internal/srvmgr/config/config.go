@@ -30,8 +30,9 @@ type Config struct {
 	DataDir string
 	// MasterKeyFile is used when HYROUTE_MASTER_KEY is not set.
 	MasterKeyFile string
-	// TrustProxy makes the controller believe X-Forwarded-Proto and
-	// X-Forwarded-For from a reverse proxy on a loopback address.
+	// TrustProxy makes the controller believe X-Forwarded-Proto,
+	// X-Forwarded-For and X-Forwarded-Host from a reverse proxy on a
+	// loopback address.
 	TrustProxy bool
 	// LogLevel is debug, info, warn or error.
 	LogLevel string
