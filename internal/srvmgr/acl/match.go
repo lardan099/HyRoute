@@ -118,8 +118,15 @@ func compileSet(d Document, valid []bool, geo withPrivate) *Set {
 		trs = append(trs, tr)
 		s.tried[i] = true
 	}
-	// Every rule compiled alone already.
-	s.rs, _ = hacl.Compile[int](trs, obs, 1024, geo)
+	// Every rule compiled alone already. Should they fail together (a geo
+	// database that no longer reads), none of them was tried: the verdict
+	// lists them as unknown instead of matching none.
+	rs, err := hacl.Compile[int](trs, obs, 1024, geo)
+	if err != nil {
+		clear(s.tried)
+		return s
+	}
+	s.rs = rs
 	return s
 }
 

@@ -1,9 +1,12 @@
 package acl
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/lardan099/hyroute/third_party/hysteria-acl/v2geo"
 )
 
 const vectors = `reject(geoip:private)
@@ -122,6 +125,30 @@ func TestDryRunRenames(t *testing.T) {
 	}
 	if err != nil || !slices.Equal(got, []string{"example.com:proxy>proxy", "www.example.com:proxy>proxy"}) {
 		t.Fatalf("old name taken: %v %q", err, got)
+	}
+}
+
+// onceGeo reads its geoip database once: each rule compiles alone, then
+// they do not compile together.
+type onceGeo struct{ reads *int }
+
+func (g onceGeo) LoadGeoIP() (map[string]*v2geo.GeoIP, error) {
+	*g.reads++
+	if *g.reads > 1 {
+		return nil, errors.New("geoip.dat: read error")
+	}
+	return testGeo{}.LoadGeoIP()
+}
+
+func (onceGeo) LoadGeoSite() (map[string]*v2geo.GeoSite, error) { return testGeo{}.LoadGeoSite() }
+
+// Rules that do not compile together were not tried: no verdict of none
+// matching.
+func TestMatchUntriedWhenSetFails(t *testing.T) {
+	reads := 0
+	v, err := Match(Parse("reject(geoip:ru)\ndirect(all)"), Env{Geo: onceGeo{&reads}}, Request{Host: "example.org", Port: 443})
+	if err != nil || v.Rule != -1 || !slices.Equal(v.Unknown, []int{0, 1}) {
+		t.Fatalf("%+v %v", v, err)
 	}
 }
 
