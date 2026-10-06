@@ -1201,9 +1201,9 @@ routing`, ревизия с источником «правка»).
 | GET | `/api/v1/servers/{id}/config/revisions/{rev}` | operator+ | конфиг ревизии, секреты замаскированы |
 | GET | `/api/v1/servers/{id}/config/compare?from=&to=` | operator+ | diff двух ревизий без секретов, изменённые секреты — путями |
 | POST | `/api/v1/servers/{id}/config/rollback` | operator+ | `{base, revision}`: задание `apply` с конфигом ревизии |
-| POST | `/api/v1/servers/{id}/config/rotate` | operator+ | `{base, auth, users, obfs, cert}`: задание `apply` с новыми паролями и/или самоподписанным сертификатом; что не подходит к конфигу — 400 `invalid` |
-| GET | `/api/v1/servers/{id}/client` | любая | сводка для клиентов без секретов |
-| POST | `/api/v1/servers/{id}/client/reveal` | operator+ | `{user}` → ссылки (официальная и совместимая), `config.yaml`, QR; CSRF, `no-store`, пишется в audit log |
+| POST | `/api/v1/servers/{id}/config/rotate` | operator+ | `{base, auth, users, obfs, cert}`: задание `apply` с новыми паролями и/или самоподписанным сертификатом (пустой `users` — все пользователи, кроме связей каскадов); что не подходит к конфигу — 400 `invalid` |
+| GET | `/api/v1/servers/{id}/client` | любая | сводка для клиентов без секретов; пользователи связей каскадов — отдельно, в `links` |
+| POST | `/api/v1/servers/{id}/client/reveal` | operator+ | `{user}` → ссылки (официальная и совместимая), `config.yaml`, QR; CSRF, `no-store`, пишется в audit log; пользователь связи каскада — 409 `link_user` |
 | GET | `/api/v1/jobs`, `/api/v1/jobs/{id}` | любая | список (`?server=`, `?before=`), детали с шагами |
 | GET | `/api/v1/jobs/{id}/logs` | любая | строки журнала после `?after=` |
 | GET | `/api/v1/jobs/{id}/events` (SSE) | любая | сохранённый журнал после `Last-Event-ID`, затем события `log`/`step`/`job` до конца задания, `end` |

@@ -869,7 +869,10 @@ export interface ClientSummary {
   pinSHA256?: string;
   obfs?: string;
   auth: string;
+  // users: the clients; links: the users of cascade links into the
+  // server (the entry logs in with them; no client link, no rotation).
   users?: string[];
+  links?: string[];
   warnings: string[];
 }
 

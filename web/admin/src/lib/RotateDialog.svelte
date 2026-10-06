@@ -75,6 +75,7 @@
             </div>
           {/if}
           <span class="hint">{t('rot.usersHint')}</span>
+          {#if summary?.links?.length}<span class="hint">{t('rot.linkUsers', { users: summary.links.join(', ') })}</span>{/if}
         </div>
       {:else if kind}
         <p class="hint">{t('rot.external', { type: kind })}</p>

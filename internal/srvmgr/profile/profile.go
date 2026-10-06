@@ -5,6 +5,7 @@ package profile
 
 import (
 	"errors"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,8 +27,12 @@ type Summary struct {
 	PinSHA256 string `json:"pinSHA256,omitempty"`
 	Obfs      string `json:"obfs,omitempty"`
 	Auth      string `json:"auth"`
-	// Users are the userpass users (names only), sorted.
-	Users    []string `json:"users,omitempty"`
+	// Users are the userpass users (names only), sorted, but for those
+	// of cascade links.
+	Users []string `json:"users,omitempty"`
+	// Links are the userpass users of the cascade links into the server,
+	// sorted: the entry logs in with them, no client does.
+	Links    []string `json:"links,omitempty"`
 	Warnings []string `json:"warnings"`
 }
 
@@ -51,6 +56,10 @@ type Profile struct {
 // command; the controller does not know them.
 var ErrExternalAuth = errors.New("внешняя проверка паролей")
 
+// ErrLinkUser: the user is a cascade link's login; no client link is
+// made for it.
+var ErrLinkUser = errors.New("пользователь связи каскада")
+
 // ClientOptions are what a client of srv needs beyond its config c: the
 // address and public ports, the hop interval, and how to check the
 // certificate. user picks the userpass user.
@@ -69,8 +78,9 @@ func ClientOptions(srv model.Server, c *hyconfig.Server, meta model.ConfigMeta, 
 	return o
 }
 
-// Summarize is the summary of a server's client profile.
-func Summarize(srv model.Server, cfg []byte, meta model.ConfigMeta) (Summary, error) {
+// Summarize is the summary of a server's client profile; links are the
+// users of the cascade links into the server (cascade.Users).
+func Summarize(srv model.Server, cfg []byte, meta model.ConfigMeta, links []string) (Summary, error) {
 	c, err := hyconfig.ParseServer(cfg)
 	if err != nil {
 		return Summary{}, err
@@ -87,9 +97,14 @@ func Summarize(srv model.Server, cfg []byte, meta model.ConfigMeta) (Summary, er
 		s.SNI = c.ACME.Domains[0]
 	}
 	for u := range c.Auth.UserPass {
-		s.Users = append(s.Users, u)
+		if isLink(links, u) {
+			s.Links = append(s.Links, u)
+		} else {
+			s.Users = append(s.Users, u)
+		}
 	}
 	sort.Strings(s.Users)
+	sort.Strings(s.Links)
 	if s.PinSHA256 != "" {
 		s.Warnings = append(s.Warnings, "Сертификат самоподписанный: клиенты проверяют его по pinSHA256. Клиент, который pin не поддерживает, подключится без проверки сертификата.")
 	}
@@ -103,14 +118,22 @@ func Summarize(srv model.Server, cfg []byte, meta model.ConfigMeta) (Summary, er
 }
 
 // Build is the full profile; user picks the userpass user (may be empty
-// when there is one).
-func Build(srv model.Server, cfg []byte, meta model.ConfigMeta, user string) (Profile, error) {
-	s, err := Summarize(srv, cfg, meta)
+// when there is one client). A user of links is refused (ErrLinkUser).
+func Build(srv model.Server, cfg []byte, meta model.ConfigMeta, user string, links []string) (Profile, error) {
+	s, err := Summarize(srv, cfg, meta, links)
 	if err != nil {
 		return Profile{}, err
 	}
 	if s.Auth == "http" || s.Auth == "command" {
 		return Profile{}, ErrExternalAuth
+	}
+	if s.Auth == "userpass" && len(s.Links) > 0 {
+		if user == "" && len(s.Users) == 1 {
+			user = s.Users[0]
+		}
+		if (user == "" && len(s.Users) == 0) || isLink(s.Links, user) {
+			return Profile{}, ErrLinkUser
+		}
 	}
 	c, _ := hyconfig.ParseServer(cfg)
 	cc, err := hyconfig.ClientFor(c, ClientOptions(srv, c, meta, user))
@@ -150,6 +173,12 @@ func Build(srv model.Server, cfg []byte, meta model.ConfigMeta, user string) (Pr
 		return Profile{}, err
 	}
 	return p, nil
+}
+
+// isLink: user is one of links (names match as the auth does, ignoring
+// case).
+func isLink(links []string, user string) bool {
+	return slices.ContainsFunc(links, func(l string) bool { return strings.EqualFold(l, user) })
 }
 
 // withHop adds the hop interval to an official link (hopping: the client

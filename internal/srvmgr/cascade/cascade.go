@@ -132,6 +132,20 @@ func ID(chainID int64, idx int) string {
 // User is the link's own user on a userpass exit.
 func User(chainID int64, idx int) string { return "link-" + ID(chainID, idx) }
 
+// Users are the link users of server: those of the links that end there
+// (a userpass exit has them in its config).
+func Users(chains []model.Chain, server int64) []string {
+	var out []string
+	for _, c := range chains {
+		for _, l := range c.Links {
+			if l.To == server {
+				out = append(out, User(c.ID, l.Idx))
+			}
+		}
+	}
+	return out
+}
+
 // UnitName is the systemd unit of the link client on the entry.
 func UnitName(chainID int64, idx int) string { return "hyroute-link-" + ID(chainID, idx) + ".service" }
 

@@ -15,6 +15,51 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/profile"
 )
 
+// The user of a cascade link on its exit: listed apart, never revealed,
+// and left out of a rotation of all users.
+func TestClientLinkUserAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	ids := map[string]int64{}
+	for _, name := range []string{"entry", "exit"} {
+		rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": name, "host": name + ".example.com", "authType": "password", "password": fakeSSHPass}, nil)
+		var srv serverJSON
+		json.Unmarshal(rec.Body.Bytes(), &srv)
+		ids[name] = srv.ID
+	}
+	ch := model.Chain{Name: "c", Nodes: []int64{ids["entry"], ids["exit"]}, Links: []model.ChainLink{{}}, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := e.db.CreateChain(ctx, &ch, nil); err != nil {
+		t.Fatal(err)
+	}
+	link := "link-" + strconv.FormatInt(ch.ID, 10) + "-0"
+	exit, id := ids["exit"], strconv.FormatInt(ids["exit"], 10)
+	cfg := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: userpass\n  userpass:\n    phone: fake-phone-pass\n    " + link + ": fake-link-pass\n")
+	c := model.ServerConfig{ServerID: exit, SHA256: "x", Source: model.ConfigCascade, Meta: model.ConfigMeta{TLS: "acme", Ports: "443"}, At: time.Now()}
+	e.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return e.keys.Seal(cfg, model.ConfigContext(exit, rev)) })
+
+	rec := owner.do("GET", "/api/v1/servers/"+id+"/client", nil, nil)
+	var sum profile.Summary
+	json.Unmarshal(rec.Body.Bytes(), &sum)
+	if rec.Code != 200 || strings.Join(sum.Users, ",") != "phone" || strings.Join(sum.Links, ",") != link {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	code(t, owner.do("POST", "/api/v1/servers/"+id+"/client/reveal", map[string]any{"user": link}, nil), http.StatusConflict, "link_user")
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/client/reveal", map[string]any{}, nil)
+	if rec.Code != 200 || strings.Contains(rec.Body.String(), "fake-link-pass") || !strings.Contains(rec.Body.String(), `"user":"phone"`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+
+	e.db.SetInstallation(ctx, model.Installation{ServerID: exit, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", At: time.Now()})
+	e.db.SetHostKey(ctx, model.HostKey{ServerID: exit, Type: "ssh-ed25519", Key: []byte("fake"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()})
+	rec = owner.do("POST", "/api/v1/servers/"+id+"/config/rotate", map[string]any{"base": c.Revision, "auth": true}, nil)
+	var j jobJSON
+	json.Unmarshal(rec.Body.Bytes(), &j)
+	if rec.Code != http.StatusAccepted || !strings.Contains(string(j.Params), `"rotated":["user:phone"]`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
 func TestClientProfileAPI(t *testing.T) {
 	e := newEnv(t)
 	owner := e.setupOwner()

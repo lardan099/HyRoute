@@ -125,6 +125,12 @@ func (s *server) rotateConfig(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	links, err := s.linkUsers(r, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	in.Rotation.Links = links
 	j, err := s.Apply.Rotate(r.Context(), id, in.Base, in.Rotation, principal(r).User.ID)
 	if err != nil {
 		s.fail(w, r, jobError(configError(err)))

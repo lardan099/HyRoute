@@ -67,6 +67,20 @@ func TestParams(t *testing.T) {
 	}
 }
 
+func TestUsers(t *testing.T) {
+	chains := []model.Chain{
+		{ID: 3, Nodes: []int64{1, 2}, Links: []model.ChainLink{{ChainID: 3, Idx: 0, From: 1, To: 2}}},
+		{ID: 4, Nodes: []int64{2, 5}, Links: []model.ChainLink{{ChainID: 4, Idx: 0, From: 2, To: 5}}},
+		{ID: 6, Nodes: []int64{7, 2}, Links: []model.ChainLink{{ChainID: 6, Idx: 0, From: 7, To: 2}}},
+	}
+	if u := Users(chains, 2); strings.Join(u, ",") != "link-3-0,link-6-0" {
+		t.Fatalf("%q", u)
+	}
+	if u := Users(chains, 1); len(u) != 0 {
+		t.Fatalf("entry: %q", u)
+	}
+}
+
 func TestExitCredentials(t *testing.T) {
 	c := parse(t, exitPassword)
 	if changed, err := ExitWith(c, User(3, 0), "x"); err != nil || changed {

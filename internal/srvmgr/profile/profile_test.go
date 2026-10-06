@@ -26,7 +26,7 @@ func TestDeployedServerLinksParseInHyRoute(t *testing.T) {
 	pin, _ := deploy.Pin([]byte(sec[deploy.SecretCert]))
 	meta := deploy.Meta(p, pin)
 
-	pr, err := Build(srv, cfg, meta, "")
+	pr, err := Build(srv, cfg, meta, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestDeployedServerLinksParseInHyRoute(t *testing.T) {
 	}
 
 	// The summary has no secrets.
-	s, _ := Summarize(srv, cfg, meta)
+	s, _ := Summarize(srv, cfg, meta, nil)
 	b, _ := json.Marshal(s)
 	for _, secret := range []string{sec[deploy.SecretAuth], sec[deploy.SecretObfs]} {
 		if strings.Contains(string(b), secret) {
@@ -75,7 +75,7 @@ func TestDeployedServerLinksParseInHyRoute(t *testing.T) {
 
 func TestACMEServer(t *testing.T) {
 	cfg := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: password\n  password: fake-profile-pass\n")
-	pr, err := Build(srv, cfg, model.ConfigMeta{TLS: "acme", Ports: "443", SNI: "vpn.example.com"}, "")
+	pr, err := Build(srv, cfg, model.ConfigMeta{TLS: "acme", Ports: "443", SNI: "vpn.example.com"}, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,14 +88,14 @@ func TestACMEServer(t *testing.T) {
 func TestUserPass(t *testing.T) {
 	cfg := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: userpass\n  userpass:\n    bob: fake-bob-pass\n    alice: fake-alice-pass\n")
 	meta := model.ConfigMeta{TLS: "acme", Ports: "443"}
-	s, _ := Summarize(srv, cfg, meta)
+	s, _ := Summarize(srv, cfg, meta, nil)
 	if strings.Join(s.Users, ",") != "alice,bob" {
 		t.Fatalf("%q", s.Users)
 	}
-	if _, err := Build(srv, cfg, meta, ""); err == nil {
+	if _, err := Build(srv, cfg, meta, "", nil); err == nil {
 		t.Fatal("no user picked among two")
 	}
-	pr, err := Build(srv, cfg, meta, "bob")
+	pr, err := Build(srv, cfg, meta, "bob", nil)
 	if err != nil || pr.User != "bob" {
 		t.Fatal(err)
 	}
@@ -105,12 +105,37 @@ func TestUserPass(t *testing.T) {
 	}
 }
 
+// The user of a cascade link is no client: it is listed apart and gets
+// no link; without a name the one client is taken.
+func TestLinkUser(t *testing.T) {
+	cfg := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: userpass\n  userpass:\n    phone: fake-phone-pass\n    link-3-0: fake-link-pass\n")
+	meta := model.ConfigMeta{TLS: "acme", Ports: "443"}
+	links := []string{"link-3-0", "link-4-1"}
+	s, _ := Summarize(srv, cfg, meta, links)
+	if strings.Join(s.Users, ",") != "phone" || strings.Join(s.Links, ",") != "link-3-0" {
+		t.Fatalf("users %q, links %q", s.Users, s.Links)
+	}
+	for _, u := range []string{"link-3-0", "LINK-3-0"} {
+		if _, err := Build(srv, cfg, meta, u, links); !errors.Is(err, ErrLinkUser) {
+			t.Fatalf("%s: %v", u, err)
+		}
+	}
+	pr, err := Build(srv, cfg, meta, "", links)
+	if err != nil || pr.User != "phone" || strings.Contains(pr.URI, "fake-link-pass") {
+		t.Fatalf("%v %q", err, pr.User)
+	}
+	only := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: userpass\n  userpass:\n    link-3-0: fake-link-pass\n")
+	if _, err := Build(srv, only, meta, "", links); !errors.Is(err, ErrLinkUser) {
+		t.Fatalf("only the link: %v", err)
+	}
+}
+
 func TestExternalAuth(t *testing.T) {
 	cfg := []byte("listen: :443\nacme:\n  domains: [vpn.example.com]\nauth:\n  type: http\n  http:\n    url: http://127.0.0.1:8081/auth\n")
-	if _, err := Build(srv, cfg, model.ConfigMeta{TLS: "acme"}, ""); !errors.Is(err, ErrExternalAuth) {
+	if _, err := Build(srv, cfg, model.ConfigMeta{TLS: "acme"}, "", nil); !errors.Is(err, ErrExternalAuth) {
 		t.Fatalf("%v", err)
 	}
-	s, err := Summarize(srv, cfg, model.ConfigMeta{TLS: "acme"})
+	s, err := Summarize(srv, cfg, model.ConfigMeta{TLS: "acme"}, nil)
 	if err != nil || len(s.Warnings) != 1 {
 		t.Fatalf("%+v %v", s, err)
 	}
@@ -130,7 +155,7 @@ func TestHopInterval(t *testing.T) {
 	c, _ := deploy.BuildConfig(p, sec)
 	cfg, _ := c.Marshal()
 	pin, _ := deploy.Pin([]byte(sec[deploy.SecretCert]))
-	pr, err := Build(hop, cfg, deploy.Meta(p, pin), "")
+	pr, err := Build(hop, cfg, deploy.Meta(p, pin), "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +182,7 @@ func TestHopInterval(t *testing.T) {
 	c, _ = deploy.BuildConfig(one, sec)
 	cfg, _ = c.Marshal()
 	pin, _ = deploy.Pin([]byte(sec[deploy.SecretCert]))
-	if pr, _ = Build(hop, cfg, deploy.Meta(one, pin), ""); strings.Contains(pr.URI+pr.Compat, "mportHopInt") || strings.Contains(pr.Config, "hopInterval") {
+	if pr, _ = Build(hop, cfg, deploy.Meta(one, pin), "", nil); strings.Contains(pr.URI+pr.Compat, "mportHopInt") || strings.Contains(pr.Config, "hopInterval") {
 		t.Fatalf("interval for one port:\n%s\n%s", pr.URI, pr.Config)
 	}
 }

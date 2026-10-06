@@ -15,9 +15,13 @@ import (
 // link with an old value stops working once the job restarts Hysteria.
 type Rotation struct {
 	// Auth: the password of password auth, or of userpass users (Users;
-	// empty: all of them).
+	// empty: all of them but Links).
 	Auth  bool     `json:"auth"`
 	Users []string `json:"users,omitempty"`
+	// Links are the users of cascade links into the server (the caller
+	// names them): their passwords are the cascade's, and a new one would
+	// only cut the link until it is updated.
+	Links []string `json:"-"`
 	// Obfs: the Salamander password.
 	Obfs bool `json:"obfs"`
 	// Cert: a new self-signed certificate and key in the files the config
@@ -53,7 +57,7 @@ func (a *Applier) Rotate(ctx context.Context, serverID int64, base int, r Rotati
 	}
 	var what []string
 	if r.Auth {
-		w, err := rotateAuth(c, r.Users)
+		w, err := rotateAuth(c, r.Users, r.Links)
 		if err != nil {
 			return model.Job{}, err
 		}
@@ -98,8 +102,9 @@ func (a *Applier) Rotate(ctx context.Context, serverID int64, base int, r Rotati
 	return a.x.Jobs.Submit(ctx, JobKind, serverID, p, sec, actor)
 }
 
-// rotateAuth gives the auth section new passwords and says which ones.
-func rotateAuth(c *hyconfig.Server, users []string) ([]string, error) {
+// rotateAuth gives the auth section new passwords and says which ones;
+// all users are those but links.
+func rotateAuth(c *hyconfig.Server, users, links []string) ([]string, error) {
 	switch strings.ToLower(c.Auth.Type) {
 	case "password":
 		c.Auth.Password = generated()
@@ -110,7 +115,12 @@ func rotateAuth(c *hyconfig.Server, users []string) ([]string, error) {
 		}
 		if len(users) == 0 {
 			for u := range c.Auth.UserPass {
-				users = append(users, u)
+				if !slices.ContainsFunc(links, func(l string) bool { return strings.EqualFold(l, u) }) {
+					users = append(users, u)
+				}
+			}
+			if len(users) == 0 {
+				return nil, &model.FieldError{Field: "users", Msg: "В конфиге нет пользователей, кроме связи каскада: её пароль меняет сам каскад."}
 			}
 		}
 		slices.Sort(users)

@@ -6,9 +6,20 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/profile"
 )
+
+// linkUsers are the users of the cascade links into server id: the
+// entry's logins on a userpass exit, no client's.
+func (s *server) linkUsers(r *http.Request, id int64) ([]string, error) {
+	cs, err := s.Store.ListChains(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	return cascade.Users(cs, id), nil
+}
 
 // clientSource loads what the client profile is built from.
 func (s *server) clientSource(w http.ResponseWriter, r *http.Request) (int64, model.Server, model.ServerConfig, []byte, bool) {
@@ -33,11 +44,16 @@ func (s *server) clientSource(w http.ResponseWriter, r *http.Request) (int64, mo
 // clientProfile is the summary of the client side of a server: no
 // secrets, anyone may see it.
 func (s *server) clientProfile(w http.ResponseWriter, r *http.Request) {
-	_, srv, cur, cfg, ok := s.clientSource(w, r)
+	id, srv, cur, cfg, ok := s.clientSource(w, r)
 	if !ok {
 		return
 	}
-	sum, err := profile.Summarize(srv, cfg, cur.Meta)
+	links, err := s.linkUsers(r, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	sum, err := profile.Summarize(srv, cfg, cur.Meta, links)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -63,8 +79,16 @@ func (s *server) revealClient(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	pr, err := profile.Build(srv, cfg, cur.Meta, in.User)
+	links, err := s.linkUsers(r, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	pr, err := profile.Build(srv, cfg, cur.Meta, in.User, links)
 	switch {
+	case errors.Is(err, profile.ErrLinkUser):
+		writeError(w, &Error{Status: http.StatusConflict, Code: "link_user", Message: "Это пользователь связи каскада: по нему к серверу подключается вход каскада, ссылку для клиента на него HyRoute не выдаёт. Выберите пользователя-клиента."})
+		return
 	case errors.Is(err, profile.ErrExternalAuth):
 		writeError(w, &Error{Status: http.StatusConflict, Code: "external_auth", Message: "Пароли клиентов этого сервера проверяет внешний сервис: HyRoute их не знает, ссылку нельзя составить."})
 		return

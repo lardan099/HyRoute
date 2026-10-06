@@ -108,9 +108,11 @@
   let loading = $state(true);
   // cfg is the server's current config revision (null: none).
   let cfg = $state<ServerConfig | null>(null);
-  // curAuth, curUsers: the client auth of the current config.
+  // curAuth, curUsers: the client auth of the current config; curLinks:
+  // its users of cascade links (not in the form).
   let curAuth = $state('');
   let curUsers = $state<string[]>([]);
+  let curLinks = $state<string[]>([]);
   // changed: the current config was not made by a deploy; the deploy
   // replaces it only with overwrite.
   let changed = $state(false);
@@ -151,6 +153,8 @@
 
   let users = $derived(usersText.split(/[\s,;]+/).filter(Boolean));
   let removedUsers = $derived(authMode === 'userpass' && curAuth === 'userpass' ? curUsers.filter((u) => !users.includes(u)) : []);
+  // The deploy drops the users of cascade links unless typed in.
+  let droppedLinks = $derived(authMode !== '' ? curLinks.filter((u) => !users.includes(u)) : []);
   let authChanges = $derived(!!cfg && !!curAuth && authMode !== '' && authMode !== curAuth);
   // TCP 80 and 443 are the ACME http and tls challenges' too.
   let tcpBlocked = $derived(tls === 'acme' && challenge !== 'dns');
@@ -299,6 +303,7 @@
         const s = await api.clientSummary(server.id);
         curAuth = s.auth;
         curUsers = s.users ?? [];
+        curLinks = s.links ?? [];
       } catch {
         curAuth = cfg.meta.auth ?? '';
       }
@@ -646,6 +651,9 @@
         <div class="note warn small">{t('deploy.authChanged')}</div>
       {:else if removedUsers.length}
         <div class="note warn small">{t('deploy.usersRemoved', { users: removedUsers.join(', ') })}</div>
+      {/if}
+      {#if droppedLinks.length}
+        <div class="note warn small">{t('deploy.linksRemoved', { users: droppedLinks.join(', ') })}</div>
       {/if}
 
       <details>

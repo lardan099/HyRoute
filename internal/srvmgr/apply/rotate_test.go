@@ -219,11 +219,29 @@ func TestRotateRefused(t *testing.T) {
 	}
 }
 
+// All users are the clients: the user of a cascade link keeps its
+// password (the cascade's).
+func TestRotateKeepsLinkUser(t *testing.T) {
+	c, err := hyconfig.ParseServer([]byte("listen: :443\nauth:\n  type: userpass\n  userpass:\n    phone: fake-phone-pass\n    link-3-0: fake-link-pass\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	what, err := rotateAuth(c, nil, []string{"link-3-0"})
+	if err != nil || strings.Join(what, ",") != "user:phone" || c.Auth.UserPass["link-3-0"] != "fake-link-pass" || c.Auth.UserPass["phone"] == "fake-phone-pass" {
+		t.Fatalf("%v %q %v", err, what, c.Auth.UserPass)
+	}
+	delete(c.Auth.UserPass, "phone")
+	var fe *model.FieldError
+	if _, err := rotateAuth(c, nil, []string{"link-3-0"}); !errors.As(err, &fe) || !strings.Contains(fe.Msg, "каскад") {
+		t.Fatalf("only the link: %v", err)
+	}
+}
+
 func rotateAuthOf(t *testing.T, auth string) error {
 	c, err := hyconfig.ParseServer([]byte("listen: :443\n" + auth))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = rotateAuth(c, nil)
+	_, err = rotateAuth(c, nil, nil)
 	return err
 }
