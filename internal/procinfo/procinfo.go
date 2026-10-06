@@ -238,18 +238,25 @@ func (c *Cache) Revalidate() {
 	}
 }
 
-// Run tracks the tree every second and revalidates the cache every 5 s
-// until stop is closed.
+// trackEvery is how often Run reads the process tree. A launcher that
+// starts a child and exits between two reads without using the network
+// is never seen, and "with children" rules miss its child: the shorter
+// the period, the shorter-lived a launcher that is still caught.
+const trackEvery = 500 * time.Millisecond
+
+// Run tracks the tree every trackEvery and revalidates the cache every
+// 5 s until stop is closed.
 func (c *Cache) Run(stop <-chan struct{}) {
-	t := time.NewTicker(time.Second)
+	t := time.NewTicker(trackEvery)
 	defer t.Stop()
+	per := int(5 * time.Second / trackEvery)
 	for i := 1; ; i++ {
 		select {
 		case <-stop:
 			return
 		case <-t.C:
 			c.Track()
-			if i%5 == 0 {
+			if i%per == 0 {
 				c.Revalidate()
 			}
 		}
