@@ -601,6 +601,8 @@ func TestParams(t *testing.T) {
 		{TLS: TLSACME, Domain: "vpn.xn--80ak6aa92e.xn--p1ai"},
 		{TLS: TLSACME, Domain: "VPN.Пример.РФ"},
 		{TLS: TLSSelfSigned, SNI: "cdn.пример.москва"},
+		// An email domain in capitals, as a config or an import may have it.
+		{TLS: TLSACME, Domain: "vpn.example.com", Email: "Admin@Example.COM"},
 	}
 	for i := range good {
 		if err := good[i].Normalize(); err != nil {

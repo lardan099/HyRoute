@@ -131,7 +131,8 @@ var (
 	// domainRe: a host name in ASCII; the top-level label is letters or
 	// punycode (xn--p1ai is .рф), never digits (an IP address).
 	domainRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})$`)
-	emailRe  = regexp.MustCompile(`^[^@\s]{1,64}@[a-z0-9.-]{1,253}$`)
+	// emailRe: the domain in any case (Admin@Example.com), as entered.
+	emailRe = regexp.MustCompile(`^[^@\s]{1,64}@[A-Za-z0-9.-]{1,253}$`)
 )
 
 // asciiName is a host name as entered, lower case, its international
