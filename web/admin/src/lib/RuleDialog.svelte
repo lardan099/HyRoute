@@ -52,16 +52,22 @@
   });
   let valid = $derived(Object.keys(problems).length === 0);
 
-  // search looks up geo categories as the admin types.
+  // search looks up geo categories as the admin types; seq drops the
+  // answer to an older value or kind.
+  let seq = 0;
   function search() {
     clearTimeout(timer);
+    const my = ++seq;
     if (kind !== 'geoip' && kind !== 'geosite') return;
     const k = kind;
     timer = setTimeout(async () => {
       try {
-        names = (await api.geoCategories(k, value.split('@')[0].trim())).names;
+        const got = (await api.geoCategories(k, value.split('@')[0].trim())).names;
+        if (my !== seq) return;
+        names = got;
         noGeo = false;
       } catch (e) {
+        if (my !== seq) return;
         names = [];
         noGeo = asApiError(e).code === 'no_geo';
       }
