@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -84,19 +85,19 @@ func TestCache(t *testing.T) {
 	}
 }
 
-func TestFlight(t *testing.T) {
+func TestFlight(t *testing.T) { synctest.Test(t, testFlight) }
+
+func testFlight(t *testing.T) {
 	var f flight
 	var calls atomic.Int32
 	release := make(chan struct{})
 	k := flightKey{cacheKey: cacheKey{name: "a.example"}}
 	var wg sync.WaitGroup
 	got := make([][]byte, 50)
-	started := make(chan struct{}, 50)
 	for i := range got {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			started <- struct{}{}
 			got[i], _ = f.do(k, func() ([]byte, error) {
 				calls.Add(1)
 				<-release
@@ -104,10 +105,9 @@ func TestFlight(t *testing.T) {
 			})
 		}()
 	}
-	for range got {
-		<-started
-	}
-	time.Sleep(200 * time.Millisecond) // let them all join the call
+	// Every goroutine blocked: one in the call, on release, the others
+	// joined it, on its done (a sleep only made that likely).
+	synctest.Wait()
 	close(release)
 	wg.Wait()
 	if n := calls.Load(); n != 1 {
