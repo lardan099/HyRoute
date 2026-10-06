@@ -413,14 +413,23 @@ func TestMaintainRefused(t *testing.T) {
 		t.Fatalf("imported: %v", err)
 	}
 	var fe *model.FieldError
+	unchecked := model.Server{Name: "nl-new", Host: "192.0.2.12", SSHPort: 22, SSHUser: "root", AuthType: model.AuthPassword, Role: model.RoleStandalone, State: model.StateNew}
+	if err := h.db.CreateServer(ctx, &unchecked, nil); err != nil {
+		t.Fatal(err)
+	}
 	for _, p := range []MaintainParams{
 		{Op: "rm"}, {Op: OpUpgrade, Version: "latest"}, {Op: OpUpgrade, Source: "ftp"},
-		// Through another server: which one, not itself, a known one.
+		// Through another server: which one, not itself, a known one, one
+		// whose SSH key is trusted.
 		{Op: OpUpgrade, Source: SourceNode}, {Op: OpUpgrade, Source: SourceNode, Via: h.server}, {Op: OpUpgrade, Source: SourceNode, Via: 999},
+		{Op: OpUpgrade, Source: SourceNode, Via: unchecked.ID},
 	} {
 		if _, err := sub.Maintain(ctx, h.server, p, 0); !errors.As(err, &fe) {
 			t.Errorf("%+v: %v", p, err)
 		}
+	}
+	if !strings.Contains(fe.Msg, "«nl-new» ещё не проверен") || fe.Field != "via" {
+		t.Errorf("untrusted node: %+v", fe)
 	}
 
 	// A service that runs another program (docker, env): it is not

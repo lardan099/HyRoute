@@ -36,6 +36,8 @@ type Store interface {
 	ServerByID(ctx context.Context, id int64) (model.Server, error)
 	SetServerState(ctx context.Context, id int64, state model.ServerState, at time.Time) error
 	PresetByID(ctx context.Context, id int64) (model.Preset, error)
+	// HostKey: the server's trusted SSH key (the source node's).
+	HostKey(ctx context.Context, serverID int64) (model.HostKey, error)
 }
 
 // Deps are the deploy's collaborators.

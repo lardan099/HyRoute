@@ -129,8 +129,16 @@ func (s *Submitter) checkVia(ctx context.Context, serverID int64, source string,
 	if via == serverID {
 		return &model.FieldError{Field: "via", Msg: "Сервер не может загружать Hysteria через себя: выберите другой."}
 	}
-	if _, err := s.Store.ServerByID(ctx, via); errors.Is(err, store.ErrNotFound) {
+	srv, err := s.Store.ServerByID(ctx, via)
+	if errors.Is(err, store.ErrNotFound) {
 		return &model.FieldError{Field: "via", Msg: "Сервер, через который загружать Hysteria, не найден."}
+	} else if err != nil {
+		return err
+	}
+	// The job connects to it only with its SSH key trusted: else the
+	// job would fail halfway, at the download.
+	if _, err := s.Store.HostKey(ctx, via); errors.Is(err, store.ErrNotFound) {
+		return &model.FieldError{Field: "via", Msg: "Сервер «" + srv.Name + "» ещё не проверен: откройте его, нажмите «Подключение» и подтвердите отпечаток ключа."}
 	} else if err != nil {
 		return err
 	}

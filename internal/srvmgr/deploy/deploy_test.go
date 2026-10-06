@@ -73,11 +73,15 @@ type conn struct{ s *sim }
 
 func (c conn) Connect(context.Context, int64) (remote.Executor, error) { return c.s, nil }
 
-// node adds another managed server, simulated by n (source node).
+// node adds another managed server with a trusted SSH key, simulated by
+// n (source node).
 func (h *harness) node(name string, n *sim) int64 {
 	h.t.Helper()
 	srv := model.Server{Name: name, Host: "192.0.2.11", SSHPort: 22, SSHUser: "root", AuthType: model.AuthPassword, Role: model.RoleStandalone, State: model.StateHealthy}
 	if err := h.db.CreateServer(context.Background(), &srv, nil); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := h.db.SetHostKey(context.Background(), model.HostKey{ServerID: srv.ID, Type: "ssh-ed25519", Key: []byte("fake-host-key"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()}); err != nil {
 		h.t.Fatal(err)
 	}
 	h.mu.Lock()
