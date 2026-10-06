@@ -299,7 +299,7 @@ func TestForceDeletePasswordExit(t *testing.T) {
 	if exit, _ := w.db.ServerByID(context.Background(), w.out); exit.State == model.StateNeedsAttention || exit.Notes != "" {
 		t.Fatalf("exit %s: %q", exit.State, exit.Notes)
 	}
-	if _, found := w.entry.file(linkCfg(w)); found || !strings.Contains(log, "ничего не менял") {
+	if _, found := w.entry.file(linkCfg(w)); found || !strings.Contains(log, "от каскада ничего нет") {
 		t.Fatalf("log:\n%s", log)
 	}
 }

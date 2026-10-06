@@ -720,7 +720,7 @@ func (x *linker) strand(ctx context.Context, env *jobs.Env, p unlinkParams, u *u
 	}
 	left := Left(p.Chain, p.Idx, entry, in, c)
 	if len(left) == 0 {
-		env.Logf("На сервере %s каскад ничего не менял (вход клиентов по общему паролю): там ничего не осталось.", role)
+		env.Logf("На сервере %s от каскада ничего нет (вход клиентов по общему паролю или пользователя связи в конфиге нет): сервер не помечается.", role)
 		return env.Set(key, "1")
 	}
 	name := "#" + strconv.FormatInt(p.Chain, 10)
