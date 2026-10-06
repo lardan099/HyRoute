@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"math/big"
@@ -417,6 +418,10 @@ func TestImportHyRouteDeployment(t *testing.T) {
 	}
 	if len(f.Findings) != 0 {
 		t.Fatalf("findings on HyRoute's own installation: %v", ids(f))
+	}
+	// No findings are a list in the report the UI reads, not null.
+	if b, _ := json.Marshal(f); !strings.Contains(string(b), `"findings":[]`) {
+		t.Fatalf("report: %s", b)
 	}
 }
 

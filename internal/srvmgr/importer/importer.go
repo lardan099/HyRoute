@@ -81,7 +81,8 @@ func (e *Error) Error() string { return e.Msg }
 // It returns the config as read (it holds passwords: never logged or put
 // in job data). ex should be read-only; sudo: reading needs sudo.
 func Discover(ctx context.Context, ex remote.Executor, sudo bool, now time.Time) (Found, []byte, error) {
-	var f Found
+	// No findings are [] in the report, not null: the UI reads a list.
+	f := Found{Findings: []Finding{}}
 	if ok, err := remote.HasSystemd(ctx, ex); err != nil {
 		return f, nil, err
 	} else if !ok {

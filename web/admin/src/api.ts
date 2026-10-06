@@ -414,7 +414,8 @@ export interface ImportReport {
   others?: string[];
   meta: ServerConfig['meta'];
   unknown?: string[];
-  findings: ImportFinding[];
+  // findings: null in the reports of earlier builds without findings.
+  findings: ImportFinding[] | null;
 }
 
 export interface ServiceStatus {

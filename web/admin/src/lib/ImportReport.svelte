@@ -5,7 +5,8 @@
 
   let { report }: { report: ImportReport } = $props();
   const icon = { warn: '!', info: 'i' } as const;
-  let attention = $derived(report.findings.some((f) => f.level === 'warn'));
+  let findings = $derived(report.findings ?? []);
+  let attention = $derived(findings.some((f) => f.level === 'warn'));
   let tls = $derived(
     report.meta.tls === 'acme' ? t('deploy.tlsACME') : report.meta.tls === 'self-signed' ? t('deploy.tlsSelf') : report.meta.tls === 'file' ? t('import.tlsFile') : '—',
   );
@@ -44,9 +45,9 @@
     <dt>{t('import.auth')}</dt>
     <dd>{report.meta.auth || '—'}</dd>
   </dl>
-  {#if report.findings.length}
+  {#if findings.length}
     <ul>
-      {#each report.findings as f, i (i)}
+      {#each findings as f, i (i)}
         <li class={f.level}>
           <span class="ic" aria-hidden="true">{icon[f.level]}</span>
           <div>
