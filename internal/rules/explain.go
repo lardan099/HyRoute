@@ -42,6 +42,10 @@ type Query struct {
 	// QUICNameless: the explained settings decide UDP/443 without a site
 	// name, as the engine does (see QUICNameless).
 	QUICNameless bool `json:"quicNameless"`
+	// BlockQUIC: «Блокировать QUIC с неизвестным сайтом» is on. Without
+	// QUICNameless the engine still drops UDP/443 whose route needs a name
+	// the cache does not give (no names, or names with different routes).
+	BlockQUIC bool `json:"blockQUIC"`
 }
 
 // StepQUICBlock is the index of the synthetic winner «Блокировка QUIC»: a
@@ -191,6 +195,8 @@ func Explain(c Config, main string, q Query) Explanation {
 	if quic {
 		ex.quicBlock(c, main, crs, errs, proc, q, hadName)
 	}
+	// nameless: decided without a site name, though names are looked at.
+	nameless := !quic && len(names) == 0
 	for _, n := range names {
 		if len(siteOf[n]) > 1 {
 			ex.Notes = append(ex.Notes, "Имена одной цепочки CNAME считаются одним сайтом: доменное правило срабатывает, если подходит любое из них.")
@@ -228,6 +234,7 @@ func Explain(c Config, main string, q Query) Explanation {
 			ex.Notes = append(ex.Notes, "У адреса несколько имён в DNS-кэше ("+all+"); результат для всех одинаковый.")
 		case q.Proto == 17:
 			ex.Steps, ex.Winner = trace("")
+			nameless = true
 			ex.Notes = append(ex.Notes, "У адреса несколько имён в DNS-кэше ("+all+"), и правила для них расходятся. В UDP имя сайта не видно, поэтому HyRoute решает без имени: доменные правила не срабатывают. "+
 				"QUIC (UDP 443) при «Блокировать QUIC с неизвестным сайтом» отбрасывается, и браузер переходит на TCP.")
 		default:
@@ -240,6 +247,11 @@ func Explain(c Config, main string, q Query) Explanation {
 			ex.Notes = append(ex.Notes, "У адреса несколько имён в DNS-кэше ("+all+"), и правила для них расходятся. Показан результат без имени: так HyRoute решает, если имени сайта нет в SNI/Host. "+
 				"Для HTTPS и HTTP он возьмёт точное имя и решит по нему: "+strings.Join(byName, "; ")+".")
 		}
+	}
+	if nameless && q.BlockQUIC && NamelessUDP(true, true, q.Proto, q.Port) {
+		// As applyUDP: whatever ExactWeb, such a flow is dropped when its
+		// route depends on the name.
+		ex.quicBlock(c, main, crs, errs, proc, q, false)
 	}
 	for _, r := range c.Rules {
 		inherit := false

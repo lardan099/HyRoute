@@ -470,7 +470,7 @@ func (c *Controller) Explain(q ExplainQuery, st *settings.Settings) Explanation 
 	main := c.mainTargetLocked()
 	sess := c.sess
 	c.mu.Unlock()
-	rq := rules.Query{App: q.App, Proto: 6, QUICNameless: quic}
+	rq := rules.Query{App: q.App, Proto: 6, QUICNameless: quic, BlockQUIC: src.QUICBlocked()}
 	if strings.EqualFold(q.Proto, "udp") {
 		rq.Proto = 17
 	}
