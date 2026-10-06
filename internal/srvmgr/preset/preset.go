@@ -265,7 +265,11 @@ func Overlay(c, p *hyconfig.Server, sections []string, password func() string) (
 			o := hyconfig.Obfs{Type: p.Obfs.Type, Gecko: hyconfig.Gecko{MinPacketSize: p.Obfs.Gecko.MinPacketSize, MaxPacketSize: p.Obfs.Gecko.MaxPacketSize}}
 			old := ""
 			if strings.EqualFold(c.Obfs.Type, o.Type) {
-				old = c.Obfs.Salamander.Password + c.Obfs.Gecko.Password
+				// The block of the type in use: Hysteria ignores the other.
+				old = c.Obfs.Salamander.Password
+				if strings.EqualFold(o.Type, "gecko") {
+					old = c.Obfs.Gecko.Password
+				}
 			}
 			pw := old
 			if pw == "" {

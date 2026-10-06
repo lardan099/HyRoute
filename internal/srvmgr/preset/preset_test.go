@@ -174,6 +174,19 @@ func TestOverlayObfs(t *testing.T) {
 	if n, _ := Overlay(c, p, []string{Obfs}, func() string { return "x" }); n || c.Obfs.Salamander.Password != "fake-kept-obfs" {
 		t.Fatalf("%+v %v", c.Obfs, n)
 	}
+	// A stale block of the other type does not go into the password.
+	for _, typ := range []string{"gecko", "salamander"} {
+		c, _ = hyconfig.ParseServer([]byte(target + "obfs:\n  type: " + typ + "\n  gecko:\n    password: fake-gecko-obfs\n  salamander:\n    password: fake-salamander-obfs\n"))
+		p := &hyconfig.Server{Obfs: hyconfig.Obfs{Type: typ}}
+		n, err := Overlay(c, p, []string{Obfs}, func() string { return "x" })
+		pw := c.Obfs.Salamander.Password
+		if typ == "gecko" {
+			pw = c.Obfs.Gecko.Password
+		}
+		if err != nil || n || pw != "fake-"+typ+"-obfs" {
+			t.Fatalf("%s: %v %+v %v", typ, err, c.Obfs, n)
+		}
+	}
 }
 
 func TestOverlayRefused(t *testing.T) {
