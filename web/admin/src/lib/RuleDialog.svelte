@@ -77,7 +77,10 @@
   function save(e: SubmitEvent) {
     e.preventDefault();
     if (!valid) return;
-    const r: AclRule = { ...(rule && !bad(rule) ? rule : {}), outbound: outbound.trim(), address: addressOf(kind, value) };
+    // An address left as it was keeps its spelling ("*" stays "*"), so the
+    // rule's line is not rewritten.
+    const address = start && kindOf(start.address) === kind && valueOf(start.address) === value.trim() ? start.address : addressOf(kind, value);
+    const r: AclRule = { ...(rule && !bad(rule) ? rule : {}), outbound: outbound.trim(), address };
     if (rule && bad(rule)) r.before = rule.before;
     r.proto = proto || undefined;
     r.port = port.trim() || undefined;
