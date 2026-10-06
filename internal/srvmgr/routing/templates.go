@@ -2,9 +2,11 @@ package routing
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/lardan099/hyroute/internal/hyconfig"
 	"github.com/lardan099/hyroute/internal/srvmgr/acl"
+	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 )
 
@@ -70,6 +72,9 @@ func FromPreset(p model.Preset) (Template, bool) {
 	}
 	t := Template{ID: "preset:" + strconv.FormatInt(p.ID, 10), Name: p.Name, ACL: acl.ParseInline(c.ACL.Inline)}
 	for _, o := range c.Outbounds {
+		if strings.EqualFold(o.Name, cascade.OutboundName) {
+			continue // the cascade's, made by its link
+		}
 		t.Outbounds = append(t.Outbounds, outboundOf(o).public())
 	}
 	return t, true

@@ -8,6 +8,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/hyconfig"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/preset"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 )
 
@@ -148,6 +149,9 @@ func TestClientConfig(t *testing.T) {
 }
 
 func TestEntryOutbound(t *testing.T) {
+	if OutboundName != preset.CascadeOutbound {
+		t.Fatalf("presets know the outbound as %q", preset.CascadeOutbound)
+	}
 	s := Secrets{SOCKSUser: "hyroute", SOCKSPassword: "fake-socks-pass"}
 	c := parse(t, "listen: :443\nauth:\n  type: password\n  password: x\n")
 	if HasOutbound(c) || !EntryWith(c, 41000, s) || EntryWith(c, 41000, s) {

@@ -34,6 +34,11 @@ const (
 	Obfs       = "obfs"       // obfs type (a password is made when applied)
 )
 
+// CascadeOutbound is the outbound a cascade link puts on its entry
+// (cascade.OutboundName; that package uses this one in its tests): it
+// belongs to the link, never to a preset.
+const CascadeOutbound = "cascade"
+
 // Sections are all sections in config order.
 var Sections = []string{Ports, Obfs, Masquerade, Speed, QUIC, UDP, Resolver, Sniff, ACL, Outbounds}
 
@@ -82,6 +87,10 @@ func Extract(c *hyconfig.Server) (*hyconfig.Server, []string) {
 	p.Sniff = c.Sniff
 	p.ACL = c.ACL
 	for _, o := range c.Outbounds {
+		if strings.EqualFold(o.Name, CascadeOutbound) {
+			notes = append(notes, fmt.Sprintf("Выход %s не сохранён: его ставит каскад на своём входе.", o.Name))
+			continue
+		}
 		o, note := outbound(o)
 		if note != "" {
 			notes = append(notes, note)
@@ -220,6 +229,24 @@ func empty(p *hyconfig.Server, section string) bool {
 	return true
 }
 
+// overOutbounds are a preset's outbounds laid over a config's: the
+// cascade's outbound stays first as it is (it belongs to the cascade
+// link), and a preset never brings one.
+func overOutbounds(cur, p []hyconfig.Outbound) []hyconfig.Outbound {
+	var out []hyconfig.Outbound
+	for _, o := range cur {
+		if strings.EqualFold(o.Name, CascadeOutbound) {
+			out = append(out, o)
+		}
+	}
+	for _, o := range p {
+		if !strings.EqualFold(o.Name, CascadeOutbound) {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
 // ErrNoSection: the preset does not carry a section asked for.
 var ErrNoSection = errors.New("preset: no such section")
 
@@ -258,7 +285,7 @@ func Overlay(c, p *hyconfig.Server, sections []string, password func() string) (
 		case ACL:
 			c.ACL = p.ACL
 		case Outbounds:
-			c.Outbounds = slices.Clone(p.Outbounds)
+			c.Outbounds = overOutbounds(c.Outbounds, p.Outbounds)
 		case Masquerade:
 			c.Masquerade = p.Masquerade
 		case Obfs:

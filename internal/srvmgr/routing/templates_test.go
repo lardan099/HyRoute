@@ -41,4 +41,10 @@ func TestFromPreset(t *testing.T) {
 	if _, ok := FromPreset(model.Preset{Config: "speedTest: true\n"}); ok {
 		t.Fatal("a preset without rules")
 	}
+	// The cascade's outbound (in a preset made on an entry before) is not
+	// offered: the link makes it.
+	p.Config += "  - name: cascade\n    type: socks5\n    socks5:\n      addr: 127.0.0.1:41000\n"
+	if tp, _ := FromPreset(p); len(tp.Outbounds) != 1 || tp.Outbounds[0].Name != "nl" {
+		t.Fatalf("%+v", tp.Outbounds)
+	}
 }

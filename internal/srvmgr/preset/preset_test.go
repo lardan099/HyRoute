@@ -189,6 +189,35 @@ func TestOverlayObfs(t *testing.T) {
 	}
 }
 
+// The cascade's outbound belongs to the cascade link: a preset made on
+// an entry does not carry it, a preset (made before) never brings one,
+// and laying outbounds over an entry keeps its own first.
+func TestPresetLeavesCascadeOutbound(t *testing.T) {
+	cascadeOut := "  - name: cascade\n    type: socks5\n    socks5:\n      addr: 127.0.0.1:41000\n      username: hyroute\n      password: fake-socks-pass\n"
+	entry := target + "outbounds:\n" + cascadeOut + "  - name: direct\n    type: direct\n"
+	c, _ := hyconfig.ParseServer([]byte(entry))
+	p, notes := Extract(c)
+	if len(p.Outbounds) != 1 || p.Outbounds[0].Name != "direct" || !strings.Contains(strings.Join(notes, "\n"), "cascade") {
+		t.Fatalf("%+v %q", p.Outbounds, notes)
+	}
+
+	old, _ := hyconfig.ParseServer([]byte("outbounds:\n  - name: cascade\n    type: socks5\n    socks5:\n      addr: 127.0.0.1:42000\n  - name: warp\n    type: socks5\n    socks5:\n      addr: 127.0.0.1:40000\n"))
+	if _, err := Overlay(c, old, []string{Outbounds}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, o := range c.Outbounds {
+		names = append(names, o.Name)
+	}
+	if !slices.Equal(names, []string{"cascade", "warp"}) || c.Outbounds[0].SOCKS5.Addr != "127.0.0.1:41000" || c.Outbounds[0].SOCKS5.Password != "fake-socks-pass" {
+		t.Fatalf("%q %+v", names, c.Outbounds[0])
+	}
+	plain, _ := hyconfig.ParseServer([]byte(target))
+	if _, err := Overlay(plain, old, []string{Outbounds}, nil); err != nil || len(plain.Outbounds) != 1 || plain.Outbounds[0].Name != "warp" {
+		t.Fatalf("%v %+v", err, plain.Outbounds)
+	}
+}
+
 func TestOverlayRefused(t *testing.T) {
 	p := &hyconfig.Server{Bandwidth: hyconfig.Bandwidth{Up: "10 mbps"}}
 	c, _ := hyconfig.ParseServer([]byte(target))
