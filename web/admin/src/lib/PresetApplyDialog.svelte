@@ -46,23 +46,36 @@
     }
   });
 
-  // The config of the target, for the revision the diff is against.
+  // seq numbers the previews: one of an older choice is dropped.
+  let seq = 0;
+
+  function stale() {
+    seq++;
+    check = null;
+    busy = false;
+  }
+
+  // The config of the target, for the revision the diff is against. The
+  // answer for a server chosen before is dropped.
   $effect(() => {
     const id = server?.id ?? serverId;
+    stale();
     config = null;
-    check = null;
+    error = null;
     if (!id) return;
+    let live = true;
     api.serverConfig(id).then(
-      (c) => (config = c),
-      (e) => (error = asApiError(e)),
+      (c) => live && (config = c),
+      (e) => live && (error = asApiError(e)),
     );
+    return () => (live = false);
   });
 
   // A new preset or a new choice of sections: the diff is old.
   $effect(() => {
     void current;
     void picked.length;
-    check = null;
+    stale();
   });
 
   function target(): number {
@@ -71,14 +84,16 @@
 
   async function preview() {
     if (!current || !config) return;
+    const my = ++seq;
     busy = true;
     error = null;
     try {
-      check = await api.presetPreview(target(), { base: config.revision, preset: current.id, sections: picked });
+      const c = await api.presetPreview(target(), { base: config.revision, preset: current.id, sections: picked });
+      if (my === seq) check = c;
     } catch (e) {
-      error = asApiError(e);
+      if (my === seq) error = asApiError(e);
     } finally {
-      busy = false;
+      if (my === seq) busy = false;
     }
   }
 
