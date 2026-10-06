@@ -1178,11 +1178,17 @@ func TestDNSTargetRules(t *testing.T) {
 	r := newDNSRig(t, tunnelAll, byRules, Options{})
 	for dst, want := range map[string]dnsDest{
 		"192.168.1.1:53": dnsMain, "8.8.8.8:53": dnsMain, "10.8.0.1:53": dnsSecondary, "8.8.4.4:53": dnsSecondary,
-		"100.100.100.100:53": dnsSecondary, "1.2.3.4:53": dnsMain, "10.9.9.9:53": dnsNone, "100.64.1.1:53": dnsNone,
-		"127.0.0.1:53": dnsNone, "0.0.0.0:53": dnsNone, "8.8.8.8:443": dnsNone, "[fe80::1]:53": dnsNone,
+		"100.100.100.100:53": dnsSecondary, "1.2.3.4:53": dnsMain, "10.9.9.9:53": dnsUnknown, "100.64.1.1:53": dnsUnknown,
+		"127.0.0.1:53": dnsNone, "0.0.0.0:53": dnsNone, "8.8.8.8:443": dnsNone, "[fe80::1]:53": dnsUnknown,
 	} {
 		if got := r.c.dnsTarget(netip.MustParseAddrPort(dst), false); got != want {
 			t.Errorf("%s: %d, want %d", dst, got, want)
+		}
+		// Over TCP an address the snapshot lacks is not intercepted.
+		if want == dnsUnknown {
+			if got := r.c.dnsTarget(netip.MustParseAddrPort(dst), true); got != dnsNone {
+				t.Errorf("%s over TCP: %d", dst, got)
+			}
 		}
 	}
 	if !r.c.dnsHold(netip.MustParseAddr("192.168.1.1")) || r.c.dnsHold(netip.MustParseAddr("192.168.1.7")) {

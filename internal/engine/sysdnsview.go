@@ -18,9 +18,13 @@ type SysDNSView struct {
 	cur     atomic.Pointer[sysdns.Info]
 	running atomic.Bool
 	last    atomic.Int64 // unix nanos of the last refresh start
-	doneAt  atomic.Int64 // start (unix nanos) of the last refresh that stored a snapshot or failed
-	now     func() time.Time
-	log     *slog.Logger
+	// starts numbers the refreshes as they start; finished is the highest
+	// number of one that finished (stored a snapshot or failed). A clock
+	// would not do: two reads within its resolution look alike.
+	starts   atomic.Uint64
+	finished atomic.Uint64
+	now      func() time.Time
+	log      *slog.Logger
 	// done is called after each background refresh (tests).
 	done func()
 }
@@ -60,10 +64,10 @@ func (v *SysDNSView) Kick() {
 	if !v.running.CompareAndSwap(false, true) {
 		return
 	}
-	start := v.now().UnixNano()
-	v.last.Store(start)
+	v.last.Store(v.now().UnixNano())
+	id := v.starts.Add(1)
 	go func() {
-		v.refresh(start)
+		v.refresh(id)
 		// Before done: a Kick right after it may start the next refresh.
 		v.running.Store(false)
 		if v.done != nil {
@@ -78,32 +82,36 @@ func (v *SysDNSView) Refresh() {
 	if v == nil || v.snap == nil {
 		return
 	}
-	start := v.now().UnixNano()
-	v.last.Store(start)
-	v.refresh(start)
+	v.last.Store(v.now().UnixNano())
+	v.refresh(v.starts.Add(1))
 }
 
-// Mark is the time a miss happened, for Fresh.
-func (v *SysDNSView) Mark() int64 { return v.now().UnixNano() }
+// Mark is the moment of a miss, for Fresh: the refreshes started so far.
+func (v *SysDNSView) Mark() uint64 {
+	if v == nil {
+		return 0
+	}
+	return v.starts.Load()
+}
 
 // Fresh waits up to d (off the packet loop) for a snapshot read after
 // mark, starting one when none runs: kickGap does not apply, it is for
 // a private DNS server the last snapshot lacks (a network change). It
 // reports whether one arrived.
-func (v *SysDNSView) Fresh(mark int64, d time.Duration) bool {
+func (v *SysDNSView) Fresh(mark uint64, d time.Duration) bool {
 	if v == nil || v.snap == nil {
 		return false
 	}
 	deadline := time.Now().Add(d)
 	for {
-		if v.doneAt.Load() >= mark {
+		if v.finished.Load() > mark {
 			return true
 		}
 		if v.running.CompareAndSwap(false, true) {
-			start := v.now().UnixNano()
-			v.last.Store(start)
+			v.last.Store(v.now().UnixNano())
+			id := v.starts.Add(1)
 			go func() {
-				v.refresh(start)
+				v.refresh(id)
 				v.running.Store(false)
 				if v.done != nil {
 					v.done()
@@ -118,8 +126,11 @@ func (v *SysDNSView) Fresh(mark int64, d time.Duration) bool {
 }
 
 // refresh stores a new snapshot; a failure keeps the old one.
-func (v *SysDNSView) refresh(start int64) {
-	defer v.doneAt.Store(start)
+func (v *SysDNSView) refresh(id uint64) {
+	defer func() {
+		for f := v.finished.Load(); f < id && !v.finished.CompareAndSwap(f, id); f = v.finished.Load() {
+		}
+	}()
 	info, err := v.snap()
 	if err != nil && info.All == nil {
 		v.log.Debug("DNS servers of the adapters not read; the last list stays", "err", err)
