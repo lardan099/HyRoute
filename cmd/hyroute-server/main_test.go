@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/datadir"
+	"github.com/lardan099/hyroute/internal/srvmgr/logbuf"
+	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 )
 
@@ -103,6 +106,23 @@ func TestRunServesHealthAndUI(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("no graceful shutdown")
+	}
+}
+
+// The Logs page keeps the records stderr gets: -log-level is for both.
+func TestLoggerLevel(t *testing.T) {
+	for level, want := range map[string]int{"debug": 3, "info": 2, "warn": 1} {
+		var out bytes.Buffer
+		log, buf := newLogger(&out, level, redact.New())
+		log.Debug("d")
+		log.Info("i")
+		log.Warn("w")
+		if recs := buf.Records(logbuf.Filter{}); len(recs) != want {
+			t.Errorf("%s: %d records in the buffer, want %d: %+v", level, len(recs), want, recs)
+		}
+		if got := strings.Count(out.String(), "\n"); got != want {
+			t.Errorf("%s: %d lines on stderr, want %d: %q", level, got, want, out.String())
+		}
 	}
 }
 

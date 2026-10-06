@@ -66,8 +66,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		return err
 	}
 	red := redact.New()
-	logs := logbuf.New(2000, slog.LevelInfo)
-	log := newLogger(stderr, cfg.LogLevel, red, logs)
+	log, logs := newLogger(stderr, cfg.LogLevel, red)
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return fmt.Errorf("data directory: %w", err)
 	}
@@ -306,10 +305,12 @@ func cleanupSessions(ctx context.Context, a *auth.Service, log *slog.Logger) {
 	}
 }
 
-// newLogger writes text logs to w and keeps the latest in buf for the
-// Logs page; every record passes through red first.
-func newLogger(w io.Writer, level string, red *redact.Redactor, buf *logbuf.Buffer) *slog.Logger {
+// newLogger writes text logs at level to w and keeps the latest records
+// of the same level in a buffer for the Logs page; every record passes
+// through red first.
+func newLogger(w io.Writer, level string, red *redact.Redactor) (*slog.Logger, *logbuf.Buffer) {
 	var l slog.Level
-	l.UnmarshalText([]byte(level))
-	return slog.New(red.Handler(slog.NewMultiHandler(slog.NewTextHandler(w, &slog.HandlerOptions{Level: l}), buf.Handler())))
+	l.UnmarshalText([]byte(level)) // checked by config.Load
+	buf := logbuf.New(2000, l)
+	return slog.New(red.Handler(slog.NewMultiHandler(slog.NewTextHandler(w, &slog.HandlerOptions{Level: l}), buf.Handler()))), buf
 }
