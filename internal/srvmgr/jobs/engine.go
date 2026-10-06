@@ -336,7 +336,8 @@ func (e *Engine) finished(ctx context.Context, j *model.Job, env *Env) {
 func (e *Engine) runJob(ctx context.Context, id int64) {
 	j, _, steps, rows, env, err := e.prepare(ctx, id)
 	if err != nil {
-		if j.ID != 0 {
+		// A stopping controller leaves the job to the recovery.
+		if j.ID != 0 && ctx.Err() == nil {
 			e.fail(ctx, &j, env, fmt.Errorf("prepare: %w", err))
 		}
 		return
@@ -365,6 +366,9 @@ func (e *Engine) runJob(ctx context.Context, id int64) {
 			if err == nil && done {
 				skipped = true
 			} else if err != nil {
+				if ctx.Err() != nil {
+					return // stopping, as after Run below
+				}
 				e.stepFailed(ctx, &j, env, steps, rows, i, err)
 				return
 			}
@@ -603,7 +607,7 @@ func (e *Engine) recoverAll(ctx context.Context) {
 func (e *Engine) recoverJob(ctx context.Context, id int64) {
 	j, k, steps, rows, env, err := e.prepare(ctx, id)
 	if err != nil {
-		if j.ID != 0 {
+		if j.ID != 0 && ctx.Err() == nil {
 			e.fail(ctx, &j, env, Fail("Задание прервано перезапуском controller и не может быть продолжено.", err))
 		}
 		return
@@ -630,6 +634,8 @@ func (e *Engine) recoverJob(ctx context.Context, id int64) {
 	env.step = "recover"
 	res, rerr := k.Recover(ctx, env)
 	switch {
+	case ctx.Err() != nil:
+		// Stopping again: the next start recovers the job.
 	case rerr != nil || res == ResolveFailed:
 		if rerr == nil {
 			rerr = errors.New("recovery check failed")

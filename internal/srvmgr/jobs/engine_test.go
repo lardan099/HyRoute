@@ -302,6 +302,50 @@ func TestRecoveryAfterKilledProcess(t *testing.T) {
 	}
 }
 
+// A controller stopping while a step's Done check runs leaves the job to
+// the recovery: nothing is rolled back and the job does not fail.
+func TestStopDuringDoneCheckIsRecovered(t *testing.T) {
+	var c counters
+	entered := make(chan struct{}, 1)
+	mk := func(block bool) *Kind {
+		return &Kind{
+			Name: "demo",
+			Steps: func(json.RawMessage) ([]Step, error) {
+				return []Step{
+					{Name: "config", Phase: model.JobConfiguring, Safe: true,
+						Run:  func(context.Context, *Env) error { c.inc("config"); return nil },
+						Undo: func(context.Context, *Env) error { c.inc("undo"); return nil }},
+					{Name: "unit", Phase: model.JobConfiguring, Safe: true,
+						Done: func(ctx context.Context, env *Env) (bool, error) {
+							if block {
+								entered <- struct{}{}
+								<-ctx.Done() // an SSH command the stop interrupts
+								return false, ctx.Err()
+							}
+							return false, nil
+						},
+						Run: func(context.Context, *Env) error { c.inc("unit"); return nil }},
+				}, nil
+			},
+			Recover: func(context.Context, *Env) (Resolution, error) { return ResolveRetry, nil },
+		}
+	}
+	h1 := newHarness(t, nil, mk(true))
+	h1.start()
+	j, _ := h1.eng.Submit(context.Background(), "demo", 0, nil, nil, 0)
+	<-entered
+	h1.kill()
+	if j, _ = h1.db.JobByID(context.Background(), j.ID); j.State != model.JobConfiguring || c.get("undo") != 0 {
+		t.Fatalf("after the stop: %s, %d undo", j.State, c.get("undo"))
+	}
+	h2 := newHarness(t, h1.db, mk(false))
+	h2.start()
+	h2.wait(j.ID, model.JobCompleted)
+	if c.get("undo") != 0 || c.get("unit") != 1 {
+		t.Fatalf("runs %v", c.m)
+	}
+}
+
 func TestRecoveryWithoutCheckFails(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	k := simpleKind("demo", Step{Name: "install", Phase: model.JobInstalling, Run: func(ctx context.Context, env *Env) error {
