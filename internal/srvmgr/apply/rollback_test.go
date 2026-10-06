@@ -220,6 +220,67 @@ func TestRetryAfterFailedRollback(t *testing.T) {
 	}
 }
 
+// A step before the restart fails (ufw refuses the new port): the
+// rollback puts the config back and leaves the service alone, which still
+// runs it. So does a retry after a rollback that restarted the service.
+func TestRollbackBeforeRestart(t *testing.T) {
+	h := newHarness(t)
+	h.stop()
+	ctx := context.Background()
+	h.v.mu.Lock()
+	h.v.ufw = map[string]bool{}
+	h.v.mu.Unlock()
+	var refuse atomic.Bool
+	var restarts atomic.Int32
+	app, _ := h.controller(h.db, riggedConn{rigged{h.v, func(line string) error {
+		switch {
+		case strings.HasPrefix(line, "ufw allow") && refuse.Load():
+			return errors.New("ERROR: problem running iptables")
+		case strings.HasPrefix(line, "systemctl restart"):
+			restarts.Add(1)
+		}
+		return nil
+	}}})
+	port := func(s string) string { return strings.Replace(s, "listen: :443", "listen: :8443", 1) }
+
+	refuse.Store(true)
+	j, err := app.Submit(ctx, h.server, 1, h.edit(port), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, log := h.wait(j)
+	if j.State != model.JobFailed || j.CurrentStep != "firewall" || restarts.Load() != 0 {
+		t.Fatalf("%s at %s, %d restarts: %s\n%s", j.State, j.CurrentStep, restarts.Load(), j.ErrorMessage, log)
+	}
+	h.back(log)
+	if h.state() != model.StateHealthy {
+		t.Fatalf("state %s after a clean rollback", h.state())
+	}
+
+	refuse.Store(false)
+	j, err = app.Submit(ctx, h.server, 1, h.edit(func(s string) string { return port(s) + "crash: true\n" }), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, log = h.wait(j)
+	if j.State != model.JobFailed || j.CurrentStep != "verify" || restarts.Load() != 2 {
+		t.Fatalf("%s at %s, %d restarts: %s\n%s", j.State, j.CurrentStep, restarts.Load(), j.ErrorMessage, log)
+	}
+	h.back(log)
+	refuse.Store(true)
+	if j, err = app.x.Jobs.Retry(ctx, j.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	j, log = h.wait(j)
+	if j.State != model.JobFailed || j.CurrentStep != "firewall" || restarts.Load() != 2 {
+		t.Fatalf("retry: %s at %s, %d restarts: %s\n%s", j.State, j.CurrentStep, restarts.Load(), j.ErrorMessage, log)
+	}
+	h.back(log)
+	if h.state() != model.StateHealthy {
+		t.Fatalf("state %s after a clean rollback", h.state())
+	}
+}
+
 // The config fails and is rolled back; the admin then edits the file
 // over SSH. A retry checks the file again and stops before writing: the
 // edit stays, and nothing is rolled back.

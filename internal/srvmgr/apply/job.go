@@ -290,9 +290,12 @@ func (x *applier) prepare(ctx context.Context, env *jobs.Env) error {
 }
 
 // undoPrepare runs last in a rollback, with the previous config back:
-// the service starts again as it was.
+// the service starts again as it was. Only after the restart step:
+// Hysteria does not read its files again on its own, so before it the
+// service still runs the previous config, and a restart would only drop
+// the sessions.
 func (x *applier) undoPrepare(ctx context.Context, env *jobs.Env) error {
-	if env.Get("changed") != "1" {
+	if env.Get("restarted") != "1" {
 		return jobs.ErrNothingToUndo
 	}
 	in, err := x.installation(ctx, env)
@@ -313,8 +316,8 @@ func (x *applier) undoPrepare(ctx context.Context, env *jobs.Env) error {
 	if action == remote.ServiceRestart {
 		env.Logf("Прежний конфиг возвращён, служба %s перезапущена с ним.", in.Unit)
 	}
-	env.Set("restored", "1")
-	return nil
+	// A retry starts from what the server runs now.
+	return env.Set("restarted", "")
 }
 
 // installed: the candidate is the config on the server.
@@ -750,6 +753,10 @@ func (x *applier) restart(ctx context.Context, env *jobs.Env) error {
 	if err != nil {
 		return err
 	}
+	// Recorded first: a restart that reports an error may have run.
+	if err := env.Set("restarted", "1"); err != nil {
+		return err
+	}
 	if err := remote.Systemctl(ctx, ex, remote.ServiceRestart, in.Unit, sudo(env)); err != nil {
 		return jobs.Fail("Не удалось перезапустить "+in.Unit+".", err)
 	}
@@ -921,8 +928,10 @@ func (x *applier) finished(ctx context.Context, env *jobs.Env, j model.Job) {
 	state := model.StateHealthy
 	if j.State == model.JobFailed {
 		switch {
-		case env.Get("changed") == "1" && env.Rollback() != jobs.RollbackNothing && (env.Get("restored") != "1" || env.Rollback() == jobs.RollbackFailed):
-			state = model.StateNeedsAttention // the rollback did not finish
+		case env.Get("changed") == "1" && env.Rollback() != jobs.RollbackNothing && (env.Get("restarted") == "1" || env.Rollback() == jobs.RollbackFailed):
+			// The rollback did not finish, or the service may still run
+			// the new config.
+			state = model.StateNeedsAttention
 		case env.Get("prevState") != "":
 			state = model.ServerState(env.Get("prevState"))
 		default:
