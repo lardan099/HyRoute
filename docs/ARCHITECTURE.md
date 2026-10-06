@@ -105,6 +105,7 @@ HyRoute. Данные WebView2 лежат не здесь, а в `%LOCALAPPDATA%
 | `internal/rules`, `internal/geodata` | модель правил, компиляция, трёхзначная оценка, место правила из соединения; базы geosite/geoip |
 | `internal/dnscache`, `internal/dnspolicy`, `internal/dnsproxy`, `internal/sysdns` | DNS-кэш из ответов; DNS-политики; резолвер DoH/DoT; DNS-серверы адаптеров |
 | `internal/hysteria`, `internal/tunnels`, `internal/groups` | ссылки, конфиг и процесс Hysteria; запущенные серверы; группы серверов |
+| `internal/hy2uri` | модель, разбор и запись ссылок `hysteria2://` (общий с менеджером серверов) |
 | `internal/localproxy`, `internal/fwrule` | локальные SOCKS5/HTTP-прокси; правила брандмауэра Windows |
 | `internal/killswitch` | kill switch на WFP |
 | `internal/flows`, `internal/stats`, `internal/logx` | «Соединения»; статистика; журналы, маскирование секретов, Privacy mode |

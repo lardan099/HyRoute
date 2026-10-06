@@ -78,6 +78,7 @@ internal/hy2uri               модель, парсер и сериализат
 internal/hyconfig             typed-модель серверного и клиентского YAML с неизвестными полями
 internal/srvmgr/
   config                      конфигурация controller (флаги + env)
+  datadir                     права каталога данных, базы и master.key, один процесс на каталог
   model                       сущности домена, без зависимостей
   store                       интерфейсы репозиториев и ошибки (ErrNotFound, ErrConflict)
   store/sqlite                реализация на modernc.org/sqlite, миграции (embed *.sql)
@@ -98,15 +99,19 @@ internal/srvmgr/
   service                     статус, start/stop/restart (задание service), journal
   apply                       редактор конфига: маскирование, поля, diff; задание apply
   firewall                    порты конфига, открытие/закрытие в ufw/firewalld и учёт правил HyRoute
+  hopping                     порты сервера: порт, список и диапазоны port hopping, перенаправление
+  tuning                      системные настройки сервера для Hysteria: буферы UDP, BBR с fq
+  quicprobe                   проверка с controller, что UDP-порт сервера отвечает (без входа клиентом)
   monitor                     сбор метрик серверов по расписанию (вне движка заданий)
   profile                     ссылки, клиентский конфиг и QR для клиентов
+  preset                      пресеты: части конфига по разделам, экспорт и импорт
   topology                    каскады: проверка цепочек (петли, роли), хранение, состояние
   cascade                     связь entry → exit: конфиги, задания link/unlink, проверки связи
   acl                         правила маршрутизации: модель, разбор и сборка, проверки, lint
   routing                     редактор маршрутизации: правила, outbounds, resolver, шаблоны
   geo                         базы geo: у controller, задание geo, расписание
-third_party/hysteria-acl      компилятор ACL Hysteria v2.12.3 (копия, MIT)
   api                         HTTP /api/v1: handlers, middleware, ошибки
+third_party/hysteria-acl      компилятор ACL Hysteria v2.12.3 (копия, MIT)
 ```
 
 Зависимости направлены сверху вниз: `api` → сервисы (`deploy`, `importer`,
