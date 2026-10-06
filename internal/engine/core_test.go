@@ -930,3 +930,34 @@ func TestFallback(t *testing.T) {
 		t.Fatalf("relay decision %+v", r)
 	}
 }
+
+// A Direct connection that never got past the handshake (its SYNs were
+// dropped or refused: the answer is inbound and unseen) ends a minute
+// after its last SYN; one that sent data lives on until FIN or idle.
+func TestTCPDirectSYNOnlyExpires(t *testing.T) {
+	h := newHarness(t, appRules, Options{})
+	h.c.DNS.AddResponse(dnsResponse(t, "example.org.", "93.184.216.34"))
+	const up = "192.168.1.5:40001"
+	h.own(6, L, R, 200)
+	h.own(6, up, R, 200)
+	h.sendTCP(L, R, packet.FlagSYN, "")
+	h.next(t)
+	h.sendTCP(L, R, packet.FlagSYN, "") // a retransmission
+	h.next(t)
+	h.sendTCP(up, R, packet.FlagSYN, "")
+	h.next(t)
+	h.sendTCP(up, R, packet.FlagACK, "")
+	h.next(t)
+	h.c.Maintain(time.Now().Add(synOnlyTTL + time.Second))
+	h.c.mu.Lock()
+	_, dead := h.c.tcp[nat.FlowKey{Src: netip.MustParseAddrPort(L), Dst: netip.MustParseAddrPort(R)}]
+	_, live := h.c.tcp[nat.FlowKey{Src: netip.MustParseAddrPort(up), Dst: netip.MustParseAddrPort(R)}]
+	_, remembered := h.c.untracked[nat.FlowKey{Src: netip.MustParseAddrPort(L), Dst: netip.MustParseAddrPort(R)}]
+	h.c.mu.Unlock()
+	if dead || remembered || !live {
+		t.Fatalf("SYN-only kept %v (untracked %v), established kept %v", dead, remembered, live)
+	}
+	if n := len(h.c.Flows.Active(time.Now())); n != 1 {
+		t.Fatalf("%d active records", n)
+	}
+}

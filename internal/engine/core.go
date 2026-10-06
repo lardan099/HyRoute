@@ -189,6 +189,10 @@ type tcpFlow struct {
 	last   time.Time
 	finAt  time.Time
 	hasFIN bool
+	// est: the application sent more than SYNs, so the handshake got an
+	// answer. A flow of SYNs only (dropped, refused: its SYN-ACK or RST is
+	// inbound and not seen) never gets a FIN or FLOW_DELETED.
+	est bool
 }
 
 type udpFlow struct {
@@ -242,6 +246,9 @@ const (
 	// connection forgotten early is decided again).
 	untrackedTTL = 2 * time.Hour
 	untrackedMax = 16384
+	// synOnlyTTL: how long after its last SYN a Direct connection that
+	// never got past the handshake is kept (Windows gives up after ~21 s).
+	synOnlyTTL = time.Minute
 	// snapshotAge: how long one read of the OS TCP table serves untracked
 	// connections.
 	snapshotAge = time.Second
@@ -420,6 +427,9 @@ func (c *Core) tcpOut(p *packet.Packet, addr *divert.Address) {
 	}
 	if tf != nil {
 		tf.last = now
+		if !p.IsSYN() {
+			tf.est = true
+		}
 		if flags&(packet.FlagFIN|packet.FlagRST) != 0 && !tf.hasFIN {
 			tf.hasFIN, tf.finAt = true, now
 		}
@@ -1381,6 +1391,13 @@ func (c *Core) Maintain(now time.Time) {
 	var idleSess []*udpSession
 	c.mu.Lock()
 	for k, tf := range c.tcp {
+		if !tf.est && now.Sub(tf.last) > synOnlyTTL {
+			// The connection never came up: no FIN or FLOW_DELETED will
+			// end it. A later SYN gets a fresh decision.
+			closed = append(closed, tf.rec)
+			delete(c.tcp, k)
+			continue
+		}
 		if (tf.hasFIN && now.Sub(tf.finAt) > time.Minute) || now.Sub(tf.last) > 2*time.Hour {
 			closed = append(closed, tf.rec)
 			delete(c.tcp, k)
