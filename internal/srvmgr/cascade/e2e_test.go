@@ -288,15 +288,26 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { target.Close() })
+	// reached counts the connections the link client opened to the target
+	// (a SOCKS CONNECT through the tunnel, with the link's login).
+	var reached atomic.Int32
 	go func() {
 		for {
 			c, err := target.Accept()
 			if err != nil {
 				return
 			}
+			reached.Add(1)
 			c.Close()
 		}
 	}()
+	// more waits a little for the accept of a connection the check made.
+	more := func(than int32) bool {
+		for i := 0; i < 100 && reached.Load() <= than; i++ {
+			time.Sleep(10 * time.Millisecond)
+		}
+		return reached.Load() > than
+	}
 	client := &socks5.Server{Username: sec.SOCKSUser, Password: sec.SOCKSPassword}
 	if err := client.Listen("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
@@ -316,8 +327,9 @@ func TestEndToEnd(t *testing.T) {
 	if j.State != model.JobCompleted {
 		t.Fatalf("link: %s %s %s\n%s", j.State, j.ErrorMessage, j.ErrorDetails, log)
 	}
-	if !strings.Contains(log, "мс") && !strings.Contains(log, "ms") {
-		t.Logf("log:\n%s", log)
+	// The ping and the CONNECT to the check target, before the restart.
+	if !strings.Contains(log, "Связь работает") || !strings.Contains(log, "Через сервер выхода открыт "+target.Addr().String()) || !more(0) {
+		t.Fatalf("link not checked through the tunnel (target reached %d times):\n%s", reached.Load(), log)
 	}
 	entryCfg, _ := w.entry.file(cfgPath)
 	c, err := hyconfig.ParseServer([]byte(entryCfg))
@@ -335,10 +347,11 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	k := &Checker{Store: w.db, Keys: w.keys}
+	before := reached.Load()
 	down, err := k.CheckLinks(ctx, entry, ex)
 	ex.Close()
-	if err != nil || down != "" {
-		t.Fatalf("check: %q %v", down, err)
+	if err != nil || down != "" || !more(before) {
+		t.Fatalf("check: %q %v (target reached %d times)", down, err, reached.Load()-before)
 	}
 	checks, _ := w.db.LinkChecks(ctx, w.chain, 0, time.Time{}, 1)
 	if len(checks) == 0 || checks[0].Status != model.StateHealthy || checks[0].TCPMillis == 0 && checks[0].HandshakeMillis == 0 {
