@@ -14,8 +14,9 @@ type Event struct {
 	Log  *model.JobLog
 }
 
-// broker fans job events out to subscribers. A slow subscriber loses
-// events rather than stalling the job; readers catch up from the database.
+// broker fans job events out to subscribers. A slow subscriber is cut
+// off rather than stalling the job: its channel closes after the events
+// it got, never with a gap in them, and it catches up from the database.
 type broker struct {
 	mu   sync.Mutex
 	subs map[int64]map[chan Event]struct{}
@@ -31,18 +32,22 @@ func (b *broker) subscribe(jobID int64) (<-chan Event, func()) {
 	}
 	b.subs[jobID][ch] = struct{}{}
 	b.mu.Unlock()
-	var once sync.Once
 	return ch, func() {
-		once.Do(func() {
-			b.mu.Lock()
-			delete(b.subs[jobID], ch)
-			if len(b.subs[jobID]) == 0 {
-				delete(b.subs, jobID)
-			}
-			b.mu.Unlock()
-			close(ch)
-		})
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if _, ok := b.subs[jobID][ch]; ok {
+			b.drop(jobID, ch)
+		}
 	}
+}
+
+// drop ends a subscription; b.mu is held.
+func (b *broker) drop(jobID int64, ch chan Event) {
+	delete(b.subs[jobID], ch)
+	if len(b.subs[jobID]) == 0 {
+		delete(b.subs, jobID)
+	}
+	close(ch)
 }
 
 func (b *broker) publish(jobID int64, ev Event) {
@@ -52,6 +57,7 @@ func (b *broker) publish(jobID int64, ev Event) {
 		select {
 		case ch <- ev:
 		default:
+			b.drop(jobID, ch)
 		}
 	}
 }

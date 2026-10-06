@@ -694,7 +694,9 @@ func (e *Engine) publishState(j model.Job) {
 	e.events.publish(j.ID, Event{Type: "job", Job: &j})
 }
 
-// Subscribe streams the events of a job until cancel is called.
+// Subscribe streams the events of a job until cancel is called. A
+// subscriber that falls behind (256 events unread) finds the channel
+// closed: the events after the last one it got are in the database.
 func (e *Engine) Subscribe(jobID int64) (<-chan Event, func()) {
 	return e.events.subscribe(jobID)
 }

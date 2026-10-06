@@ -217,7 +217,7 @@ func (s *server) jobEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	// Subscribe before reading what is stored: nothing falls in between.
 	events, cancel := s.Jobs.Subscribe(id)
-	defer cancel()
+	defer func() { cancel() }()
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -255,33 +255,42 @@ func (s *server) jobEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if !replay() {
-		return
-	}
-	if send("job", 0, toJobJSON(j)) != nil {
-		return
-	}
-	// The steps as they are now: step events sent before the subscription
-	// are not replayed.
-	if steps, err := s.Store.JobSteps(r.Context(), id); err == nil {
-		for _, st := range steps {
-			if send("step", 0, toStepJSON(st)) != nil {
-				return
+	// catchUp sends the stored lines after last, the job and its steps as
+	// they are now, and the end if the job has finished; it reports
+	// whether live events follow. It runs once subscribed, and again when
+	// the subscription fell behind and was closed: what it missed is
+	// stored.
+	catchUp := func() bool {
+		if !replay() {
+			return false
+		}
+		// The job as it is once subscribed: later changes come as events.
+		if cur, err := s.Store.JobByID(r.Context(), id); err == nil {
+			j = cur
+		}
+		if send("job", 0, toJobJSON(j)) != nil {
+			return false
+		}
+		// The steps as they are now: step events sent before the
+		// subscription are not replayed.
+		if steps, err := s.Store.JobSteps(r.Context(), id); err == nil {
+			for _, st := range steps {
+				if send("step", 0, toStepJSON(st)) != nil {
+					return false
+				}
 			}
 		}
-	}
-	// The job may have ended between reading it and subscribing.
-	if cur, err := s.Store.JobByID(r.Context(), id); err == nil {
-		j = cur
-	}
-	if j.State.Terminal() {
-		// Lines written while the replay ran are stored: send them before
-		// the end.
-		if !replay() {
-			return
+		if j.State.Terminal() {
+			// Lines written while the replay ran are stored: send them
+			// before the end.
+			if replay() {
+				send("end", 0, struct{}{})
+			}
+			return false
 		}
-		send("job", 0, toJobJSON(j))
-		send("end", 0, struct{}{})
+		return true
+	}
+	if !catchUp() {
 		return
 	}
 
@@ -303,7 +312,12 @@ func (s *server) jobEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		case ev, ok := <-events:
 			if !ok {
-				return
+				// Fallen behind: subscribe again and catch up.
+				events, cancel = s.Jobs.Subscribe(id)
+				if !catchUp() {
+					return
+				}
+				continue
 			}
 			switch ev.Type {
 			case "log":
@@ -319,7 +333,7 @@ func (s *server) jobEvents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			case "job":
-				// A line the subscription missed (a full buffer) is stored.
+				// Whatever is stored and not sent yet goes before the end.
 				if ev.Job.State.Terminal() && !replay() {
 					return
 				}

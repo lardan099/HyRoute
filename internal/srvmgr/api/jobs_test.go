@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -228,6 +229,103 @@ func TestJobEventsEndOnShutdown(t *testing.T) {
 	case <-closed:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the stream outlived shutdown")
+	}
+}
+
+// stalledClient is a client that stops reading: once stalled, Write waits
+// until gate is closed.
+type stalledClient struct {
+	hdr   http.Header
+	gate  chan struct{}
+	stall atomic.Bool
+	mu    sync.Mutex
+	body  strings.Builder
+}
+
+func (c *stalledClient) Header() http.Header { return c.hdr }
+func (c *stalledClient) WriteHeader(int)     {}
+func (c *stalledClient) Flush()              {}
+
+func (c *stalledClient) Write(b []byte) (int, error) {
+	if c.stall.Load() {
+		<-c.gate
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.body.Write(b)
+}
+
+func (c *stalledClient) text() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.body.String()
+}
+
+// A client that falls behind the live log (more lines than the broker
+// keeps for it) still gets every line once, in order, and the end.
+func TestJobEventsCatchUpAfterFallingBehind(t *testing.T) {
+	e := newEnv(t)
+	burst, finish := make(chan struct{}), make(chan struct{})
+	e.jobs.Register(&jobs.Kind{Name: "chatty", Steps: func(json.RawMessage) ([]jobs.Step, error) {
+		return []jobs.Step{{Name: "talk", Phase: model.JobInstalling, Run: func(_ context.Context, env *jobs.Env) error {
+			<-burst
+			for i := 1; i <= 600; i++ {
+				env.Logf("line %d", i)
+			}
+			<-finish
+			return nil
+		}}}, nil
+	}})
+	owner := e.setupOwner()
+	e.runJobs()
+	j, _ := e.jobs.Submit(context.Background(), "chatty", 0, nil, nil, 1)
+	e.waitJob(j.ID, model.JobInstalling)
+
+	c := &stalledClient{hdr: http.Header{}, gate: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := httptest.NewRequest("GET", "/api/v1/jobs/"+strconv.FormatInt(j.ID, 10)+"/events", nil).WithContext(ctx)
+	r.RemoteAddr = "127.0.0.1:50000"
+	r.AddCookie(owner.cookie)
+	done := make(chan struct{})
+	go func() { e.h.ServeHTTP(c, r); close(done) }()
+	waitUntil := func(what string, cond func() bool) {
+		t.Helper()
+		for i := 0; !cond(); i++ {
+			if i == 500 {
+				t.Fatalf("%s: %q", what, c.text())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitUntil("no stored state sent", func() bool { return strings.Contains(c.text(), "event: step") })
+	c.stall.Store(true)
+	close(burst)
+	waitUntil("lines not stored", func() bool {
+		ls, _ := e.db.JobLogs(context.Background(), j.ID, 0, 0)
+		return len(ls) > 600
+	})
+	close(c.gate)
+	close(finish)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stream did not end")
+	}
+
+	var got []string
+	for _, l := range strings.Split(c.text(), "\n") {
+		if id, ok := strings.CutPrefix(l, "id: "); ok {
+			got = append(got, id)
+		}
+	}
+	ls, _ := e.db.JobLogs(context.Background(), j.ID, 0, 0)
+	var want []string
+	for _, l := range ls {
+		want = append(want, strconv.FormatInt(l.Seq, 10))
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") || !strings.Contains(c.text(), "event: end") {
+		t.Fatalf("%d lines sent of %d stored; end %v", len(got), len(want), strings.Contains(c.text(), "event: end"))
 	}
 }
 
