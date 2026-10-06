@@ -82,14 +82,6 @@ func (k *kernel) Run(_ context.Context, cmd remote.Cmd) (remote.Result, error) {
 		return ok("Linux 6.1.0\n"), nil
 	case line == "uname -m":
 		return ok("x86_64\n"), nil
-	case a[0] == "sysctl" && a[1] == "-e":
-		var out string
-		for _, key := range a[2:] {
-			if v, found := k.params[key]; found {
-				out += key + " = " + strings.ReplaceAll(v, " ", "\t") + "\n"
-			}
-		}
-		return ok(out), nil
 	case a[0] == "sysctl" && a[2] == "-w":
 		key, value, _ := strings.Cut(last, "=")
 		k.set(key, value)
@@ -107,7 +99,7 @@ func (k *kernel) Run(_ context.Context, cmd remote.Cmd) (remote.Result, error) {
 			return remote.Result{ExitCode: 255, Stderr: []byte("sysctl: setting key: Invalid argument")}, nil
 		}
 		return ok(""), nil
-	case a[0] == "modinfo":
+	case a[0] == "sh" && strings.Contains(a[2], "exec modinfo -F name"):
 		if k.modules[last] {
 			return ok(last + "\n"), nil
 		}
@@ -143,6 +135,13 @@ func (k *kernel) Stream(context.Context, remote.Cmd, func(string)) error { retur
 func (k *kernel) ReadFile(_ context.Context, p string, _ bool) ([]byte, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if key, found := strings.CutPrefix(p, "/proc/sys/"); found {
+		v, found := k.params[strings.ReplaceAll(key, "/", ".")]
+		if !found {
+			return nil, fs.ErrNotExist
+		}
+		return []byte(strings.ReplaceAll(v, " ", "\t") + "\n"), nil
+	}
 	b, found := k.files[p]
 	if !found {
 		return nil, fs.ErrNotExist

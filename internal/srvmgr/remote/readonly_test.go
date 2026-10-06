@@ -36,8 +36,7 @@ func TestReadOnly(t *testing.T) {
 		{"getent", "passwd", "hysteria"},
 		{"df", "-Pk", "/"}, {"nproc"},
 		{"head", "-n", "200", "--", "/proc/stat", "/proc/meminfo"},
-		{"sysctl", "-e", "net.core.rmem_max", "net.ipv4.tcp_congestion_control"},
-		{"modinfo", "-F", "name", "tcp_bbr"},
+		{"sh", "-c", `PATH="$PATH:/usr/local/sbin:/usr/sbin:/sbin"; exec modinfo -F name "$1"`, "sh", "tcp_bbr"},
 	}
 	for _, a := range allowed {
 		if _, err := ex.Run(ctx, remote.Cmd{Args: a, Sudo: true}); err != nil {
@@ -57,6 +56,7 @@ func TestReadOnly(t *testing.T) {
 		{"getent", "hosts", "example.com"}, {"getent", "passwd", "-s", "x"},
 		{"sysctl", "-w", "net.core.rmem_max=1"}, {"sysctl", "net.core.rmem_max=1"}, {"sysctl", "-p", "/etc/sysctl.d/x.conf"},
 		{"sysctl", "--system"}, {"modinfo", "tcp_bbr"}, {"modprobe", "tcp_bbr"},
+		{"sh", "-c", `PATH="$PATH:/usr/local/sbin:/usr/sbin:/sbin"; exec modinfo -F name "$1"`, "sh", "-k"},
 	}
 	for _, a := range refused {
 		if _, err := ex.Run(ctx, remote.Cmd{Args: a}); !errors.Is(err, remote.ErrNotReadOnly) {

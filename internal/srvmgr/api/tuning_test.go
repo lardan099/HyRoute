@@ -16,18 +16,26 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/remote/sshtest"
 )
 
-// tuningExec is a kernel with cubic loaded and the bbr module available.
+// tuningExec is a kernel with cubic loaded and the bbr module available
+// (its parameters are tuningFiles).
 func tuningExec(ctx context.Context, line string, in io.Reader, out, errw io.Writer) int {
 	cmd := strings.TrimPrefix(strings.TrimPrefix(line, "sudo -n -- "), "env LC_ALL=C LANG=C ")
 	switch {
-	case strings.HasPrefix(cmd, "sysctl -e"):
-		fmt.Fprint(out, "net.core.rmem_max = 212992\nnet.core.wmem_max = 212992\nnet.core.default_qdisc = fq_codel\nnet.ipv4.tcp_congestion_control = cubic\nnet.ipv4.tcp_available_congestion_control = reno cubic\n")
-	case strings.HasPrefix(cmd, "modinfo -F name"):
-		fmt.Fprintln(out, strings.Fields(cmd)[3])
+	case strings.Contains(cmd, "exec modinfo -F name"):
+		f := strings.Fields(cmd)
+		fmt.Fprintln(out, f[len(f)-1])
 	default:
 		return probeExec(ctx, line, in, out, errw)
 	}
 	return 0
+}
+
+var tuningFiles = map[string]string{
+	"/proc/sys/net/core/rmem_max":                         "212992\n",
+	"/proc/sys/net/core/wmem_max":                         "212992\n",
+	"/proc/sys/net/core/default_qdisc":                    "fq_codel\n",
+	"/proc/sys/net/ipv4/tcp_congestion_control":           "cubic\n",
+	"/proc/sys/net/ipv4/tcp_available_congestion_control": "reno cubic\n",
 }
 
 func TestTuningAPI(t *testing.T) {
@@ -36,6 +44,7 @@ func TestTuningAPI(t *testing.T) {
 	ctx := context.Background()
 	srv := sshtest.Start(t, "root", fakeSSHPass)
 	srv.SetExec(tuningExec)
+	srv.SetFiles(tuningFiles)
 	rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": "S", "host": srv.Host, "sshPort": srv.Port, "authType": "password", "password": fakeSSHPass}, nil)
 	var created serverJSON
 	json.Unmarshal(rec.Body.Bytes(), &created)
@@ -58,7 +67,7 @@ func TestTuningAPI(t *testing.T) {
 	rec = viewer.do("GET", "/api/v1/servers/"+id+"/tuning", nil, nil)
 	var st tuningJSON
 	json.Unmarshal(rec.Body.Bytes(), &st)
-	if rec.Code != http.StatusOK || !st.BBR || len(st.Settings) != 4 || st.QUIC.Type != "bbr" || st.QUIC.Profile != "aggressive" || st.Brutal.Up != "500 mbps" || strings.Contains(rec.Body.String(), "fake-tuning") {
+	if rec.Code != http.StatusOK || !st.BBR || len(st.Settings) != 4 || st.Settings[0].Current != "212992" || st.QUIC.Type != "bbr" || st.QUIC.Profile != "aggressive" || st.Brutal.Up != "500 mbps" || strings.Contains(rec.Body.String(), "fake-tuning") {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 	for _, l := range srv.Lines() {

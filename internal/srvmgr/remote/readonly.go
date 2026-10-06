@@ -87,20 +87,11 @@ func reads(a []string) bool {
 	if a[0] == "ip" {
 		return slices.Equal(a, []string{"ip", "-o", "route", "get", routeProbe})
 	}
-	if a[0] == "sysctl" {
-		// Reading only: -e and keys, never key=value.
-		for _, x := range a[1:] {
-			if x != "-e" && !sysctlKeyRe.MatchString(x) {
-				return false
-			}
-		}
-		return true
-	}
-	if a[0] == "modinfo" {
-		return len(a) == 4 && a[1] == "-F" && a[2] == "name" && moduleRe.MatchString(a[3])
-	}
 	if a[0] == "sh" {
-		return len(a) == 5 && a[1] == "-c" && (a[2] == hasCommandScript || a[2] == hasSystemCommandScript) && a[3] == "sh"
+		if len(a) != 5 || a[1] != "-c" || a[3] != "sh" {
+			return false
+		}
+		return a[2] == hasCommandScript || a[2] == hasSystemCommandScript || a[2] == modinfoScript && moduleRe.MatchString(a[4])
 	}
 	if len(a) == 2 && a[1] == "version" && strings.HasPrefix(path.Base(a[0]), "hysteria") && path.IsAbs(a[0]) {
 		return true

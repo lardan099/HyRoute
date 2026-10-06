@@ -554,10 +554,12 @@ queued → connecting → preflight → downloading → installing → configuri
   предлагается, только если он загружен или у ядра есть модуль `tcp_bbr`
   (`modinfo`), очередь fq — если есть `sch_fq`; иначе настройка видна с
   причиной, а задание с ней отклоняется до изменений.
-- Typed operations `remote.SysctlRead` (`sysctl -e` ключей; в read-only
-  исполнителе разрешено только чтение ключей, без `key=value`),
-  `SysctlSet`, `SysctlLoad` (`sysctl -p` файла), `KernelModule`; ключи и
-  значения проверяются регулярными выражениями.
+- Typed operations `remote.SysctlRead` (файлы `/proc/sys/<ключ>`: ни
+  root, ни программа не нужны — у не-root SSH-пользователя на Debian
+  `sysctl` и `modinfo` лежат вне PATH, в `/usr/sbin`), `SysctlSet`,
+  `SysctlLoad` (`sysctl -p` файла, от root), `KernelModule` (`modinfo`,
+  с каталогами sbin в PATH; в read-only исполнителе разрешён только он);
+  ключи и значения проверяются регулярными выражениями.
 - Задание `tuning`: `check` решает значения один раз (повтор шага берёт
   те же), `sysctl` записывает `/etc/sysctl.d/90-hyroute.conf` (состояние
   файла записано до изменения, копия `.hyroute-prev`), `load` записывает
