@@ -267,6 +267,29 @@ func TestUpgradeNodeInstalled(t *testing.T) {
 	}
 }
 
+// The node's SSH user has no sudo: the node downloads as that user,
+// which needs no root.
+func TestUpgradeNodeWithoutSudo(t *testing.T) {
+	s := newSim()
+	h := deployed(t, s)
+	s.github = false
+	n := newSim()
+	n.nonRoot = true
+	n.AddDownload(h.res.URL(newVersion, "hysteria-linux-amd64"), newBinary)
+	via := h.node("nl-1", n)
+	h.mu.Lock()
+	h.noBinary = true
+	h.mu.Unlock()
+
+	j := h.maintain(MaintainParams{Op: OpUpgrade, Version: newVersion, Source: SourceNode, Via: via})
+	if b, _ := s.file(BinaryPath); j.State != model.JobCompleted || !bytes.Equal(b, newBinary) {
+		t.Fatalf("%s: %s %s\n%s", j.State, j.ErrorMessage, j.ErrorDetails, h.log(j.ID))
+	}
+	if !n.ran("curl -fsSL") || !n.ran("rm -rf") {
+		t.Fatalf("node %q", n.cmds)
+	}
+}
+
 // What the node downloads does not match the release hash, or the node
 // does not answer: the server is not changed, the error says why.
 func TestUpgradeNodeFails(t *testing.T) {

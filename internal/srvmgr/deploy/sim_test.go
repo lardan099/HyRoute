@@ -45,6 +45,8 @@ type sim struct {
 	silent bool
 	// noSS: iproute2 is not installed.
 	noSS bool
+	// nonRoot: the SSH user is not root and has no sudo.
+	nonRoot bool
 	// squatter: another Hysteria (its own unit, a container) holds UDP
 	// 443 with this PID, and the service cannot take it; squatsLate: it
 	// shows only once the service has started.
@@ -116,12 +118,19 @@ func (s *sim) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 			return fail(1, "simulated failure: "+p), nil
 		}
 	}
+	if cmd.Sudo && s.nonRoot {
+		return fail(1, "sudo: a password is required"), nil
+	}
 	last := a[len(a)-1]
 	switch a[0] {
 	case "true":
 		return ok(""), nil
 	case "id":
 		switch {
+		case line == "id -un" && s.nonRoot:
+			return ok("deploy\n"), nil
+		case line == "id -u" && s.nonRoot:
+			return ok("1000\n"), nil
 		case line == "id -un":
 			return ok("root\n"), nil
 		case line == "id -u":
@@ -376,6 +385,9 @@ func (s *sim) Stream(ctx context.Context, cmd remote.Cmd, line func(string)) err
 func (s *sim) ReadFile(ctx context.Context, path string, sudo bool) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if sudo && s.nonRoot {
+		return nil, fmt.Errorf("cat %s: sudo: a password is required", path)
+	}
 	b, found := s.files[path]
 	if !found {
 		return nil, fmt.Errorf("%s: %w", path, fs.ErrNotExist)

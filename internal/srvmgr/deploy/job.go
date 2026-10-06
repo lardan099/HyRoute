@@ -1075,7 +1075,10 @@ func (x *deployer) node(ctx context.Context, via int64) (*hyrelease.Node, error)
 			ex.Close()
 			return nil, false, err
 		}
-		return ex, !p.Root, nil
+		// sudo where the node has it: a user without it still reads the
+		// installed binary and downloads into a temporary directory of
+		// its own.
+		return ex, !p.Root && p.Sudo, nil
 	}}
 	if in, err := x.Store.Installation(ctx, via); err == nil {
 		n.Installed = in.Binary
