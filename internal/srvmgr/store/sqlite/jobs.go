@@ -305,8 +305,9 @@ func (d *DB) SearchJobLogs(ctx context.Context, f model.JobLogFilter) ([]model.J
 	q := `SELECT l.job_id, l.seq, l.ts, l.level, l.step, l.message, j.server_id, j.kind FROM job_logs l JOIN jobs j ON j.id = l.job_id WHERE 1 = 1`
 	var args []any
 	if f.ServerID != 0 {
-		q += ` AND j.server_id = ?`
-		args = append(args, f.ServerID)
+		// The jobs that change the server, as ListJobs selects them.
+		q += ` AND (j.server_id = ? OR j.id IN (SELECT job_id FROM job_servers WHERE server_id = ?))`
+		args = append(args, f.ServerID, f.ServerID)
 	}
 	switch f.Level {
 	case "warn":

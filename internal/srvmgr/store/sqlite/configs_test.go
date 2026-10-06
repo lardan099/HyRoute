@@ -82,11 +82,22 @@ func TestSearchJobLogs(t *testing.T) {
 	if err != nil || len(all) != 6 || all[0].Message != "Служба упала" || all[0].ServerID != ids[1] || all[0].Kind != "import" {
 		t.Fatalf("%+v %v", all, err)
 	}
+	// A cascade link changes its exit server too: its lines are found by
+	// either server.
+	link := model.Job{Kind: "link", ServerID: ids[0], Servers: []int64{ids[1]}, State: model.JobCompleted, Params: []byte("{}"), CreatedAt: base}
+	if err := d.CreateJob(ctx, &link, []model.JobStep{{Idx: 0, Name: "exit-config"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AppendJobLog(ctx, &model.JobLog{JobID: link.ID, Time: base.Add(time.Minute), Level: "info", Step: "exit-config", Message: "Конфиг выхода записан"}); err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range []struct {
 		f    model.JobLogFilter
 		want int
 	}{
-		{model.JobLogFilter{ServerID: ids[0]}, 3},
+		{model.JobLogFilter{ServerID: ids[0]}, 4},
+		{model.JobLogFilter{ServerID: ids[1]}, 4},
+		{model.JobLogFilter{ServerID: ids[1], Text: "выхода"}, 1},
 		{model.JobLogFilter{Level: "warn"}, 4},
 		{model.JobLogFilter{Level: "error", ServerID: ids[0]}, 1},
 		{model.JobLogFilter{Text: "100%"}, 2},
