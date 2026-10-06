@@ -149,7 +149,7 @@ env), `setup-token` на время первого запуска и `lock`: con
 | `jobs` | id, kind, server_id, state, current_step, params (json без секретов), data (json без секретов: результаты шагов), secret (envelope, контекст `job/<id>/secret`), attempt, error_message, error_details, created_by, created_at, started_at, finished_at, lease_owner, lease_until | |
 | `job_steps` | job_id, idx, name, phase, state, attempt, started_at, finished_at, error | |
 | `job_logs` | job_id, seq, ts, level, step, message | message уже прошёл redaction |
-| `audit_log` | id, ts, user_id, action, target, details | кто что сделал (вход, выход, пользователи, подтверждение ключа, показ ссылок); из неудачных входов и попыток setup хранятся последние 10 000 |
+| `audit_log` | id, ts, user_id, action, target, details | кто что сделал (вход, выход, пользователи, подтверждение ключа, показ ссылок, удаление каскада без недоступного сервера — `chain_force_delete`); из неудачных входов и попыток setup хранятся последние 10 000 |
 | `chains` | id, name (unique), notes, created_by, created_at, updated_at | каскад (P3-01), миграция 0016 |
 | `chain_nodes` | chain_id, idx, server_id | серверы цепочки по порядку, entry — idx 0; сервер из цепочки не удаляется |
 | `chain_links` | chain_id, idx, params (json без секретов), secrets (envelope, контекст `chain/<id>/link/<idx>`), state (new/linking/active/stale/unlinking/failed), from_revision, to_revision, config_sha256, updated_at | связь узлов idx и idx + 1 |
@@ -1025,6 +1025,33 @@ commit: ревизии без связи (источник `cascade`), зате�
 каскада. Откат — в обратном порядке (unit и конфиг связи возвращаются,
 служба запускается); неудачное снятие оставляет связь как была.
 
+**Удаление без недоступного сервера.** Шаг `connect` задания
+`unlink` записывает сервер, до которого не дошёл, в данные задания
+(`unreached:<id>` = `1`): SSH не подключился (нет ответа, отказ во
+входе, сменился ключ) или подключение оборвалось до проверки прав
+(`remote.UnreachableError`); сервер, который отвечает без root и sudo,
+недоступным не считается. Обычное снятие падает там же, как раньше.
+`Linker.Unreached` — такие серверы, если последнее задание связи (`link`
+или `unlink` этого каскада, среди последних 1000 заданий entry) —
+упавший `unlink` с `delete`; иначе пусто (не пробовали, после него
+прошло другое задание связи, оба сервера ответили, задание идёт).
+`Linker.ForceDelete` — то же задание `unlink` с `{"delete": true,
+"force": true}`, только при непустом `Unreached` (иначе `ErrReached`, 409
+`servers_reached`). В нём `connect` пропускает недоступный сервер
+(предупреждение в журнале), его шаги (`entry-*` и `link-*` для entry,
+`exit-*` для exit) ничего не делают, `check` его не сверяет, `commit`
+не сохраняет ему ревизию (на сервере прежний конфиг) и до удаления
+каскада помечает его `needs_attention` с абзацем в заметках
+(`AddServerNote`, один раз за задание): что связь могла оставить —
+`cascade.Left` по базовой ревизии (entry: служба `hyroute-link-…`,
+конфиг клиента связи, outbound `cascade`, пока он в конфиге; exit:
+пользователь `link-…`, пока он в конфиге; exit с `password` ничего не
+хранит и не помечается). С доступного сервера связь снимается теми же
+шагами, что при обычном снятии; ответили оба — это обычное снятие.
+Затем каскад удаляется вместе со связями, секретами и проверками
+(`ON DELETE CASCADE`). Повтор такого задания, как и запуск, — только
+owner и admin (`cascade.Forced`, `Role.CanForce`).
+
 **Устаревание.** `Linker.Sync` сравнивает развёрнутые связи с текущими
 ревизиями и записями серверов (адрес и интервал смены портов выхода
 меняются без новой ревизии, поэтому одинаковых номеров ревизий мало):
@@ -1347,12 +1374,12 @@ JSON-строкой) и должно прийти за минуту; тело б
 | POST | `/api/v1/users` | owner/admin | `{username, password, role}`: admin, operator или readonly (второго owner не создать) |
 | GET/POST | `/api/v1/servers` | читать: любая; создать: operator+ | инвентарь; роль сервера только для чтения (следует из каскадов), `chains` — каскады сервера (id, название, состояние) |
 | GET/PATCH/DELETE | `/api/v1/servers/{id}` | | удаление сервера из каскада — 409 `chain_member` |
-| GET | `/api/v1/chains`, `/api/v1/chains/{id}` | все | каскады: серверы по порядку с ролями, связи с параметрами и состоянием (секреты связей не отдаются) |
+| GET | `/api/v1/chains`, `/api/v1/chains/{id}` | все | каскады: серверы по порядку с ролями, связи с параметрами и состоянием (секреты связей не отдаются); ответы об одном каскаде — ещё `unreachable`: серверы, до которых не дошло последнее «Удалить каскад» (`Linker.Unreached`), `{serverId, name, role, left}`, `left` — что связь там оставит |
 | POST | `/api/v1/chains` | operator+ | `{name, notes, nodes: [entry, exit], link: {up, down, noUdp, checkTarget}}` — проверка (петли, роли, конфиги, auth exit, параметры) и сохранение; связь не разворачивается |
 | PATCH | `/api/v1/chains/{id}` | operator+ | `{name, notes}` |
 | DELETE | `/api/v1/chains/{id}` | operator+ | только неразвёрнутый каскад (все связи new или failed), иначе 409 `chain_deployed` |
 | POST | `/api/v1/chains/{id}/link` | operator+ | задание `link` на entry и exit (202, задание); 409 `no_config`, `no_installation`, `server_busy` |
-| POST | `/api/v1/chains/{id}/unlink` | operator+ | `{delete}` — задание `unlink` (202); 409 `not_deployed`, `server_busy` |
+| POST | `/api/v1/chains/{id}/unlink` | operator+; с `force` — owner/admin | `{delete}` — задание `unlink` (202); 409 `not_deployed`, `server_busy`. `{delete: true, force: true}` — удалить без серверов из `unreachable` (`Linker.ForceDelete`): 409 `servers_reached`, если последнее задание связи — не упавшее «Удалить каскад», которое не дошло до сервера; 400 без `delete`; пишется в audit log (`chain_force_delete`) |
 | GET | `/api/v1/chains/{id}/checks` | все | `?idx=&limit=` — проверки связи, новые первыми (7 дней) |
 | POST | `/api/v1/chains/{id}/check` | operator+ | проверить связи каскада сейчас (с entry, как сборщик); 409 `chain_busy` во время задания |
 | POST | `/api/v1/servers/{id}/check` | operator+ | подключение и проверка прав (ничего не меняет) |
@@ -1407,7 +1434,7 @@ JSON-строкой) и должно прийти за минуту; тело б
 | GET | `/api/v1/jobs`, `/api/v1/jobs/{id}` | любая | список (`?server=`, `?before=`), детали с шагами |
 | GET | `/api/v1/jobs/{id}/logs` | любая | строки журнала после `?after=` |
 | GET | `/api/v1/jobs/{id}/events` (SSE) | любая | сохранённый журнал после `Last-Event-ID`, затем события `log`/`step`/`job` до конца задания, `end` |
-| POST | `/api/v1/jobs/{id}/retry` | operator+ | повтор с безопасного шага |
+| POST | `/api/v1/jobs/{id}/retry` | operator+; `unlink` с `force` — owner/admin | повтор с безопасного шага |
 | GET | `/api/v1/logs` | любая | `source=controller` (буфер последних записей процесса) или `jobs` (журналы заданий), фильтры `server`, `level`, `q` (подстрока без учёта регистра в любом алфавите); всё уже отредактировано |
 
 ## Модель угроз
