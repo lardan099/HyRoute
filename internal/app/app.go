@@ -235,6 +235,13 @@ func (c *Controller) Load() error {
 		c.flushDNSAsync("start") // dns: answers of a run that crashed
 	}
 	c.loadStats() // stats: the collection mode (creates nothing)
+	if c.Store != nil {
+		// Files a killed run left half-written; an hour old: none is
+		// being written now.
+		if n := c.Store.SweepTemp(time.Now().Add(-time.Hour)); n > 0 {
+			c.Log.Info("temporary files of an interrupted write removed", "count", n)
+		}
+	}
 	c.groupsLog.Do(func() { c.groupsRT.Log = c.Log })
 	if loadErr != "" {
 		return errors.New(loadErr)
