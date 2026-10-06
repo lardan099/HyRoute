@@ -234,12 +234,25 @@ const maxBody = 1 << 20
 // ACL (acl.file moved into the config) is a few times larger as JSON.
 const maxRoutingBody = 6 << 20
 
+// bodyTimeout bounds the time a body takes to arrive (a few MB fit even
+// on a slow link). The server has no ReadTimeout, it would end event
+// streams, so without it a body that never comes holds its connection
+// forever.
+var bodyTimeout = time.Minute
+
 func limitBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
 			limit := int64(maxBody)
 			if strings.Contains(r.URL.Path, "/routing") || strings.HasPrefix(r.URL.Path, "/api/v1/chain-templates/") {
 				limit = maxRoutingBody
+			}
+			if r.ContentLength != 0 {
+				// It also covers the rest of a body the handler did not
+				// read: net/http reads it after the handler. Once the body
+				// is in, the deadline no longer matters (HTTP/1 lifts it,
+				// HTTP/2 applies it to the body only).
+				http.NewResponseController(w).SetReadDeadline(time.Now().Add(bodyTimeout))
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}

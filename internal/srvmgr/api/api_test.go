@@ -1,16 +1,21 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
 )
@@ -163,5 +168,54 @@ func TestPanicBecomesInternalError(t *testing.T) {
 	e := decodeError(t, rec)
 	if e.Code != "internal" || strings.Contains(rec.Body.String(), "boom") {
 		t.Fatalf("panic text leaked or wrong code: %q", rec.Body.String())
+	}
+}
+
+func TestBodyTimeout(t *testing.T) {
+	bodyTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { bodyTimeout = time.Minute })
+	e := newEnv(t)
+	ts := httptest.NewServer(e.h)
+	defer ts.Close()
+
+	// A promised body that never comes: the public login and a route that
+	// answers 401 without reading it both let the connection go.
+	for _, path := range []string{"/api/v1/session", "/api/v1/servers"} {
+		c, err := net.Dial("tcp", ts.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(c, "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n\r\n{", path, ts.Listener.Addr())
+		c.SetReadDeadline(time.Now().Add(10 * time.Second))
+		resp, err := io.ReadAll(c)
+		c.Close()
+		if err != nil {
+			t.Fatalf("%s: connection held: %v (%q)", path, err, resp)
+		}
+		if !bytes.HasPrefix(resp, []byte("HTTP/1.1 4")) {
+			t.Fatalf("%s: %q", path, resp)
+		}
+	}
+
+	// Once the body is in, a request that runs longer keeps its context
+	// (a whole-request ReadTimeout would end it).
+	h := limitBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		time.Sleep(3 * bodyTimeout)
+		if err := r.Context().Err(); err != nil {
+			t.Errorf("request context: %v", err)
+		}
+		w.Write([]byte("ok"))
+	}))
+	ts2 := httptest.NewServer(h)
+	defer ts2.Close()
+	resp, err := http.Post(ts2.URL, "application/json", strings.NewReader(`{"a":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(b) != "ok" {
+		t.Fatalf("long request: %d %q", resp.StatusCode, b)
 	}
 }

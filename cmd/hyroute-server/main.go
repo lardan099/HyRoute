@@ -221,7 +221,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			},
 		}),
 		// No ReadTimeout/WriteTimeout: live logs are long-lived event
-		// streams. Bodies are bounded by size in the API instead.
+		// streams. Bodies are bounded by size and time in the API instead.
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
