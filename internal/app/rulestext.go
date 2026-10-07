@@ -837,8 +837,16 @@ func formatRulesText(cfg rules.Config, ts []target) string {
 	var b strings.Builder
 	b.WriteString("# Одна строка — одно правило: что -> куда. Проверяются сверху вниз.\n")
 	b.WriteString("# Куда: vpn (основной), имя сервера, группа:Имя, напрямую, блок. Опции после |: tcp, udp, порты (tcp 443), выкл.\n\n")
+	writeRuleLines(&b, cfg.Rules, ts)
+	b.WriteString("\n# Всё остальное\n* -> " + targetWords(cfg.DefaultAction, cfg.DefaultProfile, cfg.DefaultFallback, ts) + "\n")
+	return b.String()
+}
+
+// writeRuleLines writes rules as lines of rules text, a [program] block
+// for rules of one program with sites.
+func writeRuleLines(b *strings.Builder, rs []rules.Rule, ts []target) {
 	section := ""
-	for _, r := range cfg.Rules {
+	for _, r := range rs {
 		apps, doms := r.AllApps(), r.AllDomains()
 		sec, lineApps := "", apps
 		if len(apps) == 1 && len(doms) > 0 && apps[0].InheritChildren && inSection(apps[0].Pattern) {
@@ -898,8 +906,6 @@ func formatRulesText(cfg rules.Config, ts []target) string {
 	if section != "" {
 		b.WriteString("\n[*]\n")
 	}
-	b.WriteString("\n# Всё остальное\n* -> " + targetWords(cfg.DefaultAction, cfg.DefaultProfile, cfg.DefaultFallback, ts) + "\n")
-	return b.String()
 }
 
 // inSection reports whether [p] reads back as exactly this program (with

@@ -149,6 +149,7 @@ export interface RulesTextResult {
   hasDefault: boolean;
   defaultAction: Action;
   defaultProfile: string;
+  defaultFallback?: string[];
   errors: { line: number; text: string }[];
   warnings: { line: number; text: string }[];
   summary: string;
@@ -592,6 +593,9 @@ interface GUI {
   Inspect(query: string): Promise<InspectResult>;
   GeoList(kind: 'site' | 'ip', name: string, filter: string, offset: number, limit: number): Promise<GeoListing>;
   ConvertACL(text: string, mode: 'domains' | 'rules', suffix: string, actions: string): Promise<ConvertResult>;
+  // Rules of another program into rules text; to: source place -> vpn,
+  // direct, block or id:<server or group>.
+  ImportRules(text: string, format: string, to: Record<string, string>): Promise<RulesImport>;
 }
 
 export interface InspectHit {
@@ -630,6 +634,28 @@ export interface ConvertResult {
   text: string;
   count: number;
   warnings: string[];
+}
+
+// A place another program's rules send traffic to, and where it goes here.
+export interface RulesImportTarget {
+  name: string;
+  kind: 'direct' | 'block' | 'proxy';
+  detail?: string;
+  rules: number;
+  to: string; // vpn, direct, block or id:<server or group>
+}
+
+export interface RulesImport {
+  format: string;
+  title: string;
+  formats: { id: string; title: string }[];
+  targets: RulesImportTarget[];
+  text: string; // rules text without «Всё остальное»
+  count: number;
+  default: string;
+  defaultLine: string; // "* -> …" or ''
+  warnings: string[];
+  notes: string[];
 }
 
 const w = window as any;

@@ -475,6 +475,12 @@ func (g *GUI) GeoList(kind, name, filter string, offset, limit int) (geodata.Lis
 func (g *GUI) ConvertACL(text, mode, suffix, actions string) (app.ConvertResult, error) {
 	return g.ctl.ConvertACL(text, mode, suffix, actions)
 }
+
+// ImportRules converts rules of another program (SwitchyOmega, v2rayN,
+// Throne, FoxyProxy, Clash, PAC …) into rules text.
+func (g *GUI) ImportRules(text, format string, to map[string]string) (app.RulesImport, error) {
+	return g.ctl.ImportRules(text, format, to)
+}
 func (g *GUI) GeoCategories(kind, query string) []string {
 	return g.ctl.GeoCategories(kind, query, 40)
 }

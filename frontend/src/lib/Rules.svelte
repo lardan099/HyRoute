@@ -8,6 +8,7 @@
   import FallbackPicker from './FallbackPicker.svelte';
   import Explain from './Explain.svelte';
   import RulesText from './RulesText.svelte';
+  import RulesImport from './RulesImport.svelte';
   import Help from './Help.svelte';
   import RouteWizard from './RouteWizard.svelte';
   import RulesetBar, { showSwitchResult, showRulesetError } from './RulesetBar.svelte';
@@ -37,6 +38,7 @@
   const activeName = $derived(ui.status?.ruleset?.name || 'Основной');
   let picking = $state(false);
   let asText = $state(false);
+  let importing = $state(false); // «Импорт»: rules of another program
   let wizard = $state(false);
   let dragFrom = $state<number | null>(null);
   let dragOver = $state<number | null>(null);
@@ -116,7 +118,7 @@
   // a network rule) also reloads; in edit mode the profile list's revision
   // does (the edited profile was edited elsewhere, switched to or deleted).
   $effect(() => {
-    if (!s || pending || editing || asText || wizard || dragFrom !== null || reloading) return;
+    if (!s || pending || editing || asText || importing || wizard || dragFrom !== null || reloading) return;
     const r = ui.status?.ruleset;
     if (editId) {
       if (!r || r.rev <= editRev || r.rev <= triedEditAt) return;
@@ -381,6 +383,9 @@
       ><Icon name="wand" size={16} />Пошагово</button
     >
     <button onclick={() => (picking = true)} disabled={!s}><Icon name="sparkles" size={16} />Шаблоны</button>
+    <button onclick={() => (importing = true)} disabled={!s} title="Правила из SwitchyOmega, v2rayN, Throne, FoxyProxy, Clash, PAC-файла или списка сайтов"
+      ><Icon name="download" size={16} />Импорт</button
+    >
     <button class="primary" onclick={() => openEditor(-1, newRule(), 'Новое правило')} disabled={!s}><Icon name="plus" size={16} />Правило</button>
   </header>
 
@@ -565,6 +570,25 @@
   />
 {/if}
 
+{#if importing}
+  <RulesImport
+    target={s?.ruleset ?? ''}
+    rulesetName={editId ? editName : activeName}
+    list={rsView}
+    onclose={() => (importing = false)}
+    onsaved={(n) => {
+      importing = false;
+      toast({ tone: 'ok', text: () => `Добавлено правил: ${n}. Они в конце списка — проверьте порядок и серверы.` });
+      load();
+    }}
+    onprofile={(id, name) => {
+      importing = false;
+      toast({ tone: 'ok', text: () => `Создан профиль правил «${hide(name)}»`, actions: [{ label: () => 'Открыть', run: () => setEdit(id) }] });
+      load();
+    }}
+  />
+{/if}
+
 {#if asText}
   <RulesText
     target={s?.ruleset ?? ''}
@@ -656,6 +680,8 @@
   .wtop { display: flex; align-items: center; gap: 10px; padding: 14px 24px; font-size: 15px; }
   .page-wrap { display: grid; gap: 16px; max-width: 1000px; }
   header { align-items: flex-start; gap: 10px; }
+  /* The title keeps its width: the buttons go to the next line instead. */
+  header > .grow { min-width: 280px; }
   .sub { margin: 4px 0 0; }
   .list { display: grid; gap: 8px; }
 

@@ -101,7 +101,7 @@ HyRoute. Данные WebView2 лежат не здесь, а в `%LOCALAPPDATA%
 | `internal/divert`, `internal/packet` | биндинги WinDivert без cgo, фильтры; разбор, переписывание и сборка пакетов |
 | `internal/attrib`, `internal/procinfo` | чей пакет: таблица сокетов, IP Helper; PID → путь, дерево процессов |
 | `internal/relay`, `internal/sniff`, `internal/socks5` | relay TCP; SNI и HTTP Host; клиент SOCKS5 |
-| `internal/rules`, `internal/geodata` | модель правил, компиляция, трёхзначная оценка, место правила из соединения; базы geosite/geoip |
+| `internal/rules`, `internal/geodata`, `internal/ruleconv` | модель правил, компиляция, трёхзначная оценка, место правила из соединения; базы geosite/geoip; правила других программ (SwitchyOmega, v2rayN, sing-box, Clash…) |
 | `internal/dnscache`, `internal/dnspolicy`, `internal/dnsproxy`, `internal/sysdns` | DNS-кэш из ответов; DNS-политики; резолвер DoH/DoT; DNS-серверы адаптеров |
 | `internal/hysteria`, `internal/tunnels`, `internal/groups` | ссылки, конфиг и процесс Hysteria; запущенные серверы; группы серверов |
 | `internal/localproxy`, `internal/fwrule` | локальные SOCKS5/HTTP-прокси; правила брандмауэра Windows |

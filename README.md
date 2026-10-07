@@ -128,7 +128,7 @@ game.exe -> Нидерланды | udp 27000-27200
 
 <img src="docs/screenshots/lists.png" alt="Поиск по спискам">
 
-`geosite:…` и `geoip:…` берутся из тех же баз, что в v2rayN и Xray: runetfreedom (по умолчанию, с `ru-blocked`), Loyalsoldier, v2fly, hysteria-geodata или свои ссылки. HyRoute скачивает их, только когда они нужны правилам, и обновляет раз в 12 часов. Страница «Списки» отвечает, в каких списках есть сайт или IP и что HyRoute с ним делает сейчас; «Конвертер ACL» переводит ACL сервера Hysteria в правила.
+`geosite:…` и `geoip:…` берутся из тех же баз, что в v2rayN и Xray: runetfreedom (по умолчанию, с `ru-blocked`), Loyalsoldier, v2fly, hysteria-geodata или свои ссылки. HyRoute скачивает их, только когда они нужны правилам, и обновляет раз в 12 часов. Страница «Списки» отвечает, в каких списках есть сайт или IP и что HyRoute с ним делает сейчас; «Правила» → «Импорт» переносит правила из SwitchyOmega, v2rayN, Throne, sing-box, FoxyProxy, Clash, PAC-файлов и ACL сервера Hysteria.
 
 ### Соединения
 

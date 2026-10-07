@@ -7,6 +7,7 @@
   import Icon from './Icon.svelte';
   import ListViewer from './ListViewer.svelte';
   import RuleEditor from './RuleEditor.svelte';
+  import RulesImport from './RulesImport.svelte';
 
   loadGeo();
 
@@ -18,6 +19,7 @@
   let info = $state('');
   let viewing = $state<string | null>(null);
   let adding = $state<Rule | null>(null);
+  let importing = $state(false); // rules of another program into HyRoute rules
 
   // Every search bumps seq: the answer to an earlier one (a slow DNS
   // lookup) must not replace the result of the newer one or end its wait.
@@ -124,7 +126,7 @@
     </div>
     <div class="seg">
       <button class:on={tab === 'search'} onclick={() => (tab = 'search')}>Поиск</button>
-      <button class:on={tab === 'acl'} onclick={() => (tab = 'acl')}>Конвертер ACL</button>
+      <button class:on={tab === 'acl'} onclick={() => (tab = 'acl')}>Конвертер</button>
     </div>
   </header>
 
@@ -204,6 +206,10 @@
     {/if}
   {:else}
     <section class="card acl">
+      <div class="note info small other">
+        <span class="grow">Правила SwitchyOmega, v2rayN, Throne, sing-box, FoxyProxy, Clash, PAC-файл или список AutoProxy переводит в правила HyRoute окно импорта.</span>
+        <button onclick={() => (importing = true)}><Icon name="download" size={14} />Из другой программы…</button>
+      </div>
       <p class="muted small">
         Вставьте правила ACL сервера Hysteria (<code>- proxy(geosite:openai)</code>, <code>- direct(suffix:example.com)</code>…). Их можно превратить в
         список доменов вида <code>*.example.com +hyst</code> для других программ или в правила HyRoute.
@@ -245,6 +251,21 @@
 </div>
 
 {#if viewing}<ListViewer tag={viewing} onclose={() => (viewing = null)} />{/if}
+{#if importing}
+  <RulesImport
+    target={ui.status?.ruleset?.token ?? ''}
+    rulesetName={ui.status?.ruleset?.name ?? ''}
+    onclose={() => (importing = false)}
+    onsaved={(n) => {
+      importing = false;
+      info = `Добавлено правил: ${n}. Они в конце списка на странице «Правила».`;
+    }}
+    onprofile={(_id, name) => {
+      importing = false;
+      info = `Создан профиль правил «${hide(name)}»: он на странице «Правила».`;
+    }}
+  />
+{/if}
 {#if adding}
   <RuleEditor rule={adding} title="Новое правило" onsave={saveRule} onclose={() => (adding = null)} />
 {/if}
@@ -277,4 +298,6 @@
   .opts label input { flex: 1; }
   .short { width: 90px; }
   .warn-t { color: var(--warn); }
+  .other { display: flex; gap: 10px; align-items: center; margin: 0; }
+  .other button { flex: none; }
 </style>
