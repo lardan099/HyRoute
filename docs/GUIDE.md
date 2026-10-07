@@ -155,7 +155,7 @@ instagram.com -> США
 
 | Программа | Что вставить |
 | --- | --- |
-| SwitchyOmega, ZeroOmega | правила текстом (`[SwitchyOmega Conditions]`, строки `*.site.com +Профиль`) или экспортированный PAC-файл |
+| SwitchyOmega, ZeroOmega | резервная копия настроек (`.bak`: правила профиля-переключателя), правила текстом (`[SwitchyOmega Conditions]`, строки `*.site.com +Профиль`) или экспортированный PAC-файл |
 | v2rayN | строки таблицы правил маршрутизации (выделить и скопировать) или правила в JSON |
 | Xray, V2Ray | `routing.rules` из конфига |
 | Throne, Nekoray, sing-box, Hiddify | JSON правил маршрута (`route.rules`) или простые списки Nekoray |

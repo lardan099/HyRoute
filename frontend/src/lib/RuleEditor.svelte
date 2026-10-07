@@ -224,6 +224,12 @@
     { v: 'block', l: 'Заблокировать', d: 'соединение не пройдёт', icon: 'ban' },
   ];
 
+  // few: a long list as its first items and how many more (a rule of
+  // 2000 imported sites stays one readable line).
+  function few(list: string[], n = 4): string {
+    return list.length <= n + 1 ? list.join(', ') : `${list.slice(0, n).join(', ')} и ещё ${list.length - n}`;
+  }
+
   const sentence = $derived.by(() => {
     const apps = r.apps!.map((a) => appLabel(a.pattern));
     // Lists from the database read as «YouTube», plain sites as is (masked
@@ -231,9 +237,9 @@
     const sites = r.domains!.map((d) => (itemLabel(d)?.geo ? `«${shortLabel(d)}»` : hide(itemLabel(d) ? shortLabel(d) : siteLabel(d).host)));
     let who = '';
     let proto = ppText ? ` (только ${ppText})` : '';
-    if (apps.length && sites.length) who = `${apps.join(', ')}, когда открывает ${sites.join(', ')}`;
-    else if (apps.length) who = `Всё от ${apps.join(', ')}`;
-    else if (sites.length) who = `${sites.join(', ')} — в любой программе,`;
+    if (apps.length && sites.length) who = `${few(apps)}, когда открывает ${few(sites)}`;
+    else if (apps.length) who = `Всё от ${few(apps)}`;
+    else if (sites.length) who = `${few(sites)} — в любой программе,`;
     else if (pp.ports.length) [who, proto] = [`Все соединения на ${ppText}`, ''];
     else return 'Добавьте программу, сайт или порт (в «Протокол и порты»).';
     // A group: «группу «Авто» (самый быстрый)».

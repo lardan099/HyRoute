@@ -176,7 +176,7 @@ func importName(r ruleconv.Rule, f ruleconv.Format) string {
 		return r.Name
 	}
 	src := map[ruleconv.Format]string{
-		ruleconv.Omega: "Omega", ruleconv.PAC: "PAC", ruleconv.AutoProxy: "AutoProxy", ruleconv.V2RayN: "v2rayN",
+		ruleconv.Omega: "Omega", ruleconv.OmegaBak: "Omega", ruleconv.PAC: "PAC", ruleconv.AutoProxy: "AutoProxy", ruleconv.V2RayN: "v2rayN",
 		ruleconv.Xray: "Xray", ruleconv.SingBox: "sing-box", ruleconv.Nekoray: "Nekoray", ruleconv.FoxyProxy: "FoxyProxy",
 		ruleconv.Clash: "Clash", ruleconv.List: "Список",
 	}[f]

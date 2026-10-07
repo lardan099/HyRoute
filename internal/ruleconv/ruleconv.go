@@ -27,6 +27,7 @@ type Format string
 const (
 	Auto      Format = ""
 	Omega     Format = "omega"     // [SwitchyOmega Conditions] and "pattern +Profile" lines
+	OmegaBak  Format = "omegabak"  // SwitchyOmega / ZeroOmega backup (.bak, JSON)
 	PAC       Format = "pac"       // FindProxyForURL, SwitchyOmega's exported PAC too
 	AutoProxy Format = "autoproxy" // AutoProxy / GFWList (base64 or plain)
 	V2RayN    Format = "v2rayn"    // v2rayN rules: the table copied, or JSON
@@ -40,13 +41,15 @@ const (
 )
 
 // Formats in the order the window offers them.
-var Formats = []Format{Omega, PAC, AutoProxy, V2RayN, Xray, SingBox, Nekoray, FoxyProxy, Clash, Hysteria, List}
+var Formats = []Format{Omega, OmegaBak, PAC, AutoProxy, V2RayN, Xray, SingBox, Nekoray, FoxyProxy, Clash, Hysteria, List}
 
 // Title is a format's name for the user.
 func (f Format) Title() string {
 	switch f {
 	case Omega:
 		return "SwitchyOmega / ZeroOmega (правила текстом)"
+	case OmegaBak:
+		return "SwitchyOmega / ZeroOmega (резервная копия .bak)"
 	case PAC:
 		return "PAC-файл (в том числе из SwitchyOmega)"
 	case AutoProxy:
@@ -160,6 +163,8 @@ func Convert(text string, f Format) (Result, error) {
 	switch f {
 	case Omega:
 		err = c.omega(text)
+	case OmegaBak:
+		err = c.omegaBak(text)
 	case PAC:
 		err = c.pac(text)
 	case AutoProxy:
@@ -205,12 +210,15 @@ func Detect(text string) Format {
 		return Omega
 	case strings.HasPrefix(head, "[autoproxy"):
 		return AutoProxy
-	case strings.Contains(t, "FindProxyForURL"):
-		return PAC
-	case strings.HasPrefix(t, "{") || strings.HasPrefix(t, "["):
+	}
+	// JSON first: a SwitchyOmega backup holds PAC scripts too.
+	if strings.HasPrefix(t, "{") || strings.HasPrefix(t, "[") {
 		if f := detectJSON(t); f != "" {
 			return f
 		}
+	}
+	if strings.Contains(t, "FindProxyForURL") {
+		return PAC
 	}
 	if b, ok := decodeBase64(t); ok && strings.HasPrefix(strings.ToLower(strings.TrimSpace(string(b))), "[autoproxy") {
 		return AutoProxy
@@ -256,6 +264,9 @@ func detectJSON(t string) Format {
 	case []any:
 		return rulesFormat(x)
 	case map[string]any:
+		if omegaBackup(x) {
+			return OmegaBak
+		}
 		if d, ok := x["data"].([]any); ok && len(d) > 0 {
 			if m, ok := d[0].(map[string]any); ok && (m["include"] != nil || m["exclude"] != nil || m["hostname"] != nil) {
 				return FoxyProxy
@@ -355,6 +366,7 @@ type conv struct {
 	// firstOutbound: in the source, what no rule matches goes to the first
 	// outbound (Xray, v2rayN).
 	firstOutbound bool
+	once          map[string]bool // warnOnce
 }
 
 func (c *conv) warn(line int, f string, a ...any) {

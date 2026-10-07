@@ -94,6 +94,46 @@ Weekday: 1~5 +Proxy A
 	}
 }
 
+func TestOmegaBackup(t *testing.T) {
+	text := `{
+  "+auto switch": {"profileType": "SwitchProfile", "name": "auto switch", "defaultProfileName": "direct", "rules": [
+    {"condition": {"conditionType": "HostWildcardCondition", "pattern": "*.example.com"}, "profileName": "hyst"},
+    {"condition": {"conditionType": "HostWildcardCondition", "pattern": "*.example.com"}, "profileName": "hyst"},
+    {"condition": {"conditionType": "IpCondition", "ip": "192.0.2.0", "prefixLength": 24}, "profileName": "hyst"},
+    {"condition": {"conditionType": "UrlWildcardCondition", "pattern": "*://*.example.org/*"}, "profileName": "Kz"},
+    {"condition": {"conditionType": "HostWildcardCondition", "pattern": "*.pac.example"}, "profileName": "PAC_LIST"},
+    {"condition": {"conditionType": "WeekdayCondition", "startDay": 1, "endDay": 5}, "profileName": "hyst"}
+  ]},
+  "+hyst": {"profileType": "FixedProfile", "name": "hyst", "fallbackProxy": {"scheme": "socks5", "host": "127.0.0.1", "port": 1080}, "bypassList": []},
+  "+Kz": {"profileType": "FixedProfile", "name": "Kz", "fallbackProxy": {"scheme": "http", "host": "127.0.0.1", "port": 3128}, "auth": {"fallbackProxy": {"username": "u", "password": "secret-not-shown"}}},
+  "+PAC_LIST": {"profileType": "PacProfile", "name": "PAC_LIST", "pacScript": "function FindProxyForURL(url, host) { if (x) { a(); return \"DIRECT\"; } return \"DIRECT\"; }"},
+  "-startupProfileName": "auto switch",
+  "schemaVersion": 2
+}`
+	r, err := Convert(text, Auto)
+	if r.Format != OmegaBak {
+		t.Fatalf("format %s", r.Format)
+	}
+	check(t, r, err, []string{
+		"hyst: suffix:example.com ip:192.0.2.0/24",
+		"Kz: suffix:example.org",
+		"PAC_LIST: suffix:pac.example",
+	}, "direct")
+	want := []Target{{"hyst", ToProxy, "socks5 127.0.0.1:1080"}, {"Kz", ToProxy, "http 127.0.0.1:3128"}, {"PAC_LIST", ToProxy, "PAC-профиль"}, {"direct", ToDirect, ""}}
+	if fmt.Sprint(r.Targets) != fmt.Sprint(want) {
+		t.Fatalf("targets %+v", r.Targets)
+	}
+	if !hasWarning(r, "PAC-профиль") || !hasWarning(r, "день недели") {
+		t.Fatalf("warnings %v", r.Warnings)
+	}
+	if strings.Contains(fmt.Sprint(r), "secret") {
+		t.Fatal("a proxy password in the result")
+	}
+	if _, err := Convert(`{"+p": {"profileType": "FixedProfile", "name": "p"}, "schemaVersion": 2}`, Auto); err == nil {
+		t.Fatal("a backup without a switch profile converted")
+	}
+}
+
 func TestOmegaRuleList(t *testing.T) {
 	// A rule list without results: "!" lines are exceptions, checked first.
 	text := "[SwitchyOmega Conditions]\n*.example.com\n!*.cdn.example.com\nexample.org\n"
