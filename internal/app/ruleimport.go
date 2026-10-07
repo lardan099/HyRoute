@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/lardan099/hyroute/internal/ruleconv"
 	"github.com/lardan099/hyroute/internal/rules"
@@ -29,6 +30,9 @@ type RulesImportTarget struct {
 	Rules int `json:"rules"`
 	// To: where it goes — vpn, direct, block or id:<server or group>.
 	To string `json:"to"`
+	// Guess: To is a server or group picked by its name ("kazah" →
+	// «🇰🇿 Казахстан»), not chosen by the user.
+	Guess bool `json:"guess,omitempty"`
 }
 
 // RulesImport is a converted source.
@@ -99,6 +103,10 @@ func (c *Controller) ImportRules(text, format string, to map[string]string) (Rul
 		it := RulesImportTarget{Name: t.Name, Kind: string(t.Kind), Detail: t.Detail, To: suggestTo(t.Kind)}
 		if want := strings.TrimSpace(to[t.Name]); want != "" {
 			it.To = want
+		} else if t.Kind == ruleconv.ToProxy {
+			if id := guessServer(t.Name, ts); id != "" {
+				it.To, it.Guess = "id:"+id, true
+			}
 		}
 		act, profile, err := parseTarget(it.To, ts)
 		if err != nil {
@@ -212,4 +220,89 @@ func splitDefaultLine(text string) (rest, def string) {
 		keep = append(keep, l)
 	}
 	return strings.Join(keep, "\n"), def
+}
+
+// guessServer picks the server or group a source place most likely means
+// by its name: "nl" → «🇳🇱 NL Amsterdam», "kazah" → «Казахстан», "hyst"
+// → «Hysteria US». Only a single best match counts; "" when none or a tie.
+func guessServer(name string, ts []target) string {
+	want := nameWords(name)
+	if len(want) == 0 {
+		return ""
+	}
+	best, bestID, tie := 0, "", false
+	for _, t := range ts {
+		score := 0
+		for _, w := range want {
+			for _, h := range nameWords(t.Name) {
+				score = max(score, wordMatch(w, h))
+			}
+		}
+		switch {
+		case score > best:
+			best, bestID, tie = score, t.ID, false
+		case score == best && score > 0:
+			tie = true
+		}
+	}
+	if tie {
+		return ""
+	}
+	return bestID
+}
+
+// wordMatch scores two normalized words: 3 equal, 2 one starts the other,
+// 1 a long common start ("kazah" and "kazakhstan"); 0 no match. Short
+// words only count when equal ("nl", "us").
+func wordMatch(a, b string) int {
+	switch {
+	case a == b:
+		return 3
+	case len(a) < 3 || len(b) < 3:
+		return 0
+	case strings.HasPrefix(b, a) || strings.HasPrefix(a, b):
+		return 2
+	}
+	n := 0
+	for n < len(a) && n < len(b) && a[n] == b[n] {
+		n++
+	}
+	if n >= 4 && n*5 >= min(len(a), len(b))*4 {
+		return 1
+	}
+	return 0
+}
+
+// nameWords splits a name into lower-case Latin words: Cyrillic is
+// transliterated ("Казахстан" → kazahstan) and a flag emoji becomes its
+// country code (🇳🇱 → nl).
+func nameWords(s string) []string {
+	var b strings.Builder
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
+		if isFlagLetter(r) && i+1 < len(rs) && isFlagLetter(rs[i+1]) {
+			b.WriteString(" " + string(rune('a'+r-0x1F1E6)) + string(rune('a'+rs[i+1]-0x1F1E6)) + " ")
+			i++
+			continue
+		}
+		r = unicode.ToLower(r)
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case translit[r] != "" || r == 'ь' || r == 'ъ':
+			b.WriteString(translit[r])
+		default:
+			b.WriteByte(' ')
+		}
+	}
+	return strings.Fields(b.String())
+}
+
+func isFlagLetter(r rune) bool { return r >= 0x1F1E6 && r <= 0x1F1FF }
+
+var translit = map[rune]string{
+	'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'е': "e", 'ё': "e", 'ж': "zh", 'з': "z", 'и': "i", 'й': "y",
+	'к': "k", 'л': "l", 'м': "m", 'н': "n", 'о': "o", 'п': "p", 'р': "r", 'с': "s", 'т': "t", 'у': "u", 'ф': "f",
+	'х': "h", 'ц': "ts", 'ч': "ch", 'ш': "sh", 'щ': "sch", 'ы': "y", 'э': "e", 'ю': "yu", 'я': "ya",
 }

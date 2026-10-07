@@ -122,3 +122,58 @@ func TestImportRulesHysteria(t *testing.T) {
 		t.Fatal("empty text imported")
 	}
 }
+
+func TestImportRulesGuessServer(t *testing.T) {
+	c, _ := newCtl(t)
+	add, err := c.ImportURIs(strings.Join([]string{
+		"hysteria2://p1@nl.example:443#%F0%9F%87%B3%F0%9F%87%B1%20Amsterdam",
+		"hysteria2://p2@kz.example:443#%D0%9A%D0%B0%D0%B7%D0%B0%D1%85%D1%81%D1%82%D0%B0%D0%BD",
+		"hysteria2://p3@us.example:443#Hysteria%20US",
+		"hysteria2://p4@de1.example:443#DE%201",
+		"hysteria2://p5@de2.example:443#DE%202",
+	}, "\n"))
+	if err != nil || len(add.Added) != 5 {
+		t.Fatalf("%+v %v", add, err)
+	}
+	id := map[string]string{}
+	for _, a := range add.Added {
+		id[a.Name] = a.ID
+	}
+	text := "*.a.example +hyst\n*.b.example +kazah\n*.c.example +nl\n*.d.example +de\n*.e.example +other\n* +direct\n"
+	res, err := c.ImportRules(text, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"hyst": "id:" + id["Hysteria US"], "kazah": "id:" + id["Казахстан"], "nl": "id:" + id["🇳🇱 Amsterdam"],
+		"de": "vpn", "other": "vpn", "direct": "direct", // two DE servers: no guess
+	}
+	for _, tg := range res.Targets {
+		if tg.To != want[tg.Name] || tg.Guess != strings.HasPrefix(want[tg.Name], "id:") {
+			t.Errorf("%s: to %q guess %v, want %q", tg.Name, tg.To, tg.Guess, want[tg.Name])
+		}
+	}
+	if !strings.Contains(res.Text, "Omega kazah: b.example -> Казахстан\n") {
+		t.Fatalf("%s", res.Text)
+	}
+	// The user's choice wins over the guess.
+	res, _ = c.ImportRules(text, "", map[string]string{"kazah": "id:" + id["🇳🇱 Amsterdam"]})
+	for _, tg := range res.Targets {
+		if tg.Name == "kazah" && (tg.To != "id:"+id["🇳🇱 Amsterdam"] || tg.Guess) {
+			t.Fatalf("%+v", tg)
+		}
+	}
+}
+
+func TestNameWords(t *testing.T) {
+	for in, want := range map[string]string{
+		"🇳🇱 NL-Amsterdam #2": "nl nl amsterdam 2", "Казахстан": "kazahstan", "Подъезд": "podezd", "+IsHosting": "ishosting",
+	} {
+		if got := strings.Join(nameWords(in), " "); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
+	if wordMatch("kazah", "kazakhstan") != 1 || wordMatch("nl", "nld") != 0 || wordMatch("hyst", "hysteria") != 2 || wordMatch("us", "us") != 3 {
+		t.Error("wordMatch")
+	}
+}

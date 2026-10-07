@@ -643,6 +643,7 @@ export interface RulesImportTarget {
   detail?: string;
   rules: number;
   to: string; // vpn, direct, block or id:<server or group>
+  guess?: boolean; // a server picked by its name, not by the user
 }
 
 export interface RulesImport {

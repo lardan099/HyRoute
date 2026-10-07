@@ -28,7 +28,18 @@
   let text = $state('');
   let fileName = $state('');
   let format = $state('');
-  let to = $state<Record<string, string>>({});
+  // to: where each place of the source goes. Choices are remembered (this
+  // computer only): "kazah" chosen for NL once goes there next time too.
+  const REMEMBER = 'hyroute.importTo';
+  function remembered(): Record<string, string> {
+    try {
+      const v = JSON.parse(localStorage.getItem(REMEMBER) ?? '{}');
+      return v && typeof v === 'object' ? v : {};
+    } catch {
+      return {};
+    }
+  }
+  let to = $state<Record<string, string>>(remembered());
   let res = $state<RulesImport | null>(null);
   let error = $state('');
   let busy = $state(false);
@@ -88,7 +99,7 @@
       text = await f.text();
       fileName = f.name;
       format = '';
-      to = {};
+      to = remembered();
     } catch (err) {
       error = errText(err);
     }
@@ -96,6 +107,11 @@
 
   function setTo(name: string, v: string) {
     to = { ...to, [name]: v };
+    try {
+      // The last 200 choices.
+      const all = { ...remembered(), [name]: v };
+      localStorage.setItem(REMEMBER, JSON.stringify(Object.fromEntries(Object.entries(all).slice(-200))));
+    } catch {}
   }
 
   const toOptions: { value: string; label: string }[] = [
@@ -237,7 +253,7 @@
                     <span class="faint small"
                       >{kindText(t.kind)}{t.detail && t.detail !== t.name ? ` · ${masked ? hide(t.detail) : t.detail}` : ''} · {t.rules
                         ? `${t.rules} прав.`
-                        : 'всё остальное'}</span
+                        : 'всё остальное'}{t.guess ? ' · подобран по названию' : ''}</span
                     >
                   </div>
                   <select value={selValue(t.to)} onchange={(e) => setTo(t.name, fromSel((e.currentTarget as HTMLSelectElement).value))} aria-label="Куда: {t.name}">
