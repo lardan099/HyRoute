@@ -355,7 +355,7 @@
     <ConnMenu
       flow={menu.flow}
       anchor={menu.anchor}
-      returnFocus={menu.el}
+      returnFocus={menu?.el ?? null}
       onclose={() => (menu = null)}
       onedit={(rule, facts, ruleset) => (draft = { rule, facts, ruleset, udp: facts.proto.toLowerCase() === 'udp' })}
       onexplain={(q) => {

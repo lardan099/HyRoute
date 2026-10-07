@@ -252,8 +252,12 @@
   function close(refocus = true) {
     if (closed) return;
     closed = true;
+    // Read before onclose: the page drops the menu then, and returnFocus
+    // read after that threw (a quick rule that was saved showed «Не
+    // удалось создать правило»).
+    const back = returnFocus;
     onclose();
-    if (refocus) returnFocus?.focus();
+    if (refocus) back?.focus();
   }
 
   function items(el: HTMLElement | undefined): HTMLElement[] {
