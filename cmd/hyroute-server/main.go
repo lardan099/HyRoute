@@ -31,6 +31,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/datadir"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
 	"github.com/lardan099/hyroute/internal/srvmgr/diag"
+	"github.com/lardan099/hyroute/internal/srvmgr/events"
 	"github.com/lardan099/hyroute/internal/srvmgr/geo"
 	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
 	"github.com/lardan099/hyroute/internal/srvmgr/importer"
@@ -143,8 +144,15 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	}()
 	defer func() { stopSessions(); <-sessDone }()
 	inventory := servers.New(db, keys)
+	// Events (P4-05): what the monitor, the jobs, SSH logins and geo
+	// updates see becomes events with texts cleaned of secrets and
+	// addresses.
+	bus := &events.Bus{Store: db, Redact: red, Log: log}
+	watch := &events.Watcher{Bus: bus, Threshold: cfg.AlertThreshold}
 	conn := connect.New(inventory, db, red)
+	conn.Events = watch
 	engine := jobs.New(db, keys, red, conn, log)
+	engine.OnEnd = watch.JobEnded
 	engine.Register(preflight.Kind())
 	// One relay for the deploy and the maintenance: it keeps the binary it
 	// downloaded last for both.
@@ -153,7 +161,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	engine.Register(deploy.Kind(deployDeps))
 	engine.Register(deploy.Maintenance(deployDeps))
 	engine.Register(importer.Kind(importer.Deps{Store: db, Keys: keys}))
-	geoFiles := &geo.Store{Dir: filepath.Join(cfg.DataDir, "geo")}
+	geoFiles := &geo.Store{Dir: filepath.Join(cfg.DataDir, "geo"), OnUpdate: watch.Geo}
 	geoJobs := geo.New(geo.Deps{DB: db, Keys: keys, Files: geoFiles, Jobs: engine, Nodes: conn.Connect})
 	engine.Register(geoJobs.Kind())
 	engine.Register(service.Kind(service.Deps{Store: db, Keys: keys}))
@@ -175,8 +183,15 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		stopJobs()
 		<-jobsDone
 	}()
+	busDone := make(chan struct{})
+	go func() {
+		bus.Run(jobsCtx)
+		close(busDone)
+	}()
+	defer func() { stopJobs(); <-busDone }()
 	if cfg.MonitorInterval > 0 {
-		mon := &monitor.Collector{Store: db, Conn: conn, Keys: keys, Log: log, Interval: cfg.MonitorInterval, Links: &cascade.Checker{Store: db, Keys: keys}}
+		mon := &monitor.Collector{Store: db, Conn: conn, Keys: keys, Log: log, Interval: cfg.MonitorInterval,
+			Links: &cascade.Checker{Store: db, Keys: keys, Events: watch}, Events: watch, Online: monitor.Online}
 		monDone := make(chan struct{})
 		go func() {
 			mon.Run(jobsCtx)

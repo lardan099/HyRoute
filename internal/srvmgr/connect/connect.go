@@ -48,6 +48,15 @@ type Connector struct {
 	FetchHostKey func(ctx context.Context, t sshexec.Target, timeout time.Duration) (ssh.PublicKey, error)
 	Timeout      time.Duration
 	Now          func() time.Time
+	// Events hears how each login went (nil: nobody).
+	Events Events
+}
+
+// Events hears the outcome of every login to a server: nil, another host
+// key (remote.HostKeyChangedError), a refused login (remote.ErrAuthFailed)
+// or any other error (events.Watcher).
+type Events interface {
+	SSH(ctx context.Context, serverID int64, err error)
 }
 
 // New returns a connector using SSH.
@@ -102,8 +111,12 @@ func (c *Connector) Connect(ctx context.Context, serverID int64) (remote.Executo
 	if c.Redact != nil {
 		c.Redact.Add(creds.Password, creds.KeyPassphrase)
 	}
-	return c.Dial(ctx, target(info.Server), sshexec.Auth{Password: creds.Password, Key: creds.Key, Passphrase: creds.KeyPassphrase},
+	ex, err := c.Dial(ctx, target(info.Server), sshexec.Auth{Password: creds.Password, Key: creds.Key, Passphrase: creds.KeyPassphrase},
 		sshexec.Options{HostKey: checkAgainst(info.HostKey), Timeout: c.Timeout})
+	if c.Events != nil && ctx.Err() == nil {
+		c.Events.SSH(context.WithoutCancel(ctx), serverID, err)
+	}
+	return ex, err
 }
 
 // Check connects and identifies the server (remote.RunProbe); it changes

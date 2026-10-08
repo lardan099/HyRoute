@@ -44,6 +44,9 @@ type Config struct {
 	MonitorInterval time.Duration
 	// GeoInterval is how often the geo databases are updated (0: never).
 	GeoInterval time.Duration
+	// AlertThreshold is how many monitoring checks in a row change the
+	// status of a server or a cascade link that events tell (P4-05).
+	AlertThreshold int
 	// BackupInterval is how often a copy of the database goes to
 	// BackupDir (0: never; the owner can still make one in the admin).
 	BackupInterval time.Duration
@@ -97,6 +100,11 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 	fs.DurationVar(&c.MonitorInterval, "monitor-interval", envDuration(getenv("HYROUTE_SERVER_MONITOR_INTERVAL"), time.Minute), "how often to sample the servers' CPU, memory, disk and network; 0 turns it off (env HYROUTE_SERVER_MONITOR_INTERVAL)")
 	fs.DurationVar(&c.GeoInterval, "geo-interval", envDuration(getenv("HYROUTE_SERVER_GEO_INTERVAL"), 7*24*time.Hour), "how often to look for newer geo databases and put them on the servers that use HyRoute's; 0 turns it off (env HYROUTE_SERVER_GEO_INTERVAL)")
 	fs.DurationVar(&c.BackupInterval, "backup-interval", envDuration(getenv("HYROUTE_SERVER_BACKUP_INTERVAL"), 0), "how often to copy the database to <data-dir>/backups; 0 (the default) turns the schedule off (env HYROUTE_SERVER_BACKUP_INTERVAL)")
+	threshold := 3
+	if n, err := strconv.Atoi(env("ALERT_THRESHOLD", "")); err == nil {
+		threshold = n
+	}
+	fs.IntVar(&c.AlertThreshold, "alert-threshold", threshold, "how many monitoring checks in a row change the status of a server or a cascade link that events and notifications tell (env HYROUTE_SERVER_ALERT_THRESHOLD)")
 	fs.StringVar(&c.LogLevel, "log-level", env("LOG_LEVEL", "info"), "debug, info, warn or error (env HYROUTE_SERVER_LOG_LEVEL)")
 	allowed := fs.String("allowed-host", env("ALLOWED_HOST", ""), "names the panel answers to besides localhost, comma separated, e.g. panel.example.com (env HYROUTE_SERVER_ALLOWED_HOST)")
 	if err := fs.Parse(args); err != nil {
@@ -211,6 +219,9 @@ func (c Config) validate() error {
 	}
 	if c.BackupKeep < 1 {
 		return fmt.Errorf("backup-keep %d: at least 1", c.BackupKeep)
+	}
+	if c.AlertThreshold < 1 || c.AlertThreshold > 100 {
+		return fmt.Errorf("alert-threshold %d: from 1 to 100", c.AlertThreshold)
 	}
 	if c.GeoInterval < 0 {
 		return fmt.Errorf("geo-interval %s: a positive duration, or 0 to turn the geo schedule off", c.GeoInterval)

@@ -50,6 +50,17 @@ type Connector interface {
 	Connect(ctx context.Context, serverID int64) (remote.Executor, error)
 }
 
+// Events hears what the rounds find (events.Watcher).
+type Events interface {
+	// Server: the status a round found on a server without a job:
+	// healthy, degraded or offline, with the reason.
+	Server(ctx context.Context, srv model.Server, status model.ServerState, reason string)
+	// Disk: how full the root file system of a server is.
+	Disk(ctx context.Context, srv model.Server, usedKiB, totalKiB uint64)
+	// Network: whether the controller itself has network.
+	Network(ctx context.Context, online bool)
+}
+
 // Collector samples every server with a trusted host key each Interval.
 type Collector struct {
 	Store Store
@@ -74,12 +85,20 @@ type Collector struct {
 	// 30 s).
 	Links       LinkChecker
 	LinkTimeout time.Duration
+	// Online checks the controller's own network when no server of a
+	// round answered (two servers or more); nil: never checked. Without
+	// network the round changes no state and stores no health check.
+	Online func(ctx context.Context) bool
+	// Events hears statuses, disks and the controller's network (nil:
+	// nobody).
+	Events Events
 
 	mu          sync.Mutex
 	prev        map[int64]last
 	traffic     map[int64]counters
 	refused     map[int64]refusal
 	lastCompact time.Time
+	offline     bool // the last round found the controller without network
 }
 
 type last struct {
@@ -157,6 +176,33 @@ func (c *Collector) loggedIn(id int64) {
 	c.mu.Lock()
 	delete(c.refused, id)
 	c.mu.Unlock()
+}
+
+// Paused are the servers the collector does not log in to now because
+// they refused the login, with the time of the next attempt (unless the
+// login data changes first).
+func (c *Collector) Paused() map[int64]time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now
+	if c.Now != nil {
+		now = c.Now
+	}
+	out := map[int64]time.Time{}
+	for id, r := range c.refused {
+		if now().Before(r.until) {
+			out[id] = r.until
+		}
+	}
+	return out
+}
+
+// Offline reports whether the last round found the controller without
+// network.
+func (c *Collector) Offline() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.offline
 }
 
 func (c *Collector) defaults() {
@@ -247,7 +293,11 @@ func (c *Collector) Round(ctx context.Context) {
 		c.Log.Warn("monitor: jobs", "err", err)
 	}
 	sem := make(chan struct{}, c.Parallel)
-	var wg sync.WaitGroup
+	var (
+		wg    sync.WaitGroup
+		vmu   sync.Mutex
+		found []verdict
+	)
 	for _, srv := range list {
 		if _, err := c.Store.HostKey(ctx, srv.ID); err != nil {
 			continue // not trusted yet: no connection
@@ -260,10 +310,20 @@ func (c *Collector) Round(ctx context.Context) {
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
-			c.collect(ctx, srv, busy[srv.ID], login)
+			v := c.collect(ctx, srv, busy[srv.ID], login)
+			vmu.Lock()
+			found = append(found, v)
+			vmu.Unlock()
 		}()
 	}
 	wg.Wait()
+	// States are set once every server is done: when none answered, it
+	// may be the controller that lost its network.
+	if ctx.Err() == nil && !c.noNetwork(ctx, found) {
+		for _, v := range found {
+			c.apply(ctx, v)
+		}
+	}
 	now := c.Now()
 	c.mu.Lock()
 	due := now.Sub(c.lastCompact) >= 10*time.Minute
@@ -293,8 +353,39 @@ func (c *Collector) Round(ctx context.Context) {
 // others belong to jobs and the admin.
 var up = []model.ServerState{model.StateHealthy, model.StateDegraded}
 
-// collect samples one server; login is its loginKey.
-func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool, login string) {
+// netSign is what a server's answer says about the controller's own
+// network.
+type netSign int
+
+const (
+	netUnknown netSign = iota // no verdict (a local error, the round cut short)
+	netDown                   // neither SSH nor UDP answered
+	netUp                     // the server answered
+)
+
+// verdict is what a round found on one server. Round applies it once
+// every server is done: when none of them answered, the controller
+// itself may have lost its network, and then nothing is applied.
+type verdict struct {
+	srv model.Server
+	net netSign
+	// health is the check to store; the server's state follows it.
+	health *model.Health
+	// Without a health check: the state to swap to from the states in
+	// from ("": none), and why (for the log).
+	state model.ServerState
+	from  []model.ServerState
+	err   error
+	// status and reason for Events ("": nothing to tell, the server had
+	// a job or the login failed).
+	status model.ServerState
+	reason string
+}
+
+// collect samples one server; login is its loginKey. The state it found
+// is in the verdict, not set yet.
+func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool, login string) (v verdict) {
+	v.srv = srv
 	// An entry of a cascade checks its links after its own health.
 	timeout, links := c.Timeout, !busy && c.Links != nil && c.Links.HasLinks(ctx, srv.ID)
 	if links {
@@ -313,29 +404,44 @@ func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool, lo
 	sshTook := time.Since(start)
 	if err != nil {
 		if ctx.Err() != nil {
-			return
+			return verdict{srv: srv}
 		}
 		refused := errors.Is(err, remote.ErrAuthFailed)
 		if refused {
 			pause := c.refuse(srv.ID, login, c.Now())
 			c.Log.Warn("monitor: the server refused the SSH login; next attempt when the login data changes or after a pause", "server", srv.Name, "pause", pause, "err", err)
 		}
-		var unreachable *remote.UnreachableError
+		var (
+			unreachable *remote.UnreachableError
+			changed     *remote.HostKeyChangedError
+		)
 		down := errors.As(err, &unreachable)
+		if refused || errors.As(err, &changed) {
+			v.net = netUp // it answered SSH
+		}
 		if hc != nil {
-			c.finish(ctx, srv, hc.sshFailed(err, down))
-			return
+			h := hc.sshFailed(err, down)
+			v.health, v.status, v.reason = &h, h.Status, h.Reason
+			switch {
+			case h.UDP == model.UDPOK:
+				v.net = netUp
+			case down:
+				v.net = netDown
+			}
+			return v
 		}
 		switch {
 		case down:
-			if ok, _ := c.Store.SwapServerState(ctx, srv.ID, up, model.StateOffline, c.Now()); ok {
-				c.Log.Warn("monitor: server unreachable", "server", srv.Name, "err", err)
+			v.net, v.state, v.from, v.err = netDown, model.StateOffline, up, err
+			if !busy {
+				v.status, v.reason = model.StateOffline, "SSH не отвечает."
 			}
 		case !refused:
 			c.Log.Warn("monitor: connect", "server", srv.Name, "err", err)
 		}
-		return
+		return v
 	}
+	v.net = netUp
 	c.loggedIn(srv.ID)
 	defer ex.Close()
 	// The timeout closes the connection too: a server that went silent
@@ -357,7 +463,7 @@ func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool, lo
 					h.Status, h.Reason = model.StateDegraded, capitalize(down)
 				}
 			}
-			c.finish(ctx, srv, h)
+			v.health, v.status, v.reason = &h, h.Status, h.Reason
 		}()
 	}
 	s, err := remote.ReadSample(cctx, ro)
@@ -365,7 +471,10 @@ func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool, lo
 		if ctx.Err() == nil {
 			c.Log.Warn("monitor: sample", "server", srv.Name, "err", err)
 		}
-		return
+		return v
+	}
+	if c.Events != nil {
+		c.Events.Disk(ctx, srv, s.DiskUsedKiB, s.DiskTotalKiB)
 	}
 	now := c.Now()
 	c.mu.Lock()
@@ -378,7 +487,7 @@ func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool, lo
 	}
 	if err := c.Store.AddMetric(ctx, Point(srv.ID, now, s, prev, p.at)); err != nil && ctx.Err() == nil {
 		c.Log.Warn("monitor: store", "server", srv.Name, "err", err)
-		return
+		return v
 	}
 	// A job may be changing the config (and the secret): its servers are
 	// read once it ends; the counters carry the traffic in between.
@@ -386,9 +495,67 @@ func (c *Collector) collect(ctx context.Context, srv model.Server, busy bool, lo
 		c.readTraffic(cctx, srv, ro)
 	}
 	if hc == nil && !busy {
-		if ok, _ := c.Store.SwapServerState(ctx, srv.ID, []model.ServerState{model.StateOffline}, model.StateHealthy, now); ok {
-			c.Log.Info("monitor: server reachable again", "server", srv.Name)
+		v.state, v.from, v.status = model.StateHealthy, []model.ServerState{model.StateOffline}, model.StateHealthy
+	}
+	return v
+}
+
+// noNetwork decides, after a round, whether the controller has network:
+// when no server answered (two or more were tried) it asks Online. It
+// tells Events what it learnt and reports a controller without network.
+func (c *Collector) noNetwork(ctx context.Context, found []verdict) bool {
+	tried, down := 0, 0
+	for _, v := range found {
+		switch v.net {
+		case netDown:
+			tried++
+			down++
+		case netUp:
+			tried++
 		}
+	}
+	online, known := true, tried > down
+	if !known && down >= 2 && c.Online != nil {
+		online, known = c.Online(ctx), true
+		if ctx.Err() != nil {
+			return true // stopping: nothing is applied
+		}
+	}
+	if !known {
+		return false
+	}
+	c.mu.Lock()
+	was := c.offline
+	c.offline = !online
+	c.mu.Unlock()
+	switch {
+	case !online && !was:
+		c.Log.Warn("monitor: no server answered and neither did the internet: the controller has no network; server states stay as they are", "servers", down)
+	case online && was:
+		c.Log.Info("monitor: the controller has network again")
+	}
+	if c.Events != nil {
+		c.Events.Network(ctx, online)
+	}
+	return !online
+}
+
+// apply stores what a round found on a server and sets its state.
+func (c *Collector) apply(ctx context.Context, v verdict) {
+	switch {
+	case v.health != nil:
+		c.finish(ctx, v.srv, *v.health)
+	case v.state != "":
+		if ok, _ := c.Store.SwapServerState(ctx, v.srv.ID, v.from, v.state, c.Now()); ok {
+			if v.state == model.StateOffline {
+				c.Log.Warn("monitor: server unreachable", "server", v.srv.Name, "err", v.err)
+			} else {
+				c.Log.Info("monitor: server reachable again", "server", v.srv.Name)
+			}
+		}
+	}
+	if c.Events != nil && v.status != "" && ctx.Err() == nil {
+		c.Events.Server(ctx, v.srv, v.status, v.reason)
 	}
 }
 

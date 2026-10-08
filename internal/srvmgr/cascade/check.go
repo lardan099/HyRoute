@@ -171,11 +171,18 @@ type CheckStore interface {
 	PruneLinkChecks(ctx context.Context, before time.Time) error
 }
 
+// LinkEvents hears every stored link check (events.Watcher).
+type LinkEvents interface {
+	Link(ctx context.Context, chain model.Chain, l model.ChainLink, entry, exit model.Server, c model.LinkCheck)
+}
+
 // Checker checks deployed links for the monitor, from their entries.
 type Checker struct {
 	Store CheckStore
 	Keys  *secrets.Keyring
 	Now   func() time.Time
+	// Events hears the checks (nil: nobody).
+	Events LinkEvents
 }
 
 func (k *Checker) now() time.Time {
@@ -250,6 +257,9 @@ func (k *Checker) CheckLinks(ctx context.Context, entry model.Server, ex remote.
 			}
 			if err := k.Store.AddLinkCheck(ctx, res); err != nil {
 				return down, err
+			}
+			if k.Events != nil {
+				k.Events.Link(ctx, c, l, entry, pr.Exit, res)
 			}
 			if res.Status == model.StateOffline && down == "" {
 				down = "каскад до «" + pr.Exit.Name + "» не работает: " + res.Reason

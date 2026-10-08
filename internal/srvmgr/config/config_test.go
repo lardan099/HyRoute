@@ -100,6 +100,22 @@ func TestMonitorInterval(t *testing.T) {
 	}
 }
 
+func TestAlertThreshold(t *testing.T) {
+	c, err := Load(nil, env(nil), io.Discard)
+	if err != nil || c.AlertThreshold != 3 {
+		t.Fatalf("default: %v %v", c.AlertThreshold, err)
+	}
+	c, err = Load(nil, env(map[string]string{"HYROUTE_SERVER_ALERT_THRESHOLD": "5"}), io.Discard)
+	if err != nil || c.AlertThreshold != 5 {
+		t.Fatalf("env: %v %v", c.AlertThreshold, err)
+	}
+	for _, v := range []string{"0", "101"} {
+		if _, err := Load([]string{"-alert-threshold", v}, env(nil), io.Discard); err == nil {
+			t.Errorf("-alert-threshold %s: no error", v)
+		}
+	}
+}
+
 func TestGeoInterval(t *testing.T) {
 	c, err := Load(nil, env(nil), io.Discard)
 	if err != nil || c.GeoInterval != 7*24*time.Hour {

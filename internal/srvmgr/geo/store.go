@@ -96,6 +96,9 @@ type Store struct {
 	Base string // DefaultBase if ""
 	HTTP *http.Client
 	Now  func() time.Time
+	// OnUpdate hears every update that ran: the release the controller
+	// has after it and the error (events.Watcher.Geo).
+	OnUpdate func(ctx context.Context, release string, err error)
 
 	mu      sync.Mutex
 	parsed  string // the release ip and site are of
@@ -192,6 +195,14 @@ func (s *Store) Update(ctx context.Context) (Info, bool, error) {
 		return Info{}, false, ErrBusy
 	}
 	defer s.updates.Unlock()
+	info, changed, err := s.update(ctx)
+	if s.OnUpdate != nil && ctx.Err() == nil {
+		s.OnUpdate(context.WithoutCancel(ctx), info.Release, err)
+	}
+	return info, changed, err
+}
+
+func (s *Store) update(ctx context.Context) (Info, bool, error) {
 	cur, err := s.Info()
 	if err != nil {
 		return cur, false, err

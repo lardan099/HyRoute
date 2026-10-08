@@ -54,6 +54,9 @@ type Engine struct {
 	// Audit records every queued job and retry with its ID; New takes it
 	// from the store when that keeps the audit log too. nil: not recorded.
 	Audit store.Audit
+	// OnEnd hears every job that completed or failed, after its kind's
+	// Finished hook has set the servers' state (events.Watcher.JobEnded).
+	OnEnd func(ctx context.Context, j model.Job)
 
 	kinds  map[string]*Kind
 	owner  string
@@ -357,13 +360,15 @@ func (e *Engine) fail(ctx context.Context, j *model.Job, env *Env, err error) {
 	e.finished(ctx, j, env)
 }
 
-// finished runs the kind's Finished hook for a job that just ended.
+// finished runs the kind's Finished hook for a job that just ended, then
+// OnEnd.
 func (e *Engine) finished(ctx context.Context, j *model.Job, env *Env) {
-	k := e.kinds[j.Kind]
-	if k == nil || k.Finished == nil || env == nil {
-		return
+	if k := e.kinds[j.Kind]; k != nil && k.Finished != nil && env != nil {
+		k.Finished(context.WithoutCancel(ctx), env, *j)
 	}
-	k.Finished(context.WithoutCancel(ctx), env, *j)
+	if e.OnEnd != nil {
+		e.OnEnd(context.WithoutCancel(ctx), *j)
+	}
 }
 
 func (e *Engine) runJob(ctx context.Context, id int64) {

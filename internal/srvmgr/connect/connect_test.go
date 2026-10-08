@@ -131,6 +131,8 @@ func TestFirstConnectNeedsConfirmation(t *testing.T) {
 func TestChangedHostKeyBlocks(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
+	logins := &logins{}
+	e.conn.Events = logins
 	old := ssh.FingerprintSHA256(e.srv.HostKey())
 	if _, err := e.conn.Trust(ctx, 1, e.id, old, false); err != nil {
 		t.Fatal(err)
@@ -160,6 +162,10 @@ func TestChangedHostKeyBlocks(t *testing.T) {
 	if _, err := e.conn.Check(ctx, e.id); err != nil {
 		t.Fatalf("after re-trust: %v", err)
 	}
+	// Events heard every login: the changed key twice, then a login.
+	if got := logins.list; len(got) != 3 || !errors.As(got[0], &changed) || !errors.As(got[1], &changed) || got[2] != nil {
+		t.Fatalf("logins heard %v", got)
+	}
 	es, _ := e.db.ListAudit(ctx, 5)
 	found := false
 	for _, a := range es {
@@ -171,6 +177,11 @@ func TestChangedHostKeyBlocks(t *testing.T) {
 		t.Fatalf("no audit of the re-trust: %+v", es)
 	}
 }
+
+// logins records what Events hears.
+type logins struct{ list []error }
+
+func (l *logins) SSH(_ context.Context, _ int64, err error) { l.list = append(l.list, err) }
 
 func TestWrongCredentialsAndNoSudo(t *testing.T) {
 	if runtime.GOOS == "windows" {
