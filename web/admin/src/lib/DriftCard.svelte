@@ -14,7 +14,14 @@
   // onchange gets the result whenever its differences change (an accept,
   // a check, a revert's check): the server's state and revision may have
   // changed with them.
-  let { serverId, writable, onchange }: { serverId: number; writable: boolean; onchange?: (d: Drift) => void } = $props();
+  // checkable: the caller may check now; decides: whether it may accept
+  // or revert a difference of this kind (the API checks it again).
+  let {
+    serverId,
+    checkable,
+    decides,
+    onchange,
+  }: { serverId: number; checkable: boolean; decides: (kind: string) => boolean; onchange?: (d: Drift) => void } = $props();
 
   let data = $state<Drift | null>(null);
   let error = $state<ApiError | null>(null);
@@ -96,7 +103,7 @@
   <div class="row">
     <h2 class="grow">{t('drift.title')}</h2>
     {#if data?.at}<span class="small muted">{t('drift.checked', { when: when(data.at) })}</span>{/if}
-    {#if writable}<button class="ghost" disabled={busy} onclick={check}>{busy ? t('drift.checking') : t('drift.check')}</button>{/if}
+    {#if checkable}<button class="ghost" disabled={busy} onclick={check}>{busy ? t('drift.checking') : t('drift.check')}</button>{/if}
   </div>
   {#if error}<div class="note error small">{error.message}</div>{/if}
   {#if note}<div class="note info small">{note}</div>{/if}
@@ -133,7 +140,7 @@
               <button class="link" onclick={() => go('deployments', it.job!.id)}>{t('drift.openJob')}</button>
             </p>
           {/if}
-          {#if writable}
+          {#if decides(it.kind)}
             <div class="row actions">
               <button disabled={busy || reverting(it)} onclick={() => (confirm = { item: it, action: 'accept' })}>
                 {it.kind === 'config' ? t('drift.acceptConfig') : t('drift.accept')}

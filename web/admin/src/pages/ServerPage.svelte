@@ -5,7 +5,7 @@
   import { api, asApiError, type ApiError, type Drift, type Job, type Server, type ServerConfig, type ServiceAction, type ServiceStatus } from '../api';
   import { t, type Key } from '../i18n';
   import { go } from '../router.svelte';
-  import { canOn } from '../session.svelte';
+  import { can, canOn } from '../session.svelte';
   import { flag, stateTone, uptime } from '../lib/format';
   import Dialog from '../lib/Dialog.svelte';
   import DeployDialog from '../lib/DeployDialog.svelte';
@@ -52,6 +52,11 @@
     reveal: canOn(server, 'clients.reveal'),
     clients: canOn(server, 'clients.manage'),
   });
+  // mayDecide: accept or revert a difference found by the reconciliation:
+  // the unit and the binary are the deploy's, a cascade link the
+  // cascades', the rest the config's.
+  const mayDecide = (kind: string) =>
+    kind === 'unit' || kind === 'binary' ? may.deploy : kind === 'link' ? may.config && can('chains') : may.config;
   let poll: ReturnType<typeof setTimeout> | undefined;
   // gone: the page is left; a job read in flight then polls no more.
   let gone = false;
@@ -297,7 +302,7 @@
 
   {#key id}<HealthCard serverId={id} />{/key}
   {#if status || (statusError && statusError.code !== 'no_installation')}
-    {#key id}<DriftCard serverId={id} {writable} onchange={driftChanged} />{/key}
+    {#key id}<DriftCard serverId={id} checkable={may.service} decides={mayDecide} onchange={driftChanged} />{/key}
   {/if}
   {#key id}<MetricsCard serverId={id} />{/key}
   {#if status || (statusError && statusError.code !== 'no_installation')}

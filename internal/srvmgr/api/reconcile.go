@@ -277,11 +277,11 @@ func (s *server) acceptDrift(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if _, err := s.installed(r, id); err != nil {
+	if err := s.mayDecide(r, id, in.Key); err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	if err := s.mayDecide(r, id, in.Key); err != nil {
+	if _, err := s.installed(r, id); err != nil {
 		s.fail(w, r, err)
 		return
 	}
@@ -305,11 +305,11 @@ func (s *server) revertDrift(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if _, err := s.installed(r, id); err != nil {
+	if err := s.mayDecide(r, id, in.Key); err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	if err := s.mayDecide(r, id, in.Key); err != nil {
+	if _, err := s.installed(r, id); err != nil {
 		s.fail(w, r, err)
 		return
 	}
