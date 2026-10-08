@@ -27,6 +27,9 @@ const (
 	MaxParallel     = 10
 )
 
+// MaxServers bounds the servers of one batch.
+const MaxServers = 1000
+
 var (
 	// ErrNotRunning: only a running batch is stopped.
 	ErrNotRunning = errors.New("batch: not running")

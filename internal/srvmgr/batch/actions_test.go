@@ -137,7 +137,7 @@ func TestCheck(t *testing.T) {
 	for action, want := range map[model.BatchAction]string{
 		model.BatchMaintain: `{"version":"` + hyrelease.DefaultVersion + `","source":"auto"}`,
 		model.BatchGeo:      `{"source":"auto"}`,
-		model.BatchRouting:  `{"template":"builtin:ads","place":"top"}`,
+		model.BatchRouting:  `{"template":"builtin:ads","place":"top","sha256":"` + adsSum(t) + `"}`,
 	} {
 		in := map[model.BatchAction]string{model.BatchMaintain: `{"via":4}`, model.BatchGeo: `{"via":4}`, model.BatchRouting: `{"template":"builtin:ads","servers":[1]}`}[action]
 		got, err := e.a.Check(e.ctx, action, json.RawMessage(in))
@@ -206,4 +206,73 @@ func TestQueue(t *testing.T) {
 func isUnchanged(err error) bool {
 	var un *Unchanged
 	return errors.As(err, &un) && un.Msg != ""
+}
+
+// A batch lays the preset (or preset template) it was made with: one
+// edited or put under the same ID since is refused.
+func TestPresetReplaced(t *testing.T) {
+	e := newActions(t)
+	id := e.preset("rules", "acl:\n  inline:\n    - reject(geoip:private)\n    - direct(all)\n")
+	a, b := e.server("a", acmeCfg), e.server("b", acmeCfg)
+	presetRaw, err := e.a.Check(e.ctx, model.BatchPreset, json.RawMessage(`{"preset":`+strconv.FormatInt(id, 10)+`,"sections":["acl"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tplRaw, err := e.a.Check(e.ctx, model.BatchRouting, json.RawMessage(`{"template":"preset:`+strconv.FormatInt(id, 10)+`","place":"replace"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := e.db.PresetByID(e.ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Config = "acl:\n  inline:\n    - direct(all)\n    - reject(all)\n"
+	if err := e.db.UpdatePreset(e.ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.a.Queue(e.ctx, model.Batch{Action: model.BatchPreset, Params: presetRaw}, a, 0); err == nil || !strings.Contains(Message(err), "заменён") {
+		t.Fatalf("preset: %v", err)
+	}
+	if _, _, err := e.a.Queue(e.ctx, model.Batch{Action: model.BatchRouting, Params: tplRaw}, b, 0); err == nil || !strings.Contains(Message(err), "заменён") {
+		t.Fatalf("template: %v", err)
+	}
+}
+
+// On the exit of a cascade a batch rotation leaves the shared password,
+// Salamander and the certificate the link client uses.
+func TestRotateKeepsCascadeExit(t *testing.T) {
+	e := newActions(t)
+	const exitCfg = `listen: :443
+tls:
+  cert: /etc/hysteria/cert.pem
+  key: /etc/hysteria/key.pem
+auth:
+  type: password
+  password: fake-batch-pass-0002
+obfs:
+  type: salamander
+  salamander:
+    password: fake-batch-obfs-0002
+`
+	entry, exit := e.server("entry", acmeCfg), e.server("exit", exitCfg)
+	ch := model.Chain{Name: "c", Nodes: []int64{entry, exit}, Links: []model.ChainLink{{}}, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := e.db.CreateChain(e.ctx, &ch, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := e.queue(model.BatchRotate, `{"auth":true,"obfs":true,"cert":true}`, exit)
+	if !isUnchanged(err) || strings.Count(err.Error(), "связь каскада") != 2 {
+		t.Fatalf("exit of a cascade: %v", err)
+	}
+}
+
+// adsSum is the content sum of the built-in ads template.
+func adsSum(t *testing.T) string {
+	t.Helper()
+	for _, tp := range routing.Builtins() {
+		if tp.ID == "builtin:ads" {
+			return templateSum(tp)
+		}
+	}
+	t.Fatal("no builtin:ads")
+	return ""
 }

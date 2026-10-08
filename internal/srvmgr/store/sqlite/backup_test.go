@@ -135,3 +135,27 @@ func TestInUse(t *testing.T) {
 		t.Fatalf("with a user: %v %v", used, err)
 	}
 }
+
+// A deleted preset's ID is not given to the next one.
+func TestPresetIDsNotReused(t *testing.T) {
+	ctx := context.Background()
+	d, _ := openTemp(t)
+	var ids []int64
+	for _, n := range []string{"a", "b"} {
+		p := model.Preset{Name: n, Config: "acl:\n", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+		if err := d.CreatePreset(ctx, &p); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, p.ID)
+	}
+	if err := d.DeletePreset(ctx, ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	p := model.Preset{Name: "c", Config: "acl:\n", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := d.CreatePreset(ctx, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.ID == ids[1] {
+		t.Fatalf("preset %d given again", p.ID)
+	}
+}

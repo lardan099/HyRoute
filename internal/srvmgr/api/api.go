@@ -417,13 +417,20 @@ const maxConfigBody = 2*hyconfig.MaxServerConfig + 1<<20
 // forever.
 var bodyTimeout = time.Minute
 
+// routingBody: the routing editor and its imports take routing documents
+// (not /api/v1/batches/routing, whose body is a list of servers).
+func routingBody(p string) bool {
+	return strings.HasPrefix(p, "/api/v1/servers/") && strings.Contains(p, "/routing") ||
+		strings.HasPrefix(p, "/api/v1/routing/") || strings.HasPrefix(p, "/api/v1/chain-templates/")
+}
+
 func limitBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
 			limit := int64(maxBody)
 			if strings.HasSuffix(r.URL.Path, "/config/render") || strings.HasSuffix(r.URL.Path, "/config/apply") {
 				limit = maxConfigBody
-			} else if strings.Contains(r.URL.Path, "/routing") || strings.HasPrefix(r.URL.Path, "/api/v1/chain-templates/") {
+			} else if routingBody(r.URL.Path) {
 				limit = maxRoutingBody
 			} else if r.URL.Path == "/api/v1/presets/import" {
 				limit = maxPresetBody

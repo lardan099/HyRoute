@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
@@ -197,7 +198,16 @@ var (
 		if err := json.Unmarshal(b, &in); err != nil {
 			return err
 		}
-		t.servers = append(t.servers, in.Servers...)
+		if len(in.Servers) > batch.MaxServers {
+			return &Error{Status: http.StatusBadRequest, Code: "invalid", Message: fmt.Sprintf("В пакете — не больше %d серверов.", batch.MaxServers), Details: "servers"}
+		}
+		seen := make(map[int64]bool, len(in.Servers))
+		for _, id := range in.Servers {
+			if !seen[id] {
+				seen[id] = true
+				t.servers = append(t.servers, id)
+			}
+		}
 		return nil
 	})
 	// bodyServerID: the server a preset is made of ({"serverId": id}).
@@ -234,6 +244,12 @@ func bodyFinder(name string, find func(b []byte, t *targets) error) finder {
 			return err
 		}
 		if err := find(b, t); err != nil {
+			// A finder's own answer (a bound) goes as it is; a body that
+			// does not decode is a bad request.
+			var ae *Error
+			if errors.As(err, &ae) {
+				return ae
+			}
 			e := *errBadJSON
 			e.Details = err.Error()
 			return &e

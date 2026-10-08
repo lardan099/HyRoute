@@ -2,6 +2,8 @@ package batch
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,6 +44,9 @@ type (
 	PresetParams struct {
 		Preset   int64    `json:"preset"`
 		Sections []string `json:"sections"`
+		// SHA256 is the preset's config when the batch was made: a preset
+		// replaced since (deleted and another made, edited) is not laid.
+		SHA256 string `json:"sha256"`
 	}
 	// RoutingParams: the rule template, where its rules go (routing.Place*)
 	// and whether its outbounds and resolver come with it.
@@ -50,6 +55,8 @@ type (
 		Place     string `json:"place"`
 		Outbounds bool   `json:"outbounds,omitempty"`
 		Resolver  bool   `json:"resolver,omitempty"`
+		// SHA256 is the template's content when the batch was made.
+		SHA256 string `json:"sha256"`
 	}
 	// TuningParams: the kernel settings.
 	TuningParams struct {
@@ -57,7 +64,9 @@ type (
 	}
 	// RotateParams: what gets new values on each server where it can
 	// (Salamander only where the config has it, the certificate only where
-	// it is self-signed); the passwords of cascade links stay.
+	// it is self-signed); the passwords of cascade links stay, and on the
+	// exit of a cascade the shared password, Salamander and the
+	// certificate the link uses stay too.
 	RotateParams struct {
 		Auth bool `json:"auth,omitempty"`
 		Obfs bool `json:"obfs,omitempty"`
@@ -152,11 +161,13 @@ func (a *Actions) Check(ctx context.Context, action model.BatchAction, raw json.
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return nil, err
 		}
-		if _, err := a.Store.PresetByID(ctx, p.Preset); errors.Is(err, store.ErrNotFound) {
+		pr, err := a.Store.PresetByID(ctx, p.Preset)
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, invalid("preset", "Такого пресета нет.")
 		} else if err != nil {
 			return nil, err
 		}
+		p.SHA256 = presetSum(pr)
 		if len(p.Sections) == 0 {
 			return nil, invalid("sections", "Выберите разделы пресета.")
 		}
@@ -171,9 +182,11 @@ func (a *Actions) Check(ctx context.Context, action model.BatchAction, raw json.
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return nil, err
 		}
-		if _, err := a.template(ctx, p.Template); err != nil {
+		t, err := a.template(ctx, p.Template, "")
+		if err != nil {
 			return nil, err
 		}
+		p.SHA256 = templateSum(t)
 		switch p.Place {
 		case "":
 			p.Place = routing.PlaceTop
@@ -220,18 +233,36 @@ func Via(b model.Batch) int64 {
 	return p.Via
 }
 
-// template is a rule template by its ID.
-func (a *Actions) template(ctx context.Context, id string) (routing.Template, error) {
+// template is a rule template by its ID; sum, when set, is the content
+// the batch was made with (a template of a preset replaced since is not
+// laid).
+func (a *Actions) template(ctx context.Context, id, sum string) (routing.Template, error) {
 	ps, err := a.Store.ListPresets(ctx)
 	if err != nil {
 		return routing.Template{}, err
 	}
 	for _, t := range routing.Templates(ps) {
 		if t.ID == id {
+			if sum != "" && templateSum(t) != sum {
+				return routing.Template{}, invalid("template", "Шаблон правил пакета заменён с тех пор, как пакет создан: его пресет удалили или изменили.")
+			}
 			return t, nil
 		}
 	}
 	return routing.Template{}, invalid("template", "Такого шаблона правил нет: его пресет удалён.")
+}
+
+// presetSum and templateSum name the content a batch lays: a preset ID
+// alone could later name another preset.
+func presetSum(p model.Preset) string {
+	h := sha256.Sum256([]byte(p.Config))
+	return hex.EncodeToString(h[:])
+}
+
+func templateSum(t routing.Template) string {
+	b, _ := json.Marshal(t)
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
 }
 
 // Queue queues the job of b's action on the server for actor, as the
@@ -282,6 +313,9 @@ func (a *Actions) preset(ctx context.Context, b model.Batch, serverID, actor int
 	} else if err != nil {
 		return model.Job{}, err
 	}
+	if p.SHA256 != "" && presetSum(pr) != p.SHA256 {
+		return model.Job{}, invalid("preset", "Пресет пакета заменён с тех пор, как пакет создан: его удалили или изменили.")
+	}
 	cur, _, err := a.Editor.Current(ctx, serverID)
 	if err != nil {
 		return model.Job{}, err
@@ -301,7 +335,7 @@ func (a *Actions) routing(ctx context.Context, b model.Batch, serverID, actor in
 	if err := json.Unmarshal(b.Params, &p); err != nil {
 		return model.Job{}, err
 	}
-	t, err := a.template(ctx, p.Template)
+	t, err := a.template(ctx, p.Template, p.SHA256)
 	if err != nil {
 		return model.Job{}, err
 	}
@@ -343,26 +377,40 @@ func (a *Actions) rotate(ctx context.Context, b model.Batch, serverID, actor int
 	}
 	links := cascade.Users(chains, serverID)
 	r := apply.Rotation{Links: links}
+	// The link client of a cascade into this server logs in with the
+	// shared password of a password server and copies its Salamander
+	// password and certificate pin: changing them in a batch would cut
+	// the cascade until it is redeployed.
+	exit := len(links) > 0
+	const linkNote = "его использует связь каскада к этому серверу — смените на странице сервера и обновите каскад"
 	var left []string
 	if p.Auth {
-		if ok, why := rotatable(c, links); ok {
-			r.Auth = true
-		} else {
+		if ok, why := rotatable(c, links); !ok {
 			left = append(left, why)
+		} else if exit && strings.EqualFold(c.Auth.Type, "password") {
+			left = append(left, "общий пароль: "+linkNote)
+		} else {
+			r.Auth = true
 		}
 	}
 	if p.Obfs {
-		if strings.EqualFold(c.Obfs.Type, "salamander") {
-			r.Obfs = true
-		} else {
+		switch {
+		case !strings.EqualFold(c.Obfs.Type, "salamander"):
 			left = append(left, "обфускации Salamander в конфиге нет")
+		case exit:
+			left = append(left, "пароль Salamander: "+linkNote)
+		default:
+			r.Obfs = true
 		}
 	}
 	if p.Cert {
-		if c.ACME == nil && c.TLS != nil && cur.Meta.TLS == "self-signed" && path.IsAbs(c.TLS.Cert) && path.IsAbs(c.TLS.Key) {
-			r.Cert = true
-		} else {
+		switch {
+		case !(c.ACME == nil && c.TLS != nil && cur.Meta.TLS == "self-signed" && path.IsAbs(c.TLS.Cert) && path.IsAbs(c.TLS.Key)):
 			left = append(left, "сертификат не самоподписанный (ACME или от удостоверяющего центра)")
+		case exit:
+			left = append(left, "сертификат: "+linkNote)
+		default:
+			r.Cert = true
 		}
 	}
 	note := ""

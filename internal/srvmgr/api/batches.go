@@ -183,10 +183,16 @@ func (s *server) createBatch(action model.BatchAction) http.HandlerFunc {
 			return
 		}
 		var ids []int64
+		seen := make(map[int64]bool, len(in.Servers))
 		for _, id := range in.Servers {
-			if !slices.Contains(ids, id) {
+			if !seen[id] {
+				seen[id] = true
 				ids = append(ids, id)
 			}
+		}
+		if len(ids) > batch.MaxServers {
+			writeError(w, &Error{Status: http.StatusBadRequest, Code: "invalid", Message: fmt.Sprintf("В пакете — не больше %d серверов.", batch.MaxServers), Details: "servers"})
+			return
 		}
 		if len(ids) == 0 {
 			writeError(w, &Error{Status: http.StatusBadRequest, Code: "invalid", Message: "Выберите серверы.", Details: "servers"})
