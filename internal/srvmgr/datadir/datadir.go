@@ -80,3 +80,14 @@ func Check(path string, dir bool) error {
 	}
 	return check(path, st, dir)
 }
+
+// Create makes a new file for secrets, owner-only from its first byte
+// (on Windows its ACL is set as it is created, not after, so no handle
+// opened in between keeps access); an existing file is an error
+// (fs.ErrExist).
+func Create(path string) (*os.File, error) { return create(path) }
+
+// Replace puts tmp in place of path in one rename and makes the rename
+// itself last a crash (a key file must not come back older than the
+// values sealed with it after a power cut).
+func Replace(tmp, path string) error { return replace(tmp, path) }

@@ -41,7 +41,7 @@ var tools []tool
 func init() {
 	tools = []tool{
 		{"backup", "[-out файл]", "копия базы в <data-dir>/backups или в файл; служба может работать", toolBackup},
-		{"restore", "[-force] файл", "восстановить базу из копии; служба должна быть остановлена", toolRestore},
+		{"restore", "[-force] [-plain] файл", "восстановить базу из копии; служба должна быть остановлена", toolRestore},
 		{"reset-password", "[-password-stdin] имя", "новый пароль пользователя (создаётся и показывается один раз), его сессии завершаются", toolResetPassword},
 		{"rekey", "[-rotate]", "перешифровать данные текущей версией ключа (-rotate: сначала добавить новую); служба должна быть остановлена", toolRekey},
 		{"doctor", "", "проверить права файлов, ключ, целостность базы, свободное место и копии; служба может работать", toolDoctor},
@@ -164,9 +164,10 @@ func toolBackup(ctx context.Context, args []string, env toolEnv) error {
 }
 
 func toolRestore(ctx context.Context, args []string, env toolEnv) error {
-	var force bool
+	var force, plain bool
 	cfg, rest, err := config.LoadTool("restore", args, env.getenv, env.stderr, func(fs *flag.FlagSet) {
 		fs.BoolVar(&force, "force", false, "replace a database with users or servers (it is moved aside, not deleted)")
+		fs.BoolVar(&plain, "plain", false, "restore a copy that is not encrypted although a passphrase is set or its name ends in .enc")
 	})
 	if err != nil {
 		return err
@@ -198,6 +199,7 @@ func toolRestore(ctx context.Context, args []string, env toolEnv) error {
 		DB:         cfg.DBPath(),
 		Passphrase: pass,
 		Force:      force,
+		Plain:      plain,
 		Keys: func() (*secrets.Keyring, string, error) {
 			k, _, err := secrets.Load(env.getenv, cfg.MasterKeyFile)
 			return k, keySource(env.getenv, cfg), err
@@ -206,7 +208,11 @@ func toolRestore(ctx context.Context, args []string, env toolEnv) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(env.stdout, "База %s восстановлена из %s.\nСхема базы: %d (эта программа знает до %d)\nВерсии мастер-ключа в данных: %s\n", cfg.DBPath(), file, r.Schema, sqlite.KnownSchema(), versionList(r.Versions))
+	enc := "нет"
+	if r.Encrypted {
+		enc = "да"
+	}
+	fmt.Fprintf(env.stdout, "База %s восстановлена из %s (копия зашифрована: %s).\nСхема базы: %d (эта программа знает до %d)\nВерсии мастер-ключа в данных: %s\n", cfg.DBPath(), file, enc, r.Schema, sqlite.KnownSchema(), versionList(r.Versions))
 	if r.Previous != "" {
 		fmt.Fprintf(env.stdout, "Прежняя база перенесена в %s: удалите её, когда убедитесь, что всё на месте.\n", r.Previous)
 	}

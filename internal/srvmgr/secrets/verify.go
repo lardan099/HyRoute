@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/srvmgr/datadir"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
 
@@ -212,7 +213,7 @@ func AddVersion(file string, keys *Keyring) (*Keyring, error) {
 	if err := writeKeyFile(tmp, text); err != nil {
 		return nil, err
 	}
-	if err := os.Rename(tmp, file); err != nil {
+	if err := datadir.Replace(tmp, file); err != nil {
 		os.Remove(tmp)
 		return nil, err
 	}

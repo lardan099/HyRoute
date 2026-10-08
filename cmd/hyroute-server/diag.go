@@ -12,6 +12,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/srvmgr/backup"
 	"github.com/lardan099/hyroute/internal/srvmgr/config"
+	"github.com/lardan099/hyroute/internal/srvmgr/datadir"
 	"github.com/lardan099/hyroute/internal/srvmgr/diag"
 	"github.com/lardan099/hyroute/internal/srvmgr/geo"
 )
@@ -58,7 +59,7 @@ func toolDiag(ctx context.Context, args []string, env toolEnv) error {
 	if out == "" {
 		out = bundle.Name()
 	}
-	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := datadir.Create(out)
 	if errors.Is(err, fs.ErrExist) {
 		return fmt.Errorf("файл %s уже есть: укажите другой -out", out)
 	}

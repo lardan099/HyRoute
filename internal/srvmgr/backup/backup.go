@@ -125,7 +125,12 @@ func (m *Manager) make(ctx context.Context) (Info, error) {
 		name = fmt.Sprintf("%s-%d%s", base, i, ext)
 	}
 	path := filepath.Join(m.Dir, name)
-	if err := Write(ctx, m.DB, m.Dir, path, m.Passphrase); err != nil {
+	// The snapshot is the whole database unencrypted: it is taken in the
+	// data directory, never next to the copies, which may be synced
+	// elsewhere.
+	tmp := filepath.Dir(m.Dir)
+	m.sweep(tmp)
+	if err := Write(ctx, m.DB, tmp, path, m.Passphrase); err != nil {
 		return Info{}, err
 	}
 	st, err := os.Stat(path)
@@ -133,6 +138,30 @@ func (m *Manager) make(ctx context.Context) (Info, error) {
 		return Info{}, err
 	}
 	return Info{Name: name, Size: st.Size(), At: at, Encrypted: m.Passphrase != ""}, nil
+}
+
+// leftover is how old a snapshot or a part of a copy must be before a
+// later copy takes it for the remains of a killed run: one of a copy in
+// progress elsewhere (the command next to the service) is younger.
+const leftover = time.Hour
+
+// sweep removes the remains of copies a killed process left: snapshots
+// in the data directory, unfinished copies in Dir.
+func (m *Manager) sweep(tmp string) {
+	for _, d := range []struct{ dir, prefix string }{{tmp, ".snapshot-hyroute-server-"}, {m.Dir, ".part-hyroute-server-"}, {m.Dir, ".snapshot-hyroute-server-"}} {
+		entries, err := os.ReadDir(d.dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !strings.HasPrefix(e.Name(), d.prefix) || !e.Type().IsRegular() {
+				continue
+			}
+			if st, err := e.Info(); err == nil && m.now().Sub(st.ModTime()) > leftover {
+				os.Remove(filepath.Join(d.dir, e.Name()))
+			}
+		}
+	}
 }
 
 func exists(path string) bool {
@@ -165,7 +194,7 @@ func Write(ctx context.Context, db Snapshotter, tmpDir, path, passphrase string)
 	defer src.Close()
 	part := filepath.Join(filepath.Dir(path), ".part-"+filepath.Base(path))
 	os.Remove(part)
-	f, err := os.OpenFile(part, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := datadir.Create(part)
 	if err != nil {
 		return err
 	}
@@ -175,9 +204,6 @@ func Write(ctx context.Context, db Snapshotter, tmpDir, path, passphrase string)
 			os.Remove(part)
 		}
 	}()
-	if err := datadir.File(part); err != nil {
-		return err
-	}
 	if passphrase != "" {
 		err = encrypt(f, src, passphrase)
 	} else {
@@ -195,7 +221,7 @@ func Write(ctx context.Context, db Snapshotter, tmpDir, path, passphrase string)
 	if exists(path) {
 		return fmt.Errorf("%s already exists", path)
 	}
-	return os.Rename(part, path)
+	return datadir.Replace(part, path)
 }
 
 // List is the copies in Dir, newest first.
@@ -345,6 +371,9 @@ func Passphrase(getenv func(string) string, env, file string) (string, error) {
 	}
 	if runtime.GOOS != "windows" && st.Mode().Perm()&0o077 != 0 {
 		return "", fmt.Errorf("backup passphrase file %s has mode %v: allow only its owner (chmod 600)", file, st.Mode().Perm())
+	}
+	if err := datadir.Check(file, false); err != nil {
+		return "", fmt.Errorf("backup passphrase file: %w", err)
 	}
 	b, err := os.ReadFile(file)
 	if err != nil {

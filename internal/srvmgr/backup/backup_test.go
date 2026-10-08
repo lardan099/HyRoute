@@ -437,3 +437,85 @@ func TestRestoreRefusesNewerAndDamaged(t *testing.T) {
 		t.Fatal("a database appeared")
 	}
 }
+
+// The unencrypted snapshot of an encrypted copy is never next to the
+// copies, and what a killed run left is swept once it is old.
+func TestSnapshotNotInBackups(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	m := &Manager{DB: f.db, Dir: filepath.Join(f.dir, "backups"), Passphrase: "pw", Now: func() time.Time { return now }}
+	os.MkdirAll(m.Dir, 0o700)
+	stale := []string{filepath.Join(f.dir, ".snapshot-hyroute-server-20261001-000000.db.enc"), filepath.Join(m.Dir, ".part-hyroute-server-20261001-000000.db.enc"),
+		filepath.Join(m.Dir, ".snapshot-hyroute-server-20261001-000000.db.enc")}
+	fresh := filepath.Join(f.dir, ".snapshot-hyroute-server-20261008-115959.db.enc")
+	for _, p := range append(stale, fresh) {
+		os.WriteFile(p, []byte("SQLite format 3"), 0o600)
+	}
+	for _, p := range stale {
+		os.Chtimes(p, now.Add(-2*time.Hour), now.Add(-2*time.Hour))
+	}
+	os.Chtimes(fresh, now.Add(-time.Minute), now.Add(-time.Minute))
+	if _, err := m.Make(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range stale {
+		if exists(p) {
+			t.Errorf("leftover %s kept", p)
+		}
+	}
+	if !exists(fresh) {
+		t.Error("the snapshot of a copy in progress elsewhere was removed")
+	}
+	entries, _ := os.ReadDir(m.Dir)
+	for _, e := range entries {
+		b, _ := os.ReadFile(filepath.Join(m.Dir, e.Name()))
+		if bytes.HasPrefix(b, []byte("SQLite format 3")) {
+			t.Errorf("plaintext database in the backups directory: %s", e.Name())
+		}
+	}
+}
+
+// With a passphrase set, or a name saying so, a copy that is not
+// encrypted is refused unless the admin says it is theirs.
+func TestRestoreRefusesPlainWhenEncryptedExpected(t *testing.T) {
+	ctx := context.Background()
+	src := newFixture(t)
+	plain := filepath.Join(src.dir, "copy.db")
+	if err := Write(ctx, src.db, src.dir, plain, ""); err != nil {
+		t.Fatal(err)
+	}
+	named := filepath.Join(src.dir, "hyroute-server-20261008-120000.db.enc")
+	b, _ := os.ReadFile(plain)
+	os.WriteFile(named, b, 0o600)
+	target := func() (string, string) {
+		dir := t.TempDir()
+		key := filepath.Join(dir, "master.key")
+		os.WriteFile(key, []byte(src.keyText), 0o600)
+		return filepath.Join(dir, "hyroute-server.db"), key
+	}
+	for _, c := range []struct {
+		file, pass string
+	}{{plain, "pw"}, {named, ""}} {
+		db, key := target()
+		if _, err := Restore(ctx, RestoreOptions{File: c.file, DB: db, Passphrase: c.pass, Keys: keysFrom(key)}); !errors.Is(err, ErrPlain) {
+			t.Fatalf("%s with %q: %v, want ErrPlain", filepath.Base(c.file), c.pass, err)
+		}
+		if exists(db) {
+			t.Fatal("a database appeared")
+		}
+		r, err := Restore(ctx, RestoreOptions{File: c.file, DB: db, Passphrase: c.pass, Keys: keysFrom(key), Plain: true})
+		if err != nil || r.Encrypted {
+			t.Fatalf("with Plain: %+v %v", r, err)
+		}
+	}
+	m := &Manager{DB: src.db, Dir: filepath.Join(src.dir, "backups"), Passphrase: "pw"}
+	info, err := m.Make(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, key := target()
+	if r, err := Restore(ctx, RestoreOptions{File: filepath.Join(m.Dir, info.Name), DB: db, Passphrase: "pw", Keys: keysFrom(key)}); err != nil || !r.Encrypted {
+		t.Fatalf("encrypted: %+v %v", r, err)
+	}
+}

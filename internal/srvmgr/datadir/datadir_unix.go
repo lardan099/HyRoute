@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"syscall"
 )
 
@@ -35,3 +36,25 @@ func lock(f *os.File) error {
 }
 
 func check(path string, st fs.FileInfo, dir bool) error { return protect(path, st, dir) }
+
+func create(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+}
+
+func replace(tmp, path string) error {
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return SyncDir(filepath.Dir(path))
+}
+
+// SyncDir makes the entries of dir (a file created or renamed in it)
+// last a crash.
+func SyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}

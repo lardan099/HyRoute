@@ -227,6 +227,9 @@ func toolDoctor(ctx context.Context, args []string, env toolEnv) error {
 	if !secrets.KeyInEnv(env.getenv) {
 		files = append(files, cfg.MasterKeyFile)
 	}
+	if cfg.BackupPassphraseFile != "" {
+		files = append(files, cfg.BackupPassphraseFile)
+	}
 	backups, _ := (&backup.Manager{Dir: cfg.BackupDir()}).List()
 	for _, b := range backups {
 		files = append(files, filepath.Join(cfg.BackupDir(), b.Name))

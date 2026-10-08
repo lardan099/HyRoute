@@ -89,3 +89,50 @@ func check(path string, _ fs.FileInfo, _ bool) error {
 	}
 	return nil
 }
+
+// ownerOnly is the security descriptor protect sets on a file.
+func ownerOnly() (*windows.SECURITY_DESCRIPTOR, error) {
+	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return nil, err
+	}
+	return windows.SecurityDescriptorFromString(fmt.Sprintf("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;%s)", tu.User.Sid.String()))
+}
+
+func create(path string) (*os.File, error) {
+	sd, err := ownerOnly()
+	if err != nil {
+		return nil, err
+	}
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	sa := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+	h, err := windows.CreateFile(p, windows.GENERIC_READ|windows.GENERIC_WRITE, 0, sa, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		if errors.Is(err, windows.ERROR_FILE_EXISTS) {
+			err = fs.ErrExist
+		}
+		return nil, &fs.PathError{Op: "create", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(h), path), nil
+}
+
+func replace(tmp, path string) error {
+	from, err := windows.UTF16PtrFromString(tmp)
+	if err != nil {
+		return err
+	}
+	to, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	if err := windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH); err != nil {
+		return &os.LinkError{Op: "rename", Old: tmp, New: path, Err: err}
+	}
+	return nil
+}
+
+// SyncDir: on Windows a write-through rename and file flushes are enough.
+func SyncDir(string) error { return nil }

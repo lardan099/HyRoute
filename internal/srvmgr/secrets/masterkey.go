@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/lardan099/hyroute/internal/srvmgr/datadir"
 )
 
 // EnvMasterKey holds the master key when it is not in a file.
@@ -155,7 +157,7 @@ func writeKeyFile(file, text string) error {
 	if _, err := os.Stat(filepath.Dir(file)); err != nil {
 		return fmt.Errorf("master key directory: %w", err)
 	}
-	f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := datadir.Create(file)
 	if err != nil {
 		return err
 	}
@@ -168,6 +170,7 @@ func writeKeyFile(file, text string) error {
 	}
 	if err != nil {
 		os.Remove(file)
+		return err
 	}
-	return err
+	return datadir.SyncDir(filepath.Dir(file))
 }
