@@ -316,6 +316,50 @@ func TestRevertConfigEndToEnd(t *testing.T) {
 	}
 }
 
+// The revert failed, and the admin accepted the config found instead: a
+// retry of the revert does not write the old revision over the accepted
+// one.
+func TestRevertRetryAfterAccept(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	c := newController(w)
+	c.start(t)
+	w.r.Jobs = c.jobs
+	edited := strings.Replace(revisionCfg, "listen: :443", "listen: :8443", 1)
+	w.m.SetFile(cfgPath, []byte(edited))
+	w.m.start()
+	w.r.Round(ctx)
+	w.m.mu.Lock()
+	w.m.bad = "listen: :443\n"
+	w.m.mu.Unlock()
+	j, err := w.r.Revert(ctx, w.a, "config", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j = waitJob(t, w, j.ID); j.State != model.JobFailed {
+		t.Fatalf("%s: %s", j.State, j.ErrorMessage)
+	}
+	if _, err := w.r.Accept(ctx, w.a, "config", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	w.m.mu.Lock()
+	w.m.bad = ""
+	w.m.mu.Unlock()
+	if _, err := c.eng.Retry(ctx, j.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if j = waitJob(t, w, j.ID); j.State != model.JobFailed || j.CurrentStep != "validate" || !strings.Contains(j.ErrorMessage, "ревизия 2") {
+		t.Fatalf("retry: %s at %s: %s", j.State, j.CurrentStep, j.ErrorMessage)
+	}
+	if b, _ := w.m.File(cfgPath); string(b) != edited {
+		t.Fatalf("the accepted config is gone:\n%s", b)
+	}
+	if cur, _ := w.db.CurrentConfig(ctx, w.a); cur.Revision != 2 || cur.SHA256 != hexSHA([]byte(edited)) {
+		t.Fatalf("current revision %+v", cur)
+	}
+}
+
 func waitJob(t *testing.T, w *world, id int64) model.Job {
 	t.Helper()
 	for i := 0; i < 500; i++ {

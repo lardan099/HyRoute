@@ -238,6 +238,18 @@ func (x *applier) validate(ctx context.Context, env *jobs.Env, p Params) error {
 	if len(errs) > 0 {
 		return jobs.Fail("Конфиг не прошёл проверку, на сервер ничего не записано: "+strings.Join(errs, "; ")+".", nil)
 	}
+	if p.Drift != "" {
+		// A revert puts back the revision it was queued for while that is
+		// the current one: a retry after the admin accepted the config
+		// found would write an old revision over the accepted one.
+		cur, err := x.Store.CurrentConfig(ctx, env.ServerID)
+		if err != nil {
+			return err
+		}
+		if cur.Revision != p.Base {
+			return jobs.Fail(fmt.Sprintf("После сверки в HyRoute сохранена ревизия %d конфига, а задание возвращает ревизию %d: прежнюю версию оно на сервер не пишет. Проверьте сервер снова.", cur.Revision, p.Base), nil)
+		}
+	}
 	in, err := x.installation(ctx, env)
 	if err != nil {
 		return err
