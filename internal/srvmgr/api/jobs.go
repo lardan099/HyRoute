@@ -103,8 +103,14 @@ func jobError(err error) error {
 	return mapError(err)
 }
 
+// listJobs is the jobs of the servers in the caller's scope.
 func (s *server) listJobs(w http.ResponseWriter, r *http.Request) {
-	js, err := s.Store.ListJobs(r.Context(), model.JobFilter{ServerID: queryInt(r, "server"), BeforeID: queryInt(r, "before"), Limit: int(queryInt(r, "limit"))})
+	set, err := s.scopeSet(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	js, err := s.Store.ListJobs(r.Context(), model.JobFilter{ServerID: queryInt(r, "server"), BeforeID: queryInt(r, "before"), Limit: int(queryInt(r, "limit")), Within: set.within()})
 	if err != nil {
 		s.fail(w, r, err)
 		return

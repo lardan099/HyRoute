@@ -34,6 +34,24 @@ func (s *server) changePassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toSessionJSON(is.User, is.CSRF))
 }
 
+// roleJSON is a built-in role with its permissions (P4-04).
+type roleJSON struct {
+	Role        model.Role         `json:"role"`
+	Permissions []model.Permission `json:"permissions"`
+	// Unscoped: the role reaches every server whatever the scope.
+	Unscoped bool `json:"unscoped"`
+}
+
+// listRoles is the built-in roles, the most powerful first: the user
+// dialog shows what each one may do.
+func (s *server) listRoles(w http.ResponseWriter, r *http.Request) {
+	out := make([]roleJSON, 0, len(model.Roles))
+	for _, role := range model.Roles {
+		out = append(out, roleJSON{Role: role, Permissions: role.Permissions(), Unscoped: role.Unscoped()})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // updateUser changes the role or the scope of a user, or blocks and
 // unblocks it.
 func (s *server) updateUser(w http.ResponseWriter, r *http.Request) {

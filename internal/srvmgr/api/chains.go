@@ -118,6 +118,8 @@ func (s *server) serverNames(r *http.Request) (map[int64]string, error) {
 	return names, nil
 }
 
+// listChains is the cascades in the caller's scope: those of servers all
+// of which it reaches.
 func (s *server) listChains(w http.ResponseWriter, r *http.Request) {
 	cs, err := s.Store.ListChains(r.Context())
 	if err != nil {
@@ -129,8 +131,16 @@ func (s *server) listChains(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	set, err := s.scopeSet(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
 	out := make([]chainJSON, 0, len(cs))
 	for _, c := range cs {
+		if !set.hasAll(c.Nodes) {
+			continue
+		}
 		c = s.sync(r, c)
 		j := toChainJSON(topology.Of(c), names)
 		s.linkHealth(r, &j, c)

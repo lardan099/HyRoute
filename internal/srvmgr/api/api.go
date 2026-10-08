@@ -140,6 +140,7 @@ func (s *server) routes() []route {
 		{"GET /api/v1/sessions", signedIn, s.listSessions},
 		{"DELETE /api/v1/sessions/{id}", signedIn, s.revokeSession},
 		{"GET /api/v1/users", signedIn, s.listUsers},
+		{"GET /api/v1/roles", signedIn, s.listRoles},
 		{"POST /api/v1/users", need(model.PermUsers, global), s.createUser},
 		{"POST /api/v1/session/password", signedIn, s.changePassword},
 		{"PATCH /api/v1/users/{id}", need(model.PermUsers, global), s.updateUser},

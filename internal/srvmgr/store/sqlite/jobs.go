@@ -63,6 +63,23 @@ const unfinished = `state NOT IN ('completed', 'failed')`
 // server twice), as their first server or one of the others.
 const touches = `(server_id = ? OR id IN (SELECT job_id FROM job_servers WHERE server_id = ?))`
 
+// within is the condition of model.JobFilter.Within on the jobs table
+// named t, with three arguments (withinArgs): every server of the job is
+// in the JSON array of IDs, the node of params.via too.
+func within(t string) string {
+	return `(` + t + `.server_id IN (SELECT value FROM json_each(?))
+		AND NOT EXISTS (SELECT 1 FROM job_servers x WHERE x.job_id = ` + t + `.id AND x.server_id NOT IN (SELECT value FROM json_each(?)))
+		AND COALESCE(json_extract(` + t + `.params, '$.via'), 0) IN (SELECT 0 UNION ALL SELECT value FROM json_each(?)))`
+}
+
+func withinArgs(ids []int64) []any {
+	if ids == nil {
+		ids = []int64{}
+	}
+	b, _ := json.Marshal(ids)
+	return []any{string(b), string(b), string(b)}
+}
+
 // busyWith counts the unfinished jobs that change server id.
 func busyWith(ctx context.Context, t *sql.Tx, id int64) (bool, error) {
 	var n int
@@ -195,6 +212,9 @@ func (d *DB) ListJobs(ctx context.Context, f model.JobFilter) ([]model.Job, erro
 	if f.BeforeID != 0 {
 		where, args = append(where, "id < ?"), append(args, f.BeforeID)
 	}
+	if f.Within != nil {
+		where, args = append(where, within("jobs")), append(args, withinArgs(*f.Within)...)
+	}
 	q := `SELECT ` + jobCols + ` FROM jobs`
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
@@ -322,6 +342,10 @@ func (d *DB) SearchJobLogs(ctx context.Context, f model.JobLogFilter) ([]model.J
 		// The jobs that change the server, as ListJobs selects them.
 		q += ` AND (j.server_id = ? OR j.id IN (SELECT job_id FROM job_servers WHERE server_id = ?))`
 		args = append(args, f.ServerID, f.ServerID)
+	}
+	if f.Within != nil {
+		q += ` AND ` + within("j")
+		args = append(args, withinArgs(*f.Within)...)
 	}
 	switch f.Level {
 	case "warn":

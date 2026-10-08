@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -491,4 +493,166 @@ func TestRetryRechecksRights(t *testing.T) {
 			t.Errorf("kind %s: %q", k, p)
 		}
 	}
+}
+
+// Lists show a user with a narrower scope only their servers, the
+// cascades all of whose servers are theirs, and the jobs, job logs and
+// metrics of those.
+func TestScopeFiltersLists(t *testing.T) {
+	s := newScoped(t)
+	ctx := context.Background()
+	onA := s.failedJob(service.JobKind, s.a, service.Params{Action: "restart"})
+	onB := s.failedJob(service.JobKind, s.b, service.Params{Action: "restart"})
+	link, err := s.jobs.SubmitOn(ctx, service.JobKind, []int64{s.a, s.b}, service.Params{Action: "restart"}, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.State = model.JobFailed
+	s.db.UpdateJob(ctx, link)
+	viaB := s.failedJob(service.JobKind, s.c, map[string]any{"action": "restart", "via": s.b})
+	onC := s.failedJob(service.JobKind, s.c, service.Params{Action: "restart"})
+	for _, j := range []int64{onA, onB, link.ID, viaB, onC} {
+		l := model.JobLog{JobID: j, Time: time.Now(), Level: "info", Message: "line of " + id(j)}
+		s.db.AppendJobLog(ctx, &l)
+	}
+	for _, srv := range []int64{s.a, s.b} {
+		s.db.AddMetric(ctx, model.Metric{ServerID: srv, At: time.Now(), MemTotalMiB: 1024})
+	}
+	get := func(c *client, path string, v any) {
+		t.Helper()
+		rec := c.do("GET", path, nil, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, rec.Code, rec.Body)
+		}
+		json.Unmarshal(rec.Body.Bytes(), v)
+	}
+
+	var ss []serverJSON
+	get(s.op, "/api/v1/servers", &ss)
+	var names []string
+	for _, x := range ss {
+		names = append(names, x.Name)
+		if !slices.Contains(x.Perms, model.PermConfig) || slices.Contains(x.Perms, model.PermUsers) {
+			t.Fatalf("%s: perms %v", x.Name, x.Perms)
+		}
+		for _, ch := range x.Chains {
+			if ch.ID == s.ab {
+				t.Fatalf("%s: the cascade with b listed", x.Name)
+			}
+		}
+	}
+	if strings.Join(names, ",") != "a,c" {
+		t.Fatalf("servers: %v", names)
+	}
+	var one serverJSON
+	get(s.op, "/api/v1/servers/"+id(s.a), &one)
+	if len(one.Chains) != 1 || one.Chains[0].ID != s.ac {
+		t.Fatalf("chains of a: %+v", one.Chains)
+	}
+
+	var cs []chainJSON
+	get(s.op, "/api/v1/chains", &cs)
+	if len(cs) != 1 || cs[0].ID != s.ac {
+		t.Fatalf("chains: %+v", cs)
+	}
+
+	var js []jobJSON
+	get(s.op, "/api/v1/jobs", &js)
+	var got []int64
+	for _, j := range js {
+		got = append(got, j.ID)
+	}
+	if !slices.Equal(got, []int64{onC, onA}) {
+		t.Fatalf("jobs %v, want %v", got, []int64{onC, onA})
+	}
+	get(s.op, "/api/v1/jobs?server="+id(s.b), &js)
+	if len(js) != 0 {
+		t.Fatalf("jobs of b: %+v", js)
+	}
+
+	var ls []logEntryJSON
+	get(s.op, "/api/v1/logs?source=jobs", &ls)
+	got = nil
+	for _, l := range ls {
+		got = append(got, l.JobID)
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, []int64{onA, onC}) {
+		t.Fatalf("job logs of %v", got)
+	}
+	code(t, s.op.do("GET", "/api/v1/logs", nil, nil), http.StatusForbidden, "forbidden")
+
+	var ms []latestJSON
+	get(s.op, "/api/v1/metrics/latest", &ms)
+	if len(ms) != 1 || ms[0].ServerID != s.a {
+		t.Fatalf("metrics: %+v", ms)
+	}
+
+	// Users without the users permission see no scopes.
+	rec := s.op.do("GET", "/api/v1/users", nil, nil)
+	if rec.Code != 200 || strings.Contains(rec.Body.String(), `"scope"`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if rec := s.owner.do("GET", "/api/v1/users", nil, nil); !strings.Contains(rec.Body.String(), `"scope":{"tags":["de"]}`) {
+		t.Fatalf("owner: %s", rec.Body)
+	}
+
+	// The owner sees everything.
+	get(s.owner, "/api/v1/servers", &ss)
+	get(s.owner, "/api/v1/jobs", &js)
+	get(s.owner, "/api/v1/chains", &cs)
+	if len(ss) != 3 || len(js) != 5 || len(cs) != 2 {
+		t.Fatalf("owner: %d servers, %d jobs, %d chains", len(ss), len(js), len(cs))
+	}
+}
+
+// A live stream ends once its user may no longer see what it streams: the
+// scope narrowed past the job's server.
+func TestScopeEndsStreams(t *testing.T) {
+	s := newScoped(t)
+	release := make(chan struct{})
+	defer close(release)
+	var broken atomic.Bool
+	s.jobs.Register(demoKind(release, &broken))
+	s.runJobs()
+	j, err := s.jobs.Submit(context.Background(), "demo", s.a, nil, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.waitJob(j.ID, model.JobInstalling)
+	ts := httptest.NewServer(s.h)
+	defer ts.Close()
+	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/jobs/"+id(j.ID)+"/events", nil)
+	req.AddCookie(s.op.cookie)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("%d", res.StatusCode)
+	}
+	closed := make(chan struct{})
+	go func() { io.Copy(io.Discard, res.Body); close(closed) }()
+	select {
+	case <-closed:
+		t.Fatal("the stream ended early")
+	case <-time.After(200 * time.Millisecond):
+	}
+	var us []userJSON
+	json.Unmarshal(s.owner.do("GET", "/api/v1/users", nil, nil).Body.Bytes(), &us)
+	for _, u := range us {
+		if u.Username == "de" {
+			if rec := s.owner.do("PATCH", userPath(u.ID, ""), map[string]any{"scope": map[string]any{"tags": []string{"us"}}}, nil); rec.Code != 200 {
+				t.Fatalf("%d %s", rec.Code, rec.Body)
+			}
+		}
+	}
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream outlived the scope")
+	}
+	// Reconnecting gets what a server out of scope gets.
+	code(t, s.op.do("GET", "/api/v1/jobs/"+id(j.ID)+"/events", nil, nil), http.StatusNotFound, "not_found")
 }

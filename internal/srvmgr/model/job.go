@@ -125,6 +125,11 @@ type JobFilter struct {
 	ServerID int64 // 0: all
 	Limit    int
 	BeforeID int64 // 0: newest
+	// Within, when not nil, keeps the jobs whose every server is one of
+	// *Within (a user's scope, P4-04): the job's own, the others it
+	// changes and the node it downloads through (params "via"). Jobs of
+	// no server are left out.
+	Within *[]int64
 }
 
 // JobLogFilter selects job log lines across jobs.
@@ -133,6 +138,8 @@ type JobLogFilter struct {
 	Level    string // this level and above (info < warn < error); "": all
 	Text     string // case-insensitive substring of the message
 	Limit    int
+	// Within: the lines of the jobs JobFilter.Within keeps.
+	Within *[]int64
 }
 
 // JobLogHit is a job log line with its job's server and kind.

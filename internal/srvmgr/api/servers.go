@@ -33,8 +33,11 @@ type serverJSON struct {
 	HostKey          *hostKeyJSON      `json:"hostKey"`
 	// HopInterval of the client links, seconds (0: the client's default).
 	HopInterval int `json:"hopInterval"`
-	// Chains are the cascades the server is a node of.
+	// Chains are the cascades the server is a node of (those in the
+	// caller's scope).
 	Chains []serverChainJSON `json:"chains"`
+	// Perms are the caller's permissions on the server (P4-04).
+	Perms []model.Permission `json:"perms"`
 }
 
 // serverChainJSON is a cascade a server is in.
@@ -89,22 +92,47 @@ func pathID(r *http.Request) (int64, bool) {
 	return id, err == nil && id > 0
 }
 
+// listServers is the inventory the caller's scope reaches.
 func (s *server) listServers(w http.ResponseWriter, r *http.Request) {
 	list, err := s.Servers.List(r.Context())
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	chains := s.chainsByServer(r)
+	set, err := s.scopeSet(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	chains := s.chainsByServer(r, set)
 	out := make([]serverJSON, 0, len(list))
 	for _, in := range list {
-		j := toServerJSON(in)
-		if cs := chains[in.ID]; cs != nil {
-			j.Chains = cs
+		if !set.has(in.ID) {
+			continue
 		}
-		out = append(out, j)
+		out = append(out, s.withChains(r, toServerJSON(in), chains))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// withChains adds the cascades of the server and the caller's
+// permissions.
+func (s *server) withChains(r *http.Request, j serverJSON, chains map[int64][]serverChainJSON) serverJSON {
+	if cs := chains[j.ID]; cs != nil {
+		j.Chains = cs
+	}
+	j.Perms = serverPerms(r)
+	return j
+}
+
+// oneServer is a server answered alone (get, create, save), with its
+// cascades in scope and the caller's permissions.
+func (s *server) oneServer(r *http.Request, in servers.Info) serverJSON {
+	set, err := s.scopeSet(r)
+	if err != nil {
+		set = scopeSet{ids: map[int64]bool{}} // no cascades rather than all
+	}
+	return s.withChains(r, toServerJSON(in), s.chainsByServer(r, set))
 }
 
 func (s *server) getServer(w http.ResponseWriter, r *http.Request) {
@@ -118,22 +146,22 @@ func (s *server) getServer(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, mapError(err))
 		return
 	}
-	j := toServerJSON(in)
-	if cs := s.chainsByServer(r)[in.ID]; cs != nil {
-		j.Chains = cs
-	}
-	writeJSON(w, http.StatusOK, j)
+	writeJSON(w, http.StatusOK, s.oneServer(r, in))
 }
 
-// chainsByServer are the cascades of each server (none when they cannot
-// be read: the server is shown all the same).
-func (s *server) chainsByServer(r *http.Request) map[int64][]serverChainJSON {
+// chainsByServer are the cascades of each server that are in scope as a
+// whole (none when they cannot be read: the server is shown all the
+// same).
+func (s *server) chainsByServer(r *http.Request, set scopeSet) map[int64][]serverChainJSON {
 	cs, err := s.Store.ListChains(r.Context())
 	if err != nil {
 		return nil
 	}
 	m := map[int64][]serverChainJSON{}
 	for _, c := range cs {
+		if !set.hasAll(c.Nodes) {
+			continue
+		}
 		for _, n := range c.Nodes {
 			m[n] = append(m[n], serverChainJSON{ID: c.ID, Name: c.Name, State: topology.State(c)})
 		}
@@ -152,7 +180,7 @@ func (s *server) createServer(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, mapError(err))
 		return
 	}
-	writeJSON(w, http.StatusCreated, toServerJSON(in))
+	writeJSON(w, http.StatusCreated, s.oneServer(r, in))
 }
 
 func (s *server) updateServer(w http.ResponseWriter, r *http.Request) {
@@ -171,7 +199,7 @@ func (s *server) updateServer(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, mapError(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, toServerJSON(in))
+	writeJSON(w, http.StatusOK, s.oneServer(r, in))
 }
 
 func (s *server) deleteServer(w http.ResponseWriter, r *http.Request) {

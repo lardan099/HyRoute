@@ -85,16 +85,24 @@ type latestJSON struct {
 	pointJSON
 }
 
-// latestMetrics is the newest sample of every server from the last five
-// minutes (the Overview).
+// latestMetrics is the newest sample of every server in the caller's
+// scope from the last five minutes (the Overview).
 func (s *server) latestMetrics(w http.ResponseWriter, r *http.Request) {
 	ms, err := s.Store.LatestMetrics(r.Context(), time.Now().Add(-5*time.Minute))
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
+	set, err := s.scopeSet(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
 	out := make([]latestJSON, 0, len(ms))
 	for _, m := range ms {
+		if !set.has(m.ServerID) {
+			continue
+		}
 		out = append(out, latestJSON{ServerID: m.ServerID, pointJSON: toPoint(m)})
 	}
 	writeJSON(w, http.StatusOK, out)

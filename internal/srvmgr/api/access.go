@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
@@ -402,3 +403,75 @@ func (s *server) sessionHolds(r *http.Request) bool {
 
 // reach is the scope of the caller: what lists show.
 func reach(r *http.Request) model.Scope { return principal(r).User.Reach() }
+
+// scopeSet is the servers in the caller's scope, for filtering lists: a
+// server out of it is not shown, as if it did not exist.
+type scopeSet struct {
+	all bool
+	ids map[int64]bool
+}
+
+// scopeSet reads the servers the caller reaches.
+func (s *server) scopeSet(r *http.Request) (scopeSet, error) {
+	sc := reach(r)
+	if sc.All {
+		return scopeSet{all: true}, nil
+	}
+	ss, err := s.Store.ListServers(r.Context())
+	if err != nil {
+		return scopeSet{}, err
+	}
+	set := scopeSet{ids: map[int64]bool{}}
+	for _, srv := range ss {
+		if sc.Covers(srv.Tags) {
+			set.ids[srv.ID] = true
+		}
+	}
+	return set, nil
+}
+
+// has: the server is in scope.
+func (set scopeSet) has(id int64) bool { return set.all || set.ids[id] }
+
+// hasAll: every one of ids is in scope, and there is one (a cascade, a
+// job).
+func (set scopeSet) hasAll(ids []int64) bool {
+	if set.all {
+		return true
+	}
+	if len(ids) == 0 {
+		return false
+	}
+	for _, id := range ids {
+		if !set.ids[id] {
+			return false
+		}
+	}
+	return true
+}
+
+// within is the set for model.JobFilter.Within: nil for all servers.
+func (set scopeSet) within() *[]int64 {
+	if set.all {
+		return nil
+	}
+	ids := make([]int64, 0, len(set.ids))
+	for id := range set.ids {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return &ids
+}
+
+// serverPerms are the caller's permissions on a server in their scope:
+// those of the role that are held on servers. The UI shows what they
+// allow and hides the rest.
+func serverPerms(r *http.Request) []model.Permission {
+	out := []model.Permission{}
+	for _, p := range principal(r).User.Role.Permissions() {
+		if p.ServerBound() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
