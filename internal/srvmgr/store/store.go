@@ -49,6 +49,7 @@ type Store interface {
 	Chains
 	LinkChecks
 	ServerGeos
+	Events
 	Close() error
 }
 
@@ -314,4 +315,19 @@ type LinkChecks interface {
 	LinkChecks(ctx context.Context, chainID int64, idx int, since time.Time, limit int) ([]model.LinkCheck, error)
 	// PruneLinkChecks drops checks older than before.
 	PruneLinkChecks(ctx context.Context, before time.Time) error
+}
+
+// Events stores events (P4-05): one open event per key, closed ones kept
+// for a while.
+type Events interface {
+	// RaiseEvent opens e at e.OpenedAt or, while an event of its key is
+	// open, glues it into that one (count + 1; text, severity, subject and
+	// last time from e). opened: a new event.
+	RaiseEvent(ctx context.Context, e model.Event) (out model.Event, opened bool, err error)
+	// CloseEvent closes the open event of key; closed: there was one.
+	CloseEvent(ctx context.Context, key string, at time.Time, text string) (out model.Event, closed bool, err error)
+	// ListEvents are events newest first.
+	ListEvents(ctx context.Context, f model.EventFilter) ([]model.Event, error)
+	// PruneEvents drops events closed before before.
+	PruneEvents(ctx context.Context, before time.Time) error
 }
