@@ -25,20 +25,23 @@
   // gone: the card is destroyed; a read in flight then sets no timer.
   let gone = false;
 
-  // A revert job that has not failed: its end brings a new check, so the
-  // card looks again soon.
-  const reverting = (it: DriftItem) => !!it.job && it.job.state !== 'failed';
+  // reverting: the revert job has not ended (no decision meanwhile);
+  // watched: it has not failed either, and its end brings a new check, so
+  // the card looks again soon.
+  const reverting = (it: DriftItem) => !!it.job && it.job.state !== 'failed' && it.job.state !== 'completed';
+  const watched = (it: DriftItem) => !!it.job && it.job.state !== 'failed';
 
   async function load() {
     clearTimeout(timer);
     try {
       const before = data?.items.length ?? 0;
       data = await api.drift(serverId);
+      error = null;
       if (data.items.length !== before) onchange?.(data);
     } catch (e) {
       error = asApiError(e);
     }
-    if (!gone) timer = setTimeout(load, data?.items.some(reverting) ? 3000 : 60e3);
+    if (!gone) timer = setTimeout(load, data?.items.some(watched) ? 3000 : 60e3);
   }
   onMount(load);
   onDestroy(() => {
