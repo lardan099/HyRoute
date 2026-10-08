@@ -280,7 +280,10 @@ func (s *Service) candidate(ctx context.Context, serverID int64, in Input) (Prev
 		p.Rules = append(p.Rules, acl.FileLint(envAfter)...)
 	}
 	if !file {
-		changes, err := acl.DryRun(before, after, envBefore, envAfter, kept, in.Requests)
+		// Rules by geo names have no samples: the catalog's services give
+		// theirs.
+		reqs := append(slices.Clone(in.Requests), serviceSamples(before, after)...)
+		changes, err := acl.DryRun(before, after, envBefore, envAfter, kept, reqs)
 		if err != nil {
 			return Preview{}, nil, cur, &model.FieldError{Field: "requests", Msg: err.Error()}
 		}

@@ -33,17 +33,23 @@ func rules(group string, rs ...acl.Rule) acl.Document {
 	return acl.Document{Rules: rs}
 }
 
+// localGroup is the group of the "local networks" template, localNets
+// the networks it rejects.
+const localGroup = "Локальные сети"
+
+var localNets = []string{"127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10"}
+
 // Builtins are the templates HyRoute ships.
 func Builtins() []Template {
 	var local []acl.Rule
-	for _, cidr := range []string{"127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10"} {
+	for _, cidr := range localNets {
 		local = append(local, acl.Rule{Outbound: "reject", Address: cidr})
 	}
 	return []Template{
 		{
 			ID: "builtin:local", Name: "Блок локальных сетей", Builtin: true,
 			Description: "Клиенты не попадут на сам сервер (службы на 127.0.0.1) и в сети вокруг него, в том числе к адресу метаданных облака 169.254.169.254. Ставьте в начало.",
-			ACL:         rules("Локальные сети", local...),
+			ACL:         rules(localGroup, local...),
 		},
 		{
 			ID: "builtin:ads", Name: "Блок рекламы", Builtin: true,

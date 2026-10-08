@@ -257,6 +257,13 @@ func header(group string) string {
 	return groupMark + " " + group
 }
 
+// GroupHeader is the line that starts group ("": the rules after it are
+// in no group).
+func GroupHeader(group string) string { return header(group) }
+
+// HeaderOf reads a group header line: the group it starts.
+func HeaderOf(line string) (string, bool) { return groupHeader(line) }
+
 // groupAfter is the group after the headers among lines, from group.
 func groupAfter(lines []string, group string) string {
 	for _, l := range lines {

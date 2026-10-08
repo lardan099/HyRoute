@@ -126,6 +126,54 @@ func (s *server) checkRouting(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v)
 }
 
+// routingServices is the «По сервисам» tab for the editor's draft ({acl}):
+// the catalog's services the controller's geo databases have the
+// categories of, and the builder's group of the draft read back.
+func (s *server) routingServices(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.routingServer(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		ACL acl.Document `json:"acl"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		writeError(w, err)
+		return
+	}
+	v, err := s.routing().Services(r.Context(), id, in.ACL)
+	if err != nil {
+		s.fail(w, r, configError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+// buildRoutingServices puts the group built of a choice per service into
+// the editor's draft; nothing is stored. A group changed by hand is
+// replaced only with overwrite: 409 services_edited says what changed.
+func (s *server) buildRoutingServices(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.routingServer(w, r)
+	if !ok {
+		return
+	}
+	var in routing.ServicesInput
+	if err := readJSON(r, &in); err != nil {
+		writeError(w, err)
+		return
+	}
+	res, err := s.routing().BuildServices(r.Context(), id, in)
+	var edited *routing.ServicesEditedError
+	if errors.As(err, &edited) {
+		writeError(w, &Error{Status: http.StatusConflict, Code: "services_edited", Message: edited.Error()})
+		return
+	} else if err != nil {
+		s.fail(w, r, configError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 // exportRouting is the server's routing for download: JSON (format=json,
 // the default) or the rules as Hysteria reads them (format=text).
 func (s *server) exportRouting(w http.ResponseWriter, r *http.Request) {

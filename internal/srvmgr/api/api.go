@@ -148,6 +148,8 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/servers/{id}/routing/preview", s.authed(anyRole, s.previewRouting))
 	mux.HandleFunc("POST /api/v1/servers/{id}/routing/apply", s.authed(anyRole, s.applyRouting))
 	mux.HandleFunc("POST /api/v1/servers/{id}/routing/check", s.authed(anyRole, s.checkRouting))
+	mux.HandleFunc("POST /api/v1/servers/{id}/routing/services", s.authed(anyRole, s.routingServices))
+	mux.HandleFunc("POST /api/v1/servers/{id}/routing/services/build", s.authed(anyRole, s.buildRoutingServices))
 	mux.HandleFunc("GET /api/v1/servers/{id}/routing/export", s.authed(writers, s.exportRouting))
 	mux.HandleFunc("GET /api/v1/servers/{id}/routing/file", s.authed(writers, s.routingFile))
 	mux.HandleFunc("POST /api/v1/routing/import", s.authed(anyRole, s.importRouting))
