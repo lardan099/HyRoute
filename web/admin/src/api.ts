@@ -160,6 +160,16 @@ export interface KeyCheck {
   unused: number[];
 }
 
+// DiagFiles lists the files of the diagnostic bundle before its download.
+export interface DiagFiles {
+  name: string;
+  jobs: number;
+  // controllerLog: the bundle has the panel's log buffer.
+  controllerLog: boolean;
+  size: number;
+  files: { name: string; about: string; size: number }[];
+}
+
 export type AuthType = 'password' | 'key';
 export type ServerRole = 'standalone' | 'entry' | 'relay' | 'exit';
 export type ServerState = 'new' | 'deploying' | 'healthy' | 'degraded' | 'offline' | 'needs_attention';
@@ -1060,6 +1070,7 @@ export const api = {
     const qs = q.toString();
     return request<{ entries: AuditEntry[]; next: number }>('GET', '/audit' + (qs ? '?' + qs : ''));
   },
+  diag: (jobs: number) => request<DiagFiles>('GET', `/diag?jobs=${jobs}`),
   servers: () => request<Server[]>('GET', '/servers'),
   server: (id: number) => request<Server>('GET', `/servers/${id}`),
   createServer: (s: ServerInput) => request<Server>('POST', '/servers', s),

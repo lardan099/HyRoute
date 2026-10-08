@@ -2,10 +2,11 @@
   import { onMount } from 'svelte';
   import { api, asApiError, type ApiError, type SessionInfo, type User } from '../api';
   import { locale, t, type Key } from '../i18n';
-  import { canManageUsers, session, signedOut } from '../session.svelte';
+  import { canDiagnose, canManageUsers, session, signedOut } from '../session.svelte';
   import BackupCard from '../lib/BackupCard.svelte';
   import PasswordDialog from '../lib/PasswordDialog.svelte';
   import UsersCard from '../lib/UsersCard.svelte';
+  import DiagCard from '../lib/DiagCard.svelte';
 
   let users = $state<User[]>([]);
   let sessions = $state<SessionInfo[]>([]);
@@ -114,6 +115,12 @@
 {#if manage}
   <section class="card">
     <BackupCard />
+  </section>
+{/if}
+
+{#if canDiagnose(session.user)}
+  <section class="card">
+    <DiagCard />
   </section>
 {/if}
 

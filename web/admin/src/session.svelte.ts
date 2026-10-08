@@ -46,3 +46,5 @@ export const canManageUsers = (u: User | null) => !!u && (u.role === 'owner' || 
 export const canForce = (u: User | null) => !!u && (u.role === 'owner' || u.role === 'admin');
 // canBackup: copies of the database are the owner's.
 export const canBackup = (u: User | null) => !!u && u.role === 'owner';
+// canDiagnose: the diagnostic bundle is for owners and admins.
+export const canDiagnose = (u: User | null) => !!u && (u.role === 'owner' || u.role === 'admin');
