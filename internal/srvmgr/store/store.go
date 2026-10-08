@@ -52,6 +52,7 @@ type Store interface {
 	Events
 	AlertChannels
 	Drifts
+	Batches
 	Close() error
 }
 
@@ -359,4 +360,22 @@ type AlertChannels interface {
 	ListAlertChannels(ctx context.Context) ([]model.AlertChannel, error)
 	// AlertChannelSecret is the sealed secret (nil: none).
 	AlertChannelSecret(ctx context.Context, id int64) ([]byte, error)
+}
+
+// Batches stores bulk operations (P4-07): a batch with its servers in
+// order and the job of each.
+type Batches interface {
+	// CreateBatch inserts b with its items, setting b.ID.
+	CreateBatch(ctx context.Context, b *model.Batch) error
+	// BatchByID is a batch with its items.
+	BatchByID(ctx context.Context, id int64) (model.Batch, error)
+	// ListBatches are the batches f selects, newest first, with their
+	// items (Limit: 1 to 500, 100 by default).
+	ListBatches(ctx context.Context, f model.BatchFilter) ([]model.Batch, error)
+	// UnfinishedBatches are the running and stopping batches, oldest
+	// first.
+	UnfinishedBatches(ctx context.Context) ([]model.Batch, error)
+	// SaveBatch writes the state, stop, times and every item of b,
+	// atomically.
+	SaveBatch(ctx context.Context, b model.Batch) error
 }
