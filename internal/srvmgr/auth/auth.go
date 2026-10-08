@@ -93,8 +93,9 @@ type Service struct {
 	failures atomic.Int64  // failed attempts audited (see auditFailure)
 
 	mu        sync.Mutex
-	setupHash []byte // SHA-256 of the one-time setup token, nil if none
-	dummy     string // hash verified for unknown users (same timing)
+	setupHash []byte        // SHA-256 of the one-time setup token, nil if none
+	dummy     string        // hash verified for unknown users (same timing)
+	ended     chan struct{} // closed when sessions end (see Revocations)
 }
 
 // New returns a service with the default parameters.
@@ -194,6 +195,10 @@ func validateCredentials(username, password string) error {
 	if !usernameRe.MatchString(username) {
 		return &model.FieldError{Field: "username", Msg: "Имя пользователя: от 1 до 64 символов, латинские буквы, цифры, точка, дефис и подчёркивание."}
 	}
+	return validatePassword(password)
+}
+
+func validatePassword(password string) error {
 	if n := utf8.RuneCountInString(password); n < MinPasswordLen || len(password) > MaxPasswordLen {
 		return &model.FieldError{Field: "password", Msg: fmt.Sprintf("Пароль: не короче %d символов.", MinPasswordLen)}
 	}
@@ -237,7 +242,7 @@ func (s *Service) Setup(ctx context.Context, token, username, password string, m
 	if err != nil {
 		return Issued{}, err
 	}
-	u := model.User{Username: username, PasswordHash: hash, Role: model.RoleOwner, CreatedAt: now, UpdatedAt: now}
+	u := model.User{Username: username, PasswordHash: hash, Role: model.RoleOwner, CreatedAt: now, UpdatedAt: now, LastLoginAt: now}
 	if err := s.Store.CreateFirstUser(ctx, &u); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return Issued{}, ErrSetupDone
@@ -302,6 +307,9 @@ func (s *Service) Login(ctx context.Context, username, password string, m Meta) 
 	s.limits.succeeded(a)
 	if fresh != "" {
 		s.Store.UpdatePasswordHash(ctx, u.ID, fresh, now)
+	}
+	if s.Store.SetLastLogin(ctx, u.ID, now) == nil {
+		u.LastLoginAt = now
 	}
 	s.audit(ctx, u.ID, "login", u.Username, "from "+m.IP)
 	return s.issue(ctx, u, m, now)
@@ -385,7 +393,34 @@ func (s *Service) authenticate(ctx context.Context, token string, touch bool) (P
 // Logout revokes the session of p.
 func (s *Service) Logout(ctx context.Context, p Principal) error {
 	s.audit(ctx, p.User.ID, "logout", p.User.Username, "")
-	return s.Store.RevokeSession(ctx, p.Session.ID, s.Now())
+	err := s.Store.RevokeSession(ctx, p.Session.ID, s.Now())
+	s.sessionsEnded()
+	return err
+}
+
+// Revocations returns a channel closed when sessions end next: a logout, a
+// revoked session, a changed password, a blocked or deleted user. A live
+// event stream then rechecks its session at once instead of at its next
+// keepalive. Take the next channel before rechecking, so sessions that
+// end meanwhile are not missed.
+func (s *Service) Revocations() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ended == nil {
+		s.ended = make(chan struct{})
+	}
+	return s.ended
+}
+
+// sessionsEnded wakes the waiters of Revocations; the sessions are already
+// ended in the store.
+func (s *Service) sessionsEnded() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ended != nil {
+		close(s.ended)
+		s.ended = nil
+	}
 }
 
 // Sessions lists live sessions: all of them for owners and admins when all
@@ -423,12 +458,15 @@ func (s *Service) RevokeSession(ctx context.Context, p Principal, id int64) erro
 	if sess.UserID != p.User.ID && !p.User.Role.CanManageUsers() {
 		return ErrForbidden
 	}
-	s.audit(ctx, p.User.ID, "session_revoked", fmt.Sprint(id), "")
-	return s.Store.RevokeSession(ctx, id, s.Now())
+	s.audit(ctx, p.User.ID, "session_revoked", userTarget(sess.UserID), fmt.Sprint("session ", id))
+	err = s.Store.RevokeSession(ctx, id, s.Now())
+	s.sessionsEnded()
+	return err
 }
 
 // CreateUser adds an admin, operator or read-only user; only owners and
-// admins may, and nobody creates a second owner.
+// admins may. An owner is made of an existing user (UpdateUser,
+// TransferOwner), not created.
 func (s *Service) CreateUser(ctx context.Context, p Principal, username, password string, role model.Role) (model.User, error) {
 	if !p.User.Role.CanManageUsers() {
 		return model.User{}, ErrForbidden
@@ -456,7 +494,7 @@ func (s *Service) CreateUser(ctx context.Context, p Principal, username, passwor
 		}
 		return model.User{}, err
 	}
-	s.audit(ctx, p.User.ID, "user_created", u.Username, string(role))
+	s.audit(ctx, p.User.ID, "user_created", userTarget(u.ID), u.Username+": "+string(role))
 	return u, nil
 }
 

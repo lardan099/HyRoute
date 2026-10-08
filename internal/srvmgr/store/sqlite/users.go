@@ -67,8 +67,8 @@ func scanUser(r rowScanner) (model.User, error) {
 func insertUser(ctx context.Context, q interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }, u *model.User) error {
-	res, err := q.ExecContext(ctx, `INSERT INTO users (username, password_hash, role, disabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		u.Username, u.PasswordHash, string(u.Role), u.Disabled, unixTime(u.CreatedAt), unixTime(u.UpdatedAt))
+	res, err := q.ExecContext(ctx, `INSERT INTO users (username, password_hash, role, disabled, created_at, updated_at, last_login_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		u.Username, u.PasswordHash, string(u.Role), u.Disabled, unixTime(u.CreatedAt), unixTime(u.UpdatedAt), unixTime(u.LastLoginAt))
 	if err != nil {
 		return conflict(err)
 	}
