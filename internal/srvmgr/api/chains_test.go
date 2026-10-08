@@ -352,3 +352,58 @@ func TestChainThreeNodesAPI(t *testing.T) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 }
+
+// Hop by hop: each link shows its latest check, the chain the worst of
+// them and the sum of their handshakes, and the egress is the last
+// server's address.
+func TestChainHopsHealthAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	var ids []int64
+	for i, name := range []string{"Entry", "Relay", "Exit"} {
+		rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": name, "host": "192.0.2.5" + strconv.Itoa(i), "authType": "password", "password": fakeSSHPass}, nil)
+		var srv serverJSON
+		json.Unmarshal(rec.Body.Bytes(), &srv)
+		c := model.ServerConfig{ServerID: srv.ID, SHA256: "x", Meta: model.ConfigMeta{Auth: "password"}, Source: model.ConfigDeploy, At: time.Now()}
+		e.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) {
+			return e.keys.Seal([]byte("listen: :443\nauth:\n  type: password\n  password: fake-hops-api\n"), model.ConfigContext(srv.ID, rev))
+		})
+		e.db.AddHealth(ctx, model.Health{ServerID: srv.ID, At: time.Now(), Status: model.StateHealthy, UDP: model.UDPOK, Egress: "203.0.113.1" + strconv.Itoa(i)})
+		ids = append(ids, srv.ID)
+	}
+	rec := owner.do("POST", "/api/v1/chains", map[string]any{"name": "Три", "nodes": ids}, nil)
+	var ch chainJSON
+	json.Unmarshal(rec.Body.Bytes(), &ch)
+	id := strconv.FormatInt(ch.ID, 10)
+	c, _ := e.db.ChainByID(ctx, ch.ID)
+	for _, l := range c.Links {
+		l.State = model.LinkActive
+		e.db.UpdateLink(ctx, l)
+	}
+	e.db.AddLinkCheck(ctx, model.LinkCheck{ChainID: ch.ID, Idx: 0, At: time.Unix(1_700_000_000, 0), Status: model.StateHealthy, HandshakeMillis: 30, TCPMillis: 90})
+	rec = owner.do("GET", "/api/v1/chains/"+id, nil, nil)
+	json.Unmarshal(rec.Body.Bytes(), &ch)
+	if ch.Health != model.StateHealthy || ch.LatencyMs != 0 || ch.Links[0].Check == nil || ch.Links[1].Check != nil || ch.Egress != "203.0.113.12" {
+		t.Fatalf("one hop checked: %s", rec.Body)
+	}
+	e.db.AddLinkCheck(ctx, model.LinkCheck{ChainID: ch.ID, Idx: 1, At: time.Unix(1_700_000_000, 0), Status: model.StateDegraded, Reason: "медленно", HandshakeMillis: 50})
+	rec = owner.do("GET", "/api/v1/chains/"+id, nil, nil)
+	json.Unmarshal(rec.Body.Bytes(), &ch)
+	if ch.Health != model.StateDegraded || ch.LatencyMs != 80 || ch.Links[1].Check == nil || ch.Links[1].Check.HandshakeMs != 50 || ch.Egress != "203.0.113.12" {
+		t.Fatalf("both hops: %s", rec.Body)
+	}
+	e.db.AddLinkCheck(ctx, model.LinkCheck{ChainID: ch.ID, Idx: 1, At: time.Unix(1_700_000_060, 0), Status: model.StateOffline, Reason: "сервер «Exit» не отвечает"})
+	rec = owner.do("GET", "/api/v1/chains", nil, nil)
+	var list []chainJSON
+	json.Unmarshal(rec.Body.Bytes(), &list)
+	if len(list) != 1 || list[0].Health != model.StateOffline || list[0].LatencyMs != 0 || list[0].Egress != "" || list[0].Links[0].Check.Status != model.StateHealthy {
+		t.Fatalf("the last hop offline: %s", rec.Body)
+	}
+	rec = owner.do("GET", "/api/v1/chains/"+id+"/checks?idx=1", nil, nil)
+	var checks []linkCheckJSON
+	json.Unmarshal(rec.Body.Bytes(), &checks)
+	if len(checks) != 2 || checks[0].Status != model.StateOffline {
+		t.Fatalf("checks of hop 2: %s", rec.Body)
+	}
+}

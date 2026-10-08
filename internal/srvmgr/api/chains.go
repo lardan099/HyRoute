@@ -24,11 +24,14 @@ type chainJSON struct {
 	Name  string          `json:"name"`
 	Notes string          `json:"notes"`
 	State model.LinkState `json:"state"`
-	// Health is the worst latest check of its deployed links ("": none
-	// checked yet).
+	// Health is the worst latest check of its deployed links, hop by hop
+	// ("": none checked yet).
 	Health model.ServerState `json:"health"`
-	// Egress is the exit's address out, when the exit sends straight out
-	// (its first outbound is direct) and the chain is not offline.
+	// LatencyMs is the sum of the latest handshakes of its links, from
+	// the entry to the exit (0: a deployed link has no answered check).
+	LatencyMs int `json:"latencyMs"`
+	// Egress is the address out of the last server, when it sends straight
+	// out (its first outbound is direct) and the chain is not offline.
 	Egress string          `json:"egress"`
 	Nodes  []chainNodeJSON `json:"nodes"`
 	Links  []chainLinkJSON `json:"links"`
@@ -380,23 +383,34 @@ func (s *server) forceDelete(w http.ResponseWriter, r *http.Request, id int64, d
 	writeJSON(w, http.StatusAccepted, toJobJSON(j))
 }
 
-// linkHealth adds the latest check of each deployed link, the chain's health
-// (the worst of them) and its egress address.
+// linkHealth adds the latest check of each deployed link (each hop is
+// checked from the server it starts at), the chain's health (the worst of
+// them), its latency (the sum of their handshakes) and its egress
+// address.
 func (s *server) linkHealth(r *http.Request, out *chainJSON, c model.Chain) {
 	ctx := r.Context()
 	rank := map[model.ServerState]int{model.StateHealthy: 1, model.StateDegraded: 2, model.StateOffline: 3}
+	total, every := 0, true
 	for i, l := range c.Links {
 		if i >= len(out.Links) || (l.State != model.LinkActive && l.State != model.LinkStale) {
 			continue
 		}
 		cs, err := s.Store.LinkChecks(ctx, c.ID, l.Idx, time.Time{}, 1)
 		if err != nil || len(cs) == 0 {
+			every = false
 			continue
 		}
 		out.Links[i].Check = toLinkCheckJSON(cs[0])
 		if rank[cs[0].Status] > rank[out.Health] {
 			out.Health = cs[0].Status
 		}
+		if cs[0].Status == model.StateOffline || cs[0].HandshakeMillis == 0 {
+			every = false
+		}
+		total += cs[0].HandshakeMillis
+	}
+	if every && total > 0 {
+		out.LatencyMs = total
 	}
 	if out.Health == "" || out.Health == model.StateOffline || !s.directOut(r, c.Exit()) {
 		return
@@ -418,6 +432,35 @@ func (s *server) directOut(r *http.Request, id int64) bool {
 	}
 	c, err := hyconfig.ParseServer(b)
 	return err == nil && cascade.DirectOut(c)
+}
+
+// checkFrom checks the deployed links that start at server sid now; false:
+// the answer is written (a failure).
+func (s *server) checkFrom(w http.ResponseWriter, r *http.Request, sid int64) bool {
+	srv, err := s.Store.ServerByID(r.Context(), sid)
+	if err != nil {
+		s.fail(w, r, mapError(err))
+		return false
+	}
+	release, ok := s.sshSlot(w, r, srv.ID, false)
+	if !ok {
+		return false
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	ex, err := s.Connect.Connect(ctx, srv.ID)
+	if err != nil {
+		s.fail(w, r, mapError(err))
+		return false
+	}
+	defer ex.Close()
+	k := &cascade.Checker{Store: s.Store, Keys: s.Keys}
+	if _, err := k.CheckLinks(ctx, srv, ex); err != nil {
+		s.fail(w, r, mapError(err))
+		return false
+	}
+	return true
 }
 
 // chainChecks is the check history of a chain's link (?idx=, ?limit=,
@@ -454,8 +497,9 @@ func (s *server) chainChecks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// checkChain checks the chain's links now, from the entry, as the
-// monitor does each round, and returns the chain with the result.
+// checkChain checks the chain's links now, each from the server it
+// starts at (the entry, then the relays), as the monitor does each round,
+// and returns the chain with the results.
 func (s *server) checkChain(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok || s.Connect == nil {
@@ -471,28 +515,19 @@ func (s *server) checkChain(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, &Error{Status: http.StatusConflict, Code: "chain_busy", Message: "Задание каскада ещё идёт: проверка — после него."})
 		return
 	}
-	entry, err := s.Store.ServerByID(r.Context(), c.Entry())
-	if err != nil {
-		s.fail(w, r, mapError(err))
-		return
+	var from []int64
+	for _, l := range c.Links {
+		if (l.State == model.LinkActive || l.State == model.LinkStale) && !slices.Contains(from, l.From) {
+			from = append(from, l.From)
+		}
 	}
-	release, ok := s.sshSlot(w, r, entry.ID, false)
-	if !ok {
-		return
+	if len(from) == 0 {
+		from = []int64{c.Entry()}
 	}
-	defer release()
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-	defer cancel()
-	ex, err := s.Connect.Connect(ctx, entry.ID)
-	if err != nil {
-		s.fail(w, r, mapError(err))
-		return
-	}
-	defer ex.Close()
-	k := &cascade.Checker{Store: s.Store, Keys: s.Keys}
-	if _, err := k.CheckLinks(ctx, entry, ex); err != nil {
-		s.fail(w, r, mapError(err))
-		return
+	for _, sid := range from {
+		if !s.checkFrom(w, r, sid) {
+			return
+		}
 	}
 	if c, err = s.Store.ChainByID(r.Context(), id); err != nil {
 		s.fail(w, r, mapError(err))

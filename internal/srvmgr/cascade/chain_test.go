@@ -581,3 +581,52 @@ func TestChainForceDeleteWithoutRelay(t *testing.T) {
 		t.Fatalf("log:\n%s", log)
 	}
 }
+
+// Each hop is checked from the server it starts at: the entry checks the
+// link to the relay, the relay the link to the exit. A hop that does not
+// work names its servers, and only the server it starts at is degraded
+// for it.
+func TestChainChecksPerHop(t *testing.T) {
+	w := three(t)
+	ctx := context.Background()
+	if j, log := w.deploy(); j.State != model.JobCompleted {
+		t.Fatalf("%s\n%s", j.ErrorMessage, log)
+	}
+	k := &Checker{Store: w.db, Keys: w.keys}
+	for i, h := range w.hosts {
+		srv, _ := w.db.ServerByID(ctx, w.ids[i])
+		if has := k.HasLinks(ctx, srv.ID); has != (i < 2) {
+			t.Fatalf("%s has links: %v", srv.Name, has)
+		}
+		if down, err := k.CheckLinks(ctx, srv, h); err != nil || down != "" {
+			t.Fatalf("%s: %q %v", srv.Name, down, err)
+		}
+	}
+	for idx := range 2 {
+		cs, _ := w.db.LinkChecks(ctx, w.chain, idx, time.Time{}, 10)
+		if len(cs) != 1 || cs[0].Status != model.StateHealthy || cs[0].HandshakeMillis != 42 {
+			t.Fatalf("checks of link %d: %+v", idx, cs)
+		}
+	}
+
+	// The exit stops answering: the relay's link is offline, the entry's
+	// is not checked through it.
+	w.exit.mu.Lock()
+	w.exit.down = true
+	w.exit.mu.Unlock()
+	relay, _ := w.db.ServerByID(ctx, w.ids[1])
+	down, err := k.CheckLinks(ctx, relay, w.hosts[1])
+	if err != nil || down != "каскад до «Exit» не работает: сервер «Exit» не отвечает клиенту связи (failed to initialize client: timeout: no recent network activity)" {
+		t.Fatalf("relay: %q %v", down, err)
+	}
+	entry, _ := w.db.ServerByID(ctx, w.ids[0])
+	if down, err := k.CheckLinks(ctx, entry, w.hosts[0]); err != nil || down != "" {
+		t.Fatalf("entry: %q %v", down, err)
+	}
+	if cs, _ := w.db.LinkChecks(ctx, w.chain, 1, time.Time{}, 1); len(cs) != 1 || cs[0].Status != model.StateOffline {
+		t.Fatalf("link 1: %+v", cs)
+	}
+	if cs, _ := w.db.LinkChecks(ctx, w.chain, 0, time.Time{}, 1); len(cs) != 1 || cs[0].Status != model.StateHealthy {
+		t.Fatalf("link 0: %+v", cs)
+	}
+}
