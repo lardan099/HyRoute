@@ -187,6 +187,9 @@ func TestWebhookGlueAndSign(t *testing.T) {
 	e.webhook(s.URL)
 	other, so := newHook(t)
 	e.webhook(so.URL, model.EventDisk)
+	// A window the six notices surely fall in, also on a loaded machine:
+	// at 50 ms the store's writes of a busy test run took longer.
+	e.n.Glue = time.Second
 	e.start()
 	for i := range 5 {
 		e.raise("server:"+strconv.Itoa(i), model.EventServer)
