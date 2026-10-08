@@ -376,17 +376,26 @@ func (s *Service) ChangePassword(ctx context.Context, p Principal, current, pass
 	if err != nil {
 		return Issued{}, err
 	}
+	// current was verified against the hash read with the session: the
+	// change goes through only while that hash is stored and the session
+	// live. A reset, another change or a revocation that committed since
+	// wins (they ended this session).
 	var me model.User
-	err = s.Store.ChangeUsers(ctx, s.Now(), func(all []model.User) ([]model.User, []int64, error) {
+	err = s.Store.ChangeUsersFor(ctx, s.Now(), p.Session.ID, func(all []model.User) ([]model.User, []int64, error) {
 		u, err := caller(all, p)
 		if err != nil {
 			return nil, nil, err
+		}
+		if u.PasswordHash != p.User.PasswordHash {
+			return nil, nil, ErrUnauthenticated
 		}
 		u.PasswordHash = hash
 		me = u
 		return []model.User{u}, []int64{u.ID}, nil
 	})
-	if err != nil {
+	if errors.Is(err, store.ErrNotFound) {
+		return Issued{}, ErrUnauthenticated
+	} else if err != nil {
 		return Issued{}, err
 	}
 	s.sessionsEnded()

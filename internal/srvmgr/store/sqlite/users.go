@@ -152,13 +152,13 @@ func listUsers(ctx context.Context, q interface {
 	return us, rows.Err()
 }
 
-func (d *DB) UpdatePasswordHash(ctx context.Context, id int64, hash string, at time.Time) error {
-	res, err := d.db.ExecContext(ctx, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`, hash, unixTime(at), id)
+func (d *DB) UpdatePasswordHash(ctx context.Context, id int64, old, hash string, at time.Time) error {
+	res, err := d.db.ExecContext(ctx, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ? AND password_hash = ?`, hash, unixTime(at), id, old)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return store.ErrNotFound
+		return store.ErrConflict
 	}
 	return nil
 }
@@ -180,7 +180,29 @@ func (d *DB) SetLastLogin(ctx context.Context, id int64, at time.Time) error {
 }
 
 func (d *DB) ChangeUsers(ctx context.Context, at time.Time, change func(all []model.User) ([]model.User, []int64, error)) error {
+	return d.changeUsers(ctx, at, nil, change)
+}
+
+func (d *DB) ChangeUsersFor(ctx context.Context, at time.Time, session int64, change func(all []model.User) ([]model.User, []int64, error)) error {
+	return d.changeUsers(ctx, at, func(t *sql.Tx) error {
+		var live bool
+		err := t.QueryRowContext(ctx, `SELECT revoked_at IS NULL AND expires_at > ? FROM sessions WHERE id = ?`, unixTime(at), session).Scan(&live)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && !live {
+			return store.ErrNotFound
+		}
+		return err
+	}, change)
+}
+
+// changeUsers is ChangeUsers once pre, when given, accepts the state in
+// the same transaction.
+func (d *DB) changeUsers(ctx context.Context, at time.Time, pre func(*sql.Tx) error, change func(all []model.User) ([]model.User, []int64, error)) error {
 	return d.tx(ctx, func(t *sql.Tx) error {
+		if pre != nil {
+			if err := pre(t); err != nil {
+				return err
+			}
+		}
 		all, err := listUsers(ctx, t)
 		if err != nil {
 			return err
@@ -244,14 +266,24 @@ func scanSession(r rowScanner) (model.Session, error) {
 	return s, err
 }
 
-func (d *DB) CreateSession(ctx context.Context, s *model.Session) error {
-	res, err := d.db.ExecContext(ctx, `INSERT INTO sessions (token_hash, user_id, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		s.TokenHash, s.UserID, unixTime(s.CreatedAt), unixTime(s.LastSeenAt), unixTime(s.ExpiresAt), nullUnix(s.RevokedAt), s.IP, s.UserAgent)
-	if err != nil {
-		return conflict(err)
-	}
-	s.ID, err = res.LastInsertId()
-	return err
+func (d *DB) CreateSessionIf(ctx context.Context, s *model.Session, hash string) error {
+	return d.tx(ctx, func(t *sql.Tx) error {
+		var have string
+		var disabled bool
+		err := t.QueryRowContext(ctx, `SELECT password_hash, disabled FROM users WHERE id = ?`, s.UserID).Scan(&have, &disabled)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && (have != hash || disabled) {
+			return store.ErrConflict
+		} else if err != nil {
+			return err
+		}
+		res, err := t.ExecContext(ctx, `INSERT INTO sessions (token_hash, user_id, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			s.TokenHash, s.UserID, unixTime(s.CreatedAt), unixTime(s.LastSeenAt), unixTime(s.ExpiresAt), nullUnix(s.RevokedAt), s.IP, s.UserAgent)
+		if err != nil {
+			return conflict(err)
+		}
+		s.ID, err = res.LastInsertId()
+		return err
+	})
 }
 
 func (d *DB) SessionByTokenHash(ctx context.Context, hash []byte) (model.Session, error) {

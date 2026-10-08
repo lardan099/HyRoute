@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -46,8 +47,12 @@ func TestUsers(t *testing.T) {
 	if n, _ := d.CountUsers(ctx); n != 2 {
 		t.Fatalf("count %d", n)
 	}
-	if err := d.UpdatePasswordHash(ctx, ro.ID, "h5", now); err != nil {
+	if err := d.UpdatePasswordHash(ctx, ro.ID, "h4", "h5", now); err != nil {
 		t.Fatal(err)
+	}
+	// A rehash of a hash replaced meanwhile writes nothing.
+	if err := d.UpdatePasswordHash(ctx, ro.ID, "h4", "h6", now); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("stale rehash: %v", err)
 	}
 	if u, _ := d.UserByID(ctx, ro.ID); u.PasswordHash != "h5" {
 		t.Fatalf("hash %q", u.PasswordHash)
@@ -95,7 +100,26 @@ func TestSessions(t *testing.T) {
 	u := model.User{Username: "a", PasswordHash: "h", Role: model.RoleOwner}
 	d.CreateUser(ctx, &u)
 	s := model.Session{TokenHash: []byte{1, 2, 3}, UserID: u.ID, CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(time.Hour), IP: "127.0.0.1"}
-	if err := d.CreateSession(ctx, &s); err != nil || s.ID == 0 {
+	// Only while the user has the hash verified and is not blocked.
+	for _, hash := range []string{"other", ""} {
+		if err := d.CreateSessionIf(ctx, &s, hash); !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("hash %q: %v", hash, err)
+		}
+	}
+	gone := s
+	gone.UserID = 999
+	if err := d.CreateSessionIf(ctx, &gone, "h"); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("no user: %v", err)
+	}
+	d.SetUserDisabled(ctx, u.ID, true, now)
+	if err := d.CreateSessionIf(ctx, &s, "h"); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("blocked: %v", err)
+	}
+	d.SetUserDisabled(ctx, u.ID, false, now)
+	if ss, _ := d.ListSessions(ctx, 0, now); len(ss) != 0 {
+		t.Fatalf("refused sessions stored: %+v", ss)
+	}
+	if err := d.CreateSessionIf(ctx, &s, "h"); err != nil || s.ID == 0 {
 		t.Fatal(err)
 	}
 	got, err := d.SessionByTokenHash(ctx, []byte{1, 2, 3})
@@ -204,7 +228,7 @@ func TestChangeUsers(t *testing.T) {
 	d.CreateUser(ctx, &b)
 	for i, id := range []int64{a.ID, a.ID, b.ID} {
 		s := model.Session{TokenHash: []byte{byte(i)}, UserID: id, CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(time.Hour)}
-		if err := d.CreateSession(ctx, &s); err != nil {
+		if err := d.CreateSessionIf(ctx, &s, "h"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -294,6 +318,48 @@ func TestChangeUsers(t *testing.T) {
 	}
 	if err := d.DeleteUser(ctx, a.ID, func([]model.User) error { return nil }); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("delete twice: %v", err)
+	}
+}
+
+// ChangeUsersFor changes users only while the session it acts for is
+// live: one revoked, expired or gone meanwhile writes nothing.
+func TestChangeUsersFor(t *testing.T) {
+	d, _ := openTemp(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0)
+	u := model.User{Username: "a", PasswordHash: "h", Role: model.RoleOwner, CreatedAt: now, UpdatedAt: now}
+	d.CreateUser(ctx, &u)
+	s := model.Session{TokenHash: []byte{1}, UserID: u.ID, CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(time.Hour)}
+	if err := d.CreateSessionIf(ctx, &s, "h"); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	change := func(at time.Time, session int64) error {
+		return d.ChangeUsersFor(ctx, at, session, func(all []model.User) ([]model.User, []int64, error) {
+			n++
+			x := all[0]
+			x.PasswordHash = fmt.Sprint("h", n)
+			return []model.User{x}, nil, nil
+		})
+	}
+	for name, err := range map[string]error{
+		"expired": change(now.Add(time.Hour), s.ID),
+		"no id":   change(now, 0),
+		"gone":    change(now, 999),
+	} {
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	if err := change(now, s.ID); err != nil {
+		t.Fatal(err)
+	}
+	d.RevokeSession(ctx, s.ID, now)
+	if err := change(now, s.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("revoked: %v", err)
+	}
+	if got, _ := d.UserByID(ctx, u.ID); got.PasswordHash != "h1" || n != 1 {
+		t.Fatalf("hash %q after %d changes", got.PasswordHash, n)
 	}
 }
 

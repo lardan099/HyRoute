@@ -305,14 +305,24 @@ func (s *Service) Login(ctx context.Context, username, password string, m Meta) 
 		return Issued{}, ErrBadCredentials
 	}
 	s.limits.succeeded(a)
-	if fresh != "" {
-		s.Store.UpdatePasswordHash(ctx, u.ID, fresh, now)
+	// The rehash replaces only the hash just verified: a reset that
+	// committed meanwhile stays.
+	if fresh != "" && s.Store.UpdatePasswordHash(ctx, u.ID, u.PasswordHash, fresh, now) == nil {
+		u.PasswordHash = fresh
 	}
 	if s.Store.SetLastLogin(ctx, u.ID, now) == nil {
 		u.LastLoginAt = now
 	}
+	is, err := s.issue(ctx, u, m, now)
+	if errors.Is(err, ErrUnauthenticated) {
+		// The password was reset or changed, or the user blocked, while
+		// it was being checked: it no longer lets them in.
+		return Issued{}, ErrBadCredentials
+	} else if err != nil {
+		return Issued{}, err
+	}
 	s.audit(ctx, u.ID, "login", u.Username, "from "+m.IP)
-	return s.issue(ctx, u, m, now)
+	return is, nil
 }
 
 // dummyHash is a real hash with the current parameters, so a login with an
@@ -327,6 +337,9 @@ func (s *Service) dummyHash() string {
 	return s.dummy
 }
 
+// issue opens a session of u, which a password has just verified against
+// u.PasswordHash: only while the user still has that hash and is not
+// blocked (store.Sessions.CreateSessionIf), ErrUnauthenticated otherwise.
 func (s *Service) issue(ctx context.Context, u model.User, m Meta, now time.Time) (Issued, error) {
 	tok, err := randomToken()
 	if err != nil {
@@ -337,7 +350,9 @@ func (s *Service) issue(ctx context.Context, u model.User, m Meta, now time.Time
 		ua = ua[:256]
 	}
 	sess := model.Session{TokenHash: tokenHash(tok), UserID: u.ID, CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(s.MaxAge), IP: m.IP, UserAgent: ua}
-	if err := s.Store.CreateSession(ctx, &sess); err != nil {
+	if err := s.Store.CreateSessionIf(ctx, &sess, u.PasswordHash); errors.Is(err, store.ErrConflict) {
+		return Issued{}, ErrUnauthenticated
+	} else if err != nil {
 		return Issued{}, err
 	}
 	return Issued{Token: tok, CSRF: CSRFToken(tok), User: u, Session: sess}, nil

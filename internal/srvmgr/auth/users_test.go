@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
@@ -451,5 +452,129 @@ func TestUserScope(t *testing.T) {
 	}
 	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("audit:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// hooked runs a function once in the middle of a login, after the
+// password was verified, as a concurrent request would.
+type hooked struct {
+	*sqlite.DB
+	onLastLogin  func()
+	onUpdateHash func()
+}
+
+func (h *hooked) SetLastLogin(ctx context.Context, id int64, at time.Time) error {
+	if f := h.onLastLogin; f != nil {
+		h.onLastLogin = nil
+		f()
+	}
+	return h.DB.SetLastLogin(ctx, id, at)
+}
+
+func (h *hooked) UpdatePasswordHash(ctx context.Context, id int64, old, hash string, at time.Time) error {
+	if f := h.onUpdateHash; f != nil {
+		h.onUpdateHash = nil
+		f()
+	}
+	return h.DB.UpdatePasswordHash(ctx, id, old, hash, at)
+}
+
+// A reset, a change of the password or a block that commits while a
+// login with the old password is being checked wins: the login opens no
+// session (one opened after the revocation would outlive it, after an
+// unblock too).
+func TestLoginRacesUserChange(t *testing.T) {
+	const newPass = "brand new password 1"
+	for _, c := range []struct {
+		name string
+		race func(t *testing.T, tm *team)
+		live int // sessions of the user left
+	}{
+		{"reset", func(t *testing.T, tm *team) {
+			_, err := tm.s.ResetPassword(context.Background(), tm.owner, tm.ro.User.ID, newPass)
+			mustNoErr(t, err)
+		}, 0},
+		{"change", func(t *testing.T, tm *team) {
+			_, err := tm.s.ChangePassword(context.Background(), tm.ro, goodPass, newPass, meta("127.0.0.1"))
+			mustNoErr(t, err)
+		}, 1},
+		{"block", func(t *testing.T, tm *team) {
+			_, err := tm.s.UpdateUser(context.Background(), tm.owner, tm.ro.User.ID, UserChange{Disabled: flag(true)})
+			mustNoErr(t, err)
+		}, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			tm := newTeam(t)
+			ctx := context.Background()
+			h := &hooked{DB: tm.db}
+			tm.s.Store = h
+			h.onLastLogin = func() { c.race(t, tm) }
+			_, err := tm.s.Login(ctx, "ro", goodPass, meta("127.0.0.2"))
+			wantErr(t, "login during the "+c.name, err, ErrBadCredentials)
+			// Unblocked, the user has no session from the time of the block.
+			_, err = tm.s.UpdateUser(ctx, tm.owner, tm.ro.User.ID, UserChange{Disabled: flag(false)})
+			mustNoErr(t, err)
+			if live, _ := tm.db.ListSessions(ctx, tm.ro.User.ID, tm.s.Now()); len(live) != c.live {
+				t.Fatalf("%d live sessions, want %d", len(live), c.live)
+			}
+		})
+	}
+}
+
+// With stale hash parameters a login rehashes the password it verified:
+// a reset that committed meanwhile is not overwritten with the old one.
+func TestRehashKeepsReset(t *testing.T) {
+	tm := newTeam(t)
+	ctx := context.Background()
+	h := &hooked{DB: tm.db}
+	tm.s.Store = h
+	p := tm.s.Params
+	p.Time++
+	tm.s.Params = p // every stored hash is stale now
+	const newPass = "brand new password 1"
+	h.onUpdateHash = func() {
+		_, err := tm.s.ResetPassword(ctx, tm.owner, tm.ro.User.ID, newPass)
+		mustNoErr(t, err)
+	}
+	_, err := tm.s.Login(ctx, "ro", goodPass, meta("127.0.0.1"))
+	wantErr(t, "login with the password before the reset", err, ErrBadCredentials)
+	if _, err := tm.s.Login(ctx, "ro", newPass, meta("127.0.0.2")); err != nil {
+		t.Fatalf("the reset password: %v", err)
+	}
+	if _, err := tm.s.Login(ctx, "ro", goodPass, meta("127.0.0.3")); !errors.Is(err, ErrBadCredentials) {
+		t.Fatalf("the old password after the reset: %v", err)
+	}
+	// Without a race the rehash is stored.
+	u, _ := tm.db.UserByName(ctx, "op")
+	mustNoErr(t, func() error { _, err := tm.s.Login(ctx, "op", goodPass, meta("127.0.0.4")); return err }())
+	if got, _ := tm.db.UserByName(ctx, "op"); got.PasswordHash == u.PasswordHash {
+		t.Fatal("not rehashed")
+	}
+}
+
+// One's own change checked the current password against the hash read
+// with the session: a reset or a logout that committed since wins.
+func TestChangePasswordAfterReset(t *testing.T) {
+	tm := newTeam(t)
+	s, ctx := tm.s, context.Background()
+	const reset, mine = "reset password 1", "my new password 1"
+	// tm.ro is the request in flight, read before the reset.
+	_, err := s.ResetPassword(ctx, tm.owner, tm.ro.User.ID, reset)
+	mustNoErr(t, err)
+	_, err = s.ChangePassword(ctx, tm.ro, goodPass, mine, meta("127.0.0.1"))
+	wantErr(t, "change after a reset", err, ErrUnauthenticated)
+	if _, err := s.Login(ctx, "ro", reset, meta("127.0.0.1")); err != nil {
+		t.Fatalf("the reset password: %v", err)
+	}
+	if _, err := s.Login(ctx, "ro", mine, meta("127.0.0.1")); !errors.Is(err, ErrBadCredentials) {
+		t.Fatalf("the change overwrote the reset: %v", err)
+	}
+
+	// The session ended meanwhile: the password stays.
+	mustNoErr(t, s.Logout(ctx, tm.op))
+	_, err = s.ChangePassword(ctx, tm.op, goodPass, mine, meta("127.0.0.1"))
+	wantErr(t, "change in a session that ended", err, ErrUnauthenticated)
+	if _, err := s.Login(ctx, "op", goodPass, meta("127.0.0.1")); err != nil {
+		t.Fatalf("the password changed: %v", err)
 	}
 }

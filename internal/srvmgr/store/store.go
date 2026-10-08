@@ -118,8 +118,11 @@ type Users interface {
 	UserByID(ctx context.Context, id int64) (model.User, error)
 	UserByName(ctx context.Context, username string) (model.User, error)
 	ListUsers(ctx context.Context) ([]model.User, error)
-	// UpdatePasswordHash replaces the hash (rehash with new parameters).
-	UpdatePasswordHash(ctx context.Context, id int64, hash string, at time.Time) error
+	// UpdatePasswordHash replaces the user's hash old with hash (a rehash
+	// with new parameters); ErrConflict, nothing written, when the hash is
+	// no longer old (a reset or a change committed meanwhile) or the user
+	// is gone.
+	UpdatePasswordHash(ctx context.Context, id int64, old, hash string, at time.Time) error
 	SetUserDisabled(ctx context.Context, id int64, disabled bool, at time.Time) error
 	// SetLastLogin records a login of the user.
 	SetLastLogin(ctx context.Context, id int64, at time.Time) error
@@ -129,6 +132,10 @@ type Users interface {
 	// sessions end at at. A check across users (the last owner) made in
 	// change holds when it commits: two changes at once cannot both pass it.
 	ChangeUsers(ctx context.Context, at time.Time, change func(all []model.User) (changed []model.User, revoke []int64, err error)) error
+	// ChangeUsersFor is ChangeUsers on behalf of a session: ErrNotFound,
+	// nothing written, when that session is revoked, expired at at or
+	// gone by the time the transaction runs.
+	ChangeUsersFor(ctx context.Context, at time.Time, session int64, change func(all []model.User) (changed []model.User, revoke []int64, err error)) error
 	// DeleteUser removes the user and its sessions once check accepted it
 	// against every user, atomically like ChangeUsers.
 	DeleteUser(ctx context.Context, id int64, check func(all []model.User) error) error
@@ -136,8 +143,13 @@ type Users interface {
 
 // Sessions stores logins by the hash of their token.
 type Sessions interface {
-	// CreateSession sets s.ID.
-	CreateSession(ctx context.Context, s *model.Session) error
+	// CreateSessionIf opens a session of s.UserID, which a password with
+	// hash has just verified, and sets s.ID: in one transaction with a
+	// read of the user, only while the user still has hash and is not
+	// blocked (ErrConflict otherwise). A reset, a change of the password
+	// or a block that commits meanwhile has already ended the user's
+	// sessions and would not end this one.
+	CreateSessionIf(ctx context.Context, s *model.Session, hash string) error
 	SessionByTokenHash(ctx context.Context, hash []byte) (model.Session, error)
 	SessionByID(ctx context.Context, id int64) (model.Session, error)
 	TouchSession(ctx context.Context, id int64, at time.Time) error
