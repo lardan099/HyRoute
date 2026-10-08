@@ -141,7 +141,10 @@ func (s *server) getJob(w http.ResponseWriter, r *http.Request) {
 	out := struct {
 		jobJSON
 		Steps []stepJSON `json:"steps"`
-	}{jobJSON: toJobJSON(j), Steps: make([]stepJSON, 0, len(steps))}
+		// MayRetry: the caller's role may retry the job (the UI shows the
+		// button; the retry checks again).
+		MayRetry bool `json:"mayRetry"`
+	}{jobJSON: toJobJSON(j), Steps: make([]stepJSON, 0, len(steps)), MayRetry: mayRetry(principal(r).User.Role, j)}
 	for _, st := range steps {
 		out.Steps = append(out.Steps, toStepJSON(st))
 	}

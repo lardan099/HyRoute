@@ -274,6 +274,19 @@ func jobPerm(j model.Job) (model.Permission, bool) {
 	return p, ok
 }
 
+// kindAllows: the role may retry a job of j's kind.
+func kindAllows(r model.Role, j model.Job) bool {
+	perm, ok := jobPerm(j)
+	return ok && r.Can(perm) || !ok && r.Unscoped()
+}
+
+// mayRetry: the role may retry j, as the retry route checks it (a job in
+// the caller's scope): its kind, and owners and admins only for a cascade
+// deleted without its unreachable server.
+func mayRetry(r model.Role, j model.Job) bool {
+	return kindAllows(r, j) && (!cascade.Forced(j) || r.CanForce())
+}
+
 // mayRetrySome: the role holds a permission some kind of job needs.
 func mayRetrySome(r model.Role) bool {
 	if r.Can(model.PermClientsManage) {
@@ -317,11 +330,8 @@ func (s *server) allowed(r *http.Request, rl rule, p auth.Principal) error {
 	if err := s.inScope(r.Context(), u.Reach(), t); err != nil {
 		return err
 	}
-	if rl.byJob && t.job != nil {
-		perm, ok := jobPerm(*t.job)
-		if ok && !u.Role.Can(perm) || !ok && !u.Role.Unscoped() {
-			return errForbidden
-		}
+	if rl.byJob && t.job != nil && !kindAllows(u.Role, *t.job) {
+		return errForbidden
 	}
 	return nil
 }

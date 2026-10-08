@@ -169,6 +169,14 @@ func TestClientManagerAPI(t *testing.T) {
 	e.db.UpdateJob(ctx, j)
 	other := e.failedJob(apply.JobKind, id, apply.Params{Base: 3})
 	code(t, cm.do("POST", "/api/v1/jobs/"+strconv.FormatInt(other, 10)+"/retry", nil, nil), http.StatusForbidden, "forbidden")
+	// The job page shows the button by the same rule.
+	for jobID, want := range map[int64]bool{j.ID: true, other: false} {
+		var d struct{ MayRetry bool }
+		json.Unmarshal(cm.do("GET", "/api/v1/jobs/"+strconv.FormatInt(jobID, 10), nil, nil).Body.Bytes(), &d)
+		if d.MayRetry != want {
+			t.Errorf("job %d: mayRetry %v", jobID, d.MayRetry)
+		}
+	}
 
 	// The links are the client manager's to give out; the config is not.
 	if rec := cm.do("POST", srv+"/client/reveal", map[string]any{"user": "phone"}, nil); rec.Code != http.StatusOK {
