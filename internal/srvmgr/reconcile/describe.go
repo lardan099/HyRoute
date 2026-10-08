@@ -138,10 +138,25 @@ func geoSummary(files []model.DriftFile, release string) string {
 }
 
 // Brief names the differences in a line (the event of the server).
+//
+// A link is named without its cascade: the event reaches everyone who sees
+// the server, also users who do not see the whole cascade (P4-04); the
+// server page names it to those who do.
 func Brief(items []model.DriftItem) string {
-	titles := make([]string, len(items))
-	for i, it := range items {
-		titles[i] = it.Title
+	var titles []string
+	links := 0
+	for _, it := range items {
+		if it.Kind == model.DriftLink {
+			links++
+			continue
+		}
+		titles = append(titles, it.Title)
+	}
+	switch {
+	case links == 1:
+		titles = append(titles, "связь каскада")
+	case links > 1:
+		titles = append(titles, fmt.Sprintf("связи каскадов (%d)", links))
 	}
 	return "Отличаются от записанного HyRoute: " + strings.Join(titles, ", ") + "."
 }

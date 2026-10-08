@@ -81,9 +81,10 @@ func TestRoundFindsEveryDifference(t *testing.T) {
 	if li.Chain != w.chain || len(li.Files) != 2 || !strings.Contains(li.Summary, "«Через Хельсинки»") {
 		t.Fatalf("link %+v", li)
 	}
-	// One event for the server, naming every difference.
+	// One event for the server, naming every difference; the link without
+	// its cascade (users of the server may not see the cascade).
 	want := "Frankfurt: Отличаются от записанного HyRoute: конфиг Hysteria " + cfgPath + ", служба " + unitName + ", бинарник Hysteria " + binPath +
-		", базы geo " + geo.ServerDir + ", связь каскада «Через Хельсинки»."
+		", базы geo " + geo.ServerDir + ", связь каскада."
 	if ds, _ := w.ev.get(); !slices.Equal(ds, []string{want}) {
 		t.Fatalf("events %q", ds)
 	}
