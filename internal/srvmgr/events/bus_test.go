@@ -218,3 +218,22 @@ func TestClean(t *testing.T) {
 		}
 	}
 }
+
+// Bare domains of anyone but a public service and key fingerprints leave
+// event texts; file and unit names stay.
+func TestCleanDomainsAndFingerprints(t *testing.T) {
+	red := redact.New()
+	cases := map[string]string{
+		"x509: certificate is valid for vpn.example.com, not exit.example.org":                     "x509: certificate is valid for [адрес], not [адрес]",
+		"lookup acme.example.net: no such host":                                                    "lookup [адрес]: no such host",
+		"host:vpn.example.com":                                                                     "host:[адрес]",
+		"не удалось скачать с github.com":                                                          "не удалось скачать с github.com",
+		"служба hysteria-server.service, файл config.yaml":                                         "служба hysteria-server.service, файл config.yaml",
+		"host key changed: trusted ssh-ed25519 SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG": "host key changed: trusted ssh-ed25519 SHA256:" + redact.Mask,
+	}
+	for in, want := range cases {
+		if got := Clean(in, red, nil); got != want {
+			t.Errorf("%q\n got %q\nwant %q", in, got, want)
+		}
+	}
+}

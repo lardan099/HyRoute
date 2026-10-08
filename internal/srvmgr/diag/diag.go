@@ -174,10 +174,13 @@ type build struct {
 	at    time.Time
 	notes []string
 
-	schema    int
-	servers   []model.Server
-	users     []model.User
-	chains    []model.Chain
+	schema  int
+	servers []model.Server
+	users   []model.User
+	chains  []model.Chain
+	// former are names the audit remembers, oldest first: servers and
+	// cascades renamed or deleted, users gone; the logs still have them.
+	former    []formerName
 	jobs      []model.Job // the latest, newest first
 	steps     map[int64][]model.JobStep
 	logs      map[int64][]model.JobLog
@@ -238,6 +241,9 @@ func (x *build) load(ctx context.Context) error {
 		return err
 	}
 	slices.SortFunc(x.chains, func(a, b model.Chain) int { return int(a.ID - b.ID) })
+	if x.former, err = formerNames(ctx, x.Store); err != nil {
+		return err
+	}
 	if x.jobs, err = x.Store.ListJobs(ctx, model.JobFilter{Limit: x.jobCount()}); err != nil {
 		return err
 	}
@@ -416,6 +422,65 @@ func yamlSecrets(b []byte) []string {
 	return out
 }
 
+// formerName is a name an audit entry recorded.
+type formerName struct {
+	kind, name string
+}
+
+// auditNames are the actions whose details start with the name of what
+// they changed (servers and cascades: the name; users: the name, then
+// ": …" or " (…)"), and whose target is a user's name (logins).
+var (
+	auditNamed = map[string]string{
+		"server_created": kindServer, "server_updated": kindServer, "server_deleted": kindServer,
+		"chain_created": kindChain, "chain_updated": kindChain, "chain_deleted": kindChain,
+		"user_created": kindUser, "user_role_changed": kindUser, "user_scope_changed": kindUser, "user_blocked": kindUser,
+		"user_unblocked": kindUser, "user_password_reset": kindUser, "user_password_changed": kindUser, "user_deleted": kindUser,
+	}
+	auditTargetUser = map[string]bool{"login": true, "logout": true}
+)
+
+// formerNames reads the names of the audit, oldest first, so a name
+// gets the same pseudonym however often it is built.
+func formerNames(ctx context.Context, st store.Store) ([]formerName, error) {
+	actions := []string{"login", "logout"}
+	for a := range auditNamed {
+		actions = append(actions, a)
+	}
+	slices.Sort(actions)
+	var all []model.AuditEntry
+	f := model.AuditFilter{Actions: actions, Limit: 1000}
+	for range 100 {
+		page, err := st.QueryAudit(ctx, f)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if len(page) < f.Limit {
+			break
+		}
+		f.BeforeID = page[len(page)-1].ID
+	}
+	slices.SortFunc(all, func(a, b model.AuditEntry) int { return int(a.ID - b.ID) })
+	var out []formerName
+	for _, e := range all {
+		if kind, ok := auditNamed[e.Action]; ok {
+			name := e.Details
+			if kind == kindUser {
+				if i := strings.IndexAny(name, ": ("); i >= 0 {
+					name = name[:i]
+				}
+			}
+			if name = strings.TrimSpace(name); name != "" {
+				out = append(out, formerName{kind, name})
+			}
+		} else if auditTargetUser[e.Action] && e.Target != "" {
+			out = append(out, formerName{kindUser, e.Target})
+		}
+	}
+	return out, nil
+}
+
 // connectedRe is the line a job logs when it connects: the user and the
 // host name of the server (uname -n).
 var connectedRe = regexp.MustCompile(`Подключено как (\S+) к (\S+) \(`)
@@ -434,6 +499,9 @@ func (x *build) register() {
 	}
 	for _, c := range x.chains {
 		p.name(kindChain, c.Name)
+	}
+	for _, f := range x.former {
+		p.name(f.kind, f.name)
 	}
 	for _, s := range x.servers {
 		cur := x.configs[s.ID]

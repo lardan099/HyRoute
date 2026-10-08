@@ -28,7 +28,8 @@ var (
 
 // Clean makes text fit for an event: secrets out (red and the patterns
 // of redact), the address of each server replaced by its name, and any
-// other address — IP, URL, name with a port — by Address.
+// other address — IP, URL, name with a port, a domain other than a
+// public service's — by Address; key fingerprints and pins are masked.
 func Clean(text string, red *redact.Redactor, servers []model.Server) string {
 	text = red.String(text)
 	// Longest first: a host that contains another one is replaced whole.
@@ -55,7 +56,10 @@ func Clean(text string, red *redact.Redactor, servers []model.Server) string {
 	})
 	text = ipv4Re.ReplaceAllString(text, Address)
 	text = hostPortRe.ReplaceAllString(text, Address)
-	return text
+	// A bare domain (a certificate's name, a failed lookup) is an address
+	// too, a key fingerprint is looked up like one.
+	text = redact.Domains(text, Address)
+	return redact.Fingerprints(text)
 }
 
 // replaceHost replaces host in text, in any case of ASCII letters, where

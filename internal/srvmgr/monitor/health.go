@@ -112,12 +112,17 @@ func (hc *check) sshFailed(err error, unreachable bool) model.Health {
 	u := hc.waitUDP()
 	hc.h.UDP, hc.h.UDPMillis = u.state, int(u.rtt.Milliseconds())
 	refused := errors.Is(err, remote.ErrAuthFailed)
+	var changed *remote.HostKeyChangedError
 	why := "Не удалось войти по SSH: " + err.Error()
 	switch {
 	case unreachable:
 		why = "SSH не отвечает"
 	case refused:
 		why = "Сервер отклонил вход по SSH"
+	case errors.As(err, &changed):
+		// The fingerprints identify the server like its address: the
+		// server page shows them, the reason does not.
+		why = "Ключ SSH сервера сменился: подтвердите новый ключ на странице сервера"
 	}
 	switch {
 	case u.state == model.UDPOK:

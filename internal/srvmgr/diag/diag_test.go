@@ -14,6 +14,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/srvmgr/diag"
 	"github.com/lardan099/hyroute/internal/srvmgr/diag/diagtest"
+	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
 )
@@ -191,4 +192,33 @@ func TestBundleJobs(t *testing.T) {
 	if _, err := (&diag.Builder{Store: db, Keys: keys}).Build(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// Names the panel no longer has — a server renamed, a cascade or user
+// deleted — are still in the logs: the audit remembers them, and they
+// get pseudonyms too.
+func TestBundleFormerNames(t *testing.T) {
+	ctx := context.Background()
+	db, keys, _, _ := canaryDB(t)
+	for _, e := range []model.AuditEntry{
+		{Action: "server_created", Target: "server/99", Details: "Ivanov-Home"},
+		{Action: "chain_deleted", Target: "chain/98", Details: "Kaskad-Mamy"},
+		{Action: "user_deleted", Target: "user/97", Details: "petrovich"},
+		{Action: "login", Target: "sidorova"},
+	} {
+		e.Time = time.Now()
+		if err := db.AddAudit(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	js, err := db.ListJobs(ctx, model.JobFilter{Limit: 1})
+	if err != nil || len(js) == 0 {
+		t.Fatalf("jobs %v %v", js, err)
+	}
+	l := model.JobLog{JobID: js[0].ID, Time: time.Now(), Level: "info", Message: "Связь «Ivanov-Home» → «Kaskad-Mamy» запустил petrovich, вошла sidorova"}
+	if err := db.AppendJobLog(ctx, &l); err != nil {
+		t.Fatal(err)
+	}
+	_, files := build(t, &diag.Builder{Store: db, Keys: keys, Version: "test"})
+	diagtest.NoCanaries(t, files, "Ivanov-Home", "Kaskad-Mamy", "petrovich", "sidorova")
 }

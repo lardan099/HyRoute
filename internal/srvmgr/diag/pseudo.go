@@ -13,7 +13,6 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/net/idna"
-	"golang.org/x/net/publicsuffix"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 )
@@ -42,12 +41,6 @@ func init() {
 
 // public are domains of the services HyRoute and Hysteria use themselves:
 // they identify no installation, and the logs read better with them.
-var public = map[string]bool{
-	"github.com": true, "githubusercontent.com": true, "golang.org": true, "go.dev": true,
-	"hysteria.network": true, "hy2.io": true, "hy2.sh": true, "letsencrypt.org": true, "zerossl.com": true,
-	"cloudflare-dns.com": true, "dns.google": true, "quad9.net": true,
-}
-
 // publicIPs are the public DNS resolvers a config may name.
 var publicIPs = map[string]bool{
 	"1.1.1.1": true, "1.0.0.1": true, "8.8.8.8": true, "8.8.4.4": true, "9.9.9.9": true, "149.112.112.112": true,
@@ -151,7 +144,7 @@ func keep(key string) bool {
 	if a, err := netip.ParseAddr(key); err == nil {
 		return a.IsLoopback() || a.IsPrivate() || a.IsUnspecified() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() || a.IsMulticast()
 	}
-	if site, err := publicsuffix.EffectiveTLDPlusOne(key); err == nil && public[site] {
+	if redact.PublicName(key) {
 		return true
 	}
 	return false
@@ -205,12 +198,10 @@ var (
 	// Key material redact leaves: certificates and public keys,
 	// fingerprints and pins, long hex strings (hashes and pins), and long
 	// random-looking strings (a secret nothing registered).
-	pemRe         = regexp.MustCompile(`(?s)-----BEGIN ([A-Z0-9 ]+)-----.*?(?:-----END [A-Z0-9 ]+-----|$)`)
-	sshKeyRe      = regexp.MustCompile(`\b((?:ssh|ecdsa|sk)-[a-z0-9@.-]+)\s+AAAA[0-9A-Za-z+/]+=*`)
-	fingerprintRe = regexp.MustCompile(`\b(SHA256|SHA1|MD5):[0-9A-Za-z+/:=]{16,}`)
-	pinRe         = regexp.MustCompile(`(?i)(pin(?:sha256)?["']?\s*[:=]\s*["']?)[0-9a-f:]{16,}`)
-	hexRe         = regexp.MustCompile(`\b[0-9A-Fa-f]{40,}\b|\b(?:[0-9A-Fa-f]{2}:){19,}[0-9A-Fa-f]{2}\b`)
-	blobRe        = regexp.MustCompile(`[A-Za-z0-9+/_-]{32,}={0,2}`)
+	pemRe    = regexp.MustCompile(`(?s)-----BEGIN ([A-Z0-9 ]+)-----.*?(?:-----END [A-Z0-9 ]+-----|$)`)
+	sshKeyRe = regexp.MustCompile(`\b((?:ssh|ecdsa|sk)-[a-z0-9@.-]+)\s+AAAA[0-9A-Za-z+/]+=*`)
+	hexRe    = regexp.MustCompile(`\b[0-9A-Fa-f]{40,}\b|\b(?:[0-9A-Fa-f]{2}:){19,}[0-9A-Fa-f]{2}\b`)
+	blobRe   = regexp.MustCompile(`[A-Za-z0-9+/_-]{32,}={0,2}`)
 
 	emailRe  = regexp.MustCompile(`[A-Za-z0-9._%+-]+@((?:[A-Za-z0-9-]+\.)+[A-Za-z][A-Za-z0-9-]+)`)
 	ipv4Re   = regexp.MustCompile(`\d{1,3}(?:\.\d{1,3}){3}`)
@@ -291,8 +282,7 @@ func maskKeys(s string) string {
 	if !longRun(s, 16) {
 		return s
 	}
-	s = fingerprintRe.ReplaceAllString(s, "${1}:"+redact.Mask)
-	s = pinRe.ReplaceAllString(s, "${1}"+redact.Mask)
+	s = redact.Fingerprints(s)
 	s = hexRe.ReplaceAllString(s, redact.Mask)
 	return blobRe.ReplaceAllStringFunc(s, func(m string) string {
 		if strings.ContainsFunc(m, unicode.IsUpper) && strings.ContainsFunc(m, unicode.IsLower) && strings.ContainsFunc(m, unicode.IsDigit) {
@@ -451,17 +441,8 @@ func isAlnum(c byte) bool {
 	return isDigit(c) || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
-// isDomain: name is a host name under a public suffix (an ICANN one or a
-// dynamic DNS zone like duckdns.org), not a file name or the suffix
-// itself.
-func isDomain(name string) bool {
-	a, err := idna.ToASCII(fold(name))
-	if err != nil {
-		return false
-	}
-	suffix, icann := publicsuffix.PublicSuffix(a)
-	return (icann || strings.Contains(suffix, ".")) && suffix != a
-}
+// isDomain: name is a host name under a public suffix (redact.IsDomain).
+func isDomain(name string) bool { return redact.IsDomain(name) }
 
 // hostOf is the host of an address as configs write it: host:port, a
 // URL, [IPv6]:port or a bare host.
