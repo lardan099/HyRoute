@@ -3,11 +3,14 @@ package sqlite
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
@@ -142,5 +145,49 @@ func TestRewrapSealedStops(t *testing.T) {
 	slices.Sort(vs)
 	if !slices.Equal(vs, []uint32{1, 2, 3}) {
 		t.Fatalf("versions %v: the credential moved to 3, the rest stayed", vs)
+	}
+}
+
+// A database of an older schema has no tables of later migrations: the
+// sealed values are read from the tables it has (a backup of it restores,
+// backup and doctor read it before the controller migrates it).
+func TestSealedOnOlderSchema(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "old.db")
+	uri, _ := fileURI(path)
+	sqldb, err := sql.Open("sqlite", uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &DB{db: sqldb}
+	defer d.Close()
+	ms, _ := migrations(migrationFS)
+	fsys := fstest.MapFS{}
+	for _, m := range ms[:20] { // before alert_channels and drift
+		fsys[filepathName(m)] = &fstest.MapFile{Data: []byte(m.sql)}
+	}
+	if err := d.migrateFS(ctx, fsys); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.db.ExecContext(ctx, `INSERT INTO servers (name, host, ssh_port, ssh_user, auth_type, role, state, created_at, updated_at) VALUES ('a', '192.0.2.1', 22, 'root', 'password', 'standalone', 'new', 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.db.ExecContext(ctx, `INSERT INTO server_credentials (server_id, kind, sealed, updated_at) VALUES (1, 'ssh_password', ?, 0)`, sealedAs(2, "old")); err != nil {
+		t.Fatal(err)
+	}
+	if has, err := d.HasSealed(ctx); err != nil || !has {
+		t.Fatalf("HasSealed %v %v", has, err)
+	}
+	if vs, err := d.SealedVersions(ctx); err != nil || !slices.Equal(vs, []uint32{2}) {
+		t.Fatalf("SealedVersions %v %v", vs, err)
+	}
+	if ss, err := d.SealedSamples(ctx); err != nil || len(ss) != 1 {
+		t.Fatalf("SealedSamples %v %v", ss, err)
+	}
+	if _, _, err := d.SealedSample(ctx); err != nil {
+		t.Fatalf("SealedSample %v", err)
+	}
+	if n, err := d.RewrapSealed(ctx, 3, func(b []byte, _ string) ([]byte, error) { return sealedAs(3, "new"), nil }); err != nil || n != 1 {
+		t.Fatalf("RewrapSealed %d %v", n, err)
 	}
 }

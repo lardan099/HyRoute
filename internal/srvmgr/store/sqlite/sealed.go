@@ -43,6 +43,36 @@ var sealedColumns = []sealedColumn{
 	{"drift", "config", "server_id, ''", func(id int64, _ string) string { return model.DriftContext(id) }},
 }
 
+// present are the sealed columns whose tables this database has: a
+// database of an older schema (a backup being restored, one a newer
+// binary reads before its first start) lacks the tables of later
+// migrations, and their values cannot be there.
+func (d *DB) present(ctx context.Context) ([]sealedColumn, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tables := map[string]bool{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		tables[n] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out []sealedColumn
+	for _, c := range sealedColumns {
+		if tables[c.table] {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
 // isSealed is the SQL condition that column holds a sealed value: it
 // starts with 4 bytes of magic and the key version (big-endian, see
 // package secrets), and SQL reads only those 8 bytes.
@@ -53,20 +83,28 @@ func isSealed(column string) string {
 // HasSealed reports whether any row holds a value sealed with the master
 // key.
 func (d *DB) HasSealed(ctx context.Context) (bool, error) {
-	parts := make([]string, len(sealedColumns))
-	for i, c := range sealedColumns {
+	cols, err := d.present(ctx)
+	if err != nil || len(cols) == 0 {
+		return false, err
+	}
+	parts := make([]string, len(cols))
+	for i, c := range cols {
 		parts[i] = fmt.Sprintf(`EXISTS (SELECT 1 FROM %s WHERE %s IS NOT NULL)`, c.table, c.column)
 	}
 	var has bool
-	err := d.db.QueryRowContext(ctx, `SELECT `+strings.Join(parts, " OR ")).Scan(&has)
+	err = d.db.QueryRowContext(ctx, `SELECT `+strings.Join(parts, " OR ")).Scan(&has)
 	return has, err
 }
 
 // SealedVersions are the master key versions the stored sealed values
 // need.
 func (d *DB) SealedVersions(ctx context.Context) ([]uint32, error) {
-	parts := make([]string, len(sealedColumns))
-	for i, c := range sealedColumns {
+	cols, err := d.present(ctx)
+	if err != nil || len(cols) == 0 {
+		return nil, err
+	}
+	parts := make([]string, len(cols))
+	for i, c := range cols {
 		parts[i] = fmt.Sprintf(`SELECT %s AS v FROM %s WHERE %s IS NOT NULL`, c.column, c.table, c.column)
 	}
 	rows, err := d.db.QueryContext(ctx, `SELECT DISTINCT substr(v, 5, 4) FROM (`+strings.Join(parts, " UNION ALL ")+`) WHERE `+isSealed("v"))
@@ -90,7 +128,11 @@ func (d *DB) SealedVersions(ctx context.Context) ([]uint32, error) {
 // SealedSample is one value sealed with the master key and the context it
 // was sealed for, to try a key on (store.ErrNotFound: there are none).
 func (d *DB) SealedSample(ctx context.Context) ([]byte, string, error) {
-	for _, c := range sealedColumns {
+	cols, err := d.present(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, c := range cols {
 		var (
 			id     int64
 			sub    string
@@ -112,9 +154,13 @@ func (d *DB) SealedSample(ctx context.Context) ([]byte, string, error) {
 // stored values use, with their contexts: a key that opens them all opens
 // the database.
 func (d *DB) SealedSamples(ctx context.Context) ([]store.SealedValue, error) {
+	cols, err := d.present(ctx)
+	if err != nil {
+		return nil, err
+	}
 	seen := map[uint32]bool{}
 	var out []store.SealedValue
-	for _, c := range sealedColumns {
+	for _, c := range cols {
 		rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT substr(%[2]s, 5, 4), %[1]s, %[2]s FROM %[3]s WHERE %[4]s GROUP BY substr(%[2]s, 5, 4)`,
 			c.keys, c.column, c.table, isSealed(c.column)))
 		if err != nil {
@@ -159,7 +205,11 @@ const (
 // on with the rest. n counts the rewritten values.
 func (d *DB) RewrapSealed(ctx context.Context, current uint32, rewrap func(sealed []byte, context string) ([]byte, error)) (n int, err error) {
 	cur := binary.BigEndian.AppendUint32(nil, current)
-	for _, c := range sealedColumns {
+	cols, err := d.present(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, c := range cols {
 		var ids []int64
 		rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT rowid FROM %s WHERE %s AND substr(%s, 5, 4) != ? ORDER BY rowid`,
 			c.table, isSealed(c.column), c.column), cur)
