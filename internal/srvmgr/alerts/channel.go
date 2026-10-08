@@ -297,3 +297,35 @@ func minutes(hm string) int {
 	m, _ := strconv.Atoi(hm[3:])
 	return h*60 + m
 }
+
+// Destination is where a channel's secret goes, from its checked
+// settings: the Bot API, the webhook URL, or the mail server with its
+// security and login. A channel whose destination changes must be given
+// its secret again: a stored token or password never goes to an address
+// it was not entered for.
+func Destination(kind model.ChannelKind, settings json.RawMessage) string {
+	switch kind {
+	case model.ChannelTelegram:
+		var s TelegramSettings
+		if decode(settings, &s) != nil {
+			return ""
+		}
+		if s.APIBase == "" {
+			s.APIBase = DefaultTelegramAPI
+		}
+		return s.APIBase
+	case model.ChannelWebhook:
+		var s WebhookSettings
+		if decode(settings, &s) != nil {
+			return ""
+		}
+		return s.URL
+	case model.ChannelSMTP:
+		var s SMTPSettings
+		if decode(settings, &s) != nil {
+			return ""
+		}
+		return fmt.Sprintf("%s %s:%d %s", s.Security, strings.ToLower(s.Host), s.Port, s.Username)
+	}
+	return ""
+}

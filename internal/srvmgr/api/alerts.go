@@ -188,11 +188,19 @@ func (s *server) updateChannel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, mapError(err))
 		return
 	}
+	moved := alerts.Destination(c.Kind, c.Settings) != alerts.Destination(old.Kind, old.Settings)
+	if moved && old.HasSecret && seal == nil {
+		writeError(w, &Error{Status: http.StatusBadRequest, Code: "secret_required", Message: "Адрес канала изменился: введите секрет заново. Сохранённый секрет на новый адрес не отправляется.", Details: "secret"})
+		return
+	}
 	if err := s.Store.UpdateAlertChannel(ctx, c, seal); err != nil {
 		s.fail(w, r, mapError(err))
 		return
 	}
 	details := channelDetails(c)
+	if moved {
+		details += ", destination changed"
+	}
 	if replaced {
 		details += ", secret replaced"
 	}

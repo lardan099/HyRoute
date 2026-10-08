@@ -114,6 +114,26 @@ func TestAlertChannelsAPI(t *testing.T) {
 	code(t, owner.do("PATCH", "/api/v1/alerts/channels/"+strconv.FormatInt(wh.ID, 10), map[string]any{"name": "Хук", "settings": map[string]any{"url": hook.URL}, "clearSecret": true}, nil), http.StatusBadRequest, "invalid")
 	code(t, owner.do("PATCH", "/api/v1/alerts/channels/999", map[string]any{"name": "x"}, nil), http.StatusNotFound, "not_found")
 
+	// A stored token or password does not move to another address: the
+	// Bot API or the mail server changes only with the secret given again.
+	tgPath := "/api/v1/alerts/channels/" + strconv.FormatInt(tg.ID, 10)
+	code(t, admin.do("PATCH", tgPath, map[string]any{"name": "Телеграм админов", "settings": map[string]any{"chatId": "-100501", "apiBase": "https://bot.example.net"}}, nil), http.StatusBadRequest, "secret_required")
+	mlPath := "/api/v1/alerts/channels/" + strconv.FormatInt(ml.ID, 10)
+	for _, moved := range []map[string]any{
+		{"host": "smtp.example.net", "security": "starttls", "username": "bot", "from": "bot@example.com", "to": []string{"a@example.com"}},
+		{"host": "smtp.example.com", "port": 2525, "security": "starttls", "username": "bot", "from": "bot@example.com", "to": []string{"a@example.com"}},
+		{"host": "smtp.example.com", "security": "tls", "username": "bot", "from": "bot@example.com", "to": []string{"a@example.com"}},
+		{"host": "smtp.example.com", "security": "starttls", "username": "other", "from": "bot@example.com", "to": []string{"a@example.com"}},
+	} {
+		code(t, admin.do("PATCH", mlPath, map[string]any{"name": "Почта", "settings": moved}, nil), http.StatusBadRequest, "secret_required")
+	}
+	// The recipients may change with the stored password; a new address
+	// with the secret given again is fine.
+	code(t, admin.do("PATCH", mlPath, map[string]any{"name": "Почта", "settings": map[string]any{"host": "smtp.example.com", "security": "starttls",
+		"username": "bot", "from": "bot@example.com", "to": []string{"b@example.com"}}}, nil), 200, "")
+	code(t, admin.do("PATCH", mlPath, map[string]any{"name": "Почта", "settings": map[string]any{"host": "smtp.example.net", "security": "starttls",
+		"username": "bot", "from": "bot@example.com", "to": []string{"b@example.com"}}, "secret": fakeMailPass}, nil), 200, "")
+
 	// The test goes now, signed with the stored key.
 	rec = admin.do("POST", "/api/v1/alerts/channels/"+strconv.FormatInt(wh.ID, 10)+"/test", nil, nil)
 	if rec.Code != 200 || hits.Load() != 1 || lastSig.Load() != true {
@@ -145,7 +165,7 @@ func TestAlertChannelsAPI(t *testing.T) {
 			}
 		}
 	}
-	if actions["alert_channel_created"] != 3 || actions["alert_channel_updated"] != 2 || actions["alert_channel_deleted"] != 1 || actions["alert_channel_tested"] != 2 {
+	if actions["alert_channel_created"] != 3 || actions["alert_channel_updated"] != 4 || actions["alert_channel_deleted"] != 1 || actions["alert_channel_tested"] != 2 {
 		t.Fatalf("audit %v", actions)
 	}
 	for _, body := range []string{rec.Body.String(), owner.do("GET", "/api/v1/alerts/channels", nil, nil).Body.String()} {
