@@ -151,3 +151,25 @@ func TestAllowedHosts(t *testing.T) {
 		}
 	}
 }
+
+// -reconcile-interval: an hour by default, 0 turns the schedule off; a
+// negative or too short one is refused.
+func TestReconcileInterval(t *testing.T) {
+	c, err := Load(nil, env(nil), io.Discard)
+	if err != nil || c.ReconcileInterval != time.Hour {
+		t.Fatalf("default: %v %v", c.ReconcileInterval, err)
+	}
+	c, err = Load([]string{"-reconcile-interval", "0"}, env(nil), io.Discard)
+	if err != nil || c.ReconcileInterval != 0 {
+		t.Fatalf("off: %v %v", c.ReconcileInterval, err)
+	}
+	c, err = Load(nil, env(map[string]string{"HYROUTE_SERVER_RECONCILE_INTERVAL": "6h"}), io.Discard)
+	if err != nil || c.ReconcileInterval != 6*time.Hour {
+		t.Fatalf("env: %v %v", c.ReconcileInterval, err)
+	}
+	for _, bad := range []string{"-1h", "10s"} {
+		if _, err := Load([]string{"-reconcile-interval", bad}, env(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "reconcile-interval") {
+			t.Fatalf("%s: %v", bad, err)
+		}
+	}
+}

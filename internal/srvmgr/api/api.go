@@ -30,6 +30,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/logbuf"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/reconcile"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
@@ -50,6 +51,9 @@ type Deps struct {
 	// on servers.
 	Geo     *geo.Store
 	GeoJobs *geo.Installer
+	// Reconcile compares servers with what HyRoute recorded (P4-06; nil:
+	// not offered).
+	Reconcile *reconcile.Reconciler
 	// Keys open config revisions (the passwords journals are redacted
 	// with).
 	Keys *secrets.Keyring
@@ -222,6 +226,10 @@ func (s *server) routes() []route {
 		{"GET /api/v1/servers/{id}/status", need(model.PermView, onServer), s.serviceStatus},
 		{"POST /api/v1/servers/{id}/service/{action}", need(model.PermService, onServer), s.serviceAction},
 		{"GET /api/v1/servers/{id}/journal", need(model.PermView, onServer), s.journal},
+		{"GET /api/v1/servers/{id}/reconcile", need(model.PermView, onServer), s.serverDrift},
+		{"POST /api/v1/servers/{id}/reconcile/check", need(model.PermService, onServer), s.checkDrift},
+		{"POST /api/v1/servers/{id}/reconcile/accept", need(model.PermConfig, onServer), s.acceptDrift},
+		{"POST /api/v1/servers/{id}/reconcile/revert", need(model.PermConfig, onServer), s.revertDrift},
 		{"GET /api/v1/jobs", need(model.PermView, global), s.listJobs},
 		{"GET /api/v1/jobs/{id}", need(model.PermView, onJob), s.getJob},
 		{"GET /api/v1/jobs/{id}/logs", need(model.PermView, onJob), s.jobLogs},

@@ -342,7 +342,9 @@ const maxWatch = 6 * time.Hour
 // await checks the server again once revert job jobID completes.
 func (r *Reconciler) await(jobID, serverID int64) {
 	ctx, cancel := context.WithTimeout(r.background(), maxWatch)
+	r.watches.Add(1)
 	go func() {
+		defer r.watches.Done()
 		defer cancel()
 		t := time.NewTicker(r.Poll)
 		defer t.Stop()

@@ -90,8 +90,10 @@ type Reconciler struct {
 
 	mu    sync.Mutex
 	locks map[int64]*sync.Mutex
-	// ctx is Run's: the watches of revert jobs end with it.
-	ctx context.Context
+	// ctx is Run's: the watches of revert jobs end with it, and Run
+	// waits for them.
+	ctx     context.Context
+	watches sync.WaitGroup
 }
 
 var (
@@ -156,12 +158,14 @@ func (r *Reconciler) background() context.Context {
 }
 
 // Run checks the servers each Interval until ctx ends (with Interval 0
-// it only keeps the watches of revert jobs going).
+// it only keeps the watches of revert jobs going). It returns once the
+// watches have ended too.
 func (r *Reconciler) Run(ctx context.Context) {
 	r.defaults()
 	r.mu.Lock()
 	r.ctx = ctx
 	r.mu.Unlock()
+	defer r.watches.Wait()
 	if r.Interval <= 0 {
 		<-ctx.Done()
 		return

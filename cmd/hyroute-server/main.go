@@ -40,6 +40,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/logbuf"
 	"github.com/lardan099/hyroute/internal/srvmgr/monitor"
 	"github.com/lardan099/hyroute/internal/srvmgr/preflight"
+	"github.com/lardan099/hyroute/internal/srvmgr/reconcile"
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
@@ -218,6 +219,18 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		defer func() { stopJobs(); <-geoDone }()
 	}
 
+	// The reconciliation (P4-06) runs with -reconcile-interval 0 too: then
+	// only when the admin asks, and for the checks after reverts.
+	submitter := &deploy.Submitter{Store: db, Keys: keys, Jobs: engine}
+	recon := &reconcile.Reconciler{Store: db, Conn: conn, Keys: keys, Log: log, Interval: cfg.ReconcileInterval, Events: watch,
+		Jobs: reconcile.Jobs{Apply: applier, Deploy: submitter, Geo: geoJobs, Links: linker}}
+	reconDone := make(chan struct{})
+	go func() {
+		recon.Run(jobsCtx)
+		close(reconDone)
+	}()
+	defer func() { stopJobs(); <-reconDone }()
+
 	pass, err := backup.Passphrase(getenv, config.EnvBackupPassphrase, cfg.BackupPassphraseFile)
 	if err != nil {
 		return err
@@ -256,11 +269,12 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			Servers:      inventory,
 			Connect:      conn,
 			Jobs:         engine,
-			Deploy:       &deploy.Submitter{Store: db, Keys: keys, Jobs: engine},
+			Deploy:       submitter,
 			Apply:        applier,
 			Cascade:      linker,
 			Geo:          geoFiles,
 			GeoJobs:      geoJobs,
+			Reconcile:    recon,
 			Keys:         keys,
 			Logs:         logs,
 			Log:          log,

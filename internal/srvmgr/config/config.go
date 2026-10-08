@@ -47,6 +47,9 @@ type Config struct {
 	// AlertThreshold is how many monitoring checks in a row change the
 	// status of a server or a cascade link that events tell (P4-05).
 	AlertThreshold int
+	// ReconcileInterval is how often servers are compared with what
+	// HyRoute recorded (0: never on a schedule; P4-06).
+	ReconcileInterval time.Duration
 	// BackupInterval is how often a copy of the database goes to
 	// BackupDir (0: never; the owner can still make one in the admin).
 	BackupInterval time.Duration
@@ -99,6 +102,7 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 	fs.BoolVar(&c.TrustProxy, "trust-proxy", isTrue(env("TRUST_PROXY", "")), "trust X-Forwarded-* from a reverse proxy on loopback (env HYROUTE_SERVER_TRUST_PROXY)")
 	fs.DurationVar(&c.MonitorInterval, "monitor-interval", envDuration(getenv("HYROUTE_SERVER_MONITOR_INTERVAL"), time.Minute), "how often to sample the servers' CPU, memory, disk and network; 0 turns it off (env HYROUTE_SERVER_MONITOR_INTERVAL)")
 	fs.DurationVar(&c.GeoInterval, "geo-interval", envDuration(getenv("HYROUTE_SERVER_GEO_INTERVAL"), 7*24*time.Hour), "how often to look for newer geo databases and put them on the servers that use HyRoute's; 0 turns it off (env HYROUTE_SERVER_GEO_INTERVAL)")
+	fs.DurationVar(&c.ReconcileInterval, "reconcile-interval", envDuration(getenv("HYROUTE_SERVER_RECONCILE_INTERVAL"), time.Hour), "how often to compare the servers' config, unit, binary, geo databases and cascade links with what HyRoute recorded (read-only); 0 turns the schedule off (env HYROUTE_SERVER_RECONCILE_INTERVAL)")
 	fs.DurationVar(&c.BackupInterval, "backup-interval", envDuration(getenv("HYROUTE_SERVER_BACKUP_INTERVAL"), 0), "how often to copy the database to <data-dir>/backups; 0 (the default) turns the schedule off (env HYROUTE_SERVER_BACKUP_INTERVAL)")
 	threshold := 3
 	if n, err := strconv.Atoi(env("ALERT_THRESHOLD", "")); err == nil {
@@ -225,6 +229,9 @@ func (c Config) validate() error {
 	}
 	if c.GeoInterval < 0 {
 		return fmt.Errorf("geo-interval %s: a positive duration, or 0 to turn the geo schedule off", c.GeoInterval)
+	}
+	if c.ReconcileInterval != 0 && c.ReconcileInterval < time.Minute {
+		return fmt.Errorf("reconcile-interval %s: at least 1m, or 0 to turn the reconciliation schedule off", c.ReconcileInterval)
 	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":
