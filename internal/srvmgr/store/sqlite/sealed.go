@@ -39,6 +39,7 @@ var sealedColumns = []sealedColumn{
 		n, _ := strconv.Atoi(idx)
 		return model.LinkSecretContext(id, n)
 	}},
+	{"alert_channels", "secret", "id, ''", func(id int64, _ string) string { return model.AlertSecretContext(id) }},
 }
 
 // isSealed is the SQL condition that column holds a sealed value: it

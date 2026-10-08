@@ -50,6 +50,7 @@ type Store interface {
 	LinkChecks
 	ServerGeos
 	Events
+	AlertChannels
 	Close() error
 }
 
@@ -330,4 +331,21 @@ type Events interface {
 	ListEvents(ctx context.Context, f model.EventFilter) ([]model.Event, error)
 	// PruneEvents drops events closed before before.
 	PruneEvents(ctx context.Context, before time.Time) error
+}
+
+// AlertChannels stores the notification channels (P4-05); their secrets
+// are sealed (model.AlertSecretContext).
+type AlertChannels interface {
+	// CreateAlertChannel inserts c (setting c.ID) with the secret seal
+	// returns once the ID is known (seal nil, or returning nil: none).
+	CreateAlertChannel(ctx context.Context, c *model.AlertChannel, seal func(id int64) ([]byte, error)) error
+	// UpdateAlertChannel replaces everything but the kind and the secret;
+	// seal (when not nil) replaces the secret too, nil from it removes it.
+	UpdateAlertChannel(ctx context.Context, c model.AlertChannel, seal func(id int64) ([]byte, error)) error
+	DeleteAlertChannel(ctx context.Context, id int64) error
+	AlertChannelByID(ctx context.Context, id int64) (model.AlertChannel, error)
+	// ListAlertChannels is every channel, oldest first.
+	ListAlertChannels(ctx context.Context) ([]model.AlertChannel, error)
+	// AlertChannelSecret is the sealed secret (nil: none).
+	AlertChannelSecret(ctx context.Context, id int64) ([]byte, error)
 }

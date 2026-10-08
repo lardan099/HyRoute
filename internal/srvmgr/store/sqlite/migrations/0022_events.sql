@@ -17,3 +17,21 @@ CREATE TABLE events (
 );
 CREATE UNIQUE INDEX events_open_key ON events (dedupe_key) WHERE closed_at IS NULL;
 CREATE INDEX events_closed_at ON events (closed_at);
+
+-- Notification channels (P4-05): Telegram, webhook, SMTP. settings,
+-- events (the kinds sent; [] every kind) and quiet (quiet hours) are
+-- JSON without secrets; the bot token, webhook signing key or SMTP
+-- password is sealed in secret (context alert/<id>/secret).
+CREATE TABLE alert_channels (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	name       TEXT NOT NULL,
+	kind       TEXT NOT NULL CHECK (kind IN ('telegram', 'webhook', 'smtp')),
+	enabled    INTEGER NOT NULL DEFAULT 1,
+	settings   TEXT NOT NULL DEFAULT '{}',
+	events     TEXT NOT NULL DEFAULT '[]',
+	quiet      TEXT NOT NULL DEFAULT '{}',
+	secret     BLOB,
+	created_by INTEGER REFERENCES users (id) ON DELETE SET NULL,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+);
