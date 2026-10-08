@@ -52,10 +52,10 @@ const (
 type rule struct {
 	kind ruleKind
 	perm model.Permission
-	// find name the servers of the request (none: global).
+	// find are the finders of the servers of the request (global: none).
 	find []finder
-	// byJob: the permission is the one of the job of the path (jobPerm),
-	// for retries; perm is unused.
+	// byJob: the permission is that of the job of the path (jobPerm), for
+	// retries; perm is not used.
 	byJob bool
 	// owner: the owner only (backups, handing the owner role over).
 	owner bool
