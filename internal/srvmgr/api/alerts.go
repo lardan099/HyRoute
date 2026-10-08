@@ -120,7 +120,7 @@ func (s *server) createChannel(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	s.Store.AddAudit(r.Context(), model.AuditEntry{Time: now, UserID: principal(r).User.ID, Action: "alert_channel.create", Target: channelTarget(c.ID), Details: channelDetails(c)})
+	s.Store.AddAudit(r.Context(), model.AuditEntry{Time: now, UserID: principal(r).User.ID, Action: "alert_channel_created", Target: channelTarget(c.ID), Details: channelDetails(c)})
 	s.reloadAlerts(r)
 	writeJSON(w, http.StatusCreated, toChannelJSON(c))
 }
@@ -196,7 +196,7 @@ func (s *server) updateChannel(w http.ResponseWriter, r *http.Request) {
 	if replaced {
 		details += ", secret replaced"
 	}
-	s.Store.AddAudit(ctx, model.AuditEntry{Time: c.UpdatedAt, UserID: principal(r).User.ID, Action: "alert_channel.update", Target: channelTarget(id), Details: details})
+	s.Store.AddAudit(ctx, model.AuditEntry{Time: c.UpdatedAt, UserID: principal(r).User.ID, Action: "alert_channel_updated", Target: channelTarget(id), Details: details})
 	s.reloadAlerts(r)
 	c, err = s.Store.AlertChannelByID(ctx, id)
 	if err != nil {
@@ -236,7 +236,7 @@ func (s *server) deleteChannel(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, mapError(err))
 		return
 	}
-	s.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), UserID: principal(r).User.ID, Action: "alert_channel.delete", Target: channelTarget(id), Details: channelDetails(c)})
+	s.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), UserID: principal(r).User.ID, Action: "alert_channel_deleted", Target: channelTarget(id), Details: channelDetails(c)})
 	s.reloadAlerts(r)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -260,7 +260,7 @@ func (s *server) testChannel(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		outcome = "failed"
 	}
-	s.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), UserID: principal(r).User.ID, Action: "alert_channel.test", Target: channelTarget(id), Details: outcome})
+	s.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), UserID: principal(r).User.ID, Action: "alert_channel_tested", Target: channelTarget(id), Details: outcome})
 	if err != nil {
 		writeError(w, &Error{Status: http.StatusBadGateway, Code: "send_failed", Message: "Сообщение не отправлено: проверьте настройки канала.", Details: err.Error()})
 		return

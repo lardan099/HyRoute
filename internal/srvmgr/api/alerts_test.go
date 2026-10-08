@@ -145,7 +145,7 @@ func TestAlertChannelsAPI(t *testing.T) {
 			}
 		}
 	}
-	if actions["alert_channel.create"] != 3 || actions["alert_channel.update"] != 2 || actions["alert_channel.delete"] != 1 || actions["alert_channel.test"] != 2 {
+	if actions["alert_channel_created"] != 3 || actions["alert_channel_updated"] != 2 || actions["alert_channel_deleted"] != 1 || actions["alert_channel_tested"] != 2 {
 		t.Fatalf("audit %v", actions)
 	}
 	for _, body := range []string{rec.Body.String(), owner.do("GET", "/api/v1/alerts/channels", nil, nil).Body.String()} {

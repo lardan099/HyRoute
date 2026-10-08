@@ -1889,10 +1889,10 @@ JSON-строкой) и должно прийти за минуту; тело б
 | GET | `/api/v1/events` | любая | события, новые первыми: `?open=1` — только открытые, `?limit=` (до 500, по умолчанию 100), `?before=<id>`; `{id, kind, severity, subject, subjectId, text, count, openedAt, lastAt, closedAt, closeText}` |
 | GET | `/api/v1/attention` | любая | сводка «Требует внимания»: `items` (`kind`, `severity`, `subject`, `subjectId`, `name`, `text`, `since`), `network` — открытое событие «у controller нет сети» или `null`, `monitoring` |
 | GET | `/api/v1/alerts/channels` | owner, admin | каналы оповещений без секретов: `{id, name, kind, enabled, settings, events, quiet, hasSecret, createdAt, updatedAt}` |
-| POST | `/api/v1/alerts/channels` | owner, admin | `{name, kind, enabled, settings, events, quiet, secret}` — проверка (`alerts.Check`, 400 `invalid` с полем в `details`), секрет запечатывается; 201; аудит `alert_channel.create` (вид и название) |
-| PATCH | `/api/v1/alerts/channels/{id}` | owner, admin | то же без `kind` (другой вид — 400): поля заменяются целиком, `secret` не передан — прежний, `clearSecret` — убрать; аудит `alert_channel.update` |
-| DELETE | `/api/v1/alerts/channels/{id}` | owner, admin | 204; аудит `alert_channel.delete` |
-| POST | `/api/v1/alerts/channels/{id}/test` | owner, admin | проверочное сообщение сейчас (и выключенным каналом), до 15 с: `{ok: true}` или 502 `send_failed` с причиной без секрета; аудит `alert_channel.test` с итогом |
+| POST | `/api/v1/alerts/channels` | owner, admin | `{name, kind, enabled, settings, events, quiet, secret}` — проверка (`alerts.Check`, 400 `invalid` с полем в `details`), секрет запечатывается; 201; аудит `alert_channel_created` (вид и название) |
+| PATCH | `/api/v1/alerts/channels/{id}` | owner, admin | то же без `kind` (другой вид — 400): поля заменяются целиком, `secret` не передан — прежний, `clearSecret` — убрать; аудит `alert_channel_updated` |
+| DELETE | `/api/v1/alerts/channels/{id}` | owner, admin | 204; аудит `alert_channel_deleted` |
+| POST | `/api/v1/alerts/channels/{id}/test` | owner, admin | проверочное сообщение сейчас (и выключенным каналом), до 15 с: `{ok: true}` или 502 `send_failed` с причиной без секрета; аудит `alert_channel_tested` с итогом |
 
 ## Модель угроз
 
