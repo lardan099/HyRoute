@@ -141,9 +141,9 @@ env), `setup-token` на время первого запуска и `lock`: con
 
 | Таблица | Поля (основные) | Заметки |
 |---|---|---|
-| `schema_migrations` | version, name, applied_at | миграции только вперёд, в транзакции |
+| `schema_migrations` | version, name, applied_at | миграции только вперёд, в транзакции; миграция с первой строкой `-- foreign_keys: off` (пересборка таблицы, на которую ссылаются другие: SQLite не меняет CHECK на месте) идёт на отдельном соединении без внешних ключей, коммитится, только если `PRAGMA foreign_key_check` пуст, и соединение после неё закрывается |
 | `settings` | key, value, updated_at | настройки controller без секретов; `master_key_check` — проверочное значение мастер-ключа |
-| `users` | id, username (unique), password_hash (PHC argon2id), role, disabled, created_at, updated_at, last_login_at | роли: owner, admin, operator, readonly; last_login_at — последний вход (0 — неизвестен; миграция `users_audit` взяла его из `audit_log` для прежних входов) |
+| `users` | id, username (unique), password_hash (PHC argon2id), role, scope (json), disabled, created_at, updated_at, last_login_at | роли: owner, admin, operator, clients, readonly; scope — область (P4-04): `{"all":true}` или `{"tags":[…]}`, значение, которое не разбирается, не даёт ни одного сервера; миграция `user_scope` пересобрала таблицу (новая роль в CHECK), всем прежним пользователям — все серверы, последовательность ID сохранена (аудит называет пользователей по ID); last_login_at — последний вход (0 — неизвестен; миграция `users_audit` взяла его из `audit_log` для прежних входов) |
 | `sessions` | id, token_hash (SHA-256 токена, unique), user_id, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent | в БД только хеш токена; CSRF-токен не хранится, а вычисляется как HMAC от токена сессии |
 | `servers` | id, name, tags (json), country, location, host, ssh_port, ssh_user, auth_type (password/key), role (standalone/entry/relay/exit), notes, state, hop_interval, created_at, updated_at | state: new, deploying, healthy, degraded, offline, needs_attention; role следует из каскадов (миграция 0016); hop_interval — интервал смены портов у клиентов, с (0 — по умолчанию клиента; миграция 0014) |
 | `server_credentials` | server_id, kind (ssh_password/ssh_key/ssh_key_passphrase), sealed (envelope), updated_at | никогда не возвращаются в API |
@@ -249,12 +249,9 @@ P1-04 сканирует файл БД на открытые значения т
 - Не больше 3 вычислений argon2id одновременно: вход и setup сверх этого
   сразу получают 503 `auth_busy` с `Retry-After` (попытка не считается),
   создание пользователя ждёт свободного места.
-- Роли: owner/admin — всё; operator — развёртывание и управление
-  сервисом, без пользователей и настроек; readonly — только чтение
-  (Phase 1 гарантирует: readonly получает 403 на любой изменяющий
-  запрос, кроме выхода, отзыва своих сессий и смены своего пароля;
-  список пользователей с ролями он видит, как и любая роль). Полный
-  RBAC — Phase 4.
+- Роли, разрешения и область — раздел «Права (P4-04)». Список
+  пользователей с ролями видит любая роль; области в нём — только те,
+  кто управляет пользователями.
 - Управление пользователями (P4-03): правила — в одном месте,
   `internal/srvmgr/auth/users.go`. Owner и admin управляют
   пользователями, operator и readonly — никем (403); owner-а трогает
@@ -270,14 +267,110 @@ P1-04 сканирует файл БД на открытые значения т
   роли (`TransferOwner`) делает пользователя owner-ом, а вызывающего —
   admin-ом в одной транзакции. Сброс и смена пароля и блокировка
   отзывают все сессии пользователя в той же транзакции; при смене своего
-  пароля браузер получает новую сессию в ответе. Смена роли сессии не
-  трогает: роль читается при каждом запросе. Каждое действие пишется в
-  аудит под `user/<id>` с именем пользователя, без пароля.
+  пароля браузер получает новую сессию в ответе. Смена роли и области
+  сессии не трогает: пользователь читается при каждом запросе, а живые
+  потоки перепроверяют доступ сразу (`Revocations`). Owner и admin
+  всегда со всеми серверами: сузить им область нельзя (400 `invalid`,
+  details `scope`), а повышение до них ставит область «все серверы».
+  Каждое действие пишется в аудит под `user/<id>` с именем пользователя,
+  без пароля (`user_scope_changed` — область до и после).
 - Аудит заданий: `jobs.Engine.SubmitOn` и `Retry` — единственные места,
   где ставится задание (из API и по расписанию geo), там и пишется
   `job_submitted`/`job_retried`: кто (0 — сам controller), target —
   первый сервер задания, details — `job=<id> kind=<kind>` и остальные
   серверы, без params и секретов.
+
+## Права (P4-04)
+
+- **Разрешения** — фиксированный набор в `internal/srvmgr/model/access.go`
+  (имена стабильны, их видят API и UI): `view` — серверы, состояние,
+  метрики, сводка конфига, задания, журналы, каскады; `service` — старт,
+  стоп и перезапуск Hysteria; `config` — конфиг и маршрутизация (редактор
+  и текст конфига с маской, возврат, порты, tuning, базы geo, пресет на
+  сервер, ротация, интервал смены портов, живые соединения); `deploy` —
+  развёртывание, импорт, preflight, обновление и переустановка, добавление
+  и удаление серверов; `clients.reveal` — ссылки и QR; `clients.manage` —
+  пользователи-клиенты сервера; `credentials` — подключение по SSH
+  (адрес, пользователь, пароль или ключ, правка сервера) и доверие ключу
+  хоста; `chains` — каскады (на всех их серверах); `presets` — пресеты и
+  шаблоны; `users` — пользователи панели и аудит; `settings` — настройки
+  панели (проверка мастер-ключа). Первые восемь действуют на серверах и
+  ограничены областью; `presets`, `users`, `settings` — общие.
+- **Роли** — именованные наборы (`model.Role.Permissions`), своих ролей
+  нет: owner и admin — всё (резервные копии — только owner,
+  `CanBackup`; удаление каскада без недоступного сервера — owner и
+  admin, `CanForce`, сверх `chains`); operator — всё, кроме `users` и
+  `settings` (как в Phase 1); clients («менеджер клиентов») — `view`,
+  `clients.reveal`, `clients.manage`; readonly — `view`.
+- **Область** (`model.Scope`, `users.scope`) — все серверы или серверы
+  хотя бы с одной из меток (`servers.tags`, без учёта регистра и
+  пробелов по краям). Нулевая область не даёт ни одного сервера: если
+  область где-то потеряется, доступ закрывается, а не открывается. Owner
+  и admin всегда со всеми (`User.Reach`).
+- **Проверка в одном месте.** Все маршруты — таблица `routes()` в
+  `api/api.go`; каждый объявляет правило (`api/access.go`): `public`
+  (health, первый запуск, логин), `signedIn` (любой вошедший: свои
+  сессия, сессии и пароль, список пользователей и ролей) или
+  `need(разрешение, finder…)`. Finder называет серверы запроса: `global`
+  — никаких; `onServer`, `onChain` (все узлы), `onJob` (все серверы
+  задания и узел `via` из params) — по `{id}` пути; `bodyVia`,
+  `bodyNodes`, `bodyServerID`, `bodyTags` — поле тела (тело читается
+  один раз и остаётся обработчику; поля разбираются тем же
+  `encoding/json`, что у обработчика, а тело, которое не разбирается,
+  отклоняется сразу). `ownerOnly(…)` — только owner, `retryRule` —
+  разрешение по виду задания. `guard` проверяет по порядку: сессия
+  (401), CSRF изменяющего запроса (403 `csrf`), разрешение роли (403
+  `forbidden` — что бы ни было в теле), затем область каждого
+  найденного сервера: сервер вне области отвечает 404 `not_found` так
+  же, как несуществующий (его существование не утекает); задание без
+  серверов видно только пользователям всех серверов; сервер, который
+  пользователь с узкой областью создаёт или сохраняет (`bodyTags`),
+  должен остаться с одной из его меток (403 `out_of_scope`). Маршрут
+  `global` с серверным разрешением (импорт правил, обновление geo)
+  областью не ограничен.
+- **Новый маршрут** — одна строка в `routes()`:
+  `{"POST /api/v1/servers/{id}/x", need(model.PermConfig, onServer), s.x}`.
+  `TestRoutesDeclared` падает на маршруте без правила, на `{id}`
+  сервера, каскада или задания без своего finder, на изменяющем
+  маршруте с `view`, и на любом `Handle`/`HandleFunc` вне цикла по
+  таблице (проверка по исходникам пакета). `TestRoleRouteMatrix` вызывает
+  каждый маршрут от каждой роли: 403 — ровно тогда, когда правило так
+  говорит; для `clients` и `readonly` список изменяющих маршрутов
+  закреплён по именам.
+- **Повтор задания** проверяет права в момент повтора: разрешение вида
+  задания (`jobPerms`: deploy, maintain, import, preflight — `deploy`;
+  apply, tuning, geo — `config`, но apply менеджера клиентов (`change:
+  clients`) — `clients.manage`; service — `service`; link, unlink —
+  `chains`; вид не из таблицы — только owner и admin) на всех его
+  серверах в текущей области. `GET /jobs/{id}` отвечает `mayRetry` по
+  тому же правилу.
+- **Списки** показывают только область: серверы (у каждого `perms` —
+  разрешения вызывающего на нём, чтобы UI не повторял правила), каскады
+  (все узлы в области — и в `chains` у серверов), задания и строки их
+  журналов (`JobFilter.Within`: все серверы задания и `params.via` в
+  области — в SQL, чтобы страницы не рвались), последние метрики. Журнал
+  controller (`/logs?source=controller`) — обо всех серверах, он только
+  для пользователей всех серверов (403). Живые потоки (события задания,
+  журнал Hysteria) проверяются при открытии и перепроверяют доступ на
+  каждом keepalive и сразу при смене роли или области: поток
+  закрывается, а переподключение получает 404.
+- **Менеджер клиентов**: `POST /servers/{id}/clients`, `…/clients/remove`,
+  `…/clients/password` (`{base, user}`, `clients.manage`) — обычное
+  задание `apply` (`change: clients`): кандидат — текущий конфиг через
+  типизированную модель, где изменён один пользователь `auth.userpass`;
+  перед постановкой `apply.OnlyUsers` проверяет, что всё остальное
+  совпадает (обе модели с одинаковыми пользователями сериализуются в
+  одно и то же). Пароль создаёт controller и отдаёт один раз
+  (`no-store`); в аудит — `client.add`/`client.remove`/`client.password`
+  с именем, без пароля. Пользователи связей каскадов — 409 `link_user`,
+  имена `link-…` заняты каскадами, общий пароль или внешняя проверка —
+  409 `not_userpass`.
+- **UI** (`session.svelte.ts`): `can(p)` — разрешение роли (то, что
+  предлагать вообще: «Добавить сервер», «Создать каскад»), `canOn(server,
+  p)` — по `perms` сервера; кнопок и пунктов меню без разрешения нет.
+  Диалог «Роль и область» показывает разрешения роли (`GET /roles`,
+  только чтение) и область: все серверы или метки (предлагаются метки
+  серверов).
 
 ## Удалённое выполнение
 
@@ -363,7 +456,7 @@ queued → connecting → preflight → downloading → installing → configuri
   с общим сервером идут по одному), удаление сервера и правка его
   подключения, повтор (`ErrStale` — задание не самое новое хотя бы у
   одного своего сервера; `ErrBusy` — у любого из них другое незавершённое
-  задание), история заданий сервера и фильтр по серверу в журналах
+  задание; права на повтор — раздел «Права (P4-04)»), история заданий сервера и фильтр по серверу в журналах
   заданий (`/api/v1/logs?source=jobs`). Шаг получает подключение к нужному
   серверу через `Env.ExecOn(id)` (у каждого сервера своё; сервер не из
   задания — ошибка); `Env.Exec` — подключение к первому. Перед откатом
@@ -635,7 +728,7 @@ queued → connecting → preflight → downloading → installing → configuri
   которого вышел бы больше, не создаётся, так что любой экспорт
   импортируется. Названия уникальны без учёта регистра
   в любом алфавите (SQLite NOCASE знает только ASCII, проверка в Go).
-- Пресеты видят все роли (в них нет секретов), меняют operator+;
+- Пресеты видят все роли (в них нет секретов), меняют держатели `presets`;
   создание, клонирование, переименование, импорт и удаление пишутся в
   аудит.
 - Применение к серверу: текущий конфиг + `Overlay` выбранных разделов →
@@ -903,10 +996,9 @@ controller только запоминает счётчики. `/traffic?clear=1
 сохраняются нигде.
 
 API: `GET servers/{id}/traffic?period=24h|7d|30d|90d` — суммы по часам и
-по пользователям (из базы, все роли); `GET …/traffic/online` — кто в сети
-сейчас (по SSH, все роли); `GET …/traffic/streams` — открытые соединения
-с адресами назначения, живым запросом, до 500 самых активных, только
-роли с правом изменения. Ошибки: `stats_off`, `stats_exposed` (API в
+по пользователям (из базы, `view`); `GET …/traffic/online` — кто в сети
+сейчас (по SSH, `view`); `GET …/traffic/streams` — открытые соединения
+с адресами назначения, живым запросом, до 500 самых активных, `config`. Ошибки: `stats_off`, `stats_exposed` (API в
 конфиге не на loopback — панель к нему не обращается), `stats_down`,
 `stats_auth`, `no_curl`.
 
@@ -1795,104 +1887,108 @@ JSON-строкой) и должно прийти за минуту; тело б
 8 подключений сразу; сверх — 429 `too_many_connections` с `Retry-After`.
 Задания и мониторинг считаются отдельно.
 
-| Метод | Путь | Роль | Что |
+| Метод | Путь | Разрешение | Что |
 |---|---|---|---|
 | GET | `/api/v1/health` | — | жив ли controller, версия схемы БД |
 | GET | `/api/v1/setup` | — | нужен ли первый запуск |
 | POST | `/api/v1/setup` | — | создать owner (setup token) |
 | POST | `/api/v1/session` | — | логин |
-| GET | `/api/v1/session` | любая | текущий пользователь, CSRF-токен |
-| DELETE | `/api/v1/session` | любая | выход |
-| GET | `/api/v1/sessions` | любая; `?all=1` — owner/admin (иначе 403) | свои сессии; с `?all=1` — сессии всех пользователей |
-| DELETE | `/api/v1/sessions/{id}` | своя — любая; чужая — owner/admin (сессию owner-а — только owner) | отзыв сессии (с CSRF, как любое изменение) |
-| POST | `/api/v1/session/password` | любая | `{current, password}`: смена своего пароля; все сессии пользователя отзываются, в ответе (как у логина) — новая сессия этого браузера; неверный текущий — 400 `invalid` с details `current`, попытки ограничены как у логина (429) |
-| GET | `/api/v1/users` | любая | пользователи: имя, роль, `disabled`, дата создания, `lastLoginAt` (null — неизвестен), без хешей паролей |
-| POST | `/api/v1/users` | owner/admin | `{username, password, role}`: admin, operator или readonly (owner-ом делают существующего пользователя) |
-| PATCH | `/api/v1/users/{id}` | owner/admin (owner-а — только owner) | `{role?, disabled?}`: смена роли (`owner` — только owner), блокировка (отзывает все сессии) и разблокировка; 409 `last_owner` — не осталось бы owner-а, который может войти; 409 `self` — блокировка себя |
-| DELETE | `/api/v1/users/{id}` | owner/admin (owner-а — только owner) | удаление; сессии удаляются, авторство заданий, ревизий, пресетов и каскадов обнуляется, аудит остаётся; себя — 409 `self`, последнего owner-а — 409 `last_owner` |
-| POST | `/api/v1/users/{id}/password` | owner/admin (owner-а — только owner) | `{password}` или `{generate: true}`: новый пароль, все сессии пользователя отзываются; сгенерированный (20 символов, 100 бит) возвращается один раз `{password}`, заданный — 204; себе — 409 `self` |
+| GET | `/api/v1/session` | вошедший | текущий пользователь (с `scope`), `permissions` его роли, CSRF-токен (так же отвечают логин, setup и смена своего пароля) |
+| DELETE | `/api/v1/session` | вошедший | выход |
+| GET | `/api/v1/sessions` | вошедший; `?all=1` — `users` (иначе 403) | свои сессии; с `?all=1` — сессии всех пользователей |
+| DELETE | `/api/v1/sessions/{id}` | своя — вошедший; чужая — `users` (сессию owner-а — только owner) | отзыв сессии (с CSRF, как любое изменение) |
+| POST | `/api/v1/session/password` | вошедший | `{current, password}`: смена своего пароля; все сессии пользователя отзываются, в ответе (как у логина) — новая сессия этого браузера; неверный текущий — 400 `invalid` с details `current`, попытки ограничены как у логина (429) |
+| GET | `/api/v1/users` | вошедший | пользователи: имя, роль, `disabled`, дата создания, `lastLoginAt` (null — неизвестен), без хешей паролей; `scope` — только тем, у кого `users` |
+| GET | `/api/v1/roles` | вошедший | встроенные роли: `role`, `permissions`, `unscoped` (всегда все серверы) |
+| POST | `/api/v1/users` | `users` | `{username, password, role, scope?}`: admin, operator, clients или readonly (owner-ом делают существующего пользователя); `scope` — `{"all": true}` (по умолчанию) или `{"tags": [...]}`, у admin — только все серверы |
+| PATCH | `/api/v1/users/{id}` | `users` (owner-а — только owner) | `{role?, scope?, disabled?}`: смена роли (`owner` — только owner) и области (у owner и admin — только все серверы; повышение до них ставит все серверы), блокировка (отзывает все сессии) и разблокировка; 409 `last_owner` — не осталось бы owner-а, который может войти; 409 `self` — блокировка себя |
+| DELETE | `/api/v1/users/{id}` | `users` (owner-а — только owner) | удаление; сессии удаляются, авторство заданий, ревизий, пресетов и каскадов обнуляется, аудит остаётся; себя — 409 `self`, последнего owner-а — 409 `last_owner` |
+| POST | `/api/v1/users/{id}/password` | `users` (owner-а — только owner) | `{password}` или `{generate: true}`: новый пароль, все сессии пользователя отзываются; сгенерированный (20 символов, 100 бит) возвращается один раз `{password}`, заданный — 204; себе — 409 `self` |
 | POST | `/api/v1/users/{id}/owner` | owner | передача роли владельца: пользователь — owner, вызывающий — admin; заблокированному — 409 `user_blocked` |
-| GET | `/api/v1/audit` | owner/admin | журнал аудита, новые сверху: `{entries: [{id, time, userId, user, action, target, object, details}], next}`; фильтры `user` (ID), `action` (одно или несколько через запятую), `target` (`server/3` или `server/` — все такого вида), `from`/`to` (RFC 3339, `to` не включается); страницы — курсор `before=next` (`limit` до 200, по умолчанию 100; `next` 0 — последняя страница): записи, добавленные между запросами, не сдвигают и не повторяют строки, как при offset, и запрос идёт по индексу; `object` — имя сервера, каскада, пресета или пользователя, пока он есть; details — через `redact` |
-| GET/POST | `/api/v1/servers` | читать: любая; создать: operator+ | инвентарь; роль сервера только для чтения (следует из каскадов), `chains` — каскады сервера (id, название, состояние) |
-| GET/PATCH/DELETE | `/api/v1/servers/{id}` | | удаление сервера из каскада — 409 `chain_member` |
-| GET | `/api/v1/chains`, `/api/v1/chains/{id}` | все | каскады: серверы по порядку с ролями, связи с параметрами и состоянием (секреты связей не отдаются); ответы об одном каскаде — ещё `unreachable`: серверы, до которых не дошло последнее «Удалить каскад» (`Linker.Unreached`), `{serverId, name, role, left}`, `left` — что связь там оставит |
-| POST | `/api/v1/chains` | operator+ | `{name, notes, nodes: [entry, relay…, exit], link: {up, down, noUdp, checkTarget}}` — от 2 до 4 серверов; проверка (петли, роли, конфиги, auth узлов после entry, параметры) и сохранение; параметры — у каждой связи; связи не разворачиваются |
-| PATCH | `/api/v1/chains/{id}` | operator+ | `{name, notes}` |
-| DELETE | `/api/v1/chains/{id}` | operator+ | только неразвёрнутый каскад (все связи new или failed), иначе 409 `chain_deployed` |
-| POST | `/api/v1/chains/{id}/link` | operator+ | одно задание `link` на связи, которым это нужно (не `active`; все, если все `active`), от выхода ко входу, на серверах этих связей (202, задание); 409 `no_config`, `no_installation`, `server_busy` |
-| POST | `/api/v1/chains/{id}/unlink` | operator+; с `force` — owner/admin | `{delete}` — одно задание `unlink` на все развёрнутые связи, от входа к выходу (202); 409 `not_deployed`, `server_busy`. `{delete: true, force: true}` — удалить без серверов из `unreachable` (`Linker.ForceDelete`): 409 `servers_reached`, если последнее задание связи — не упавшее «Удалить каскад», которое не дошло до сервера; 400 без `delete`; пишется в audit log (`chain_force_delete`) |
-| GET | `/api/v1/chains/{id}/checks` | все | `?idx=&limit=` — проверки связи, новые первыми (7 дней) |
-| POST | `/api/v1/chains/{id}/check` | operator+ | проверить связи каскада сейчас (с каждого сервера, где начинается развёрнутая связь, как сборщик); 409 `chain_busy` во время задания |
-| POST | `/api/v1/chains/{id}/route` | operator+ | `{host, ips, proto, port}` → `{hops: [{serverId, name, role, verdict, error, next}], rejected, summary}` — «Проверить правило» по каскаду от входа (`routing.Trace`) |
-| POST | `/api/v1/servers/{id}/check` | operator+ | подключение и проверка прав (ничего не меняет) |
-| POST | `/api/v1/servers/{id}/host-key` | operator+ | TOFU / re-trust с отпечатком (`replace`) |
-| POST | `/api/v1/servers/{id}/preflight` | operator+ | job preflight |
-| GET | `/api/v1/presets`, `/api/v1/presets/{id}` | все | пресеты (разделы, заметки, YAML без секретов) |
-| POST | `/api/v1/presets` | operator+ | `{name, serverId}` — из конфига сервера, `{name, from}` — копия пресета |
-| PATCH, DELETE | `/api/v1/presets/{id}` | operator+ | переименовать `{name}`, удалить |
-| GET | `/api/v1/presets/{id}/export` | все | файл пресета (JSON с версией формата) |
-| POST | `/api/v1/presets/import` | operator+ | `{data}` — текст файла пресета; файл другого вида или версии получает понятную ошибку, занятое название — номер « (N)», длинное укорачивается до 64 символов вместе с ним |
-| POST | `/api/v1/servers/{id}/preset/preview` | operator+ | `{base, preset, sections}`: проверка и diff конфига с разделами пресета |
-| POST | `/api/v1/servers/{id}/preset/apply` | operator+ | то же — задание `apply` |
-| GET | `/api/v1/servers/{id}/routing` | operator+ | правила (`acl`), outbounds и resolver без паролей, `file` (acl.file), `cascade` (вход развёрнутого каскада), проверки правил |
-| POST | `/api/v1/servers/{id}/routing/preview` | operator+ | `{base, acl, keepFile, outbounds, resolver, requests}` → проверка и diff конфига, правила после переименований, проблемы правил, dry-run (`changes`), `ok`, `same` |
-| POST | `/api/v1/servers/{id}/routing/apply` | operator+ | то же — задание `apply` (`change: routing`); ошибка в правилах или без изменений — 400 `invalid` |
-| POST | `/api/v1/servers/{id}/routing/check` | operator+ | `{acl, outbounds, request}` → правило, outbound, подмена, объяснение; на entry или relay развёрнутого каскада, если правила отправили запрос в `cascade`, — ещё `chain`: путь дальше по каскаду, как у `/chains/{id}/route` |
-| POST | `/api/v1/servers/{id}/routing/services` | operator+ | `{acl}` — черновик → вкладка «По сервисам»: `version` каталога, `sections` — разделы с сервисами, чьи категории есть в базах geo controller, `hidden` — остальные, `noGeo`, `ownGeo` (сервер читает свои базы), `cascade` (вход каскада: доступно «через выход»), `state` — группа черновика (`found`, `version`, `choices`, `edited`, `changes`) |
-| POST | `/api/v1/servers/{id}/routing/services/build` | operator+ | `{acl, outbounds, choices, overwrite}` → `{acl, state}`: черновик с группой, собранной из выбора; ничего не сохраняется. `cascade` не на входе каскада, неизвестный outbound или сервис, сервис без категорий в базах — 400 `invalid`; изменённая вручную группа без `overwrite` — 409 `services_edited` |
-| GET | `/api/v1/servers/{id}/routing/export` | operator+ | `format=json` (по умолчанию: правила, outbounds без паролей и каскада, resolver) или `text` (правила как читает Hysteria); правила `acl.file` читаются с сервера по SSH, как в `routing/file` |
-| GET | `/api/v1/servers/{id}/routing/file` | operator+ | acl.file с сервера по SSH (до 1 МБ, полный путь): `{path, acl, problems}` |
-| GET | `/api/v1/routing/templates` | любая | шаблоны правил: встроенные (`builtin:local`, `builtin:ads`, `builtin:ru`) и пресеты с `acl.inline` (`preset:<id>`, outbounds без паролей) |
-| GET | `/api/v1/chain-templates` | любая | встроенные шаблоны каскадов: «Всё через exit», «RU напрямую» |
-| POST | `/api/v1/chain-templates/import` | operator+ | `{data}` — файл шаблона каскада → шаблон (без локального порта); ничего не сохраняется |
-| GET | `/api/v1/chains/{id}/template` | operator+ | каскад как файл шаблона: параметры связи без локального порта, правила и resolver входа; без серверов и секретов; без заметок, адреса проверки и resolver, указывающих на серверы каскада (или resolver в локальную сеть) |
-| POST | `/api/v1/routing/import` | operator+ | `{data}` — экспорт HyRoute или текст ACL → черновик для редактора, без паролей; ничего не сохраняется |
-| GET | `/api/v1/geo` | любая | базы geo controller: релиз, файлы (SHA-256, размер, URL), когда скачаны и проверены |
-| POST | `/api/v1/geo/update` | operator+ | скачать последний релиз (3 мин), `{info, changed}`; релиз не скачался или не прошёл проверку — 502 `geo_download` (`geo.DownloadError`), ошибка у самого controller (его диск) — 500 `internal`; другое обновление ещё идёт — сразу 409 `geo_busy` |
-| GET | `/api/v1/servers/{id}/geo` | любая | `{release, at, latest, paths, rules}`: что HyRoute поставил, новее ли у controller нет, читает ли конфиг эти файлы, есть ли geo-правила в `acl.inline` |
-| POST | `/api/v1/servers/{id}/geo` | operator+ | `{source, via}` — задание `geo`; без установки — 409 `no_installation`, без баз у controller — 409 `no_geo` |
-| GET | `/api/v1/geo/categories` | любая | `kind=geoip\|geosite`, `q` — до 200 имён по алфавиту; без баз — 404 `no_geo` |
-| GET | `/api/v1/servers/{id}/tuning` | все | параметры ядра по SSH (только чтение) и, рядом, congestion и bandwidth конфига |
-| POST | `/api/v1/servers/{id}/tuning` | operator+ | `{keys}` — задание `tuning` |
-| POST | `/api/v1/servers/{id}/ports` | operator+ | `{base, ports, host, hopInterval}`: новые порты — задание `apply` (202, `{job}`); только интервал — сохраняется сразу (200, `{job: null}`) |
-| POST | `/api/v1/servers/{id}/deploy` | operator+ | job Quick Deploy: тело — `deploy.Params` и `secrets` (`dns`, `outPassword`; в params задания не попадают); нужен подтверждённый ключ SSH; пароли прежней ревизии (любой `auth`, если `auth` не меняется) сохраняются; текущий конфиг не из развёртывания (правка, возврат, импорт) заменяется только с `"overwrite": true`, иначе 409 `config_changed` |
-| POST | `/api/v1/servers/{id}/import` | operator+ | job импорта |
-| POST | `/api/v1/servers/{id}/maintain` | operator+ | `{op: upgrade\|reinstall, version, source, via}`: задание `maintain`; без установки 409 `no_installation`, переустановка импортированной — 409 `not_managed`, служба запускает не `hysteria*` (docker, env, оболочка) — 409 `not_hysteria` |
-| GET | `/api/v1/servers/{id}/status` | любая | статус сервиса |
-| POST | `/api/v1/servers/{id}/service/{start,stop,restart}` | operator+ | с подтверждением в UI |
-| GET | `/api/v1/servers/{id}/journal` | любая | журнал Hysteria через redaction (шаблоны + пароли текущего конфига): JSON последних записей (не дольше 30 с, как статус) или SSE с `?follow=1` (30 с — на подключение и проверку прав); живых журналов одного сервера — до 2 на пользователя (429 `too_many_journals`) |
-| GET | `/api/v1/servers/{id}/config` | любая | сводка текущей ревизии (версия, порты, TLS, pin, obfs; без конфига и паролей) |
-| GET | `/api/v1/servers/{id}/config/edit` | operator+ | конфиг для редактора: секреты `[REDACTED]` (под секретными ключами, за alias, пароли в URL, шаблоны redactor, комментарии), основные поля |
-| POST | `/api/v1/servers/{id}/config/render` | operator+ | кандидат из текста и полей: проверка, diff, меняющиеся секреты (ничего не сохраняет) |
-| POST | `/api/v1/servers/{id}/config/apply` | operator+ | задание `apply` с откатом |
-| GET | `/api/v1/servers/{id}/metrics?period=` | любая роль | ряд метрик: 1h/6h/24h/48h — замеры, 7d/30d — средние по 15 мин |
-| GET | `/api/v1/metrics/latest` | любая роль | последний замер каждого сервера за 5 минут (Overview) |
-| GET | `/api/v1/servers/{id}/health` | любая роль | последняя проверка и смены статуса или причины за неделю (до 50) |
-| GET | `/api/v1/servers/{id}/config/revisions` | любая роль | история ревизий без текста конфига |
-| GET | `/api/v1/servers/{id}/config/revisions/{rev}` | operator+ | конфиг ревизии, секреты замаскированы |
-| GET | `/api/v1/servers/{id}/config/compare?from=&to=` | operator+ | diff двух ревизий без секретов, изменённые секреты — путями |
-| POST | `/api/v1/servers/{id}/config/rollback` | operator+ | `{base, revision}`: задание `apply` с конфигом ревизии |
-| POST | `/api/v1/servers/{id}/config/rotate` | operator+ | `{base, auth, users, obfs, cert}`: задание `apply` с новыми паролями и/или самоподписанным сертификатом (пустой `users` — все пользователи, кроме связей каскадов); что не подходит к конфигу — 400 `invalid` |
-| GET | `/api/v1/servers/{id}/client` | любая | сводка для клиентов без секретов; пользователи связей каскадов — отдельно, в `links` |
-| POST | `/api/v1/servers/{id}/client/reveal` | operator+ | `{user}` → ссылки (официальная и совместимая), `config.yaml`, QR; CSRF, `no-store`, пишется в audit log; пользователь связи каскада — 409 `link_user` |
-| GET | `/api/v1/jobs`, `/api/v1/jobs/{id}` | любая | список (`?server=`, `?before=`), детали с шагами |
-| GET | `/api/v1/jobs/{id}/logs` | любая | строки журнала после `?after=` |
-| GET | `/api/v1/jobs/{id}/events` (SSE) | любая | сохранённый журнал после `Last-Event-ID`, затем события `log`/`step`/`job` до конца задания, `end` |
-| POST | `/api/v1/jobs/{id}/retry` | operator+; `unlink` с `force` — owner/admin | повтор с безопасного шага |
-| GET | `/api/v1/logs` | любая | `source=controller` (буфер последних записей процесса) или `jobs` (журналы заданий), фильтры `server`, `level`, `q` (подстрока без учёта регистра в любом алфавите); всё уже отредактировано |
+| GET | `/api/v1/audit` | `users` | журнал аудита, новые сверху: `{entries: [{id, time, userId, user, action, target, object, details}], next}`; фильтры `user` (ID), `action` (одно или несколько через запятую), `target` (`server/3` или `server/` — все такого вида), `from`/`to` (RFC 3339, `to` не включается); страницы — курсор `before=next` (`limit` до 200, по умолчанию 100; `next` 0 — последняя страница): записи, добавленные между запросами, не сдвигают и не повторяют строки, как при offset, и запрос идёт по индексу; `object` — имя сервера, каскада, пресета или пользователя, пока он есть; details — через `redact` |
+| GET/POST | `/api/v1/servers` | читать: `view` (только область); создать: `deploy` (с меткой из области) | инвентарь; роль сервера только для чтения (следует из каскадов), `chains` — каскады сервера в области (id, название, состояние), `perms` — разрешения вызывающего на сервере |
+| GET/PATCH/DELETE | `/api/v1/servers/{id}` | читать: `view`; изменить: `credentials` (метка из области остаётся); удалить: `deploy` | удаление сервера из каскада — 409 `chain_member` |
+| GET | `/api/v1/chains`, `/api/v1/chains/{id}` | `view` (каскады, все серверы которых в области) | каскады: серверы по порядку с ролями, связи с параметрами и состоянием (секреты связей не отдаются); ответы об одном каскаде — ещё `unreachable`: серверы, до которых не дошло последнее «Удалить каскад» (`Linker.Unreached`), `{serverId, name, role, left}`, `left` — что связь там оставит |
+| POST | `/api/v1/chains` | `chains` (все узлы в области) | `{name, notes, nodes: [entry, relay…, exit], link: {up, down, noUdp, checkTarget}}` — от 2 до 4 серверов; проверка (петли, роли, конфиги, auth узлов после entry, параметры) и сохранение; параметры — у каждой связи; связи не разворачиваются |
+| PATCH | `/api/v1/chains/{id}` | `chains` | `{name, notes}` |
+| DELETE | `/api/v1/chains/{id}` | `chains` | только неразвёрнутый каскад (все связи new или failed), иначе 409 `chain_deployed` |
+| POST | `/api/v1/chains/{id}/link` | `chains` | одно задание `link` на связи, которым это нужно (не `active`; все, если все `active`), от выхода ко входу, на серверах этих связей (202, задание); 409 `no_config`, `no_installation`, `server_busy` |
+| POST | `/api/v1/chains/{id}/unlink` | `chains`; с `force` — owner/admin | `{delete}` — одно задание `unlink` на все развёрнутые связи, от входа к выходу (202); 409 `not_deployed`, `server_busy`. `{delete: true, force: true}` — удалить без серверов из `unreachable` (`Linker.ForceDelete`): 409 `servers_reached`, если последнее задание связи — не упавшее «Удалить каскад», которое не дошло до сервера; 400 без `delete`; пишется в audit log (`chain_force_delete`) |
+| GET | `/api/v1/chains/{id}/checks` | `view` | `?idx=&limit=` — проверки связи, новые первыми (7 дней) |
+| POST | `/api/v1/chains/{id}/check` | `chains` | проверить связи каскада сейчас (с каждого сервера, где начинается развёрнутая связь, как сборщик); 409 `chain_busy` во время задания |
+| POST | `/api/v1/chains/{id}/route` | `config` (на всех узлах) | `{host, ips, proto, port}` → `{hops: [{serverId, name, role, verdict, error, next}], rejected, summary}` — «Проверить правило» по каскаду от входа (`routing.Trace`) |
+| POST | `/api/v1/servers/{id}/check` | `credentials` | подключение и проверка прав (ничего не меняет) |
+| POST | `/api/v1/servers/{id}/host-key` | `credentials` | TOFU / re-trust с отпечатком (`replace`) |
+| POST | `/api/v1/servers/{id}/preflight` | `deploy` | job preflight |
+| GET | `/api/v1/presets`, `/api/v1/presets/{id}` | `view` | пресеты (разделы, заметки, YAML без секретов) |
+| POST | `/api/v1/presets` | `presets` (сервер `serverId` — в области) | `{name, serverId}` — из конфига сервера, `{name, from}` — копия пресета |
+| PATCH, DELETE | `/api/v1/presets/{id}` | `presets` | переименовать `{name}`, удалить |
+| GET | `/api/v1/presets/{id}/export` | `view` | файл пресета (JSON с версией формата) |
+| POST | `/api/v1/presets/import` | `presets` | `{data}` — текст файла пресета; файл другого вида или версии получает понятную ошибку, занятое название — номер « (N)», длинное укорачивается до 64 символов вместе с ним |
+| POST | `/api/v1/servers/{id}/preset/preview` | `config` | `{base, preset, sections}`: проверка и diff конфига с разделами пресета |
+| POST | `/api/v1/servers/{id}/preset/apply` | `config` | то же — задание `apply` |
+| GET | `/api/v1/servers/{id}/routing` | `config` | правила (`acl`), outbounds и resolver без паролей, `file` (acl.file), `cascade` (вход развёрнутого каскада), проверки правил |
+| POST | `/api/v1/servers/{id}/routing/preview` | `config` | `{base, acl, keepFile, outbounds, resolver, requests}` → проверка и diff конфига, правила после переименований, проблемы правил, dry-run (`changes`), `ok`, `same` |
+| POST | `/api/v1/servers/{id}/routing/apply` | `config` | то же — задание `apply` (`change: routing`); ошибка в правилах или без изменений — 400 `invalid` |
+| POST | `/api/v1/servers/{id}/routing/check` | `config` | `{acl, outbounds, request}` → правило, outbound, подмена, объяснение; на entry или relay развёрнутого каскада, если правила отправили запрос в `cascade`, — ещё `chain`: путь дальше по каскаду, как у `/chains/{id}/route` |
+| POST | `/api/v1/servers/{id}/routing/services` | `config` | `{acl}` — черновик → вкладка «По сервисам»: `version` каталога, `sections` — разделы с сервисами, чьи категории есть в базах geo controller, `hidden` — остальные, `noGeo`, `ownGeo` (сервер читает свои базы), `cascade` (вход каскада: доступно «через выход»), `state` — группа черновика (`found`, `version`, `choices`, `edited`, `changes`) |
+| POST | `/api/v1/servers/{id}/routing/services/build` | `config` | `{acl, outbounds, choices, overwrite}` → `{acl, state}`: черновик с группой, собранной из выбора; ничего не сохраняется. `cascade` не на входе каскада, неизвестный outbound или сервис, сервис без категорий в базах — 400 `invalid`; изменённая вручную группа без `overwrite` — 409 `services_edited` |
+| GET | `/api/v1/servers/{id}/routing/export` | `config` | `format=json` (по умолчанию: правила, outbounds без паролей и каскада, resolver) или `text` (правила как читает Hysteria); правила `acl.file` читаются с сервера по SSH, как в `routing/file` |
+| GET | `/api/v1/servers/{id}/routing/file` | `config` | acl.file с сервера по SSH (до 1 МБ, полный путь): `{path, acl, problems}` |
+| GET | `/api/v1/routing/templates` | `view` | шаблоны правил: встроенные (`builtin:local`, `builtin:ads`, `builtin:ru`) и пресеты с `acl.inline` (`preset:<id>`, outbounds без паролей) |
+| GET | `/api/v1/chain-templates` | `view` | встроенные шаблоны каскадов: «Всё через exit», «RU напрямую» |
+| POST | `/api/v1/chain-templates/import` | `chains` | `{data}` — файл шаблона каскада → шаблон (без локального порта); ничего не сохраняется |
+| GET | `/api/v1/chains/{id}/template` | `chains` | каскад как файл шаблона: параметры связи без локального порта, правила и resolver входа; без серверов и секретов; без заметок, адреса проверки и resolver, указывающих на серверы каскада (или resolver в локальную сеть) |
+| POST | `/api/v1/routing/import` | `config` | `{data}` — экспорт HyRoute или текст ACL → черновик для редактора, без паролей; ничего не сохраняется |
+| GET | `/api/v1/geo` | `view` | базы geo controller: релиз, файлы (SHA-256, размер, URL), когда скачаны и проверены |
+| POST | `/api/v1/geo/update` | `config` | скачать последний релиз (3 мин), `{info, changed}`; релиз не скачался или не прошёл проверку — 502 `geo_download` (`geo.DownloadError`), ошибка у самого controller (его диск) — 500 `internal`; другое обновление ещё идёт — сразу 409 `geo_busy` |
+| GET | `/api/v1/servers/{id}/geo` | `view` | `{release, at, latest, paths, rules}`: что HyRoute поставил, новее ли у controller нет, читает ли конфиг эти файлы, есть ли geo-правила в `acl.inline` |
+| POST | `/api/v1/servers/{id}/geo` | `config` (и `via` в области) | `{source, via}` — задание `geo`; без установки — 409 `no_installation`, без баз у controller — 409 `no_geo` |
+| GET | `/api/v1/geo/categories` | `view` | `kind=geoip\|geosite`, `q` — до 200 имён по алфавиту; без баз — 404 `no_geo` |
+| GET | `/api/v1/servers/{id}/tuning` | `view` | параметры ядра по SSH (только чтение) и, рядом, congestion и bandwidth конфига |
+| POST | `/api/v1/servers/{id}/tuning` | `config` | `{keys}` — задание `tuning` |
+| POST | `/api/v1/servers/{id}/ports` | `config` | `{base, ports, host, hopInterval}`: новые порты — задание `apply` (202, `{job}`); только интервал — сохраняется сразу (200, `{job: null}`) |
+| POST | `/api/v1/servers/{id}/deploy` | `deploy` (и `via` в области) | job Quick Deploy: тело — `deploy.Params` и `secrets` (`dns`, `outPassword`; в params задания не попадают); нужен подтверждённый ключ SSH; пароли прежней ревизии (любой `auth`, если `auth` не меняется) сохраняются; текущий конфиг не из развёртывания (правка, возврат, импорт) заменяется только с `"overwrite": true`, иначе 409 `config_changed` |
+| POST | `/api/v1/servers/{id}/import` | `deploy` | job импорта |
+| POST | `/api/v1/servers/{id}/maintain` | `deploy` (и `via` в области) | `{op: upgrade\|reinstall, version, source, via}`: задание `maintain`; без установки 409 `no_installation`, переустановка импортированной — 409 `not_managed`, служба запускает не `hysteria*` (docker, env, оболочка) — 409 `not_hysteria` |
+| GET | `/api/v1/servers/{id}/status` | `view` | статус сервиса |
+| POST | `/api/v1/servers/{id}/service/{start,stop,restart}` | `service` | с подтверждением в UI |
+| GET | `/api/v1/servers/{id}/journal` | `view` | журнал Hysteria через redaction (шаблоны + пароли текущего конфига): JSON последних записей (не дольше 30 с, как статус) или SSE с `?follow=1` (30 с — на подключение и проверку прав); живых журналов одного сервера — до 2 на пользователя (429 `too_many_journals`) |
+| GET | `/api/v1/servers/{id}/config` | `view` | сводка текущей ревизии (версия, порты, TLS, pin, obfs; без конфига и паролей) |
+| GET | `/api/v1/servers/{id}/config/edit` | `config` | конфиг для редактора: секреты `[REDACTED]` (под секретными ключами, за alias, пароли в URL, шаблоны redactor, комментарии), основные поля |
+| POST | `/api/v1/servers/{id}/config/render` | `config` | кандидат из текста и полей: проверка, diff, меняющиеся секреты (ничего не сохраняет) |
+| POST | `/api/v1/servers/{id}/config/apply` | `config` | задание `apply` с откатом |
+| GET | `/api/v1/servers/{id}/metrics?period=` | `view` | ряд метрик: 1h/6h/24h/48h — замеры, 7d/30d — средние по 15 мин |
+| GET | `/api/v1/metrics/latest` | `view` (серверы области) | последний замер каждого сервера за 5 минут (Overview) |
+| GET | `/api/v1/servers/{id}/health` | `view` | последняя проверка и смены статуса или причины за неделю (до 50) |
+| GET | `/api/v1/servers/{id}/config/revisions` | `view` | история ревизий без текста конфига |
+| GET | `/api/v1/servers/{id}/config/revisions/{rev}` | `config` | конфиг ревизии, секреты замаскированы |
+| GET | `/api/v1/servers/{id}/config/compare?from=&to=` | `config` | diff двух ревизий без секретов, изменённые секреты — путями |
+| POST | `/api/v1/servers/{id}/config/rollback` | `config` | `{base, revision}`: задание `apply` с конфигом ревизии |
+| POST | `/api/v1/servers/{id}/config/rotate` | `config` | `{base, auth, users, obfs, cert}`: задание `apply` с новыми паролями и/или самоподписанным сертификатом (пустой `users` — все пользователи, кроме связей каскадов); что не подходит к конфигу — 400 `invalid` |
+| GET | `/api/v1/servers/{id}/client` | `view` | сводка для клиентов без секретов; пользователи связей каскадов — отдельно, в `links` |
+| POST | `/api/v1/servers/{id}/client/reveal` | `clients.reveal` | `{user}` → ссылки (официальная и совместимая), `config.yaml`, QR; CSRF, `no-store`, пишется в audit log; пользователь связи каскада — 409 `link_user` |
+| POST | `/api/v1/servers/{id}/clients` | `clients.manage` | `{base, user}`: новый пользователь `auth.userpass` с паролем, который создаёт controller, — задание `apply` (`change: clients`), 202 `{job, user, password}`, пароль — один раз (`no-store`); аудит `client.add` без пароля; занятое имя или имя не для ссылки — 400 `invalid`, `link-…` — 400; общий пароль или внешняя проверка — 409 `not_userpass` |
+| POST | `/api/v1/servers/{id}/clients/remove` | `clients.manage` | `{base, user}` — удалить пользователя (202 `{job, user}`); пользователь связи каскада — 409 `link_user` |
+| POST | `/api/v1/servers/{id}/clients/password` | `clients.manage` | `{base, user}` — новый пароль пользователя (202 `{job, user, password}`) |
+| GET | `/api/v1/jobs`, `/api/v1/jobs/{id}` | `view` (задания, все серверы которых в области) | список (`?server=`, `?before=`), детали с шагами и `mayRetry` |
+| GET | `/api/v1/jobs/{id}/logs` | `view` | строки журнала после `?after=` |
+| GET | `/api/v1/jobs/{id}/events` (SSE) | `view` | сохранённый журнал после `Last-Event-ID`, затем события `log`/`step`/`job` до конца задания, `end` |
+| POST | `/api/v1/jobs/{id}/retry` | разрешение вида задания (раздел «Права»); `unlink` с `force` — owner/admin | повтор с безопасного шага |
+| GET | `/api/v1/logs` | `view`; `source=controller` — только со всеми серверами | `source=controller` (буфер последних записей процесса) или `jobs` (журналы заданий), фильтры `server`, `level`, `q` (подстрока без учёта регистра в любом алфавите); всё уже отредактировано |
 | GET | `/api/v1/backups` | owner | копии базы (`items`: имя, размер, время, зашифрована ли), расписание (`interval` в секундах, `keep`), шифруются ли, каталог, итог последней копии этого процесса (`last`) |
 | POST | `/api/v1/backups` | owner | сделать копию сейчас; 201 с описанием копии, аудит `backup_created`; ошибка — 500 `backup_failed` |
 | GET | `/api/v1/backups/{name}` | owner | скачать копию (`Content-Disposition: attachment`); имя — только из списка, аудит `backup_downloaded` |
-| POST | `/api/v1/master-key/check` | owner, admin | `{"key": "<текст файла ключа>"}` → `ok` и по каждой версии ключа, которой зашифрованы данные, `ok`/`wrong`/`missing`, плюс версии текста, которые база не использует; не ключ — 400 `not_a_key`. Ключ не сохраняется и не пишется ни в журнал, ни в аудит (там — `master_key_checked` с итогом) |
-| GET | `/api/v1/diag` | owner, admin | `?jobs=` (1–200, по умолчанию 20) → `{name, jobs, controllerLog, size, files: [{name, about, size}]}`: список файлов пакета, который даст скачивание (пакет собирается и выбрасывается); вне диапазона — 400 `invalid` |
-| GET | `/api/v1/diag/bundle` | owner, admin | `?jobs=` — диагностический пакет (ZIP, `Content-Disposition: attachment`, `no-store`), собирается заново; аудит `diag_downloaded` (имя файла, число заданий и файлов) |
-| GET | `/api/v1/events` | любая | события, новые первыми: `?open=1` — только открытые, `?limit=` (до 500, по умолчанию 100), `?before=<id>`; `{id, kind, severity, subject, subjectId, text, count, openedAt, lastAt, closedAt, closeText}` |
-| GET | `/api/v1/attention` | любая | сводка «Требует внимания»: `items` (`kind`, `severity`, `subject`, `subjectId`, `name`, `text`, `since`), `network` — открытое событие «у controller нет сети» или `null`, `monitoring` |
-| GET | `/api/v1/alerts/channels` | owner, admin | каналы оповещений без секретов: `{id, name, kind, enabled, settings, events, quiet, hasSecret, createdAt, updatedAt}` |
-| POST | `/api/v1/alerts/channels` | owner, admin | `{name, kind, enabled, settings, events, quiet, secret}` — проверка (`alerts.Check`, 400 `invalid` с полем в `details`), секрет запечатывается; 201; аудит `alert_channel_created` (вид и название) |
-| PATCH | `/api/v1/alerts/channels/{id}` | owner, admin | то же без `kind` (другой вид — 400): поля заменяются целиком, `secret` не передан — прежний, `clearSecret` — убрать; аудит `alert_channel_updated` |
-| DELETE | `/api/v1/alerts/channels/{id}` | owner, admin | 204; аудит `alert_channel_deleted` |
-| POST | `/api/v1/alerts/channels/{id}/test` | owner, admin | проверочное сообщение сейчас (и выключенным каналом), до 15 с: `{ok: true}` или 502 `send_failed` с причиной без секрета; аудит `alert_channel_tested` с итогом |
+| POST | `/api/v1/master-key/check` | `settings` | `{"key": "<текст файла ключа>"}` → `ok` и по каждой версии ключа, которой зашифрованы данные, `ok`/`wrong`/`missing`, плюс версии текста, которые база не использует; не ключ — 400 `not_a_key`. Ключ не сохраняется и не пишется ни в журнал, ни в аудит (там — `master_key_checked` с итогом) |
+| GET | `/api/v1/diag` | `settings` | `?jobs=` (1–200, по умолчанию 20) → `{name, jobs, controllerLog, size, files: [{name, about, size}]}`: список файлов пакета, который даст скачивание (пакет собирается и выбрасывается); вне диапазона — 400 `invalid` |
+| GET | `/api/v1/diag/bundle` | `settings` | `?jobs=` — диагностический пакет (ZIP, `Content-Disposition: attachment`, `no-store`), собирается заново; аудит `diag_downloaded` (имя файла, число заданий и файлов) |
+| GET | `/api/v1/events` | `view` (события серверов, каскадов и заданий в области) | события, новые первыми: `?open=1` — только открытые, `?limit=` (до 500, по умолчанию 100), `?before=<id>`; `{id, kind, severity, subject, subjectId, text, count, openedAt, lastAt, closedAt, closeText}` |
+| GET | `/api/v1/attention` | `view` (только область) | сводка «Требует внимания»: `items` (`kind`, `severity`, `subject`, `subjectId`, `name`, `text`, `since`), `network` — открытое событие «у controller нет сети» или `null`, `monitoring` |
+| GET | `/api/v1/alerts/channels` | `settings` | каналы оповещений без секретов: `{id, name, kind, enabled, settings, events, quiet, hasSecret, createdAt, updatedAt}` |
+| POST | `/api/v1/alerts/channels` | `settings` | `{name, kind, enabled, settings, events, quiet, secret}` — проверка (`alerts.Check`, 400 `invalid` с полем в `details`), секрет запечатывается; 201; аудит `alert_channel_created` (вид и название) |
+| PATCH | `/api/v1/alerts/channels/{id}` | `settings` | то же без `kind` (другой вид — 400): поля заменяются целиком, `secret` не передан — прежний, `clearSecret` — убрать; аудит `alert_channel_updated` |
+| DELETE | `/api/v1/alerts/channels/{id}` | `settings` | 204; аудит `alert_channel_deleted` |
+| POST | `/api/v1/alerts/channels/{id}/test` | `settings` | проверочное сообщение сейчас (и выключенным каналом), до 15 с: `{ok: true}` или 502 `send_failed` с причиной без секрета; аудит `alert_channel_tested` с итогом |
 
 ## Модель угроз
 
