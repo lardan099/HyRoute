@@ -2,7 +2,7 @@
   // One server: the Hysteria service (status, start/stop/restart), the
   // machine, the config summary and the live journal.
   import { onMount, onDestroy } from 'svelte';
-  import { api, asApiError, type ApiError, type Job, type Server, type ServerConfig, type ServiceAction, type ServiceStatus } from '../api';
+  import { api, asApiError, type ApiError, type Drift, type Job, type Server, type ServerConfig, type ServiceAction, type ServiceStatus } from '../api';
   import { t, type Key } from '../i18n';
   import { go } from '../router.svelte';
   import { canOn } from '../session.svelte';
@@ -23,6 +23,7 @@
   import MetricsCard from '../lib/MetricsCard.svelte';
   import HealthCard from '../lib/HealthCard.svelte';
   import TrafficCard from '../lib/TrafficCard.svelte';
+  import DriftCard from '../lib/DriftCard.svelte';
 
   let { id }: { id: number } = $props();
 
@@ -129,7 +130,17 @@
     }
   }
 
-  const sourceName = { deploy: 'srv.sourceDeploy', import: 'srv.sourceImport', edit: 'srv.sourceEdit', rollback: 'srv.sourceRollback', rotate: 'srv.sourceRotate', cascade: 'srv.sourceCascade', geo: 'srv.sourceGeo' } as const;
+  const sourceName = { deploy: 'srv.sourceDeploy', import: 'srv.sourceImport', edit: 'srv.sourceEdit', rollback: 'srv.sourceRollback', rotate: 'srv.sourceRotate', cascade: 'srv.sourceCascade', geo: 'srv.sourceGeo', external: 'srv.sourceExternal' } as const;
+
+  // drifted: differences the reconciliation found (P4-06). Accepting one
+  // may add a revision and change the state: both are read again.
+  let drifted = $state(0);
+  async function driftChanged(d: Drift) {
+    drifted = d.items.length;
+    try {
+      [server, config] = await Promise.all([api.server(id), api.serverConfig(id).catch(() => null)]);
+    } catch {}
+  }
 
   // After the history or the editor: the summary may have changed.
   async function closePanel() {
@@ -150,7 +161,7 @@
       <h1>{flag(server.country)} {server.name}</h1>
       <div class="muted small sub">
         <span class="mono">{server.sshUser}@{server.host}{server.sshPort !== 22 ? ':' + server.sshPort : ''}</span>
-        <span><span class="dot {stateTone(server.state)}"></span> {t(`state.${server.state}` as Key)}</span>
+        <span><span class="dot {stateTone(server.state)}"></span> {t(`state.${server.state}` as Key)}{#if drifted} · {t('drift.badge')}{/if}</span>
         {#if server.chains?.length}
           <span>
             {t(`srvrole.${server.role}` as Key)}
@@ -285,6 +296,9 @@
   </div>
 
   {#key id}<HealthCard serverId={id} />{/key}
+  {#if status || (statusError && statusError.code !== 'no_installation')}
+    {#key id}<DriftCard serverId={id} {writable} onchange={driftChanged} />{/key}
+  {/if}
   {#key id}<MetricsCard serverId={id} />{/key}
   {#if status || (statusError && statusError.code !== 'no_installation')}
     {#key id}<TuningCard serverId={id} writable={may.config} onstarted={(j) => go('deployments', j.id)} />{/key}

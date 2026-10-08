@@ -515,7 +515,7 @@ export const dnsProviders: Record<string, { key: string; required: boolean }[]> 
   vultr: [{ key: 'vultr_api_token', required: true }],
 };
 
-export type ConfigSource = 'deploy' | 'import' | 'edit' | 'rollback' | 'rotate' | 'cascade' | 'geo';
+export type ConfigSource = 'deploy' | 'import' | 'edit' | 'rollback' | 'rotate' | 'cascade' | 'geo' | 'external';
 
 // Rotation: what gets new values (users: of userpass auth; none: all).
 export interface Rotation {
@@ -986,6 +986,55 @@ export interface ServerGeo {
   rules: boolean;
 }
 
+// ==== reconciliation (P4-06) ====
+
+export type DriftKind = 'config' | 'unit' | 'binary' | 'geo' | 'link';
+
+// DriftThing is a thing the reconciliation compares; a link with its
+// cascade (hops: how many links the cascade has).
+export interface DriftThing {
+  key: string;
+  kind: DriftKind;
+  chain?: { id: number; name: string };
+  idx?: number;
+  hops?: number;
+}
+
+// DriftFile is a file that differs: SHA-256 recorded and found ('' — none).
+export interface DriftFile {
+  path: string;
+  want: string;
+  got: string;
+}
+
+export interface DriftItem extends DriftThing {
+  files: DriftFile[];
+  revision?: number;
+  // units: the files the unit is built from now (unit file, drop-ins).
+  units?: string[];
+  title: string;
+  summary: string;
+  since: string;
+  // job: the latest revert job.
+  job: { id: number; state: JobState; errorMessage?: string } | null;
+  canRevert: boolean;
+  revertNote?: string;
+  // diff, secrets: the config's masked diff (roles that may write).
+  diff?: DiffLine[];
+  secrets?: string[];
+  diffNote?: string;
+}
+
+export interface Drift {
+  // interval of the rounds, seconds (0: off).
+  interval: number;
+  at: string | null;
+  error?: string;
+  checked: DriftThing[];
+  skipped: DriftThing[];
+  items: DriftItem[];
+}
+
 // presetSections in config order; deploySections are those a deploy takes
 // (the form sets the ports and the obfuscation).
 export const presetSections: PresetSection[] = ['ports', 'obfs', 'masquerade', 'speed', 'quic', 'udp', 'resolver', 'sniff', 'acl', 'outbounds'];
@@ -1289,6 +1338,10 @@ export const api = {
     request<{ names: string[] }>('GET', `/geo/categories?kind=${kind}&q=${encodeURIComponent(q)}`),
   serverGeo: (serverId: number) => request<ServerGeo>('GET', `/servers/${serverId}/geo`),
   installGeo: (serverId: number, source: DeploySource, via?: number) => request<Job>('POST', `/servers/${serverId}/geo`, { source, via: via ?? 0 }),
+  drift: (serverId: number) => request<Drift>('GET', `/servers/${serverId}/reconcile`),
+  checkDrift: (serverId: number) => request<Drift>('POST', `/servers/${serverId}/reconcile/check`),
+  acceptDrift: (serverId: number, key: string) => request<Drift>('POST', `/servers/${serverId}/reconcile/accept`, { key }),
+  revertDrift: (serverId: number, key: string) => request<Job>('POST', `/servers/${serverId}/reconcile/revert`, { key }),
   presetPreview: (serverId: number, p: PresetApply) => request<PresetCheck>('POST', `/servers/${serverId}/preset/preview`, p),
   presetApply: (serverId: number, p: PresetApply) => request<Job>('POST', `/servers/${serverId}/preset/apply`, p),
   clientSummary: (serverId: number) => request<ClientSummary>('GET', `/servers/${serverId}/client`),
