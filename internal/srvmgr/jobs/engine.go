@@ -92,7 +92,7 @@ func (e *Engine) poke() {
 	}
 }
 
-func secretContext(jobID int64) string { return fmt.Sprintf("job/%d/secret", jobID) }
+func secretContext(jobID int64) string { return model.JobSecretContext(jobID) }
 
 // Submit queues a job. secretParams are sealed and only reach steps
 // through Env.Secret.

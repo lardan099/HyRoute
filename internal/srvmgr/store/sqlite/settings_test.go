@@ -75,15 +75,14 @@ func TestSealedData(t *testing.T) {
 	}
 	check(d, true, "sealed password", model.CredContext(srv.ID, model.CredSSHPassword))
 
-	// A job secret has no sample (its context belongs to package jobs),
-	// but it is sealed data.
+	// A job secret is sealed data with a sample of its own.
 	d, _ = openTemp(t)
 	srv = newServer(d)
 	j := model.Job{Kind: "deploy", ServerID: srv.ID, State: model.JobCompleted, Params: []byte("{}"), CreatedAt: time.Now()}
 	if err := d.CreateJob(ctx, &j, []model.JobStep{{Idx: 0, Name: "connect"}}, func(int64) ([]byte, error) { return []byte("sealed secret"), nil }); err != nil {
 		t.Fatal(err)
 	}
-	check(d, true, "", "")
+	check(d, true, "sealed secret", model.JobSecretContext(j.ID))
 }
 
 // SealedVersions reads the key version of the sealed values of every

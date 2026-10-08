@@ -22,6 +22,14 @@ var (
 	ErrInChain = errors.New("server is in a cascade")
 )
 
+// SealedValue is a stored value sealed with the master key (package
+// secrets), with the key version and the context it was sealed for.
+type SealedValue struct {
+	Version uint32
+	Sealed  []byte
+	Context string
+}
+
 // Store is the whole persistent state of the controller.
 type Store interface {
 	// SchemaVersion is the newest applied migration.

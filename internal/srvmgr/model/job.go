@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 )
 
@@ -57,6 +58,12 @@ type Job struct {
 	FinishedAt   time.Time
 	LeaseOwner   string
 	LeaseUntil   time.Time
+}
+
+// JobSecretContext is the additional data the secret params of a job are
+// sealed with.
+func JobSecretContext(jobID int64) string {
+	return "job/" + strconv.FormatInt(jobID, 10) + "/secret"
 }
 
 // AllServers are ServerID and Servers: every server the job changes.

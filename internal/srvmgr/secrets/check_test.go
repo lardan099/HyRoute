@@ -22,7 +22,11 @@ type fakeDB struct {
 	sample    []byte // one of them, with its context
 	sampleCtx string
 	versions  []uint32 // the key versions they are sealed with
+	// samples: one value of each version (Verify, CheckKeyText).
+	samples []store.SealedValue
 }
+
+func (d *fakeDB) SealedSamples(context.Context) ([]store.SealedValue, error) { return d.samples, nil }
 
 func (d *fakeDB) SealedVersions(context.Context) ([]uint32, error) { return d.versions, nil }
 
