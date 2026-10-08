@@ -189,14 +189,37 @@ func (s *server) retryJob(w http.ResponseWriter, r *http.Request) {
 var sseKeepalive = 20 * time.Second
 
 // streamContext is the context of a live event stream: r's, which also
-// ends when the controller shuts down (Deps.Streams).
+// ends when the controller shuts down (Deps.Streams) and as soon as the
+// session of the stream ends (see endWithSession).
 func (s *server) streamContext(r *http.Request) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(r.Context())
+	if s.Auth != nil {
+		go s.endWithSession(ctx, cancel, r)
+	}
 	if s.Streams == nil {
 		return ctx, cancel
 	}
 	stop := context.AfterFunc(s.Streams, cancel)
 	return ctx, func() { stop(); cancel() }
+}
+
+// endWithSession cancels a stream once its session ends by a logout, a
+// revocation, a changed password or a blocked or deleted user: the
+// keepalive checks it only every sseKeepalive.
+func (s *server) endWithSession(ctx context.Context, cancel context.CancelFunc, r *http.Request) {
+	ended := s.Auth.Revocations()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ended:
+			ended = s.Auth.Revocations()
+			if !s.sessionHolds(r) {
+				cancel()
+				return
+			}
+		}
+	}
 }
 
 // jobEvents streams a job as server-sent events: the stored log lines

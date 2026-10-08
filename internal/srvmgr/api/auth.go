@@ -65,6 +65,12 @@ func mapError(err error) error {
 		return &Error{Status: http.StatusConflict, Code: "setup_done", Message: "Администратор уже создан. Войдите под своим именем."}
 	case errors.Is(err, auth.ErrBadSetupToken):
 		return &Error{Status: http.StatusForbidden, Code: "bad_setup_token", Message: "Неверный код первого запуска. Он лежит в файле setup-token в каталоге данных hyroute-server."}
+	case errors.Is(err, auth.ErrLastOwner):
+		return &Error{Status: http.StatusConflict, Code: "last_owner", Message: "Это последний владелец панели, который может войти: его нельзя понизить, заблокировать или удалить. Сначала передайте роль владельца другому пользователю."}
+	case errors.Is(err, auth.ErrSelf):
+		return &Error{Status: http.StatusConflict, Code: "self", Message: "Себя нельзя заблокировать или удалить, а свой пароль меняется с вводом текущего (блок «Учётная запись»)."}
+	case errors.Is(err, auth.ErrBlocked):
+		return &Error{Status: http.StatusConflict, Code: "user_blocked", Message: "Пользователь заблокирован: сначала разблокируйте его."}
 	case errors.Is(err, store.ErrNotFound):
 		return errNotFound
 	case errors.Is(err, store.ErrBusy):
@@ -311,10 +317,16 @@ type userJSON struct {
 	Role      model.Role `json:"role"`
 	Disabled  bool       `json:"disabled"`
 	CreatedAt time.Time  `json:"createdAt"`
+	// LastLoginAt: null when no login is known.
+	LastLoginAt *time.Time `json:"lastLoginAt"`
 }
 
 func toUserJSON(u model.User) userJSON {
-	return userJSON{ID: u.ID, Username: u.Username, Role: u.Role, Disabled: u.Disabled, CreatedAt: u.CreatedAt}
+	out := userJSON{ID: u.ID, Username: u.Username, Role: u.Role, Disabled: u.Disabled, CreatedAt: u.CreatedAt}
+	if !u.LastLoginAt.IsZero() {
+		out.LastLoginAt = &u.LastLoginAt
+	}
+	return out
 }
 
 type sessionJSON struct {
