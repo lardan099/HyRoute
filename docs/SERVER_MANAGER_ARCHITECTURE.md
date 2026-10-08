@@ -153,7 +153,7 @@ env), `setup-token` на время первого запуска и `lock`: con
 | `installations` | server_id, binary_path, config_path, unit, service_user, version, managed (bool), binary_sha256, unit_sha256, firewall_tool, firewall_ports, firewall_keep, updated_at | managed = установлено HyRoute (deploy); импорт записывает найденную установку с managed = 0; firewall_* — открытые HyRoute правила ufw/firewalld и «не трогать брандмауэр» (миграция 0008); binary_sha256, unit_sha256 — бинарник и отпечаток unit, которые поставил или нашёл HyRoute (миграция reconcile, '' — не записано, не сверяется) |
 | `server_configs` | id, server_id, revision, config (envelope, контекст `server/<id>/config/<rev>`), sha256, meta (json: версия, listen, порты, TLS, pin, SNI, obfs, auth), source (deploy/import/edit/rollback/rotate/cascade/geo/external), from_revision, job_id, created_by, created_at | ревизия появляется только после успешного применения; YAML с паролями — зашифрован; from_revision — ревизия, к которой вернулись (rollback); external — конфиг, изменённый вне HyRoute и принятый админом (P4-06) |
 | `jobs` | id, kind, server_id, state, current_step, params (json без секретов), data (json без секретов: результаты шагов), secret (envelope, контекст `job/<id>/secret`), attempt, error_message, error_details, created_by, created_at, started_at, finished_at, lease_owner, lease_until | |
-| `job_steps` | job_id, idx, name, phase, state, attempt, started_at, finished_at, error | |
+| `job_steps` | job_id, idx, name, phase, state, attempt, started_at, finished_at, error, outstanding | outstanding — шаг сделан и не откачен (раздел «Jobs») |
 | `job_logs` | job_id, seq, ts, level, step, message | message уже прошёл redaction |
 | `audit_log` | id, ts, user_id, action, target, details | кто что сделал (вход, выход, пользователи, подтверждение ключа, показ ссылок, удаление каскада без недоступного сервера — `chain_force_delete`, постановка и повтор заданий — `job_submitted`/`job_retried`, создание, остановка и повтор пакетов — `batch_created`/`batch_stopped`/`batch_retried`); target — `server/<id>`, `chain/<id>`, `preset/<id>`, `user/<id>`, `batch/<id>` (у входов — имя, у заданий — первый сервер задания), details без секретов; индексы (user_id, id), (action, id), (target, id) для фильтров `GET /api/v1/audit`; из неудачных входов и попыток setup хранятся последние 10 000 |
 | `chains` | id, name (unique), notes, created_by, created_at, updated_at | каскад (P3-01), миграция 0016 |
@@ -490,7 +490,16 @@ queued → connecting → preflight → downloading → installing → configuri
   проверяет фактическое состояние (`Done`), затем делает (`Run`); `Undo`
   откатывает сделанное. При ошибке шага откатываются он сам и все
   выполненные и пропущенные шаги перед ним, в обратном порядке
-  (`ErrNothingToUndo` — откатывать нечего).
+  (`ErrNothingToUndo` — откатывать нечего). А также шаги прошлых попыток,
+  которые ни один откат не вернул, на любом месте (по номеру шага, с
+  конца): повтор и продолжение после перезапуска начинаются с
+  безопасного шага перед ними и могут упасть раньше, чем дойдут до них
+  снова. Это отметка `job_steps.outstanding`: шаг с `Undo` получает её,
+  когда запускается, и теряет, когда его `Undo` прошёл или не нашёл, что
+  откатывать; повтор её не сбрасывает. Шаг, который откат уже вернул,
+  второй раз не откатывается, а неудавшийся `Undo` следующий откат
+  пробует снова. У шагов, записанных controller без этой отметки, — как
+  раньше.
 - **Запись до изменения.** `Env.Set` пишет данные задания в БД до
   возврата, и шаг записывает, что собирается изменить, до изменения:
   копии файлов хранят SHA-256 исходного файла (или `absent`). `Undo`
@@ -1176,8 +1185,10 @@ Hysteria и клиент Hysteria до следующего сервера (outb
    развёртывании проверяется по `ss` снова: если его слушает другая
    программа (не клиент этой связи — PID сверяется с `MainPID` её
    службы, он ещё работает при продолжении после перезапуска), порт
-   выбирается заново; кандидаты проходят проверку `hyconfig`. Связь
-   становится `linking`.
+   выбирается заново — кроме случая, когда на entry уже конфиг, который
+   пишет задание, с outbound на этот порт (продолжение после
+   `entry-config`): новый порт развёл бы связь и конфиг entry; кандидаты
+   проходят проверку `hyconfig`. Связь становится `linking`.
 3. `exit-config`, `exit-restart`, `exit-verify` — пользователь связи на
    exit с `userpass` (копия с записанным SHA-256, права прежнего файла,
    перезапуск и ожидание UDP-порта); exit с `password` не меняется и не
@@ -1210,7 +1221,13 @@ Hysteria и клиент Hysteria до следующего сервера (outb
 состоянии (`active` или `stale`); незавершённый откат — серверы
 `needs_attention`, а связь первого развёртывания — `stale`: части связи
 могли остаться на серверах, поэтому она считается развёрнутой, и каскад
-удаляется только заданием `unlink`.
+удаляется только заданием `unlink`. Так же — когда задание упало без
+отката (controller новой версии строит для него другие шаги), а в его
+данных уже записано изменение сервера (`exitConfig`, `linkConfig`,
+`linkUnit`, `entryConfig`). Повтор или продолжение после перезапуска,
+упавшие на `check`, откатывают и то, что сделала прошлая попытка (раздел
+«Jobs»), поэтому `failed` значит, что от связи на серверах ничего не
+осталось.
 
 Задание `unlink` (`Linker.Unlink`, `POST /api/v1/chains/{id}/unlink`,
 `{"delete": true}` — удалить и каскад) снимает развёрнутую связь (у

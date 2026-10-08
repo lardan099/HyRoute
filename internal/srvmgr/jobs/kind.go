@@ -31,8 +31,10 @@ type Step struct {
 	Done func(ctx context.Context, env *Env) (bool, error)
 	Run  func(ctx context.Context, env *Env) error
 	// Undo reverts the step when it or a later step fails, also when the
-	// step was skipped (Done) or failed halfway: it acts only on what the
-	// step recorded with Env.Set before changing anything, and returns
+	// step was skipped (Done), failed halfway, or ran in an earlier attempt
+	// of the job that no rollback undid (a retry or a recovery that fails
+	// before it gets to the step again): it acts only on what the step
+	// recorded with Env.Set before changing anything, and returns
 	// ErrNothingToUndo when there is no record. Nil: nothing to undo.
 	Undo func(ctx context.Context, env *Env) error
 }

@@ -657,6 +657,139 @@ func TestRecoveryFinishesRollback(t *testing.T) {
 	}
 }
 
+// A restart interrupts the job after steps it cannot be retried from; the
+// recovery goes on from the safe step before them, and that step fails:
+// what the interrupted attempt changed is undone, newest first, although
+// this attempt never got to it again.
+func TestRecoveryRollsBackEarlierAttempt(t *testing.T) {
+	var mu sync.Mutex
+	var undone []string
+	entered := make(chan struct{}, 1)
+	var checkFails atomic.Bool
+	rollback := make(chan Rollback, 1)
+	mk := func(block bool) *Kind {
+		write := func(name string) func(context.Context, *Env) error {
+			return func(_ context.Context, env *Env) error { return env.Set(name, "1") }
+		}
+		undo := func(name string) func(context.Context, *Env) error {
+			return func(_ context.Context, env *Env) error {
+				if env.Get(name) == "" {
+					return ErrNothingToUndo
+				}
+				mu.Lock()
+				undone = append(undone, name)
+				mu.Unlock()
+				return nil
+			}
+		}
+		return &Kind{
+			Name: "demo",
+			Steps: func(json.RawMessage) ([]Step, error) {
+				return []Step{
+					{Name: "check", Phase: model.JobPreflight, Safe: true, Run: func(context.Context, *Env) error {
+						if checkFails.Load() {
+							return Fail("Сервер изменился.", nil)
+						}
+						return nil
+					}},
+					{Name: "config", Phase: model.JobConfiguring, Run: write("config"), Undo: undo("config")},
+					{Name: "unit", Phase: model.JobConfiguring, Run: write("unit"), Undo: undo("unit")},
+					{Name: "verify", Phase: model.JobVerifying, Run: func(ctx context.Context, env *Env) error {
+						if block {
+							entered <- struct{}{}
+							<-ctx.Done() // the process dies here
+							return ctx.Err()
+						}
+						return nil
+					}},
+				}, nil
+			},
+			Recover:  func(context.Context, *Env) (Resolution, error) { return ResolveRetry, nil },
+			Finished: func(_ context.Context, env *Env, _ model.Job) { rollback <- env.Rollback() },
+		}
+	}
+	h1 := newHarness(t, nil, mk(true))
+	h1.start()
+	j, _ := h1.eng.Submit(context.Background(), "demo", 0, nil, nil, 0)
+	<-entered
+	h1.kill()
+
+	checkFails.Store(true)
+	h2 := newHarness(t, h1.db, mk(false))
+	h2.start()
+	j = h2.wait(j.ID, model.JobFailed)
+	if j.CurrentStep != "check" {
+		t.Fatalf("failed at %s: %s", j.CurrentStep, j.ErrorMessage)
+	}
+	if got := <-rollback; got != RollbackClean {
+		t.Fatalf("rollback %d", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(undone) != 2 || undone[0] != "unit" || undone[1] != "config" {
+		t.Fatalf("undone %v\n%s", undone, h2.logText(j.ID))
+	}
+	if got := h2.steps(j.ID); got[0] != model.StepFailed || got[1] != model.StepRolledBack || got[2] != model.StepRolledBack || got[3] != model.StepPending {
+		t.Fatalf("steps %v", got)
+	}
+}
+
+// A retry that fails before it gets to a step again: the rollback before
+// it could not undo the step, so this one does; a step a rollback has
+// undone is not undone again.
+func TestRetryRollsBackWhatEarlierRollbackLeft(t *testing.T) {
+	var c counters
+	var undoFails, checkFails atomic.Bool
+	rollback := make(chan Rollback, 1)
+	k := simpleKind("demo",
+		Step{Name: "check", Phase: model.JobPreflight, Safe: true, Run: func(context.Context, *Env) error {
+			if checkFails.Load() {
+				return Fail("Сервер изменился.", nil)
+			}
+			return nil
+		}},
+		Step{Name: "config", Phase: model.JobConfiguring,
+			Run: func(_ context.Context, env *Env) error { return env.Set("config", "1") },
+			Undo: func(context.Context, *Env) error {
+				c.inc("undo")
+				if undoFails.Load() {
+					return errors.New("ssh: connection lost")
+				}
+				return nil
+			}},
+		Step{Name: "start", Phase: model.JobStarting, Run: func(context.Context, *Env) error { return Fail("Сервис не запустился.", nil) }},
+	)
+	k.Finished = func(_ context.Context, env *Env, _ model.Job) { rollback <- env.Rollback() }
+	h := newHarness(t, nil, k)
+	h.start()
+	ctx := context.Background()
+	undoFails.Store(true)
+	j, _ := h.eng.Submit(ctx, "demo", 0, nil, nil, 0)
+	h.wait(j.ID, model.JobFailed)
+	if got := <-rollback; got != RollbackFailed || c.get("undo") != 1 {
+		t.Fatalf("rollback %d, %d undo", got, c.get("undo"))
+	}
+
+	undoFails.Store(false)
+	checkFails.Store(true)
+	for i, want := range []struct {
+		rollback Rollback
+		undo     int
+		config   model.StepState
+	}{{RollbackClean, 2, model.StepRolledBack}, {RollbackNothing, 2, model.StepPending}} {
+		if _, err := h.eng.Retry(ctx, j.ID, 1); err != nil {
+			t.Fatal(err)
+		}
+		j = h.wait(j.ID, model.JobFailed)
+		if got := <-rollback; got != want.rollback || c.get("undo") != want.undo || j.CurrentStep != "check" {
+			t.Fatalf("retry %d: rollback %d, %d undo, at %s\n%s", i+1, got, c.get("undo"), j.CurrentStep, h.logText(j.ID))
+		}
+		if got := h.steps(j.ID); got[0] != model.StepFailed || got[1] != want.config {
+			t.Fatalf("retry %d: steps %v", i+1, got)
+		}
+	}
+}
+
 // newServer adds a server for jobs to run on.
 func (h *harness) newServer() int64 {
 	h.t.Helper()

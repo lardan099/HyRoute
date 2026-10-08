@@ -269,7 +269,7 @@ func (d *DB) SetJobData(ctx context.Context, id int64, data map[string]string) e
 }
 
 func (d *DB) JobSteps(ctx context.Context, jobID int64) ([]model.JobStep, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT job_id, idx, name, phase, state, attempt, started_at, finished_at, error FROM job_steps WHERE job_id = ? ORDER BY idx`, jobID)
+	rows, err := d.db.QueryContext(ctx, `SELECT job_id, idx, name, phase, state, attempt, started_at, finished_at, error, outstanding FROM job_steps WHERE job_id = ? ORDER BY idx`, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +279,7 @@ func (d *DB) JobSteps(ctx context.Context, jobID int64) ([]model.JobStep, error)
 		var s model.JobStep
 		var phase, state string
 		var started, finished int64
-		if err := rows.Scan(&s.JobID, &s.Idx, &s.Name, &phase, &state, &s.Attempt, &started, &finished, &s.Error); err != nil {
+		if err := rows.Scan(&s.JobID, &s.Idx, &s.Name, &phase, &state, &s.Attempt, &started, &finished, &s.Error, &s.Outstanding); err != nil {
 			return nil, err
 		}
 		s.Phase, s.State = model.JobState(phase), model.StepState(state)
@@ -290,8 +290,8 @@ func (d *DB) JobSteps(ctx context.Context, jobID int64) ([]model.JobStep, error)
 }
 
 func (d *DB) UpdateJobStep(ctx context.Context, s model.JobStep) error {
-	_, err := d.db.ExecContext(ctx, `UPDATE job_steps SET state = ?, attempt = ?, started_at = ?, finished_at = ?, error = ? WHERE job_id = ? AND idx = ?`,
-		string(s.State), s.Attempt, unixTime(s.StartedAt), unixTime(s.FinishedAt), s.Error, s.JobID, s.Idx)
+	_, err := d.db.ExecContext(ctx, `UPDATE job_steps SET state = ?, attempt = ?, started_at = ?, finished_at = ?, error = ?, outstanding = ? WHERE job_id = ? AND idx = ?`,
+		string(s.State), s.Attempt, unixTime(s.StartedAt), unixTime(s.FinishedAt), s.Error, s.Outstanding, s.JobID, s.Idx)
 	return err
 }
 

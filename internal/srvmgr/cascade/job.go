@@ -698,8 +698,11 @@ func (x *linker) check(ctx context.Context, env *jobs.Env, p jobParams) error {
 // ss: a link without one picks a free one; a link deployed first keeps
 // its stored port only while no other program listens there (one may
 // have taken it after an unlink or a failed deployment). The link's own
-// client, still up when a recovery checks again, is not another program.
-// It reports whether the port was picked (and stored).
+// client, still up when a recovery checks again, is not another program;
+// nor is anything there once the entry has the config this job writes,
+// with the outbound to that port (a recovery after entry-config): a new
+// port would part the link from it. It reports whether the port was
+// picked (and stored).
 func (x *linker) localPort(ctx context.Context, env *jobs.Env, ex remote.Executor, p jobParams, pl *plan) (bool, error) {
 	ls, err := remote.Listeners(ctx, ex, sudo(env, p.Entry))
 	var noSS *remote.ExitError
@@ -726,6 +729,11 @@ func (x *linker) localPort(ctx context.Context, env *jobs.Env, ex remote.Executo
 		for _, l := range ls {
 			if l.Port == old && u.MainPID != 0 && l.PID == u.MainPID {
 				return false, nil
+			}
+		}
+		if pl.entryCfg != nil {
+			if mine, err := x.fileIs(ctx, env, p.Entry, pl.inEntry.Config, pl.entryCfg); err != nil || mine {
+				return false, err
 			}
 		}
 	}
@@ -1401,7 +1409,9 @@ func (x *linker) cleanup(ctx context.Context, env *jobs.Env, p jobParams) error 
 // finished: a failed first deployment leaves a link failed, a failed
 // redeployment as it was; servers whose rollback did not finish need
 // attention, and the links count as deployed then (stale): parts of them
-// may be on the servers, and only unlink takes them off.
+// may be on the servers, and only unlink takes them off. So it is when
+// the job failed without a rollback (a controller that builds other steps
+// for it went on with it) after it recorded a change of a server.
 func (x *linker) finished(ctx context.Context, env *jobs.Env, j model.Job) {
 	var p jobParams
 	if err := env.DecodeParams(&p); err != nil {
@@ -1409,6 +1419,14 @@ func (x *linker) finished(ctx context.Context, env *jobs.Env, j model.Job) {
 	}
 	if j.State != model.JobFailed {
 		return
+	}
+	left := env.Rollback() == jobs.RollbackFailed
+	if env.Rollback() == jobs.RollbackNotRun {
+		for _, h := range p.hops() {
+			for _, k := range []string{"exitConfig", "linkConfig", "linkUnit", "entryConfig"} {
+				left = left || env.Get(h.key(k)) != ""
+			}
+		}
 	}
 	c, err := x.Store.ChainByID(ctx, p.Chain)
 	for _, h := range p.hops() {
@@ -1421,7 +1439,7 @@ func (x *linker) finished(ctx context.Context, env *jobs.Env, j model.Job) {
 			link.State = model.LinkStale // on the servers: a retry finishes the commit
 		case h.Prev == model.LinkActive || h.Prev == model.LinkStale:
 			link.State = h.Prev
-		case env.Rollback() == jobs.RollbackFailed:
+		case left:
 			link.State = model.LinkStale
 		default:
 			link.State = model.LinkFailed
@@ -1429,7 +1447,7 @@ func (x *linker) finished(ctx context.Context, env *jobs.Env, j model.Job) {
 		link.UpdatedAt = x.Now()
 		x.Store.UpdateLink(ctx, link)
 	}
-	if env.Rollback() == jobs.RollbackFailed {
+	if left {
 		for _, s := range p.servers() {
 			x.Store.SetServerState(ctx, s, model.StateNeedsAttention, x.Now())
 		}

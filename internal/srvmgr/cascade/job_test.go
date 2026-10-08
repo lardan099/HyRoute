@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -77,8 +78,10 @@ type host struct {
 	bad  string
 	// need: a server config without it fails.
 	need string
-	// pingHook runs at each ping (tests block in it).
+	// pingHook runs at each ping, runHook before each other command (tests
+	// block in them).
 	pingHook func()
+	runHook  func(line string)
 	// failRead: reading this file fails as a broken connection does;
 	// fail: so do commands starting with it.
 	failRead, fail string
@@ -148,9 +151,15 @@ func (h *host) Run(ctx context.Context, cmd remote.Cmd) (remote.Result, error) {
 	if len(a) > 1 && a[0] == binPath && a[len(a)-2] == "ping" {
 		return h.ping(a)
 	}
+	line := strings.Join(a, " ")
+	h.mu.Lock()
+	hook := h.runHook
+	h.mu.Unlock()
+	if hook != nil {
+		hook(line)
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	line := strings.Join(a, " ")
 	if h.fail != "" && strings.HasPrefix(line, h.fail) {
 		return remote.Result{}, errors.New("ssh: connection lost")
 	}
@@ -642,6 +651,64 @@ func TestLinkUnfinishedRollbackStaysDeployed(t *testing.T) {
 	}
 }
 
+// The rollback of a first deployment does not finish (as above), and a
+// retry stops at its check (the exit was edited meanwhile): its rollback
+// takes off what the first one left. While that fails too the link stays
+// deployed; once it succeeds nothing of the link is left, and the link is
+// failed.
+func TestLinkRetryAfterUnfinishedRollback(t *testing.T) {
+	w := newWorld(t, exitUP)
+	ctx := context.Background()
+	w.exit.down = true
+	w.entry.pingHook = func() {
+		w.entry.mu.Lock()
+		w.entry.fail = "rm "
+		w.entry.mu.Unlock()
+	}
+	j, log := w.wait(w.submit())
+	if j.State != model.JobFailed || w.link().State != model.LinkStale {
+		t.Fatalf("%s, link %s\n%s", j.State, w.link().State, log)
+	}
+	edited := exitUP + "# edited over SSH\n"
+	w.exit.mu.Lock()
+	w.exit.files[cfgPath] = []byte(edited)
+	w.exit.down = false
+	w.exit.mu.Unlock()
+	w.entry.mu.Lock()
+	w.entry.pingHook = nil // rm still fails
+	w.entry.mu.Unlock()
+	unitFile := "/etc/systemd/system/" + UnitName(w.chain, 0)
+	for _, rmFails := range []bool{true, false} {
+		if !rmFails {
+			w.entry.mu.Lock()
+			w.entry.fail = ""
+			w.entry.mu.Unlock()
+		}
+		r, err := w.linker.x.Jobs.Retry(ctx, j.ID, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if j, log = w.wait(r); j.State != model.JobFailed || j.CurrentStep != "check" || !strings.Contains(j.ErrorMessage, "изменили не через HyRoute") {
+			t.Fatalf("retry: %s at %s: %s\n%s", j.State, j.CurrentStep, j.ErrorMessage, log)
+		}
+		_, unitLeft := w.entry.file(unitFile)
+		_, cfgLeft := w.entry.file(linkCfg(w))
+		want := model.LinkFailed
+		if rmFails {
+			want = model.LinkStale
+		}
+		if l := w.link(); l.State != want || unitLeft != rmFails || cfgLeft != rmFails {
+			t.Fatalf("rm fails %v: link %s, unit left %v, config left %v\n%s", rmFails, l.State, unitLeft, cfgLeft, log)
+		}
+		if s, _ := w.db.ServerByID(ctx, w.in); s.State != model.StateNeedsAttention {
+			t.Fatalf("entry %s", s.State)
+		}
+	}
+	if now, _ := w.exit.file(cfgPath); now != edited {
+		t.Fatalf("the edit is gone:\n%s", now)
+	}
+}
+
 // Before the first deployment a user or outbound of the link's name made
 // by someone else stops the job before anything changes.
 func TestLinkRefusesForeignParts(t *testing.T) {
@@ -819,6 +886,109 @@ func TestLinkResumesAfterRestart(t *testing.T) {
 	// The link's own client on its port is not another program.
 	if p, _ := ParseParams(w.link().Params); p.LocalPort != before.LocalPort || strings.Contains(log, "занят другой программой") {
 		t.Fatalf("port %d → %d\n%s", before.LocalPort, p.LocalPort, log)
+	}
+}
+
+// The controller dies while the link comes up, and the next one builds
+// other steps for the job: it fails without a rollback. What the job
+// recorded is on the servers: the link counts as deployed (stale), and
+// both servers need attention.
+func TestLinkFailedWithoutRollbackStaysDeployed(t *testing.T) {
+	w := newWorld(t, exitUP)
+	reached := make(chan struct{})
+	var once sync.Once
+	block := make(chan struct{})
+	w.entry.pingHook = func() {
+		once.Do(func() { close(reached) })
+		<-block
+	}
+	j := w.submit()
+	<-reached
+	stopped := make(chan struct{})
+	go func() { w.stop(); close(stopped) }()
+	time.Sleep(30 * time.Millisecond) // the controller is cancelled
+	w.entry.mu.Lock()
+	w.entry.pingHook = nil
+	w.entry.mu.Unlock()
+	close(block)
+	<-stopped
+
+	eng := jobs.New(w.db, w.keys, redact.New(), hosts{w.in: w.entry, w.out: w.exit}, nil)
+	eng.Poll = 10 * time.Millisecond
+	w.linker = New(Deps{Store: w.db, Keys: w.keys, Jobs: eng, VerifyTimeout: 300 * time.Millisecond, Poll: 10 * time.Millisecond})
+	k := w.linker.Kind()
+	steps := k.Steps
+	k.Steps = func(raw json.RawMessage) ([]jobs.Step, error) {
+		s, err := steps(raw)
+		return append(s, jobs.Step{Name: "newer", Phase: model.JobVerifying, Run: func(context.Context, *jobs.Env) error { return nil }}), err
+	}
+	eng.Register(k)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { eng.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	j, log := w.wait(j)
+	if j.State != model.JobFailed || !strings.Contains(j.ErrorMessage, "не может быть продолжено") {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	if _, found := w.entry.file(linkCfg(w)); !found {
+		t.Fatal("the link's client is gone: something was rolled back")
+	}
+	if l := w.link(); l.State != model.LinkStale {
+		t.Fatalf("link %s", l.State)
+	}
+	for _, id := range []int64{w.in, w.out} {
+		if s, _ := w.db.ServerByID(context.Background(), id); s.State != model.StateNeedsAttention {
+			t.Fatalf("server %d %s", id, s.State)
+		}
+	}
+}
+
+// The controller dies once the entry has its outbound into the link; at
+// the recovery the link's client is down and its port looks taken. The
+// entry's config already sends there: the link keeps its port, and the
+// entry is neither rewritten nor restarted again.
+func TestLinkRecoveryKeepsPortOfEntryConfig(t *testing.T) {
+	w := newWorld(t, exitUP)
+	reached := make(chan struct{})
+	var once sync.Once
+	block := make(chan struct{})
+	w.entry.mu.Lock()
+	w.entry.runHook = func(line string) {
+		if line == "systemctl restart -- "+unitName {
+			once.Do(func() { close(reached) })
+			<-block
+		}
+	}
+	w.entry.mu.Unlock()
+	j := w.submit()
+	<-reached
+	before, _ := ParseParams(w.link().Params)
+	stopped := make(chan struct{})
+	go func() { w.stop(); close(stopped) }()
+	time.Sleep(30 * time.Millisecond) // the controller is cancelled
+	w.entry.mu.Lock()
+	w.entry.runHook = nil
+	w.entry.units[UnitName(w.chain, 0)] = "failed"
+	w.entry.listen = fmt.Sprintf("tcp LISTEN 0 128 127.0.0.1:%d 0.0.0.0:* users:((\"hysteria\",pid=77,fd=3))\n", before.LocalPort)
+	w.entry.mu.Unlock()
+	close(block)
+	<-stopped
+
+	w.linker, w.stop = w.controller()
+	j, log := w.wait(j)
+	if j.State != model.JobCompleted {
+		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
+	}
+	p, _ := ParseParams(w.link().Params)
+	entryNow, _ := w.entry.file(cfgPath)
+	nc, _ := hyconfig.ParseServer([]byte(entryNow))
+	if p.LocalPort != before.LocalPort || strings.Contains(log, "занят другой программой") || len(nc.Outbounds) != 1 || nc.Outbounds[0].SOCKS5.Addr != fmt.Sprintf("127.0.0.1:%d", before.LocalPort) {
+		t.Fatalf("port %d → %d, outbounds %+v\n%s", before.LocalPort, p.LocalPort, nc.Outbounds, log)
+	}
+	if n := w.entry.restarts(unitName); n != 1 {
+		t.Fatalf("entry restarted %d times\n%s", n, log)
 	}
 }
 

@@ -398,6 +398,11 @@ func (e *Engine) runJob(ctx context.Context, id int64) {
 		e.save(ctx, &j, env)
 		env.step = st.Name
 		row.State, row.Attempt, row.StartedAt, row.FinishedAt, row.Error = model.StepRunning, row.Attempt+1, e.Now(), time.Time{}, ""
+		if st.Undo != nil {
+			// Recorded before the step changes anything: a rollback of
+			// this attempt or a later one undoes it.
+			row.Outstanding = true
+		}
 		rows[i] = row // a failure keeps the attempt and the start
 		e.saveStep(ctx, row)
 
@@ -455,22 +460,30 @@ func (e *Engine) stepFailed(ctx context.Context, j *model.Job, env *Env, steps [
 	e.fail(ctx, j, env, err)
 }
 
-// rollback undoes the failed step i and the steps before it, newest
-// first, and records how it went for the Finished hook. Steps rolled back
-// already (before a restart) are not undone again.
+// rollback undoes the failed step i, the steps before it and the steps an
+// earlier attempt ran that no rollback has undone since (a retry or a
+// recovery started at a safe step before them and failed before it got to
+// them again), newest first, and records how it went for the Finished
+// hook. Steps rolled back already (before a restart, or in an earlier
+// attempt) are not undone again.
 func (e *Engine) rollback(ctx context.Context, j *model.Job, env *Env, steps []Step, rows []model.JobStep, i int) {
 	// The failed step itself may have changed part of what it does (a
-	// certificate written, its key not): its Undo goes first. Undo acts on
+	// certificate written, its key not): its Undo runs too. Undo acts on
 	// what a step recorded (Env.Set) before changing anything, so it is
-	// safe for a step that changed nothing.
+	// safe for a step that changed nothing. Skipped steps too: after a
+	// restart a step finds its own effect in place and is skipped, yet its
+	// record is there to undo. Newest first is by index: a step after i
+	// that an earlier attempt ran came after the effects of the steps
+	// before it.
 	var undo []int
-	if i < len(steps) && steps[i].Undo != nil {
-		undo = append(undo, i)
-	}
-	// Skipped steps too: after a restart a step finds its own effect in
-	// place and is skipped, yet its record is there to undo.
-	for k := min(i, len(steps)) - 1; k >= 0; k-- {
-		if (rows[k].State == model.StepDone || rows[k].State == model.StepSkipped) && steps[k].Undo != nil {
+	for k := len(steps) - 1; k >= 0; k-- {
+		if steps[k].Undo == nil {
+			continue
+		}
+		// Done or skipped before i: undone as ever (the steps of an older
+		// controller have no mark).
+		done := k < i && (rows[k].State == model.StepDone || rows[k].State == model.StepSkipped)
+		if k == i || done || rows[k].Outstanding {
 			undo = append(undo, k)
 		}
 	}
@@ -485,20 +498,26 @@ func (e *Engine) rollback(ctx context.Context, j *model.Job, env *Env, steps []S
 		for _, k := range undo {
 			env.step = steps[k].Name
 			uerr := steps[k].Undo(context.WithoutCancel(ctx), env)
-			if errors.Is(uerr, ErrNothingToUndo) {
-				continue
-			}
-			if uerr != nil {
+			nothing := errors.Is(uerr, ErrNothingToUndo)
+			if uerr != nil && !nothing {
+				// Still outstanding: the rollback of a retry tries again.
 				e.log(j.ID, "error", steps[k].Name, "Откат не удался: "+uerr.Error())
 				result = RollbackFailed
 				continue
 			}
+			save := rows[k].Outstanding
+			rows[k].Outstanding = false
+			if !nothing && k != i {
+				rows[k].State, save = model.StepRolledBack, true
+			}
+			if save {
+				e.saveStep(ctx, rows[k])
+			}
+			if nothing {
+				continue
+			}
 			if result == RollbackNothing {
 				result = RollbackClean
-			}
-			if k != i {
-				rows[k].State = model.StepRolledBack
-				e.saveStep(ctx, rows[k])
 			}
 			e.log(j.ID, "info", steps[k].Name, "Откачено.")
 		}
@@ -610,6 +629,8 @@ func (e *Engine) requeue(ctx context.Context, j *model.Job, env *Env, steps []St
 	if from == len(steps) {
 		from = 0
 	}
+	// Outstanding stays: should the new attempt fail before it gets to a
+	// step again, its rollback undoes what the step did before.
 	for i := from; i < len(rows); i++ {
 		rows[i].State, rows[i].Error, rows[i].StartedAt, rows[i].FinishedAt = model.StepPending, "", time.Time{}, time.Time{}
 		e.saveStep(ctx, rows[i])

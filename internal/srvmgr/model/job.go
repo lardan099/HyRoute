@@ -108,6 +108,11 @@ type JobStep struct {
 	StartedAt  time.Time
 	FinishedAt time.Time
 	Error      string
+	// Outstanding: the step (one with an Undo) ran in an attempt of the
+	// job and no rollback has undone it since. A rollback undoes it also
+	// when the attempt that failed did not get to it again (a retry or a
+	// recovery started at a safe step before it).
+	Outstanding bool
 }
 
 // JobLog is one line of a job's log (already redacted).
