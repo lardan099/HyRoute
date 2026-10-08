@@ -6,7 +6,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { api, asApiError, type ApiError, type Chain, type LinkCheck, type RoutingTemplate, type Server } from '../api';
   import { t, type Key } from '../i18n';
-  import { canForce, canWrite, session } from '../session.svelte';
+  import { can, canForce, session } from '../session.svelte';
   import { go } from '../router.svelte';
   import { flag, stateTone, when } from './format';
   import { busy, deployed, linkStateText, linkTone, pendingEntry } from './chain';
@@ -26,7 +26,7 @@
   let name = $state('');
   let notes = $state('');
   let editError = $state<ApiError | null>(null);
-  let writable = $derived(canWrite(session.user));
+  let writable = $derived(can('chains'));
   // unreachable: the servers «Удалить каскад» could not reach; owners and
   // admins may delete the cascade without them.
   let unreachable = $derived(chain && !busy(chain) ? (chain.unreachable ?? []) : []);

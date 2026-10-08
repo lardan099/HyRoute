@@ -6,7 +6,7 @@
   import { api, asApiError, type ApiError, type RoutingTemplate, type Server } from '../api';
   import { t } from '../i18n';
   import { go } from '../router.svelte';
-  import { canWrite, session } from '../session.svelte';
+  import { can, canOn } from '../session.svelte';
   import { bad, protoPort } from '../lib/acl';
   import TemplateApplyDialog from '../lib/TemplateApplyDialog.svelte';
 
@@ -16,13 +16,15 @@
   let error = $state<ApiError | null>(null);
   let applying = $state<RoutingTemplate | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);
-  let writable = $derived(canWrite(session.user));
+  // The routing editor's import, and applying to the servers whose config
+  // the caller may change.
+  let writable = $derived(can('config'));
   let all = $derived([...imported, ...(list ?? [])]);
 
   onMount(async () => {
     try {
       list = await api.routingTemplates();
-      servers = await api.servers();
+      servers = (await api.servers()).filter((s) => canOn(s, 'config'));
     } catch (e) {
       error = asApiError(e);
     }
@@ -83,7 +85,7 @@
         <div class="row actions">
           <span class="grow"></span>
           <button class="ghost" onclick={() => save(tp)}>{t('rules.save')}</button>
-          {#if writable}<button class="primary" disabled={!servers.length} onclick={() => (applying = tp)}>{t('rules.applyTo')}</button>{/if}
+          {#if servers.length}<button class="primary" onclick={() => (applying = tp)}>{t('rules.applyTo')}</button>{/if}
         </div>
       </section>
     {/each}

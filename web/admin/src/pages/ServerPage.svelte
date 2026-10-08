@@ -5,7 +5,7 @@
   import { api, asApiError, type ApiError, type Job, type Server, type ServerConfig, type ServiceAction, type ServiceStatus } from '../api';
   import { t, type Key } from '../i18n';
   import { go } from '../router.svelte';
-  import { canWrite, session } from '../session.svelte';
+  import { canOn } from '../session.svelte';
   import { flag, stateTone, uptime } from '../lib/format';
   import Dialog from '../lib/Dialog.svelte';
   import DeployDialog from '../lib/DeployDialog.svelte';
@@ -17,6 +17,7 @@
   import JournalView from '../lib/JournalView.svelte';
   import ConfigEditor from '../lib/ConfigEditor.svelte';
   import ClientCard from '../lib/ClientCard.svelte';
+  import ClientsCard from '../lib/ClientsCard.svelte';
   import ConfigHistory from '../lib/ConfigHistory.svelte';
   import RoutingEditor from '../lib/RoutingEditor.svelte';
   import MetricsCard from '../lib/MetricsCard.svelte';
@@ -41,7 +42,15 @@
   let history = $state(false);
   let routing = $state(false);
   let action = $state<{ name: ServiceAction; job: Job; done: boolean; ok: boolean } | null>(null);
-  let writable = $derived(canWrite(session.user));
+  // may: what the caller may do on this server (its perms from the API);
+  // what it may not is not offered.
+  let may = $derived({
+    deploy: canOn(server, 'deploy'),
+    service: canOn(server, 'service'),
+    config: canOn(server, 'config'),
+    reveal: canOn(server, 'clients.reveal'),
+    clients: canOn(server, 'clients.manage'),
+  });
   let poll: ReturnType<typeof setTimeout> | undefined;
   // gone: the page is left; a job read in flight then polls no more.
   let gone = false;
@@ -151,7 +160,7 @@
         {#if server.location}<span>{server.location}</span>{/if}
       </div>
     </div>
-    {#if writable}
+    {#if may.deploy}
       <button onclick={() => (deploying = true)}>{t('deploy.button')}</button>
       <button onclick={startImport}>{t('import.button')}</button>
     {/if}
@@ -173,7 +182,7 @@
   {#if editing}
     <ConfigEditor {server} onclose={closePanel} />
   {:else if history}
-    <ConfigHistory {server} {writable} onclose={closePanel} />
+    <ConfigHistory {server} writable={may.config} onclose={closePanel} />
   {:else if routing}
     <RoutingEditor {server} onclose={closePanel} />
   {:else}
@@ -212,12 +221,14 @@
           <dt>{t('srv.autostart')}</dt>
           <dd>{status.enabled ? t('srv.yes') : t('srv.no')}</dd>
         </dl>
-        {#if writable}
+        {#if may.service || may.deploy}
           <div class="row actions">
-            {#if !status.active}<button class="primary" disabled={!!action && !action.done} onclick={() => ask('start')}>{t('srv.start')}</button>{/if}
-            <button disabled={!!action && !action.done} onclick={() => ask('restart')}>{t('srv.restart')}</button>
-            {#if status.active}<button class="danger" disabled={!!action && !action.done} onclick={() => ask('stop')}>{t('srv.stop')}</button>{/if}
-            <button class="ghost" disabled={!!action && !action.done} onclick={() => (maintaining = true)}>{t('srv.maintain')}</button>
+            {#if may.service}
+              {#if !status.active}<button class="primary" disabled={!!action && !action.done} onclick={() => ask('start')}>{t('srv.start')}</button>{/if}
+              <button disabled={!!action && !action.done} onclick={() => ask('restart')}>{t('srv.restart')}</button>
+              {#if status.active}<button class="danger" disabled={!!action && !action.done} onclick={() => ask('stop')}>{t('srv.stop')}</button>{/if}
+            {/if}
+            {#if may.deploy}<button class="ghost" disabled={!!action && !action.done} onclick={() => (maintaining = true)}>{t('srv.maintain')}</button>{/if}
           </div>
         {/if}
       {/if}
@@ -245,11 +256,11 @@
         <div class="row">
           <h2 class="grow">{t('srv.config')}</h2>
           {#if config}<button class="ghost" onclick={() => (history = true)}>{t('hist.open')}</button>{/if}
-          {#if config && writable}<button class="ghost" onclick={() => (presetting = true)}>{t('papply.open')}</button>{/if}
-          {#if config && writable}<button class="ghost" onclick={() => (porting = true)}>{t('ports.open')}</button>{/if}
-          {#if config && writable}<button class="ghost" onclick={() => (rotating = true)}>{t('rot.open')}</button>{/if}
-          {#if config && writable}<button class="ghost" onclick={() => (routing = true)}>{t('rt.open')}</button>{/if}
-          {#if config && writable}<button class="ghost" onclick={() => (editing = true)}>{t('cfg.edit')}</button>{/if}
+          {#if config && may.config}<button class="ghost" onclick={() => (presetting = true)}>{t('papply.open')}</button>{/if}
+          {#if config && may.config}<button class="ghost" onclick={() => (porting = true)}>{t('ports.open')}</button>{/if}
+          {#if config && may.config}<button class="ghost" onclick={() => (rotating = true)}>{t('rot.open')}</button>{/if}
+          {#if config && may.config}<button class="ghost" onclick={() => (routing = true)}>{t('rt.open')}</button>{/if}
+          {#if config && may.config}<button class="ghost" onclick={() => (editing = true)}>{t('cfg.edit')}</button>{/if}
         </div>
         {#if config}
           <dl>
@@ -276,11 +287,14 @@
   {#key id}<HealthCard serverId={id} />{/key}
   {#key id}<MetricsCard serverId={id} />{/key}
   {#if status || (statusError && statusError.code !== 'no_installation')}
-    {#key id}<TuningCard serverId={id} {writable} onstarted={(j) => go('deployments', j.id)} />{/key}
+    {#key id}<TuningCard serverId={id} writable={may.config} onstarted={(j) => go('deployments', j.id)} />{/key}
   {/if}
-  {#key id}<TrafficCard serverId={id} {writable} />{/key}
+  {#key id}<TrafficCard serverId={id} writable={may.config} />{/key}
 
-  {#key config?.revision}<ClientCard serverId={id} serverName={server.name} />{/key}
+  {#if may.clients && config}
+    <ClientsCard serverId={id} revision={config.revision} onchanged={closePanel} />
+  {/if}
+  {#key config?.revision}<ClientCard serverId={id} serverName={server.name} reveal={may.reveal} />{/key}
 
   {#if status || statusError?.code !== 'no_installation'}
     {#key id}<JournalView serverId={id} />{/key}

@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import { api, asApiError, type ApiError, type Server } from '../api';
   import { t, type Key } from '../i18n';
-  import { canWrite, session } from '../session.svelte';
+  import { can, canOn } from '../session.svelte';
   import Dialog from '../lib/Dialog.svelte';
   import ServerDialog from '../lib/ServerDialog.svelte';
   import CheckDialog from '../lib/CheckDialog.svelte';
@@ -21,7 +21,9 @@
   let then = $state<'deploy' | 'import' | null>(null);
   let deploying = $state<Server | null>(null);
   let deleteError = $state<ApiError | null>(null);
-  let writable = $derived(canWrite(session.user));
+  // adding: the role adds servers (with one of the user's tags when the
+  // scope is narrower: the controller checks it).
+  let adding = $derived(can('deploy'));
 
   async function load() {
     try {
@@ -93,14 +95,14 @@
 {:else}
 <div class="row head">
   <h1 class="grow">{t('nav.servers')}</h1>
-  {#if writable}<button class="primary" onclick={() => (editing = null)}>{t('servers.add')}</button>{/if}
+  {#if adding}<button class="primary" onclick={() => (editing = null)}>{t('servers.add')}</button>{/if}
 </div>
 
 {#if error}<div class="note error">{error.message}</div>{/if}
 
 {#if list && list.length === 0}
   <div class="card empty">
-    <p>{writable ? t('servers.empty') : t('servers.emptyReadonly')}</p>
+    <p>{adding ? t('servers.empty') : t('servers.emptyReadonly')}</p>
   </div>
 {:else if list}
   <div class="card table">
@@ -133,14 +135,16 @@
               {#if !s.hostKey}<div class="small faint">{t('servers.keyNotConfirmed')}</div>{/if}
             </td>
             <td class="act">
-              {#if writable}<div class="acts">
-                <button class="ghost" onclick={() => deploy(s)}>{t('deploy.button')}</button>
-                <button class="ghost" onclick={() => importServer(s)}>{t('import.button')}</button>
+              {#if canOn(s, 'deploy') || canOn(s, 'credentials')}<div class="acts">
+                {#if canOn(s, 'deploy')}
+                  <button class="ghost" onclick={() => deploy(s)}>{t('deploy.button')}</button>
+                  <button class="ghost" onclick={() => importServer(s)}>{t('import.button')}</button>
+                {/if}
                 <Menu label={t('servers.more')}>
-                  <button onclick={() => ((checking = s), (then = null))}>{t('check.button')}</button>
-                  <button onclick={() => preflight(s)}>{t('preflight.button')}</button>
-                  <button onclick={() => (editing = s)}>{t('common.edit')}</button>
-                  <button class="danger" onclick={() => ((deleting = s), (deleteError = null))}>{t('common.delete')}</button>
+                  {#if canOn(s, 'credentials')}<button onclick={() => ((checking = s), (then = null))}>{t('check.button')}</button>{/if}
+                  {#if canOn(s, 'deploy')}<button onclick={() => preflight(s)}>{t('preflight.button')}</button>{/if}
+                  {#if canOn(s, 'credentials')}<button onclick={() => (editing = s)}>{t('common.edit')}</button>{/if}
+                  {#if canOn(s, 'deploy')}<button class="danger" onclick={() => ((deleting = s), (deleteError = null))}>{t('common.delete')}</button>{/if}
                 </Menu>
               </div>{/if}
             </td>

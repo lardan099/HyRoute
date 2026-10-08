@@ -5,7 +5,7 @@
   import { onMount } from 'svelte';
   import { api, asApiError, type ApiError, type Preset, type Server } from '../api';
   import { t, type Key } from '../i18n';
-  import { canWrite, session } from '../session.svelte';
+  import { can, canOn } from '../session.svelte';
   import { go } from '../router.svelte';
   import Dialog from '../lib/Dialog.svelte';
   import Menu from '../lib/Menu.svelte';
@@ -24,7 +24,9 @@
   let deleting = $state<Preset | null>(null);
   let applying = $state<Preset | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);
-  let writable = $derived(canWrite(session.user));
+  let writable = $derived(can('presets'));
+  // applicable: a server the caller may lay a preset over.
+  let applicable = $derived(servers.some((s) => canOn(s, 'config')));
 
   async function load() {
     try {
@@ -130,8 +132,8 @@
           </button>
           <span class="grow"></span>
           <span class="small faint">{when(p.updatedAt)}</span>
+          {#if applicable}<button class="ghost" onclick={() => (applying = p)}>{t('presets.apply')}</button>{/if}
           {#if writable}
-            <button class="ghost" onclick={() => (applying = p)}>{t('presets.apply')}</button>
             <Menu label={t('servers.more')}>
               <button onclick={() => ask('clone', p)}>{t('presets.clone')}</button>
               <button onclick={() => ask('rename', p)}>{t('presets.rename')}</button>

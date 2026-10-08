@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api, asApiError, type ApiError, type SessionInfo, type User } from '../api';
   import { locale, t, type Key } from '../i18n';
-  import { canDiagnose, canManageUsers, session, signedOut } from '../session.svelte';
+  import { can, canManageUsers, session, signedOut } from '../session.svelte';
   import AlertsCard from '../lib/AlertsCard.svelte';
   import BackupCard from '../lib/BackupCard.svelte';
   import PasswordDialog from '../lib/PasswordDialog.svelte';
@@ -113,16 +113,13 @@
   />
 {/if}
 
-{#if manage}
+{#if can('settings')}
   <section class="card">
     <BackupCard />
   </section>
   <section class="card">
     <AlertsCard />
   </section>
-{/if}
-
-{#if canDiagnose(session.user)}
   <section class="card">
     <DiagCard />
   </section>

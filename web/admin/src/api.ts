@@ -81,7 +81,28 @@ export interface Health {
   schemaVersion: number;
 }
 
-export type Role = 'owner' | 'admin' | 'operator' | 'readonly';
+export type Role = 'owner' | 'admin' | 'operator' | 'clients' | 'readonly';
+
+// Permission is one thing a user may do; a role is a fixed set of them.
+// Those held on servers reach the servers of the user's scope only.
+export type Permission =
+  | 'view'
+  | 'service'
+  | 'config'
+  | 'deploy'
+  | 'clients.reveal'
+  | 'clients.manage'
+  | 'credentials'
+  | 'chains'
+  | 'presets'
+  | 'users'
+  | 'settings';
+
+// Scope: all servers, or those with one of the tags.
+export interface Scope {
+  all?: boolean;
+  tags?: string[];
+}
 
 export interface User {
   id: number;
@@ -91,6 +112,17 @@ export interface User {
   createdAt: string;
   // lastLoginAt: null when no login is known.
   lastLoginAt: string | null;
+  // scope: the servers the user reaches; only for those who manage users
+  // (and one's own).
+  scope?: Scope;
+}
+
+// RoleInfo is a built-in role with what it may do.
+export interface RoleInfo {
+  role: Role;
+  permissions: Permission[];
+  // unscoped: the role always reaches every server.
+  unscoped: boolean;
 }
 
 // AuditEntry is a line of the audit log: who did what to which object.
@@ -123,6 +155,8 @@ export interface AuditFilter {
 
 export interface SessionState {
   user: User;
+  // permissions: the role's; those held on servers reach user.scope.
+  permissions: Permission[];
   csrfToken: string;
 }
 
@@ -272,6 +306,8 @@ export interface Server {
   hopInterval: number;
   // chains are the cascades the server is a node of.
   chains: { id: number; name: string; state: LinkState }[];
+  // perms: what the caller may do on this server.
+  perms: Permission[];
 }
 
 // PortsInput changes the ports of a server (an apply job) and the hop
@@ -354,6 +390,8 @@ export interface JobStep {
 
 export interface JobDetail extends Job {
   steps: JobStep[];
+  // mayRetry: the caller's role may retry the job.
+  mayRetry: boolean;
 }
 
 export interface JobLog {
@@ -1086,6 +1124,14 @@ export interface ClientSummary {
   warnings: string[];
 }
 
+// ClientChange is a queued change of the client users; password is the
+// generated one, shown once.
+export interface ClientChange {
+  job: Job;
+  user: string;
+  password?: string;
+}
+
 export interface ClientProfile extends ClientSummary {
   user?: string;
   uri: string;
@@ -1126,13 +1172,14 @@ export const api = {
   sessions: (all = false) => request<SessionInfo[]>('GET', '/sessions' + (all ? '?all=1' : '')),
   revokeSession: (id: number) => request<void>('DELETE', `/sessions/${id}`),
   users: () => request<User[]>('GET', '/users'),
-  createUser: (username: string, password: string, role: Role) => request<User>('POST', '/users', { username, password, role }),
+  roles: () => request<RoleInfo[]>('GET', '/roles'),
+  createUser: (username: string, password: string, role: Role, scope: Scope) => request<User>('POST', '/users', { username, password, role, scope }),
   backups: () => request<Backups>('GET', '/backups'),
   createBackup: () => request<BackupInfo>('POST', '/backups'),
   checkMasterKey: (key: string) => request<KeyCheck>('POST', '/master-key/check', { key }),
   // changePassword: one's own; every session ends, this one is replaced.
   changePassword: (current: string, password: string) => request<SessionState>('POST', '/session/password', { current, password }),
-  updateUser: (id: number, change: { role?: Role; disabled?: boolean }) => request<User>('PATCH', `/users/${id}`, change),
+  updateUser: (id: number, change: { role?: Role; scope?: Scope; disabled?: boolean }) => request<User>('PATCH', `/users/${id}`, change),
   deleteUser: (id: number) => request<void>('DELETE', `/users/${id}`),
   // resetPassword: the typed password, or without one a generated one,
   // returned once.
@@ -1247,6 +1294,11 @@ export const api = {
   clientSummary: (serverId: number) => request<ClientSummary>('GET', `/servers/${serverId}/client`),
   clientProfile: (serverId: number, user = '') =>
     request<ClientProfile>('POST', `/servers/${serverId}/client/reveal`, { user }),
+  // The client manager: add a user, remove one, or give one a new
+  // password; base is the revision the list was read from.
+  addClient: (serverId: number, base: number, user: string) => request<ClientChange>('POST', `/servers/${serverId}/clients`, { base, user }),
+  removeClient: (serverId: number, base: number, user: string) => request<ClientChange>('POST', `/servers/${serverId}/clients/remove`, { base, user }),
+  clientPassword: (serverId: number, base: number, user: string) => request<ClientChange>('POST', `/servers/${serverId}/clients/password`, { base, user }),
   serverConfig: (serverId: number) => request<ServerConfig>('GET', `/servers/${serverId}/config`),
   startPreflight: (serverId: number, udpPort = 443) => request<Job>('POST', `/servers/${serverId}/preflight`, { udpPort }),
 };

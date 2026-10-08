@@ -1,5 +1,6 @@
 <script lang="ts">
-  // Logs: the controller's latest records, job logs of all servers, a
+  // Logs: the controller's latest records (for users of all servers: they
+  // are about every server), job logs of the servers in the user's scope, a
   // server's Hysteria journal and, for owners and admins, the audit log.
   // Everything comes redacted from the controller.
   import { onMount } from 'svelte';
@@ -8,12 +9,15 @@
   import { go } from '../router.svelte';
   import { clock } from '../lib/format';
   import AuditView from '../lib/AuditView.svelte';
-  import { canManageUsers, session } from '../session.svelte';
+  import { allServers, canManageUsers, session } from '../session.svelte';
 
   type Source = 'controller' | 'jobs' | 'hysteria' | 'audit';
   const rank = { debug: 0, info: 1, warn: 2, error: 3 } as const;
 
-  let source = $state<Source>('controller');
+  // controllerLog: the controller's records are shown to users of all
+  // servers.
+  const controllerLog = allServers();
+  let source = $state<Source>(controllerLog ? 'controller' : 'jobs');
   let level = $state('');
   let text = $state('');
   let server = $state(0);
@@ -86,7 +90,7 @@
 
 <div class="row bar">
   <div class="seg" role="tablist">
-    <button class:on={source === 'controller'} onclick={() => pick('controller')}>{t('logs.controller')}</button>
+    {#if controllerLog}<button class:on={source === 'controller'} onclick={() => pick('controller')}>{t('logs.controller')}</button>{/if}
     <button class:on={source === 'jobs'} onclick={() => pick('jobs')}>{t('logs.jobs')}</button>
     <button class:on={source === 'hysteria'} onclick={() => pick('hysteria')}>{t('logs.hysteria')}</button>
     {#if auditable}<button class:on={source === 'audit'} onclick={() => pick('audit')}>{t('logs.audit')}</button>{/if}

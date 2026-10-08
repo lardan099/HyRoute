@@ -3,7 +3,7 @@
   import { onMount, tick } from 'svelte';
   import { api, asApiError, jobEventsURL, type ApiError, type Job, type JobDetail, type JobLog, type JobStep, type Server } from '../api';
   import { t, tOr, type Key } from '../i18n';
-  import { canWrite, session } from '../session.svelte';
+  import { canOn } from '../session.svelte';
   import { clock, duration, jobTone, stepTone, when } from './format';
   import PreflightReport from './PreflightReport.svelte';
   import DeployResult from './DeployResult.svelte';
@@ -139,7 +139,7 @@
   let deploying = $state(false);
   // A preflight that found the server ready leads straight to the deploy.
   let canDeploy = $derived(
-    !!job && job.kind === 'preflight' && job.state === 'completed' && !!report && !report.blocked && !report.hysteria?.installed && !!servers[job.serverId] && canWrite(session.user),
+    !!job && job.kind === 'preflight' && job.state === 'completed' && !!report && !report.blocked && !report.hysteria?.installed && canOn(servers[job.serverId], 'deploy'),
   );
 
   async function startImport() {
@@ -196,12 +196,12 @@
   <div class="row head">
     <h1 class="grow">{kindName(job.kind)} #{job.id}</h1>
     {#if canDeploy}<button class="primary" onclick={() => (deploying = true)}>{t('deploy.button')}</button>{/if}
-    {#if job.kind === 'preflight' && job.state === 'completed' && report?.hysteria?.installed && canWrite(session.user)}
+    {#if job.kind === 'preflight' && job.state === 'completed' && report?.hysteria?.installed && canOn(servers[job.serverId], 'deploy')}
       <button class="primary" onclick={startImport}>{t('import.button')}</button>
     {/if}
-    {#if job.state === 'failed' && canWrite(session.user)}
-      {#if job.kind === 'deploy' && job.data.foreign === '1'}<button onclick={startImport}>{t('import.fromDeploy')}</button>{/if}
-      <button class="primary" disabled={retrying} onclick={() => (stale ? (confirmRetry = true) : retry())}>{t('jobs.retry')}</button>
+    {#if job.state === 'failed'}
+      {#if job.kind === 'deploy' && job.data.foreign === '1' && canOn(servers[job.serverId], 'deploy')}<button onclick={startImport}>{t('import.fromDeploy')}</button>{/if}
+      {#if job.mayRetry}<button class="primary" disabled={retrying} onclick={() => (stale ? (confirmRetry = true) : retry())}>{t('jobs.retry')}</button>{/if}
     {/if}
   </div>
   <div class="meta muted small">

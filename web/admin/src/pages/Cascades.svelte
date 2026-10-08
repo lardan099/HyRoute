@@ -6,7 +6,7 @@
   import { onMount } from 'svelte';
   import { api, asApiError, type ApiError, type Chain, type Server } from '../api';
   import { t, type Key } from '../i18n';
-  import { canWrite, session } from '../session.svelte';
+  import { can } from '../session.svelte';
   import { go, route } from '../router.svelte';
   import { flag, stateTone } from '../lib/format';
   import { busy, deployed, linkStateText, linkTone, pendingEntry } from '../lib/chain';
@@ -22,7 +22,8 @@
   let confirm = $state<{ chain: Chain; kind: 'delete' | 'unlink' } | null>(null);
   // notice: why the link of a chain just created did not start.
   let notice = $state<ApiError | null>(null);
-  let writable = $derived(canWrite(session.user));
+  // A cascade listed is in the caller's scope as a whole.
+  let writable = $derived(can('chains'));
   let byId = $derived(Object.fromEntries(servers.map((s) => [s.id, s])));
 
   async function load() {

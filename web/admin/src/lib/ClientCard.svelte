@@ -4,10 +4,10 @@
   import { onMount } from 'svelte';
   import { api, asApiError, type ApiError, type ClientProfile, type ClientSummary } from '../api';
   import { t } from '../i18n';
-  import { canWrite, session } from '../session.svelte';
   import QRCode from './QRCode.svelte';
 
-  let { serverId, serverName }: { serverId: number; serverName: string } = $props();
+  // reveal: the caller may see the links (clients.reveal).
+  let { serverId, serverName, reveal: mayReveal }: { serverId: number; serverName: string; reveal: boolean } = $props();
 
   let summary = $state<ClientSummary | null>(null);
   let profile = $state<ClientProfile | null>(null);
@@ -112,7 +112,7 @@
     {#each summary.warnings as w, i (i)}<div class="note warn small">{w}</div>{/each}
 
     {#if !open}
-      {#if canWrite(session.user)}
+      {#if mayReveal}
         <div class="row actions">
           <button class="primary" disabled={busy} onclick={reveal}>{t('client.reveal')}</button>
           <span class="small faint">{t('client.revealNote')}</span>

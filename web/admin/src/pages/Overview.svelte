@@ -3,11 +3,11 @@
   import { api, asApiError, type ApiError, type Health, type Job, type LatestMetric, type Server, type ServerState } from '../api';
   import { t, tOr, type Key } from '../i18n';
   import { go } from '../router.svelte';
-  import { canWrite, session } from '../session.svelte';
+  import { can } from '../session.svelte';
   import { flag, jobTone, pct, stateTone, when } from '../lib/format';
   import AttentionCard from '../lib/AttentionCard.svelte';
 
-  let writable = $derived(canWrite(session.user));
+  let writable = $derived(can('deploy'));
 
   let health = $state<Health | null>(null);
   let error = $state<ApiError | null>(null);

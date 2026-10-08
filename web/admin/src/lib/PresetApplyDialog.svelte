@@ -6,6 +6,7 @@
   import { onMount } from 'svelte';
   import { api, asApiError, type ApiError, type Job, type Preset, type PresetCheck, type PresetSection, type Server, type ServerConfig } from '../api';
   import { t, type Key } from '../i18n';
+  import { canOn } from '../session.svelte';
   import Dialog from './Dialog.svelte';
   import ChainNote from './ChainNote.svelte';
   import DiffView from './DiffView.svelte';
@@ -38,7 +39,7 @@
         presetId = presets[0]?.id ?? 0;
       }
       if (!server) {
-        servers = await api.servers();
+        servers = (await api.servers()).filter((s) => canOn(s, 'config'));
         serverId = servers[0]?.id ?? 0;
       }
     } catch (e) {
