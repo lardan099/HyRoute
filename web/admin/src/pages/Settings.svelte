@@ -1,20 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, asApiError, type ApiError, type Role, type SessionInfo, type User } from '../api';
+  import { api, asApiError, type ApiError, type SessionInfo, type User } from '../api';
   import { locale, t, type Key } from '../i18n';
   import { canManageUsers, session, signedOut } from '../session.svelte';
   import BackupCard from '../lib/BackupCard.svelte';
+  import PasswordDialog from '../lib/PasswordDialog.svelte';
+  import UsersCard from '../lib/UsersCard.svelte';
 
   let users = $state<User[]>([]);
   let sessions = $state<SessionInfo[]>([]);
   let error = $state<ApiError | null>(null);
   let manage = $derived(canManageUsers(session.user));
-
-  let newName = $state('');
-  let newPass = $state('');
-  let newRole = $state<Role>('readonly');
-  let creating = $state(false);
-  let createError = $state<ApiError | null>(null);
+  let changing = $state(false);
+  let changed = $state(false);
 
   const fmt = (s: string) => new Date(s).toLocaleString(locale);
   const who = (id: number) => users.find((u) => u.id === id)?.username ?? '#' + id;
@@ -46,21 +44,6 @@
       signedOut();
     }
   }
-
-  async function create(e: SubmitEvent) {
-    e.preventDefault();
-    creating = true;
-    createError = null;
-    try {
-      await api.createUser(newName.trim(), newPass, newRole);
-      newName = newPass = '';
-      await load();
-    } catch (err) {
-      createError = asApiError(err);
-    } finally {
-      creating = false;
-    }
-  }
 </script>
 
 <h1>{t('nav.settings')}</h1>
@@ -70,11 +53,18 @@
 <section class="card">
   <div class="row head">
     <h2 class="grow">{t('settings.account')}</h2>
+    <button
+      onclick={() => {
+        changing = true;
+        changed = false;
+      }}>{t('settings.changePassword')}</button
+    >
     <button onclick={logout}>{t('settings.logout')}</button>
   </div>
   {#if session.user}
     <p>{session.user.username} · <span class="muted">{t(`role.${session.user.role}` as Key)}</span></p>
   {/if}
+  {#if changed}<div class="note ok">{t('settings.passwordChanged')}</div>{/if}
 </section>
 
 <section class="card">
@@ -103,33 +93,18 @@
   </table>
 </section>
 
-<section class="card">
-  <h2>{t('settings.users')}</h2>
-  <table>
-    <tbody>
-      {#each users as u (u.id)}
-        <tr>
-          <td>{u.username}</td>
-          <td class="muted">{t(`role.${u.role}` as Key)}</td>
-          <td class="muted">{u.disabled ? t('settings.disabled') : ''}</td>
-        </tr>
-      {/each}
-    </tbody>
-  </table>
-  {#if manage}
-    <form class="row create" onsubmit={create}>
-      <input type="text" placeholder={t('auth.username')} required maxlength="64" autocomplete="off" bind:value={newName} />
-      <input type="password" placeholder={t('auth.password')} required minlength="10" autocomplete="new-password" bind:value={newPass} />
-      <select bind:value={newRole}>
-        <option value="admin">{t('role.admin')}</option>
-        <option value="operator">{t('role.operator')}</option>
-        <option value="readonly">{t('role.readonly')}</option>
-      </select>
-      <button class="primary" type="submit" disabled={creating}>{t('settings.addUser')}</button>
-    </form>
-    {#if createError}<div class="note error">{createError.message}</div>{/if}
-  {/if}
-</section>
+<UsersCard changed={load} />
+
+{#if changing}
+  <PasswordDialog
+    onclose={() => (changing = false)}
+    ondone={() => {
+      changing = false;
+      changed = true;
+      load();
+    }}
+  />
+{/if}
 
 {#if manage}
   <section class="card">
@@ -146,5 +121,4 @@
   .ua { max-width: 260px; }
   .act { text-align: right; }
   td .badge { margin-left: 6px; }
-  .create { margin-top: 14px; }
 </style>

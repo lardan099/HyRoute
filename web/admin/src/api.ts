@@ -89,6 +89,36 @@ export interface User {
   role: Role;
   disabled: boolean;
   createdAt: string;
+  // lastLoginAt: null when no login is known.
+  lastLoginAt: string | null;
+}
+
+// AuditEntry is a line of the audit log: who did what to which object.
+export interface AuditEntry {
+  id: number;
+  time: string;
+  userId: number;
+  // user: the name of userId ('' for none or a deleted user).
+  user: string;
+  action: string;
+  // target: 'server/3', 'chain/2', 'user/4', 'preset/1' or a typed name.
+  target: string;
+  // object: the name of the target while it exists.
+  object: string;
+  details: string;
+}
+
+export interface AuditFilter {
+  user?: number;
+  // action: one or several, comma-separated.
+  action?: string;
+  // target: 'server/3', or 'server/' for every server.
+  target?: string;
+  // from, to: ISO times, to exclusive.
+  from?: string;
+  to?: string;
+  before?: number;
+  limit?: number;
 }
 
 export interface SessionState {
@@ -988,6 +1018,21 @@ export const api = {
   backups: () => request<Backups>('GET', '/backups'),
   createBackup: () => request<BackupInfo>('POST', '/backups'),
   checkMasterKey: (key: string) => request<KeyCheck>('POST', '/master-key/check', { key }),
+  // changePassword: one's own; every session ends, this one is replaced.
+  changePassword: (current: string, password: string) => request<SessionState>('POST', '/session/password', { current, password }),
+  updateUser: (id: number, change: { role?: Role; disabled?: boolean }) => request<User>('PATCH', `/users/${id}`, change),
+  deleteUser: (id: number) => request<void>('DELETE', `/users/${id}`),
+  // resetPassword: the typed password, or without one a generated one,
+  // returned once.
+  resetPassword: (id: number, password?: string) =>
+    request<{ password: string } | undefined>('POST', `/users/${id}/password`, password ? { password } : { generate: true }),
+  transferOwner: (id: number) => request<User>('POST', `/users/${id}/owner`),
+  audit: (f: AuditFilter) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(f)) if (v !== undefined && v !== '' && v !== 0) q.set(k, String(v));
+    const qs = q.toString();
+    return request<{ entries: AuditEntry[]; next: number }>('GET', '/audit' + (qs ? '?' + qs : ''));
+  },
   servers: () => request<Server[]>('GET', '/servers'),
   server: (id: number) => request<Server>('GET', `/servers/${id}`),
   createServer: (s: ServerInput) => request<Server>('POST', '/servers', s),

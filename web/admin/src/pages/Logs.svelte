@@ -1,14 +1,16 @@
 <script lang="ts">
-  // Logs: the controller's latest records, job logs of all servers, and a
-  // server's Hysteria journal. Everything comes redacted from the
-  // controller.
+  // Logs: the controller's latest records, job logs of all servers, a
+  // server's Hysteria journal and, for owners and admins, the audit log.
+  // Everything comes redacted from the controller.
   import { onMount } from 'svelte';
   import { api, asApiError, type ApiError, type LogEntry, type Server } from '../api';
   import { locale, t, tOr } from '../i18n';
   import { go } from '../router.svelte';
   import { clock } from '../lib/format';
+  import AuditView from '../lib/AuditView.svelte';
+  import { canManageUsers, session } from '../session.svelte';
 
-  type Source = 'controller' | 'jobs' | 'hysteria';
+  type Source = 'controller' | 'jobs' | 'hysteria' | 'audit';
   const rank = { debug: 0, info: 1, warn: 2, error: 3 } as const;
 
   let source = $state<Source>('controller');
@@ -26,10 +28,12 @@
   let seq = 0;
 
   let byId = $derived(Object.fromEntries(servers.map((s) => [s.id, s])));
+  let auditable = $derived(canManageUsers(session.user));
 
   async function load() {
     const my = ++seq;
     error = null;
+    if (source === 'audit') return;
     if (source === 'hysteria' && !server) {
       entries = [];
       loading = false;
@@ -85,22 +89,29 @@
     <button class:on={source === 'controller'} onclick={() => pick('controller')}>{t('logs.controller')}</button>
     <button class:on={source === 'jobs'} onclick={() => pick('jobs')}>{t('logs.jobs')}</button>
     <button class:on={source === 'hysteria'} onclick={() => pick('hysteria')}>{t('logs.hysteria')}</button>
+    {#if auditable}<button class:on={source === 'audit'} onclick={() => pick('audit')}>{t('logs.audit')}</button>{/if}
   </div>
-  {#if source !== 'controller'}
-    <select bind:value={server} onchange={load} aria-label={t('jobs.server')}>
-      {#if source === 'jobs'}<option value={0}>{t('logs.allServers')}</option>{:else if !server}<option value={0}>{t('logs.pickServer')}</option>{/if}
-      {#each servers as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
+  <!-- The audit view has filters of its own. -->
+  {#if source !== 'audit'}
+    {#if source !== 'controller'}
+      <select bind:value={server} onchange={load} aria-label={t('jobs.server')}>
+        {#if source === 'jobs'}<option value={0}>{t('logs.allServers')}</option>{:else if !server}<option value={0}>{t('logs.pickServer')}</option>{/if}
+        {#each servers as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
+      </select>
+    {/if}
+    <select bind:value={level} onchange={load} aria-label={t('jobs.state')}>
+      <option value="">{t('logs.levelAll')}</option>
+      <option value="warn">{t('logs.levelWarn')}</option>
+      <option value="error">{t('logs.levelError')}</option>
     </select>
+    <input class="grow" type="text" bind:value={text} oninput={typed} placeholder={t('logs.search')} />
+    <button disabled={loading} onclick={load}>{t('logs.refresh')}</button>
   {/if}
-  <select bind:value={level} onchange={load} aria-label={t('jobs.state')}>
-    <option value="">{t('logs.levelAll')}</option>
-    <option value="warn">{t('logs.levelWarn')}</option>
-    <option value="error">{t('logs.levelError')}</option>
-  </select>
-  <input class="grow" type="text" bind:value={text} oninput={typed} placeholder={t('logs.search')} />
-  <button disabled={loading} onclick={load}>{t('logs.refresh')}</button>
 </div>
 
+{#if source === 'audit'}
+  <AuditView {servers} />
+{:else}
 {#if error}<div class="note error">{error.message}</div>{/if}
 
 <div class="card lines mono">
@@ -119,6 +130,7 @@
   {/each}
 </div>
 <p class="small faint">{t('logs.hint')}</p>
+{/if}
 
 <style>
   h1 { margin-bottom: 16px; }
