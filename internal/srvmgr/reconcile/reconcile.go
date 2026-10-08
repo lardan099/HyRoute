@@ -36,6 +36,7 @@ type Store interface {
 	UnfinishedJobs(ctx context.Context) ([]model.Job, error)
 	ListJobs(ctx context.Context, f model.JobFilter) ([]model.Job, error)
 	JobByID(ctx context.Context, id int64) (model.Job, error)
+	JobSteps(ctx context.Context, jobID int64) ([]model.JobStep, error)
 	ListChains(ctx context.Context) ([]model.Chain, error)
 	ChainByID(ctx context.Context, id int64) (model.Chain, error)
 	UpdateLink(ctx context.Context, l model.ChainLink) error
@@ -393,10 +394,10 @@ func (r *Reconciler) merge(ctx context.Context, prev model.Drift, f found) (d mo
 
 // release gives the server back to healthy once its differences are
 // gone, if the needs_attention is the reconciliation's: it set it, and
-// no job but the reverts queued from it ran on the server since (another
-// job set the state its own way: a failed rollback, an import with
-// warnings). The monitor's next round corrects healthy to what the
-// server is.
+// no job but the reverts queued from it ran on the server since, none of
+// them a failed one whose rollback did not finish (another job set the
+// state its own way: a failed rollback, an import with warnings). The
+// monitor's next round corrects healthy to what the server is.
 func (r *Reconciler) release(ctx context.Context, d *model.Drift) {
 	at, reverts := d.AttentionAt, d.Reverts
 	d.AttentionAt, d.Reverts = time.Time{}, nil
@@ -413,6 +414,19 @@ func (r *Reconciler) release(ctx context.Context, d *model.Drift) {
 			break // newest first
 		}
 		if !slices.Contains(reverts, j.ID) {
+			return
+		}
+		if j.State == model.JobCompleted {
+			continue
+		}
+		// A step that changed the server and no rollback undid
+		// (Outstanding): the revert left it as neither version.
+		steps, err := r.Store.JobSteps(ctx, j.ID)
+		if err != nil {
+			r.Log.Warn("reconcile: job steps", "job", j.ID, "err", err)
+			return
+		}
+		if slices.ContainsFunc(steps, func(s model.JobStep) bool { return s.Outstanding }) {
 			return
 		}
 	}

@@ -164,6 +164,42 @@ func TestReleaseLeavesOtherJobsState(t *testing.T) {
 	}
 }
 
+// A revert failed and its rollback did not finish (the revision it wrote
+// stays, Hysteria does not run with it): the next round finds nothing
+// different, yet the server keeps the needs attention that job set.
+func TestReleaseLeavesFailedRollback(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	c := newController(w)
+	c.start(t)
+	w.r.Jobs = c.jobs
+	edited := strings.Replace(revisionCfg, "listen: :443", "listen: :8443", 1)
+	w.m.SetFile(cfgPath, []byte(edited))
+	w.m.start()
+	w.r.Round(ctx)
+	w.m.mu.Lock()
+	w.m.bad = "listen: :443\n"
+	w.m.mu.Unlock()
+	w.m.On("mv").Fail("mv: cannot move: Read-only file system", 1)
+	j, err := w.r.Revert(ctx, w.a, "config", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j = waitJob(t, w, j.ID); j.State != model.JobFailed {
+		t.Fatalf("%s: %s", j.State, j.ErrorMessage)
+	}
+	if b, _ := w.m.File(cfgPath); string(b) != revisionCfg {
+		t.Fatalf("rolled back:\n%s", b)
+	}
+	w.r.Round(ctx)
+	if d := w.drift(w.a); len(d.Items) != 0 {
+		t.Fatalf("differences %v", keys(d.Items))
+	}
+	if st := w.state(w.a); st != model.StateNeedsAttention {
+		t.Fatalf("state %s after a revert whose rollback failed", st)
+	}
+}
+
 // controller is a job engine with the kinds the reverts queue, not
 // running unless started.
 type controller struct {
@@ -341,6 +377,11 @@ func TestRevertRetryAfterAccept(t *testing.T) {
 	}
 	if _, err := w.r.Accept(ctx, w.a, "config", 0); err != nil {
 		t.Fatal(err)
+	}
+	// The revert rolled back all it did: the attention was the
+	// reconciliation's.
+	if st := w.state(w.a); st != model.StateHealthy {
+		t.Fatalf("state %s after accepting", st)
 	}
 
 	w.m.mu.Lock()
