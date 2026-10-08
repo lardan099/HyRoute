@@ -9,6 +9,7 @@
   import {
     api,
     asApiError,
+    type AclDocument,
     type AclProblem,
     type AclRequest,
     type AclRule,
@@ -22,7 +23,7 @@
   } from '../api';
   import { t, type Key } from '../i18n';
   import { go } from '../router.svelte';
-  import { bad, builtIn, kindOf, kinds, merge, protoPort, valueOf, type AddrKind, type TemplateMode } from './acl';
+  import { bad, builtIn, kindOf, kinds, merge, moveGroup, protoPort, valueOf, type AddrKind, type TemplateMode } from './acl';
   import ChainNote from './ChainNote.svelte';
   import Dialog from './Dialog.svelte';
   import DiffView from './DiffView.svelte';
@@ -30,6 +31,8 @@
   import OutboundDialog from './OutboundDialog.svelte';
   import RoutingCheck from './RoutingCheck.svelte';
   import RuleDialog from './RuleDialog.svelte';
+  import ServicesTab from './ServicesTab.svelte';
+  import { SERVICES_GROUP } from './services';
   import TemplateDialog from './TemplateDialog.svelte';
 
   let { server, onclose }: { server: Server; onclose: () => void } = $props();
@@ -72,6 +75,8 @@
   let selected = new SvelteSet<number>();
   let dragKey = $state<number | null>(null);
   let overKey = $state<number | null>(null);
+  // tab: the rules as a table, or the builder by services.
+  let tab = $state<'rules' | 'services'>('rules');
   let timer: ReturnType<typeof setTimeout> | undefined;
   let seq = 0;
 
@@ -224,6 +229,30 @@
     const to = rows.findIndex((r) => r.key === target);
     dragKey = overKey = null;
     if (from >= 0 && to >= 0) move(from, to);
+  }
+
+  function shiftGroup(group: string, dir: -1 | 1) {
+    const next = moveGroup(rows, group, dir);
+    if (next === rows) return;
+    rows = next;
+    changedRules();
+  }
+
+  // built puts the draft the builder by services made in place of the
+  // rules; the check runs as after any edit.
+  function built(doc: AclDocument) {
+    rows = rowsOf(doc.rules);
+    tail = doc.tail;
+    selected.clear();
+    highlight = null;
+    changedRules();
+  }
+
+  // showServices opens the builder's group in the table.
+  function showServices() {
+    tab = 'rules';
+    q = SERVICES_GROUP;
+    fOutbound = fKind = '';
   }
 
   function remove(key: number) {
@@ -384,6 +413,12 @@
   <div class="row head">
     <h2 class="grow">{t('rt.title', { name: server.name })} {#if view}<span class="faint small">{t('cfg.revision', { n: view.revision })}</span>{/if}</h2>
     {#if busy}<span class="faint small">{t('cfg.checking')}</span>{/if}
+    {#if view}
+      <div class="seg" role="tablist">
+        <button role="tab" aria-selected={tab === 'rules'} class:on={tab === 'rules'} onclick={() => (tab = 'rules')}>{t('rt.tabRules')}</button>
+        <button role="tab" aria-selected={tab === 'services'} class:on={tab === 'services'} onclick={() => (tab = 'services')}>{t('rt.tabServices')}</button>
+      </div>
+    {/if}
   </div>
 
   {#if loading}
@@ -398,7 +433,19 @@
       </div>
     {/each}
 
-    {#if keepFile}
+    {#if tab === 'services'}
+      {#if keepFile}
+        <div class="note info">{t('svc.file')}</div>
+      {:else}
+        <ServicesTab
+          serverId={server.id}
+          acl={() => ({ rules: rows.map((r) => r.rule), tail })}
+          outbounds={obs.map((o) => o.name)}
+          onbuild={built}
+          onshow={showServices}
+        />
+      {/if}
+    {:else if keepFile}
       <div class="note info">
         {t('rt.fileNote', { path: view.file ?? '' })}
         {#if !fileRows}<button class="link" onclick={openFile}>{t('rt.fileOpen')}</button>{/if}
@@ -471,10 +518,15 @@
               {#each shown as r, n (r.key)}
                 {#if headed(n)}
                   <tr class="group">
-                    <td colspan="8">
+                    <td colspan="7">
                       <button class="link-btn" onclick={() => (collapsed.has(r.rule.group!) ? collapsed.delete(r.rule.group!) : collapsed.add(r.rule.group!))}>
                         {collapsed.has(r.rule.group!) ? '▸' : '▾'} {r.rule.group} <span class="faint">({count(r.rule.group!)})</span>
                       </button>
+                      {#if r.rule.group === SERVICES_GROUP}<button class="link small" onclick={() => (tab = 'services')}>{t('svc.managed')}</button>{/if}
+                    </td>
+                    <td class="acts">
+                      <button class="ghost" disabled={filtering} onclick={() => shiftGroup(r.rule.group!, -1)} aria-label={t('rt.groupUp')} title={t('rt.groupUp')}>↑</button>
+                      <button class="ghost" disabled={filtering} onclick={() => shiftGroup(r.rule.group!, 1)} aria-label={t('rt.groupDown')} title={t('rt.groupDown')}>↓</button>
                     </td>
                   </tr>
                 {/if}

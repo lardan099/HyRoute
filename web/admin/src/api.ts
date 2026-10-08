@@ -746,6 +746,40 @@ export interface RoutingTemplate {
   builtin?: boolean;
 }
 
+// CatalogService is a service of the rule builder's catalog: its geosite
+// categories, geoip codes and domains.
+export interface CatalogService {
+  id: string;
+  name: string;
+  sites?: string[];
+  ips?: string[];
+  domains?: string[];
+  sample: string;
+}
+
+// ServicesState is the builder's group of a draft read back: choices are
+// service ID → outbound; edited: building it again would change it
+// (changes say what differs).
+export interface ServicesState {
+  found: boolean;
+  version?: number;
+  choices: Record<string, string>;
+  edited?: boolean;
+  changes?: string[];
+}
+
+// ServicesView is the «По сервисам» tab: the services whose categories
+// the controller's geo databases have, by section.
+export interface ServicesView {
+  version: number;
+  sections: { id: string; name: string; services: CatalogService[] }[];
+  hidden: CatalogService[];
+  noGeo?: boolean;
+  ownGeo?: boolean;
+  cascade?: { id: number; name: string };
+  state: ServicesState;
+}
+
 // ChainTemplate is a cascade without servers and secrets: the link's
 // settings and, optionally, the entry's rules and resolver.
 export interface ChainTemplate {
@@ -1026,6 +1060,9 @@ export const api = {
   routingApply: (serverId: number, input: RoutingInput) => request<Job>('POST', `/servers/${serverId}/routing/apply`, input),
   routingCheck: (serverId: number, input: { acl: AclDocument; outbounds: string[]; request: AclRequest }) =>
     request<AclVerdict>('POST', `/servers/${serverId}/routing/check`, input),
+  routingServices: (serverId: number, acl: AclDocument) => request<ServicesView>('POST', `/servers/${serverId}/routing/services`, { acl }),
+  routingServicesBuild: (serverId: number, input: { acl: AclDocument; outbounds: string[]; choices: Record<string, string>; overwrite?: boolean }) =>
+    request<{ acl: AclDocument; state: ServicesState }>('POST', `/servers/${serverId}/routing/services/build`, input),
   chainTemplates: () => request<ChainTemplate[]>('GET', '/chain-templates'),
   importChainTemplate: (data: string) => request<ChainTemplate>('POST', '/chain-templates/import', { data }),
   chainTemplate: (id: number) => request<ChainTemplate>('GET', `/chains/${id}/template`),

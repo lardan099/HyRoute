@@ -112,6 +112,34 @@ export function portOK(s: string): boolean {
 
 export const outboundOK = (s: string) => /^\w+$/.test(s);
 
+// moveGroup moves a whole group one step: its rules, gathered where its
+// first one is, go above the rule or group before them (dir -1) or below
+// the one after them (1). The order of the other rules stays.
+export function moveGroup<T extends { rule: AclRule }>(rows: T[], group: string, dir: -1 | 1): T[] {
+  const of = (r: T) => r.rule.group ?? '';
+  const first = rows.findIndex((r) => of(r) === group);
+  if (!group || first < 0) return rows;
+  const block = rows.filter((r) => of(r) === group);
+  const rest = rows.filter((r) => of(r) !== group);
+  // unit is the rule at i of rest with the rest of its group around it.
+  const unit = (i: number): [number, number] => {
+    const g = of(rest[i]);
+    let [s, e] = [i, i + 1];
+    while (g && s > 0 && of(rest[s - 1]) === g) s--;
+    while (g && e < rest.length && of(rest[e]) === g) e++;
+    return [s, e];
+  };
+  let at = first; // the rules before the group's first one are all of rest
+  if (dir < 0) {
+    if (at === 0) return rows;
+    at = unit(at - 1)[0];
+  } else {
+    if (at >= rest.length) return rows;
+    at = unit(at)[1];
+  }
+  return [...rest.slice(0, at), ...block, ...rest.slice(at)];
+}
+
 // TemplateMode is where a template's rules go.
 export type TemplateMode = 'top' | 'bottom' | 'replace';
 
