@@ -5,6 +5,7 @@
   import { go } from '../router.svelte';
   import { canWrite, session } from '../session.svelte';
   import { flag, jobTone, pct, stateTone, when } from '../lib/format';
+  import AttentionCard from '../lib/AttentionCard.svelte';
 
   let writable = $derived(canWrite(session.user));
 
@@ -41,6 +42,8 @@
     {#if error.details}<div class="small mono">{error.details}</div>{/if}
   </div>
 {/if}
+
+<AttentionCard />
 
 <div class="grid">
   <section class="card">

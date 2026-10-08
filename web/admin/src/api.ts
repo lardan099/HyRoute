@@ -170,6 +170,44 @@ export interface DiagFiles {
   files: { name: string; about: string; size: number }[];
 }
 
+// Events and the summary «Требует внимания» (P4-05). Texts name servers
+// and cascades, never addresses.
+export type Severity = 'critical' | 'warning' | 'info';
+export type EventKind = 'server' | 'link' | 'job' | 'attention' | 'host_key' | 'ssh_auth' | 'disk' | 'geo' | 'network' | 'drift';
+export type Subject = 'server' | 'chain' | 'job' | 'controller';
+
+export interface EventInfo {
+  id: number;
+  kind: EventKind;
+  severity: Severity;
+  subject: Subject;
+  subjectId: number;
+  text: string;
+  count: number;
+  openedAt: string;
+  lastAt: string;
+  closedAt: string | null;
+  closeText: string;
+}
+
+export interface AttentionItem {
+  kind: string;
+  severity: Severity;
+  subject: Subject;
+  subjectId?: number;
+  // name: the server's or cascade's ('' for the controller).
+  name: string;
+  text: string;
+  since?: string;
+}
+
+export interface Attention {
+  items: AttentionItem[];
+  // network: the controller has no network (null: it has).
+  network: EventInfo | null;
+  monitoring: boolean;
+}
+
 export type AuthType = 'password' | 'key';
 export type ServerRole = 'standalone' | 'entry' | 'relay' | 'exit';
 export type ServerState = 'new' | 'deploying' | 'healthy' | 'degraded' | 'offline' | 'needs_attention';
@@ -1071,6 +1109,8 @@ export const api = {
     return request<{ entries: AuditEntry[]; next: number }>('GET', '/audit' + (qs ? '?' + qs : ''));
   },
   diag: (jobs: number) => request<DiagFiles>('GET', `/diag?jobs=${jobs}`),
+  attention: () => request<Attention>('GET', '/attention'),
+  events: (limit = 20, open = false) => request<EventInfo[]>('GET', `/events?limit=${limit}${open ? '&open=1' : ''}`),
   servers: () => request<Server[]>('GET', '/servers'),
   server: (id: number) => request<Server>('GET', `/servers/${id}`),
   createServer: (s: ServerInput) => request<Server>('POST', '/servers', s),
