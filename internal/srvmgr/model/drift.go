@@ -76,8 +76,9 @@ type DriftItem struct {
 	// Units are the files systemd builds the unit from now: its file
 	// and drop-ins (DriftUnit, and a link whose unit differs).
 	Units []string `json:"units,omitempty"`
-	// Summary says what differs, for people: names, paths and section
-	// names, never values.
+	// Title names the thing for people ("конфиг Hysteria …"); Summary
+	// says what differs: names, paths and section names, never values.
+	Title   string `json:"title"`
 	Summary string `json:"summary"`
 	// Since is when a round first found the difference as it is now.
 	Since time.Time `json:"since"`

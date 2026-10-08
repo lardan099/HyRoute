@@ -254,19 +254,19 @@ func (keep) Close() error { return nil }
 // events records what the reconciliation reports.
 type events struct {
 	mu       sync.Mutex
-	drift    []string // "<server> <what>: <details>"
-	resolved []string
+	drift    []string // "<server name>: <what>"
+	resolved []string // server names
 }
 
-func (e *events) Drift(_ context.Context, id int64, what, details string) {
+func (e *events) Drift(_ context.Context, srv model.Server, what string) {
 	e.mu.Lock()
-	e.drift = append(e.drift, fmt.Sprintf("%d %s: %s", id, what, details))
+	e.drift = append(e.drift, srv.Name+": "+what)
 	e.mu.Unlock()
 }
 
-func (e *events) DriftResolved(_ context.Context, id int64, what string) {
+func (e *events) DriftGone(_ context.Context, srv model.Server) {
 	e.mu.Lock()
-	e.resolved = append(e.resolved, fmt.Sprintf("%d %s", id, what))
+	e.resolved = append(e.resolved, srv.Name)
 	e.mu.Unlock()
 }
 

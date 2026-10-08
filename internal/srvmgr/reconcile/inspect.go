@@ -97,8 +97,8 @@ func (r *Reconciler) config(ctx context.Context, o on, f *found) error {
 		return err
 	}
 	f.items = append(f.items, model.DriftItem{Key: key, Kind: model.DriftConfig, Revision: cur.Revision,
-		Files:   []model.DriftFile{{Path: o.in.Config, Want: cur.SHA256, Got: got}},
-		Summary: configSummary(o.in.Config, cur.Revision, rev, raw, got == "")})
+		Files: []model.DriftFile{{Path: o.in.Config, Want: cur.SHA256, Got: got}},
+		Title: "конфиг Hysteria " + o.in.Config, Summary: configSummary(o.in.Config, cur.Revision, rev, raw, got == "")})
 	f.config = raw
 	return nil
 }
@@ -128,8 +128,8 @@ func (r *Reconciler) unit(ctx context.Context, o on, f *found) error {
 	f.checked = append(f.checked, key)
 	if got != o.in.UnitSHA256 {
 		f.items = append(f.items, model.DriftItem{Key: key, Kind: model.DriftUnit, Units: files,
-			Files:   []model.DriftFile{{Path: o.in.Unit, Want: o.in.UnitSHA256, Got: got}},
-			Summary: unitSummary(o.in.Unit, files, got == "")})
+			Files: []model.DriftFile{{Path: o.in.Unit, Want: o.in.UnitSHA256, Got: got}},
+			Title: "служба " + o.in.Unit, Summary: unitSummary(o.in.Unit, files, got == "")})
 	}
 	return nil
 }
@@ -148,8 +148,8 @@ func (r *Reconciler) binary(ctx context.Context, o on, f *found) error {
 	f.checked = append(f.checked, key)
 	if got != o.in.BinarySHA256 {
 		f.items = append(f.items, model.DriftItem{Key: key, Kind: model.DriftBinary,
-			Files:   []model.DriftFile{{Path: o.in.Binary, Want: o.in.BinarySHA256, Got: got}},
-			Summary: binarySummary(o.in.Binary, o.in.Version, got == "")})
+			Files: []model.DriftFile{{Path: o.in.Binary, Want: o.in.BinarySHA256, Got: got}},
+			Title: "бинарник Hysteria " + o.in.Binary, Summary: binarySummary(o.in.Binary, o.in.Version, got == "")})
 	}
 	return nil
 }
@@ -190,7 +190,7 @@ func (r *Reconciler) geo(ctx context.Context, o on, f *found) error {
 	}
 	f.checked = append(f.checked, key)
 	if len(diff) > 0 {
-		f.items = append(f.items, model.DriftItem{Key: key, Kind: model.DriftGeo, Files: diff, Summary: geoSummary(diff, g.Release)})
+		f.items = append(f.items, model.DriftItem{Key: key, Kind: model.DriftGeo, Files: diff, Title: "базы geo " + geo.ServerDir, Summary: geoSummary(diff, g.Release)})
 	}
 	return nil
 }
@@ -219,7 +219,7 @@ func (r *Reconciler) links(ctx context.Context, o on, f *found) error {
 			f.checked = append(f.checked, key)
 			if len(diff) > 0 {
 				f.items = append(f.items, model.DriftItem{Key: key, Kind: model.DriftLink, Chain: c.ID, Idx: l.Idx, Files: diff, Units: units,
-					Summary: linkSummary(c.Name, l.Idx, len(c.Nodes), diff, units)})
+					Title: linkTitle(c.Name, l.Idx, len(c.Nodes)), Summary: linkSummary(c.Name, l.Idx, len(c.Nodes), diff, units)})
 			}
 		}
 	}

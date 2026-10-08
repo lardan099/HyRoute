@@ -54,7 +54,7 @@ func TestAcceptConfig(t *testing.T) {
 	if es, _ := w.db.ListAudit(ctx, 1); len(es) != 1 || es[0].Action != "drift_accepted" || es[0].Target != "server/1" || es[0].Details != "what=config revision=2" {
 		t.Fatalf("audit %+v", es)
 	}
-	if _, res := w.ev.get(); !slices.Equal(res, []string{"1 config"}) {
+	if _, res := w.ev.get(); !slices.Equal(res, []string{"Frankfurt"}) {
 		t.Fatalf("resolved %q", res)
 	}
 	if _, err := w.r.Accept(ctx, w.a, "config", 0); !errors.Is(err, ErrGone) {
@@ -112,11 +112,18 @@ func TestAcceptRecordsHashes(t *testing.T) {
 	if l := c.Links[0]; l.ConfigSHA256 != hexSHA([]byte("server: 203.0.113.9:443\n")) || l.UnitSHA256 != hexSHA([]byte(linkUnit+"# edited\n")) {
 		t.Fatalf("link %+v", l)
 	}
+	// Each accept updates the server's event; the last one closes it.
+	if ds, gone := w.ev.get(); len(ds) != 5 || ds[4] != "Frankfurt: Отличаются от записанного HyRoute: конфиг Hysteria "+cfgPath+"." || len(gone) != 0 {
+		t.Fatalf("events %q, gone %q", ds, gone)
+	}
 	if _, err := w.r.Accept(ctx, w.a, "config", 0); err != nil {
 		t.Fatal(err)
 	}
 	if w.state(w.a) != model.StateHealthy {
 		t.Fatalf("state %s", w.state(w.a))
+	}
+	if _, gone := w.ev.get(); !slices.Equal(gone, []string{"Frankfurt"}) {
+		t.Fatalf("gone %q", gone)
 	}
 	w.r.Round(ctx)
 	if d := w.drift(w.a); len(d.Items) != 0 || !slices.Contains(d.Checked, "geo") {
@@ -297,6 +304,9 @@ func TestRevertConfigEndToEnd(t *testing.T) {
 	}
 	if d := w.drift(w.a); len(d.Items) != 0 || w.state(w.a) != model.StateHealthy {
 		t.Fatalf("after the revert: %+v %s", d, w.state(w.a))
+	}
+	if _, gone := w.ev.get(); !slices.Equal(gone, []string{"Frankfurt"}) {
+		t.Fatalf("the event stays open: %q", gone)
 	}
 	if b, _ := w.m.File(cfgPath); string(b) != revisionCfg {
 		t.Fatalf("config:\n%s", b)

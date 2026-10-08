@@ -137,6 +137,24 @@ func geoSummary(files []model.DriftFile, release string) string {
 	return fmt.Sprintf("Базы geo изменены вне HyRoute (HyRoute ставил релиз %s): %s.", release, strings.Join(parts, ", "))
 }
 
+// Brief names the differences in a line (the event of the server).
+func Brief(items []model.DriftItem) string {
+	titles := make([]string, len(items))
+	for i, it := range items {
+		titles[i] = it.Title
+	}
+	return "Отличаются от записанного HyRoute: " + strings.Join(titles, ", ") + "."
+}
+
+// linkTitle names link idx of a chain of nodes servers.
+func linkTitle(chain string, idx, nodes int) string {
+	t := fmt.Sprintf("связь каскада «%s»", chain)
+	if nodes > 2 {
+		t += fmt.Sprintf(" (участок %d из %d)", idx+1, nodes-1)
+	}
+	return t
+}
+
 func linkSummary(chain string, idx, nodes int, files []model.DriftFile, units []string) string {
 	var parts []string
 	for _, f := range files {
@@ -152,9 +170,5 @@ func linkSummary(chain string, idx, nodes int, files []model.DriftFile, units []
 			parts = append(parts, "конфиг клиента связи "+f.Path+" изменён")
 		}
 	}
-	link := fmt.Sprintf("Связь каскада «%s»", chain)
-	if nodes > 2 {
-		link += fmt.Sprintf(" (участок %d из %d)", idx+1, nodes-1)
-	}
-	return link + " изменена вне HyRoute: " + strings.Join(parts, "; ") + "."
+	return "Связь" + strings.TrimPrefix(linkTitle(chain, idx, nodes), "связь") + " изменена вне HyRoute: " + strings.Join(parts, "; ") + "."
 }

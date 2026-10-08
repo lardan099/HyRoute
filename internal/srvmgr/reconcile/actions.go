@@ -131,7 +131,7 @@ func (r *Reconciler) Accept(ctx context.Context, serverID int64, key string, act
 	if err := r.Store.SetDrift(ctx, d); err != nil {
 		return d, err
 	}
-	r.resolved(ctx, serverID, key)
+	r.report(ctx, srv, d)
 	return d, nil
 }
 

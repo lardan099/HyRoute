@@ -51,16 +51,16 @@ type Connector interface {
 	Connect(ctx context.Context, serverID int64) (remote.Executor, error)
 }
 
-// Events hears of the differences (the event bus of P4-05 is wired here).
-// what is the key of the difference (model.DriftKey: config, unit,
-// binary, geo, link/<chain>/<idx>), details says what differs for people:
-// names and paths, no values, no addresses.
+// Events hears of a server's differences, one event a server (the
+// watcher of the events of P4-05 is wired here).
 type Events interface {
-	// Drift: a round found a new difference, or one that changed.
-	Drift(ctx context.Context, serverID int64, what string, details string)
-	// DriftResolved: the difference is gone (accepted, reverted, or the
-	// server is as HyRoute recorded again).
-	DriftResolved(ctx context.Context, serverID int64, what string)
+	// Drift: the server's differences are new or changed; what names
+	// them briefly (Brief: names and paths, no values). The masked diff
+	// stays in the result.
+	Drift(ctx context.Context, srv model.Server, what string)
+	// DriftGone: nothing differs any more (accepted, reverted, or as
+	// HyRoute recorded again).
+	DriftGone(ctx context.Context, srv model.Server)
 }
 
 // Reconciler checks every server with a trusted host key and a known
@@ -312,12 +312,22 @@ func (r *Reconciler) check(ctx context.Context, srv model.Server) (model.Drift, 
 	}
 	for _, it := range news {
 		r.Log.Warn("reconcile: changed outside HyRoute", "server", srv.Name, "what", it.Key)
-		if r.Events != nil {
-			r.Events.Drift(ctx, srv.ID, it.Key, it.Summary)
-		}
 	}
-	r.resolved(ctx, srv.ID, gone...)
+	if len(news) > 0 || len(gone) > 0 {
+		r.report(ctx, srv, d)
+	}
 	return d, nil
+}
+
+// report tells Events what differs on the server now.
+func (r *Reconciler) report(ctx context.Context, srv model.Server, d model.Drift) {
+	switch {
+	case r.Events == nil:
+	case len(d.Items) == 0:
+		r.Events.DriftGone(ctx, srv)
+	default:
+		r.Events.Drift(ctx, srv, Brief(d.Items))
+	}
 }
 
 // failure is the error of a check for people, without secrets.
@@ -326,15 +336,6 @@ func failure(err error) string {
 		return "Сервер не проверен: пользователь SSH не root и не может выполнять sudo без пароля, конфиг Hysteria ему не прочитать."
 	}
 	return "Сервер не проверен: " + redact.String(err.Error())
-}
-
-// resolved tells Events that the differences with keys are gone.
-func (r *Reconciler) resolved(ctx context.Context, serverID int64, keys ...string) {
-	for _, k := range keys {
-		if r.Events != nil {
-			r.Events.DriftResolved(ctx, serverID, k)
-		}
-	}
 }
 
 // merge makes the new result from the previous one and what a check

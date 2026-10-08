@@ -81,28 +81,41 @@ func TestRoundFindsEveryDifference(t *testing.T) {
 	if li.Chain != w.chain || len(li.Files) != 2 || !strings.Contains(li.Summary, "«Через Хельсинки»") {
 		t.Fatalf("link %+v", li)
 	}
-	ds, _ := w.ev.get()
-	if len(ds) != 5 {
+	// One event for the server, naming every difference.
+	want := "Frankfurt: Отличаются от записанного HyRoute: конфиг Hysteria " + cfgPath + ", служба " + unitName + ", бинарник Hysteria " + binPath +
+		", базы geo " + geo.ServerDir + ", связь каскада «Через Хельсинки»."
+	if ds, _ := w.ev.get(); !slices.Equal(ds, []string{want}) {
 		t.Fatalf("events %q", ds)
 	}
 
 	// The next round finds the same: no new events, the times stay.
 	since := cfg.Since
 	w.r.Round(ctx)
-	if ds, _ := w.ev.get(); len(ds) != 5 {
+	if ds, _ := w.ev.get(); len(ds) != 1 {
 		t.Fatalf("events again %q", ds)
 	}
 	if c, _ := w.drift(w.a).Item("config"); !c.Since.Equal(since) {
 		t.Fatalf("since %v → %v", since, c.Since)
 	}
-	// Changed back by hand: gone, and the server is healthy again.
+	// The config changed back by hand: the event says what is left.
 	w.m.SetFile(cfgPath, []byte(revisionCfg))
 	w.r.Round(ctx)
 	if _, ok := w.drift(w.a).Item("config"); ok {
 		t.Fatal("the config is as recorded again")
 	}
-	if _, res := w.ev.get(); !slices.Contains(res, "1 config") {
-		t.Fatalf("resolved %q", res)
+	if ds, gone := w.ev.get(); len(ds) != 2 || strings.Contains(ds[1], "конфиг") || len(gone) != 0 {
+		t.Fatalf("events %q, gone %q", ds, gone)
+	}
+	// Everything back: the event closes, the server is healthy again.
+	in, _ := w.db.Installation(ctx, w.a)
+	in.BinarySHA256, in.UnitSHA256 = "", ""
+	w.db.SetInstallation(ctx, in)
+	w.db.SetServerGeo(ctx, model.ServerGeo{ServerID: w.a, Release: "r"})
+	w.m.SetFile(w.linkAt, linkCfg)
+	w.m.SetFile("/etc/systemd/system/"+w.linkU, []byte(linkUnit))
+	w.r.Round(ctx)
+	if _, gone := w.ev.get(); !slices.Equal(gone, []string{"Frankfurt"}) || w.state(w.a) != model.StateHealthy {
+		t.Fatalf("gone %q, state %s", gone, w.state(w.a))
 	}
 }
 
