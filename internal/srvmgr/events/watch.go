@@ -281,6 +281,9 @@ func (w *Watcher) SSH(ctx context.Context, serverID int64, err error) {
 	if err != nil && !isChanged && !refused {
 		return // unreachable, a timeout: the status tells
 	}
+	if err == nil && !w.Bus.IsOpen(ctx, hk) && !w.Bus.IsOpen(ctx, auth) {
+		return // the usual login: nothing to close
+	}
 	srv, serr := w.Bus.Store.ServerByID(ctx, serverID)
 	if serr != nil {
 		return

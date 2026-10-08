@@ -158,12 +158,13 @@ func (b *Bus) Resolve(ctx context.Context, key, text string) error {
 	return nil
 }
 
-// IsOpen reports whether an event of key is open.
+// IsOpen reports whether an event of key may be open: true also when the
+// open events could not be read.
 func (b *Bus) IsOpen(ctx context.Context, key string) bool {
 	b.wmu.Lock()
 	defer b.wmu.Unlock()
 	b.loadOpen(ctx)
-	return b.open[key]
+	return b.open == nil || b.open[key]
 }
 
 // Run sweeps at once and then every hour until ctx ends.
@@ -200,7 +201,12 @@ func (b *Bus) Sweep(ctx context.Context) error {
 		case model.SubjectChain:
 			_, err = b.Store.ChainByID(ctx, e.SubjectID)
 		case model.SubjectJob:
-			_, err = b.Store.JobByID(ctx, e.SubjectID)
+			// A deleted server's jobs stay, without their server: nothing
+			// of the server can end the event any more.
+			var j model.Job
+			if j, err = b.Store.JobByID(ctx, e.SubjectID); err == nil && j.ServerID == 0 {
+				err = store.ErrNotFound
+			}
 		}
 		if !errors.Is(err, store.ErrNotFound) {
 			continue

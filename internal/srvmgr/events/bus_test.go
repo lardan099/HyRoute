@@ -164,6 +164,12 @@ func TestBusSweep(t *testing.T) {
 	f.bus.Raise(ctx, model.Event{Kind: model.EventDisk, Key: "disk:b", Subject: model.SubjectServer, SubjectID: b.ID, Text: "b"})
 	f.bus.Raise(ctx, model.Event{Kind: model.EventServer, Key: "server:a", Subject: model.SubjectServer, SubjectID: a.ID, Text: "a down"})
 	f.bus.Resolve(ctx, "server:a", "a up")
+	// A failed job of b: the job outlives the server, the event does not.
+	j := model.Job{Kind: "apply", ServerID: b.ID, State: model.JobFailed, Params: []byte("{}"), CreatedAt: f.clock.now()}
+	if err := f.db.CreateJob(ctx, &j, []model.JobStep{{Idx: 0, Name: "connect"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.bus.Raise(ctx, model.Event{Kind: model.EventJob, Key: "job:apply:b", Subject: model.SubjectJob, SubjectID: j.ID, Text: "b failed"})
 	if err := f.db.DeleteServer(ctx, b.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +182,7 @@ func TestBusSweep(t *testing.T) {
 		t.Fatalf("the sweep told %+v", got)
 	}
 	all, _ := f.db.ListEvents(ctx, model.EventFilter{})
-	if len(all) != 2 || all[0].Key != "server:a" || all[1].Key != "disk:b" || all[1].Open() || all[1].CloseText == "" {
+	if len(all) != 3 || all[0].Key != "job:apply:b" || all[0].Open() || all[1].Key != "server:a" || all[2].Key != "disk:b" || all[2].Open() || all[2].CloseText == "" {
 		t.Fatalf("after the sweep %+v", all)
 	}
 	if f.bus.IsOpen(ctx, "disk:b") {

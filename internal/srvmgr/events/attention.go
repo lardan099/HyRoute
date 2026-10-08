@@ -128,11 +128,21 @@ func (a *Attention) Summary(ctx context.Context) (Summary, error) {
 	if err := a.jobItems(ctx, byID, add); err != nil {
 		return out, err
 	}
-	if err := a.linkItems(ctx, byID, add); err != nil {
+	chains, err := a.Store.ListChains(ctx)
+	if err != nil {
 		return out, err
 	}
+	a.linkItems(ctx, chains, byID, add)
+	entries := map[int64]bool{}
+	for _, c := range chains {
+		for _, l := range c.Links {
+			if l.State == model.LinkActive || l.State == model.LinkStale {
+				entries[l.From] = true
+			}
+		}
+	}
 	for _, s := range servers {
-		a.serverExtras(ctx, s, add)
+		a.serverExtras(ctx, s, entries[s.ID], add)
 	}
 	a.geoItems(ctx, byID, add)
 
@@ -244,11 +254,7 @@ const linkChecksFresh = time.Hour
 
 // linkItems are cascade links that are stale or failed, or whose last
 // check found them offline or degraded.
-func (a *Attention) linkItems(ctx context.Context, byID map[int64]model.Server, add func(Item)) error {
-	chains, err := a.Store.ListChains(ctx)
-	if err != nil {
-		return err
-	}
+func (a *Attention) linkItems(ctx context.Context, chains []model.Chain, byID map[int64]model.Server, add func(Item)) {
 	for _, c := range chains {
 		for _, l := range c.Links {
 			what := "Связь «" + byID[l.From].Name + "» → «" + byID[l.To].Name + "»"
@@ -282,11 +288,11 @@ func (a *Attention) linkItems(ctx context.Context, byID map[int64]model.Server, 
 			add(it)
 		}
 	}
-	return nil
 }
 
-// serverExtras are the routing lint and an old Hysteria of a server.
-func (a *Attention) serverExtras(ctx context.Context, s model.Server, add func(Item)) {
+// serverExtras are the routing lint and an old Hysteria of a server;
+// entry: it is the entry of a deployed cascade link.
+func (a *Attention) serverExtras(ctx context.Context, s model.Server, entry bool, add func(Item)) {
 	in, err := a.Store.Installation(ctx, s.ID)
 	if err != nil {
 		return // nothing installed: nothing to tell
@@ -295,7 +301,7 @@ func (a *Attention) serverExtras(ctx context.Context, s model.Server, add func(I
 		add(Item{Kind: "hysteria", Severity: model.SeverityInfo, Subject: model.SubjectServer, SubjectID: s.ID, Name: s.Name,
 			Text: "Hysteria " + in.Version + " — есть " + hyrelease.DefaultVersion + ": обновите её («Обслуживание» на странице сервера)."})
 	}
-	if lr, ok := a.lintOf(ctx, s.ID); ok && lr.warns+lr.fails > 0 {
+	if lr, ok := a.lintOf(ctx, s.ID, entry); ok && lr.warns+lr.fails > 0 {
 		sev, text := model.SeverityInfo, "Правила маршрутизации: "
 		var parts []string
 		if lr.fails > 0 {
@@ -312,7 +318,7 @@ func (a *Attention) serverExtras(ctx context.Context, s model.Server, add func(I
 // lintOf checks the rules of the server's current config (acl.inline,
 // without the geo databases: names are not looked up), once per
 // revision.
-func (a *Attention) lintOf(ctx context.Context, serverID int64) (lintResult, bool) {
+func (a *Attention) lintOf(ctx context.Context, serverID int64, entry bool) (lintResult, bool) {
 	if a.Keys == nil {
 		return lintResult{}, false
 	}
@@ -320,7 +326,6 @@ func (a *Attention) lintOf(ctx context.Context, serverID int64) (lintResult, boo
 	if err != nil {
 		return lintResult{}, false
 	}
-	entry := a.isEntry(ctx, serverID)
 	a.mu.Lock()
 	lr, ok := a.lint[serverID]
 	a.mu.Unlock()
@@ -354,22 +359,6 @@ func (a *Attention) lintOf(ctx context.Context, serverID int64) (lintResult, boo
 	a.lint[serverID] = lr
 	a.mu.Unlock()
 	return lr, true
-}
-
-// isEntry: the server is the entry of a deployed link.
-func (a *Attention) isEntry(ctx context.Context, serverID int64) bool {
-	chains, err := a.Store.ListChains(ctx)
-	if err != nil {
-		return false
-	}
-	for _, c := range chains {
-		for _, l := range c.Links {
-			if l.From == serverID && (l.State == model.LinkActive || l.State == model.LinkStale) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // geoItems: the controller's databases not updated for long, and servers
