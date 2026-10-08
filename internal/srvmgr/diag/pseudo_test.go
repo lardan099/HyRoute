@@ -46,6 +46,9 @@ func TestPseudonymsReplaceTheSameEverywhere(t *testing.T) {
 		{"wrote /etc/hysteria/config.yaml, restarted hysteria-server.service and hysteria-server@config.service", "wrote /etc/hysteria/config.yaml, restarted hysteria-server.service and hysteria-server@config.service"},
 		{"Ubuntu 22.04.3 LTS, 6.1.0-18-amd64 x86_64, v2.6.0, 12:30:45", "Ubuntu 22.04.3 LTS, 6.1.0-18-amd64 x86_64, v2.6.0, 12:30:45"},
 		{"2026-10-08T12:00:00Z unspecified :: and fe80::1", "2026-10-08T12:00:00Z unspecified :: and fe80::1"},
+		// A dynamic DNS name is a domain; a name under no public suffix is
+		// not one (a file, a LAN name).
+		{"ddns myvpn.duckdns.org, lan nas.lan", "ddns domain-3, lan nas.lan"},
 	}
 	for _, c := range cases {
 		if got := p.String(c.in); got != c.want {
