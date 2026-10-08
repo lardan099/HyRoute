@@ -119,6 +119,13 @@ func (f *Executor) SetFile(path string, data []byte) {
 	f.mu.Unlock()
 }
 
+// DeleteFile removes a file from the fake machine.
+func (f *Executor) DeleteFile(path string) {
+	f.mu.Lock()
+	delete(f.files, path)
+	f.mu.Unlock()
+}
+
 // File returns a file of the fake machine.
 func (f *Executor) File(path string) ([]byte, bool) {
 	f.mu.Lock()
