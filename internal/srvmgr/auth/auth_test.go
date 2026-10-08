@@ -419,12 +419,12 @@ func TestBusy(t *testing.T) {
 	}
 	short, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
 	defer cancel()
-	if _, err := s.CreateUser(short, owner, "viewer", goodPass, model.RoleReadOnly); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := s.CreateUser(short, owner, "viewer", goodPass, model.RoleReadOnly, model.ScopeAll); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("create user without a slot: %v", err)
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.CreateUser(ctx, owner, "viewer", goodPass, model.RoleReadOnly)
+		_, err := s.CreateUser(ctx, owner, "viewer", goodPass, model.RoleReadOnly, model.ScopeAll)
 		done <- err
 	}()
 	<-s.slots
@@ -514,16 +514,18 @@ func TestRecheck(t *testing.T) {
 	ctx := context.Background()
 	is := setupOwner(t, s)
 	c.add(s.IdleTimeout / 2)
-	mustNoErr(t, s.Recheck(ctx, is.Token))
+	_, err := s.Recheck(ctx, is.Token)
+	mustNoErr(t, err)
 	c.add(s.IdleTimeout/2 + time.Minute)
-	if err := s.Recheck(ctx, is.Token); !errors.Is(err, ErrUnauthenticated) {
+	if _, err := s.Recheck(ctx, is.Token); !errors.Is(err, ErrUnauthenticated) {
 		t.Fatalf("idle session holds: %v", err)
 	}
 	is2, _ := s.Login(ctx, "owner", goodPass, meta("127.0.0.1"))
 	p2, _ := s.Authenticate(ctx, is2.Token)
-	mustNoErr(t, s.Recheck(ctx, is2.Token))
+	_, err = s.Recheck(ctx, is2.Token)
+	mustNoErr(t, err)
 	mustNoErr(t, s.Logout(ctx, p2))
-	if err := s.Recheck(ctx, is2.Token); !errors.Is(err, ErrUnauthenticated) {
+	if _, err := s.Recheck(ctx, is2.Token); !errors.Is(err, ErrUnauthenticated) {
 		t.Fatalf("logged out session holds: %v", err)
 	}
 }
@@ -540,20 +542,20 @@ func TestRoles(t *testing.T) {
 	ctx := context.Background()
 	is := setupOwner(t, s)
 	owner, _ := s.Authenticate(ctx, is.Token)
-	ro, err := s.CreateUser(ctx, owner, "viewer", goodPass, model.RoleReadOnly)
+	ro, err := s.CreateUser(ctx, owner, "viewer", goodPass, model.RoleReadOnly, model.ScopeAll)
 	mustNoErr(t, err)
-	if _, err := s.CreateUser(ctx, owner, "boss", goodPass, model.RoleOwner); err == nil {
+	if _, err := s.CreateUser(ctx, owner, "boss", goodPass, model.RoleOwner, model.ScopeAll); err == nil {
 		t.Fatal("second owner created")
 	}
-	if _, err := s.CreateUser(ctx, owner, "viewer", goodPass, model.RoleOperator); err == nil {
+	if _, err := s.CreateUser(ctx, owner, "viewer", goodPass, model.RoleOperator, model.ScopeAll); err == nil {
 		t.Fatal("duplicate name")
 	}
 	isRO, _ := s.Login(ctx, "viewer", goodPass, meta("127.0.0.1"))
 	pRO, _ := s.Authenticate(ctx, isRO.Token)
-	if pRO.User.ID != ro.ID || pRO.User.Role.CanWrite() {
+	if pRO.User.ID != ro.ID || !pRO.User.Role.Can(model.PermView) || pRO.User.Role.Can(model.PermConfig) {
 		t.Fatalf("%+v", pRO.User)
 	}
-	if _, err := s.CreateUser(ctx, pRO, "x", goodPass, model.RoleReadOnly); !errors.Is(err, ErrForbidden) {
+	if _, err := s.CreateUser(ctx, pRO, "x", goodPass, model.RoleReadOnly, model.ScopeAll); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("readonly created a user: %v", err)
 	}
 	if err := s.RevokeSession(ctx, pRO, owner.Session.ID); !errors.Is(err, ErrForbidden) {

@@ -353,11 +353,11 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Principal, er
 
 // Recheck tells a long request (an event stream) whether its session still
 // holds: ErrUnauthenticated after a logout, a revocation, the end of the
-// session or a disabled user. It is not activity of the session: an open
+// session or a disabled user. It returns the user as stored now (its role
+// and scope may have changed). It is not activity of the session: an open
 // stream does not keep an idle session alive.
-func (s *Service) Recheck(ctx context.Context, token string) error {
-	_, err := s.authenticate(ctx, token, false)
-	return err
+func (s *Service) Recheck(ctx context.Context, token string) (Principal, error) {
+	return s.authenticate(ctx, token, false)
 }
 
 func (s *Service) authenticate(ctx context.Context, token string, touch bool) (Principal, error) {
@@ -398,10 +398,10 @@ func (s *Service) Logout(ctx context.Context, p Principal) error {
 	return err
 }
 
-// Revocations returns a channel closed when sessions end next: a logout, a
-// revoked session, a changed password, a blocked or deleted user. A live
-// event stream then rechecks its session at once instead of at its next
-// keepalive. Take the next channel before rechecking, so sessions that
+// Revocations returns a channel closed when sessions end next (a logout, a
+// revoked session, a changed password, a blocked or deleted user) or a
+// user's role or scope changes. A live event stream then rechecks its
+// session and its access at once instead of at its next keepalive. Take the next channel before rechecking, so sessions that
 // end meanwhile are not missed.
 func (s *Service) Revocations() <-chan struct{} {
 	s.mu.Lock()
@@ -473,15 +473,19 @@ func (s *Service) RevokeSession(ctx context.Context, p Principal, id int64) erro
 	return err
 }
 
-// CreateUser adds an admin, operator or read-only user; only owners and
-// admins may. An owner is made of an existing user (UpdateUser,
-// TransferOwner), not created.
-func (s *Service) CreateUser(ctx context.Context, p Principal, username, password string, role model.Role) (model.User, error) {
+// CreateUser adds a user of any role but owner, reaching the servers of
+// scope; only owners and admins may. An owner is made of an existing user
+// (UpdateUser, TransferOwner), not created.
+func (s *Service) CreateUser(ctx context.Context, p Principal, username, password string, role model.Role, scope model.Scope) (model.User, error) {
 	if !p.User.Role.CanManageUsers() {
 		return model.User{}, ErrForbidden
 	}
 	if !role.Valid() || role == model.RoleOwner {
-		return model.User{}, &model.FieldError{Field: "role", Msg: "Роль: admin, operator или readonly."}
+		return model.User{}, &model.FieldError{Field: "role", Msg: "Роль: admin, operator, clients или readonly."}
+	}
+	scope, err := scopeFor(role, scope)
+	if err != nil {
+		return model.User{}, err
 	}
 	if err := validateCredentials(username, password); err != nil {
 		return model.User{}, err
@@ -496,14 +500,14 @@ func (s *Service) CreateUser(ctx context.Context, p Principal, username, passwor
 		return model.User{}, err
 	}
 	now := s.Now()
-	u := model.User{Username: username, PasswordHash: hash, Role: role, Scope: model.ScopeAll, CreatedAt: now, UpdatedAt: now}
+	u := model.User{Username: username, PasswordHash: hash, Role: role, Scope: scope, CreatedAt: now, UpdatedAt: now}
 	if err := s.Store.CreateUser(ctx, &u); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return model.User{}, &model.FieldError{Field: "username", Msg: "Пользователь с таким именем уже есть."}
 		}
 		return model.User{}, err
 	}
-	s.audit(ctx, p.User.ID, "user_created", userTarget(u.ID), u.Username+": "+string(role))
+	s.audit(ctx, p.User.ID, "user_created", userTarget(u.ID), u.Username+": "+string(role)+", "+ScopeText(scope))
 	return u, nil
 }
 

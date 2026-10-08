@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"mime"
@@ -237,80 +236,6 @@ func (s *server) meta(r *http.Request) auth.Meta {
 	return auth.Meta{IP: s.clientIP(r), UserAgent: r.UserAgent()}
 }
 
-// public handlers work without a session; they still refuse cross-site
-// writes.
-func (s *server) public(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if mutating(r.Method) && s.crossSite(r) {
-			writeError(w, errCSRF)
-			return
-		}
-		h(w, r)
-	}
-}
-
-// access is what a handler needs from the caller.
-type access int
-
-const (
-	// anyRole: any logged-in user; writes still need CanWrite.
-	anyRole access = iota
-	// ownSession: any logged-in user, writes included (logout, revoking
-	// one's own sessions: read-only users must be able to leave).
-	ownSession
-	// manageUsers: owners and admins.
-	manageUsers
-	// writers: roles that may change servers, reads included (the config
-	// editor: masking is a second line, not the only one).
-	writers
-)
-
-// authed wraps a handler that needs a session: 401 without one, CSRF check
-// on writes, 403 for read-only users on writes.
-func (s *server) authed(need access, h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie(cookieName)
-		if err != nil {
-			writeError(w, errUnauthorized)
-			return
-		}
-		p, err := s.Auth.Authenticate(r.Context(), c.Value)
-		if err != nil {
-			if errors.Is(err, auth.ErrUnauthenticated) {
-				s.clearSessionCookie(w, r)
-			}
-			s.fail(w, r, mapError(err))
-			return
-		}
-		if mutating(r.Method) {
-			if s.crossSite(r) || !auth.CheckCSRF(p.Token, r.Header.Get("X-CSRF-Token")) {
-				writeError(w, errCSRF)
-				return
-			}
-			if need != ownSession && !p.User.Role.CanWrite() {
-				writeError(w, errForbidden)
-				return
-			}
-		}
-		if need == writers && !p.User.Role.CanWrite() {
-			writeError(w, errForbidden)
-			return
-		}
-		if need == manageUsers && !p.User.Role.CanManageUsers() {
-			writeError(w, errForbidden)
-			return
-		}
-		h(w, r.WithContext(context.WithValue(r.Context(), principalKey, p)))
-	}
-}
-
-// sessionHolds re-checks the session of a running event stream, which
-// authed checked only when it opened: a stream ends once its session is
-// gone (the browser reconnects and gets 401).
-func (s *server) sessionHolds(r *http.Request) bool {
-	return s.Auth.Recheck(r.Context(), principal(r).Token) == nil
-}
-
 type userJSON struct {
 	ID        int64      `json:"id"`
 	Username  string     `json:"username"`
@@ -319,19 +244,31 @@ type userJSON struct {
 	CreatedAt time.Time  `json:"createdAt"`
 	// LastLoginAt: null when no login is known.
 	LastLoginAt *time.Time `json:"lastLoginAt"`
+	// Scope is the servers the user reaches (all for owners and admins);
+	// left out of the list of users for callers who do not manage them.
+	Scope *model.Scope `json:"scope,omitempty"`
 }
 
 func toUserJSON(u model.User) userJSON {
-	out := userJSON{ID: u.ID, Username: u.Username, Role: u.Role, Disabled: u.Disabled, CreatedAt: u.CreatedAt}
+	sc := u.Reach()
+	out := userJSON{ID: u.ID, Username: u.Username, Role: u.Role, Disabled: u.Disabled, CreatedAt: u.CreatedAt, Scope: &sc}
 	if !u.LastLoginAt.IsZero() {
 		out.LastLoginAt = &u.LastLoginAt
 	}
 	return out
 }
 
+// sessionJSON is the logged-in user with what they may do: the
+// permissions of their role (server-bound ones hold on the servers of
+// user.scope).
 type sessionJSON struct {
-	User      userJSON `json:"user"`
-	CSRFToken string   `json:"csrfToken"`
+	User        userJSON           `json:"user"`
+	Permissions []model.Permission `json:"permissions"`
+	CSRFToken   string             `json:"csrfToken"`
+}
+
+func toSessionJSON(u model.User, csrf string) sessionJSON {
+	return sessionJSON{User: toUserJSON(u), Permissions: u.Role.Permissions(), CSRFToken: csrf}
 }
 
 func (s *server) getSetup(w http.ResponseWriter, r *http.Request) {
@@ -361,7 +298,7 @@ func (s *server) postSetup(w http.ResponseWriter, r *http.Request) {
 		s.OnSetupDone()
 	}
 	s.setSessionCookie(w, r, is.Token, s.Auth.MaxAge)
-	writeJSON(w, http.StatusCreated, sessionJSON{User: toUserJSON(is.User), CSRFToken: is.CSRF})
+	writeJSON(w, http.StatusCreated, toSessionJSON(is.User, is.CSRF))
 }
 
 func (s *server) postSession(w http.ResponseWriter, r *http.Request) {
@@ -377,7 +314,7 @@ func (s *server) postSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setSessionCookie(w, r, is.Token, s.Auth.MaxAge)
-	writeJSON(w, http.StatusOK, sessionJSON{User: toUserJSON(is.User), CSRFToken: is.CSRF})
+	writeJSON(w, http.StatusOK, toSessionJSON(is.User, is.CSRF))
 }
 
 // setRetryAfter tells the client when to retry a refused login or setup.
@@ -394,7 +331,7 @@ func setRetryAfter(w http.ResponseWriter, err error) {
 
 func (s *server) getSession(w http.ResponseWriter, r *http.Request) {
 	p := principal(r)
-	writeJSON(w, http.StatusOK, sessionJSON{User: toUserJSON(p.User), CSRFToken: auth.CSRFToken(p.Token)})
+	writeJSON(w, http.StatusOK, toSessionJSON(p.User, auth.CSRFToken(p.Token)))
 }
 
 func (s *server) deleteSession(w http.ResponseWriter, r *http.Request) {
@@ -450,9 +387,16 @@ func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	// The scopes are for those who manage users: the tags of other users'
+	// scopes may name servers the caller does not see.
+	manage := principal(r).User.Role.CanManageUsers()
 	out := make([]userJSON, 0, len(us))
 	for _, u := range us {
-		out = append(out, toUserJSON(u))
+		j := toUserJSON(u)
+		if !manage {
+			j.Scope = nil
+		}
+		out = append(out, j)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -461,12 +405,18 @@ func (s *server) createUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username, Password string
 		Role               model.Role
+		// Scope: all servers when left out.
+		Scope *model.Scope
 	}
 	if err := readJSON(r, &req); err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	u, err := s.Auth.CreateUser(r.Context(), principal(r), req.Username, req.Password, req.Role)
+	scope := model.ScopeAll
+	if req.Scope != nil {
+		scope = *req.Scope
+	}
+	u, err := s.Auth.CreateUser(r.Context(), principal(r), req.Username, req.Password, req.Role, scope)
 	if err != nil {
 		s.fail(w, r, mapError(err))
 		return

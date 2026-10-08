@@ -98,7 +98,7 @@ func TestJobsAPIAndRetry(t *testing.T) {
 
 	// Read-only users see jobs but cannot retry.
 	var u model.User
-	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.Username, u.Role, u.Scope = "viewer", model.RoleReadOnly, model.ScopeAll
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 	e.db.CreateUser(context.Background(), &u)
 	ro := e.login("viewer")

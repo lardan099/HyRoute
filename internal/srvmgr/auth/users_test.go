@@ -34,7 +34,7 @@ func newTeam(t *testing.T) *team {
 		p    *Principal
 		is   *Issued
 	}{{"admin", model.RoleAdmin, &tm.admin, &tm.adminIs}, {"op", model.RoleOperator, &tm.op, nil}, {"ro", model.RoleReadOnly, &tm.ro, &tm.roIs}} {
-		if _, err := s.CreateUser(ctx, tm.owner, u.name, goodPass, u.role); err != nil {
+		if _, err := s.CreateUser(ctx, tm.owner, u.name, goodPass, u.role, model.ScopeAll); err != nil {
 			t.Fatal(err)
 		}
 		is, err := s.Login(ctx, u.name, goodPass, meta("127.0.0.1"))
@@ -355,9 +355,9 @@ func TestUserAudit(t *testing.T) {
 		"user_password_changed " + userTarget(roID) + " ro",
 		"password_change_failed " + userTarget(roID) + " from 127.0.0.1",
 		"user_password_reset " + userTarget(roID) + " ro",
-		"user_created " + userTarget(roID) + " ro: readonly",
-		"user_created " + userTarget(opID) + " op: operator",
-		"user_created " + userTarget(adminID) + " admin: admin",
+		"user_created " + userTarget(roID) + " ro: readonly, все серверы",
+		"user_created " + userTarget(opID) + " op: operator, все серверы",
+		"user_created " + userTarget(adminID) + " admin: admin, все серверы",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("audit:\n%s", strings.Join(got, "\n"))
@@ -380,4 +380,76 @@ func TestChangePasswordRateLimited(t *testing.T) {
 		}
 	}
 	t.Fatal("never rate limited")
+}
+
+// Scopes (P4-04): narrowed for the roles below admin only, normalized,
+// audited, and every change wakes the live streams to recheck.
+func TestUserScope(t *testing.T) {
+	tm := newTeam(t)
+	s, ctx := tm.s, context.Background()
+	de := model.Scope{Tags: []string{" de ", "DE", "nl"}}
+	u, err := s.CreateUser(ctx, tm.admin, "helper", goodPass, model.RoleClients, de)
+	mustNoErr(t, err)
+	if got, _ := tm.db.UserByID(ctx, u.ID); got.Scope.All || len(got.Scope.Tags) != 2 || got.Scope.Tags[0] != "de" {
+		t.Fatalf("stored scope %+v", got.Scope)
+	}
+	var fe *model.FieldError
+	for name, sc := range map[string]model.Scope{"nothing": {}, "blank tags": {Tags: []string{" ", ""}}, "long tag": {Tags: []string{strings.Repeat("x", 33)}}} {
+		if _, err := s.CreateUser(ctx, tm.owner, "x"+strings.ReplaceAll(name, " ", ""), goodPass, model.RoleOperator, sc); !errors.As(err, &fe) || fe.Field != "scope" {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	if _, err := s.CreateUser(ctx, tm.owner, "boss", goodPass, model.RoleAdmin, de); !errors.As(err, &fe) || fe.Field != "scope" {
+		t.Fatalf("admin with a scope: %v", err)
+	}
+
+	woken := s.Revocations()
+	nl := model.Scope{Tags: []string{"nl"}}
+	got, err := s.UpdateUser(ctx, tm.owner, u.ID, UserChange{Scope: &nl})
+	mustNoErr(t, err)
+	if !got.Scope.Equal(nl) {
+		t.Fatalf("%+v", got.Scope)
+	}
+	select {
+	case <-woken:
+	default:
+		t.Fatal("a changed scope did not wake the streams")
+	}
+	// Made admin, the user reaches every server; an admin cannot be
+	// narrowed.
+	got, err = s.UpdateUser(ctx, tm.owner, u.ID, UserChange{Role: role(model.RoleAdmin)})
+	mustNoErr(t, err)
+	if !got.Scope.All {
+		t.Fatalf("admin scope %+v", got.Scope)
+	}
+	_, err = s.UpdateUser(ctx, tm.owner, u.ID, UserChange{Scope: &nl})
+	if !errors.As(err, &fe) || fe.Field != "scope" {
+		t.Fatalf("narrowed an admin: %v", err)
+	}
+	_, err = s.UpdateUser(ctx, tm.owner, u.ID, UserChange{Role: role(model.RoleOperator), Scope: &nl})
+	mustNoErr(t, err)
+	// Readonly and operators manage no scopes.
+	_, err = s.UpdateUser(ctx, tm.op, u.ID, UserChange{Scope: &de})
+	wantErr(t, "operator changes a scope", err, ErrForbidden)
+	// The owner role goes with every server.
+	_, err = s.TransferOwner(ctx, tm.owner, u.ID)
+	mustNoErr(t, err)
+	if got, _ := tm.db.UserByID(ctx, u.ID); got.Role != model.RoleOwner || !got.Scope.All {
+		t.Fatalf("new owner %+v", got)
+	}
+	es, _ := tm.db.QueryAudit(ctx, model.AuditFilter{Actions: []string{"user_scope_changed", "user_created"}, Target: userTarget(u.ID)})
+	var lines []string
+	for _, e := range es {
+		lines = append(lines, e.Action+" "+e.Details)
+	}
+	// The owner role is audited as owner_transferred.
+	want := []string{
+		"user_scope_changed helper: все серверы → метки nl",
+		"user_scope_changed helper: метки nl → все серверы",
+		"user_scope_changed helper: метки de, nl → метки nl",
+		"user_created helper: clients, метки de, nl",
+	}
+	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("audit:\n%s", strings.Join(lines, "\n"))
+	}
 }

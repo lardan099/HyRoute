@@ -29,6 +29,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/geo"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/logbuf"
+	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
@@ -104,117 +105,139 @@ func New(d Deps) http.Handler {
 	}
 	s := &server{Deps: d}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/health", s.health)
-	mux.HandleFunc("GET /api/v1/setup", s.public(s.getSetup))
-	mux.HandleFunc("POST /api/v1/setup", s.public(s.postSetup))
-	mux.HandleFunc("POST /api/v1/session", s.public(s.postSession))
-	mux.HandleFunc("GET /api/v1/session", s.authed(anyRole, s.getSession))
-	mux.HandleFunc("DELETE /api/v1/session", s.authed(ownSession, s.deleteSession))
-	mux.HandleFunc("GET /api/v1/sessions", s.authed(anyRole, s.listSessions))
-	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.authed(ownSession, s.revokeSession))
-	mux.HandleFunc("GET /api/v1/users", s.authed(anyRole, s.listUsers))
-	mux.HandleFunc("POST /api/v1/users", s.authed(manageUsers, s.createUser))
-	mux.HandleFunc("POST /api/v1/session/password", s.authed(ownSession, s.changePassword))
-	mux.HandleFunc("PATCH /api/v1/users/{id}", s.authed(manageUsers, s.updateUser))
-	mux.HandleFunc("DELETE /api/v1/users/{id}", s.authed(manageUsers, s.deleteUser))
-	mux.HandleFunc("POST /api/v1/users/{id}/password", s.authed(manageUsers, s.resetPassword))
-	mux.HandleFunc("POST /api/v1/users/{id}/owner", s.authed(manageUsers, s.transferOwner))
-	mux.HandleFunc("GET /api/v1/audit", s.authed(manageUsers, s.listAudit))
-	mux.HandleFunc("GET /api/v1/servers", s.authed(anyRole, s.listServers))
-	mux.HandleFunc("POST /api/v1/servers", s.authed(anyRole, s.createServer))
-	mux.HandleFunc("GET /api/v1/servers/{id}", s.authed(anyRole, s.getServer))
-	mux.HandleFunc("PATCH /api/v1/servers/{id}", s.authed(anyRole, s.updateServer))
-	mux.HandleFunc("DELETE /api/v1/servers/{id}", s.authed(anyRole, s.deleteServer))
-	mux.HandleFunc("POST /api/v1/servers/{id}/check", s.authed(anyRole, s.checkServer))
-	mux.HandleFunc("POST /api/v1/servers/{id}/host-key", s.authed(anyRole, s.trustHostKey))
-	mux.HandleFunc("POST /api/v1/servers/{id}/preflight", s.authed(anyRole, s.startPreflight))
-	mux.HandleFunc("POST /api/v1/servers/{id}/deploy", s.authed(anyRole, s.startDeploy))
-	mux.HandleFunc("POST /api/v1/servers/{id}/import", s.authed(anyRole, s.startImport))
-	mux.HandleFunc("POST /api/v1/servers/{id}/maintain", s.authed(anyRole, s.startMaintain))
-	mux.HandleFunc("GET /api/v1/servers/{id}/config", s.authed(anyRole, s.currentConfig))
-	mux.HandleFunc("GET /api/v1/servers/{id}/config/edit", s.authed(writers, s.editConfig))
-	mux.HandleFunc("GET /api/v1/servers/{id}/client", s.authed(anyRole, s.clientProfile))
-	mux.HandleFunc("POST /api/v1/servers/{id}/client/reveal", s.authed(anyRole, s.revealClient))
-	mux.HandleFunc("POST /api/v1/servers/{id}/config/render", s.authed(anyRole, s.renderConfig))
-	mux.HandleFunc("POST /api/v1/servers/{id}/config/apply", s.authed(anyRole, s.applyConfig))
-	mux.HandleFunc("GET /api/v1/servers/{id}/metrics", s.authed(anyRole, s.serverMetrics))
-	mux.HandleFunc("GET /api/v1/metrics/latest", s.authed(anyRole, s.latestMetrics))
-	mux.HandleFunc("GET /api/v1/servers/{id}/health", s.authed(anyRole, s.serverHealth))
-	mux.HandleFunc("GET /api/v1/servers/{id}/traffic", s.authed(anyRole, s.serverTraffic))
-	mux.HandleFunc("GET /api/v1/servers/{id}/traffic/online", s.authed(anyRole, s.trafficOnline))
-	mux.HandleFunc("GET /api/v1/servers/{id}/traffic/streams", s.authed(writers, s.trafficStreams))
-	mux.HandleFunc("GET /api/v1/servers/{id}/config/revisions", s.authed(anyRole, s.configRevisions))
-	mux.HandleFunc("GET /api/v1/servers/{id}/config/revisions/{rev}", s.authed(writers, s.configRevision))
-	mux.HandleFunc("GET /api/v1/servers/{id}/config/compare", s.authed(writers, s.compareConfigs))
-	mux.HandleFunc("POST /api/v1/servers/{id}/config/rollback", s.authed(anyRole, s.rollbackConfig))
-	mux.HandleFunc("POST /api/v1/servers/{id}/config/rotate", s.authed(anyRole, s.rotateConfig))
-	mux.HandleFunc("POST /api/v1/servers/{id}/ports", s.authed(anyRole, s.setPorts))
-	mux.HandleFunc("GET /api/v1/servers/{id}/tuning", s.authed(anyRole, s.getTuning))
-	mux.HandleFunc("POST /api/v1/servers/{id}/tuning", s.authed(anyRole, s.startTuning))
-	mux.HandleFunc("GET /api/v1/presets", s.authed(anyRole, s.listPresets))
-	mux.HandleFunc("POST /api/v1/presets", s.authed(anyRole, s.createPreset))
-	mux.HandleFunc("POST /api/v1/presets/import", s.authed(anyRole, s.importPreset))
-	mux.HandleFunc("GET /api/v1/presets/{id}", s.authed(anyRole, s.getPreset))
-	mux.HandleFunc("PATCH /api/v1/presets/{id}", s.authed(anyRole, s.renamePreset))
-	mux.HandleFunc("DELETE /api/v1/presets/{id}", s.authed(anyRole, s.deletePreset))
-	mux.HandleFunc("GET /api/v1/presets/{id}/export", s.authed(anyRole, s.exportPreset))
-	mux.HandleFunc("POST /api/v1/servers/{id}/preset/preview", s.authed(anyRole, s.presetPreview))
-	mux.HandleFunc("POST /api/v1/servers/{id}/preset/apply", s.authed(anyRole, s.presetApply))
-	mux.HandleFunc("GET /api/v1/servers/{id}/routing", s.authed(writers, s.getRouting))
-	mux.HandleFunc("POST /api/v1/servers/{id}/routing/preview", s.authed(anyRole, s.previewRouting))
-	mux.HandleFunc("POST /api/v1/servers/{id}/routing/apply", s.authed(anyRole, s.applyRouting))
-	mux.HandleFunc("POST /api/v1/servers/{id}/routing/check", s.authed(anyRole, s.checkRouting))
-	mux.HandleFunc("POST /api/v1/servers/{id}/routing/services", s.authed(anyRole, s.routingServices))
-	mux.HandleFunc("POST /api/v1/servers/{id}/routing/services/build", s.authed(anyRole, s.buildRoutingServices))
-	mux.HandleFunc("GET /api/v1/servers/{id}/routing/export", s.authed(writers, s.exportRouting))
-	mux.HandleFunc("GET /api/v1/servers/{id}/routing/file", s.authed(writers, s.routingFile))
-	mux.HandleFunc("POST /api/v1/routing/import", s.authed(anyRole, s.importRouting))
-	mux.HandleFunc("GET /api/v1/routing/templates", s.authed(anyRole, s.routingTemplates))
-	mux.HandleFunc("GET /api/v1/chain-templates", s.authed(anyRole, s.chainTemplates))
-	mux.HandleFunc("POST /api/v1/chain-templates/import", s.authed(anyRole, s.importChainTemplate))
-	mux.HandleFunc("GET /api/v1/chains/{id}/template", s.authed(writers, s.chainTemplate))
-	mux.HandleFunc("GET /api/v1/geo", s.authed(anyRole, s.geoInfo))
-	mux.HandleFunc("POST /api/v1/geo/update", s.authed(anyRole, s.geoUpdate))
-	mux.HandleFunc("GET /api/v1/geo/categories", s.authed(anyRole, s.geoCategories))
-	mux.HandleFunc("GET /api/v1/servers/{id}/geo", s.authed(anyRole, s.serverGeo))
-	mux.HandleFunc("POST /api/v1/servers/{id}/geo", s.authed(anyRole, s.installGeo))
-	mux.HandleFunc("GET /api/v1/chains", s.authed(anyRole, s.listChains))
-	mux.HandleFunc("POST /api/v1/chains", s.authed(anyRole, s.createChain))
-	mux.HandleFunc("GET /api/v1/chains/{id}", s.authed(anyRole, s.getChain))
-	mux.HandleFunc("PATCH /api/v1/chains/{id}", s.authed(anyRole, s.updateChain))
-	mux.HandleFunc("DELETE /api/v1/chains/{id}", s.authed(anyRole, s.deleteChain))
-	mux.HandleFunc("POST /api/v1/chains/{id}/link", s.authed(anyRole, s.linkChain))
-	mux.HandleFunc("POST /api/v1/chains/{id}/unlink", s.authed(anyRole, s.unlinkChain))
-	mux.HandleFunc("GET /api/v1/chains/{id}/checks", s.authed(anyRole, s.chainChecks))
-	mux.HandleFunc("POST /api/v1/chains/{id}/check", s.authed(anyRole, s.checkChain))
-	mux.HandleFunc("POST /api/v1/chains/{id}/route", s.authed(anyRole, s.routeChain))
-	mux.HandleFunc("GET /api/v1/servers/{id}/status", s.authed(anyRole, s.serviceStatus))
-	mux.HandleFunc("POST /api/v1/servers/{id}/service/{action}", s.authed(anyRole, s.serviceAction))
-	mux.HandleFunc("GET /api/v1/servers/{id}/journal", s.authed(anyRole, s.journal))
-	mux.HandleFunc("GET /api/v1/jobs", s.authed(anyRole, s.listJobs))
-	mux.HandleFunc("GET /api/v1/jobs/{id}", s.authed(anyRole, s.getJob))
-	mux.HandleFunc("GET /api/v1/jobs/{id}/logs", s.authed(anyRole, s.jobLogs))
-	mux.HandleFunc("GET /api/v1/jobs/{id}/events", s.authed(anyRole, s.jobEvents))
-	mux.HandleFunc("POST /api/v1/jobs/{id}/retry", s.authed(anyRole, s.retryJob))
-	mux.HandleFunc("GET /api/v1/logs", s.authed(anyRole, s.logs))
-	mux.HandleFunc("GET /api/v1/backups", s.authed(anyRole, s.listBackups))
-	mux.HandleFunc("POST /api/v1/backups", s.authed(anyRole, s.createBackup))
-	mux.HandleFunc("GET /api/v1/backups/{name}", s.authed(anyRole, s.downloadBackup))
-	mux.HandleFunc("POST /api/v1/master-key/check", s.authed(anyRole, s.checkMasterKey))
-	mux.HandleFunc("GET /api/v1/diag", s.authed(anyRole, s.diagFiles))
-	mux.HandleFunc("GET /api/v1/diag/bundle", s.authed(anyRole, s.diagBundle))
-	mux.HandleFunc("GET /api/v1/events", s.authed(anyRole, s.listEvents))
-	mux.HandleFunc("GET /api/v1/attention", s.authed(anyRole, s.attention))
-	mux.HandleFunc("GET /api/v1/alerts/channels", s.authed(anyRole, s.listChannels))
-	mux.HandleFunc("POST /api/v1/alerts/channels", s.authed(anyRole, s.createChannel))
-	mux.HandleFunc("PATCH /api/v1/alerts/channels/{id}", s.authed(anyRole, s.updateChannel))
-	mux.HandleFunc("DELETE /api/v1/alerts/channels/{id}", s.authed(anyRole, s.deleteChannel))
-	mux.HandleFunc("POST /api/v1/alerts/channels/{id}/test", s.authed(anyRole, s.testChannel))
+	for _, rt := range s.routes() {
+		mux.HandleFunc(rt.pattern, s.guard(rt.rule, rt.h))
+	}
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { writeError(w, errNotFound) })
 	if d.UI != nil {
 		mux.Handle("/", uiHandler(d.UI))
 	}
 	return s.recoverPanics(s.logRequests(securityHeaders(s.hostCheck(limitBody(mux)))))
+}
+
+// route is an endpoint of the API and what it needs from the caller.
+type route struct {
+	pattern string
+	rule    rule
+	h       http.HandlerFunc
+}
+
+// routes is every endpoint of the API (P4-04): each one declares who may
+// call it (access.go): public, signedIn, or need(permission, finders) —
+// the permission of the role and how the servers of the request are found
+// (global: none; onServer, onChain, onJob: the {id} of the path; body*: a
+// field of the body). Nothing is registered on the mux but through this
+// table: TestRoutesDeclared fails otherwise, and TestRoleRouteMatrix checks
+// every route for every role.
+func (s *server) routes() []route {
+	return []route{
+		{"GET /api/v1/health", public, s.health},
+		{"GET /api/v1/setup", public, s.getSetup},
+		{"POST /api/v1/setup", public, s.postSetup},
+		{"POST /api/v1/session", public, s.postSession},
+		{"GET /api/v1/session", signedIn, s.getSession},
+		{"DELETE /api/v1/session", signedIn, s.deleteSession},
+		{"GET /api/v1/sessions", signedIn, s.listSessions},
+		{"DELETE /api/v1/sessions/{id}", signedIn, s.revokeSession},
+		{"GET /api/v1/users", signedIn, s.listUsers},
+		{"POST /api/v1/users", need(model.PermUsers, global), s.createUser},
+		{"POST /api/v1/session/password", signedIn, s.changePassword},
+		{"PATCH /api/v1/users/{id}", need(model.PermUsers, global), s.updateUser},
+		{"DELETE /api/v1/users/{id}", need(model.PermUsers, global), s.deleteUser},
+		{"POST /api/v1/users/{id}/password", need(model.PermUsers, global), s.resetPassword},
+		{"POST /api/v1/users/{id}/owner", ownerOnly(need(model.PermUsers, global)), s.transferOwner},
+		{"GET /api/v1/audit", need(model.PermUsers, global), s.listAudit},
+		{"GET /api/v1/servers", need(model.PermView, global), s.listServers},
+		{"POST /api/v1/servers", need(model.PermDeploy, bodyTags), s.createServer},
+		{"GET /api/v1/servers/{id}", need(model.PermView, onServer), s.getServer},
+		{"PATCH /api/v1/servers/{id}", need(model.PermCredentials, onServer, bodyTags), s.updateServer},
+		{"DELETE /api/v1/servers/{id}", need(model.PermDeploy, onServer), s.deleteServer},
+		{"POST /api/v1/servers/{id}/check", need(model.PermCredentials, onServer), s.checkServer},
+		{"POST /api/v1/servers/{id}/host-key", need(model.PermCredentials, onServer), s.trustHostKey},
+		{"POST /api/v1/servers/{id}/preflight", need(model.PermDeploy, onServer), s.startPreflight},
+		{"POST /api/v1/servers/{id}/deploy", need(model.PermDeploy, onServer, bodyVia), s.startDeploy},
+		{"POST /api/v1/servers/{id}/import", need(model.PermDeploy, onServer), s.startImport},
+		{"POST /api/v1/servers/{id}/maintain", need(model.PermDeploy, onServer, bodyVia), s.startMaintain},
+		{"GET /api/v1/servers/{id}/config", need(model.PermView, onServer), s.currentConfig},
+		{"GET /api/v1/servers/{id}/config/edit", need(model.PermConfig, onServer), s.editConfig},
+		{"GET /api/v1/servers/{id}/client", need(model.PermView, onServer), s.clientProfile},
+		{"POST /api/v1/servers/{id}/client/reveal", need(model.PermClientsReveal, onServer), s.revealClient},
+		{"POST /api/v1/servers/{id}/config/render", need(model.PermConfig, onServer), s.renderConfig},
+		{"POST /api/v1/servers/{id}/config/apply", need(model.PermConfig, onServer), s.applyConfig},
+		{"GET /api/v1/servers/{id}/metrics", need(model.PermView, onServer), s.serverMetrics},
+		{"GET /api/v1/metrics/latest", need(model.PermView, global), s.latestMetrics},
+		{"GET /api/v1/servers/{id}/health", need(model.PermView, onServer), s.serverHealth},
+		{"GET /api/v1/servers/{id}/traffic", need(model.PermView, onServer), s.serverTraffic},
+		{"GET /api/v1/servers/{id}/traffic/online", need(model.PermView, onServer), s.trafficOnline},
+		{"GET /api/v1/servers/{id}/traffic/streams", need(model.PermConfig, onServer), s.trafficStreams},
+		{"GET /api/v1/servers/{id}/config/revisions", need(model.PermView, onServer), s.configRevisions},
+		{"GET /api/v1/servers/{id}/config/revisions/{rev}", need(model.PermConfig, onServer), s.configRevision},
+		{"GET /api/v1/servers/{id}/config/compare", need(model.PermConfig, onServer), s.compareConfigs},
+		{"POST /api/v1/servers/{id}/config/rollback", need(model.PermConfig, onServer), s.rollbackConfig},
+		{"POST /api/v1/servers/{id}/config/rotate", need(model.PermConfig, onServer), s.rotateConfig},
+		{"POST /api/v1/servers/{id}/ports", need(model.PermConfig, onServer), s.setPorts},
+		{"GET /api/v1/servers/{id}/tuning", need(model.PermView, onServer), s.getTuning},
+		{"POST /api/v1/servers/{id}/tuning", need(model.PermConfig, onServer), s.startTuning},
+		{"GET /api/v1/presets", need(model.PermView, global), s.listPresets},
+		{"POST /api/v1/presets", need(model.PermPresets, bodyServerID), s.createPreset},
+		{"POST /api/v1/presets/import", need(model.PermPresets, global), s.importPreset},
+		{"GET /api/v1/presets/{id}", need(model.PermView, global), s.getPreset},
+		{"PATCH /api/v1/presets/{id}", need(model.PermPresets, global), s.renamePreset},
+		{"DELETE /api/v1/presets/{id}", need(model.PermPresets, global), s.deletePreset},
+		{"GET /api/v1/presets/{id}/export", need(model.PermView, global), s.exportPreset},
+		{"POST /api/v1/servers/{id}/preset/preview", need(model.PermConfig, onServer), s.presetPreview},
+		{"POST /api/v1/servers/{id}/preset/apply", need(model.PermConfig, onServer), s.presetApply},
+		{"GET /api/v1/servers/{id}/routing", need(model.PermConfig, onServer), s.getRouting},
+		{"POST /api/v1/servers/{id}/routing/preview", need(model.PermConfig, onServer), s.previewRouting},
+		{"POST /api/v1/servers/{id}/routing/apply", need(model.PermConfig, onServer), s.applyRouting},
+		{"POST /api/v1/servers/{id}/routing/check", need(model.PermConfig, onServer), s.checkRouting},
+		{"POST /api/v1/servers/{id}/routing/services", need(model.PermConfig, onServer), s.routingServices},
+		{"POST /api/v1/servers/{id}/routing/services/build", need(model.PermConfig, onServer), s.buildRoutingServices},
+		{"GET /api/v1/servers/{id}/routing/export", need(model.PermConfig, onServer), s.exportRouting},
+		{"GET /api/v1/servers/{id}/routing/file", need(model.PermConfig, onServer), s.routingFile},
+		{"POST /api/v1/routing/import", need(model.PermConfig, global), s.importRouting},
+		{"GET /api/v1/routing/templates", need(model.PermView, global), s.routingTemplates},
+		{"GET /api/v1/chain-templates", need(model.PermView, global), s.chainTemplates},
+		{"POST /api/v1/chain-templates/import", need(model.PermChains, global), s.importChainTemplate},
+		{"GET /api/v1/chains/{id}/template", need(model.PermChains, onChain), s.chainTemplate},
+		{"GET /api/v1/geo", need(model.PermView, global), s.geoInfo},
+		{"POST /api/v1/geo/update", need(model.PermConfig, global), s.geoUpdate},
+		{"GET /api/v1/geo/categories", need(model.PermView, global), s.geoCategories},
+		{"GET /api/v1/servers/{id}/geo", need(model.PermView, onServer), s.serverGeo},
+		{"POST /api/v1/servers/{id}/geo", need(model.PermConfig, onServer, bodyVia), s.installGeo},
+		{"GET /api/v1/chains", need(model.PermView, global), s.listChains},
+		{"POST /api/v1/chains", need(model.PermChains, bodyNodes), s.createChain},
+		{"GET /api/v1/chains/{id}", need(model.PermView, onChain), s.getChain},
+		{"PATCH /api/v1/chains/{id}", need(model.PermChains, onChain), s.updateChain},
+		{"DELETE /api/v1/chains/{id}", need(model.PermChains, onChain), s.deleteChain},
+		{"POST /api/v1/chains/{id}/link", need(model.PermChains, onChain), s.linkChain},
+		{"POST /api/v1/chains/{id}/unlink", need(model.PermChains, onChain), s.unlinkChain},
+		{"GET /api/v1/chains/{id}/checks", need(model.PermView, onChain), s.chainChecks},
+		{"POST /api/v1/chains/{id}/check", need(model.PermChains, onChain), s.checkChain},
+		{"POST /api/v1/chains/{id}/route", need(model.PermConfig, onChain), s.routeChain},
+		{"GET /api/v1/servers/{id}/status", need(model.PermView, onServer), s.serviceStatus},
+		{"POST /api/v1/servers/{id}/service/{action}", need(model.PermService, onServer), s.serviceAction},
+		{"GET /api/v1/servers/{id}/journal", need(model.PermView, onServer), s.journal},
+		{"GET /api/v1/jobs", need(model.PermView, global), s.listJobs},
+		{"GET /api/v1/jobs/{id}", need(model.PermView, onJob), s.getJob},
+		{"GET /api/v1/jobs/{id}/logs", need(model.PermView, onJob), s.jobLogs},
+		{"GET /api/v1/jobs/{id}/events", need(model.PermView, onJob), s.jobEvents},
+		{"POST /api/v1/jobs/{id}/retry", retryRule, s.retryJob},
+		{"GET /api/v1/logs", need(model.PermView, global), s.logs},
+		{"GET /api/v1/backups", ownerOnly(need(model.PermSettings, global)), s.listBackups},
+		{"POST /api/v1/backups", ownerOnly(need(model.PermSettings, global)), s.createBackup},
+		{"GET /api/v1/backups/{name}", ownerOnly(need(model.PermSettings, global)), s.downloadBackup},
+		{"POST /api/v1/master-key/check", need(model.PermSettings, global), s.checkMasterKey},
+		{"GET /api/v1/diag", need(model.PermSettings, global), s.diagFiles},
+		{"GET /api/v1/diag/bundle", need(model.PermSettings, global), s.diagBundle},
+		{"GET /api/v1/events", need(model.PermView, global), s.listEvents},
+		{"GET /api/v1/attention", need(model.PermView, global), s.attention},
+		{"GET /api/v1/alerts/channels", need(model.PermSettings, global), s.listChannels},
+		{"POST /api/v1/alerts/channels", need(model.PermSettings, global), s.createChannel},
+		{"PATCH /api/v1/alerts/channels/{id}", need(model.PermSettings, global), s.updateChannel},
+		{"DELETE /api/v1/alerts/channels/{id}", need(model.PermSettings, global), s.deleteChannel},
+		{"POST /api/v1/alerts/channels/{id}/test", need(model.PermSettings, global), s.testChannel},
+	}
 }
 
 // hostCheck answers only requests that name the panel as it is meant to

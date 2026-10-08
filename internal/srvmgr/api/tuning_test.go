@@ -60,7 +60,7 @@ func TestTuningAPI(t *testing.T) {
 
 	// Every role reads the state; nothing on the server changes.
 	var u model.User
-	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.Username, u.Role, u.Scope = "viewer", model.RoleReadOnly, model.ScopeAll
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 	e.db.CreateUser(ctx, &u)
 	viewer := e.login("viewer")

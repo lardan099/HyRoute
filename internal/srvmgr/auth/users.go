@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
@@ -22,7 +24,9 @@ import (
 //     (ErrSelf): one's own password changes with the current one
 //     (ChangePassword);
 //   - no change leaves the panel without an owner who can log in
-//     (ErrLastOwner); the owner role is handed over with TransferOwner.
+//     (ErrLastOwner); the owner role is handed over with TransferOwner;
+//   - owners and admins reach every server: their scope is all, and a
+//     narrower one is refused (scopeFor).
 //
 // Checks across users run inside the store transaction of the change, on
 // the users as they are then, the caller included: two changes at once
@@ -52,7 +56,7 @@ func mayManage(actor, target model.User) error {
 // mayGrant: actor may give role to a user they manage.
 func mayGrant(actor model.User, role model.Role) error {
 	if !role.Valid() {
-		return &model.FieldError{Field: "role", Msg: "Роль: owner, admin, operator или readonly."}
+		return &model.FieldError{Field: "role", Msg: "Роль: owner, admin, operator, clients или readonly."}
 	}
 	if role == model.RoleOwner && actor.Role != model.RoleOwner {
 		return ErrForbidden
@@ -148,20 +152,65 @@ func (s *Service) hash(ctx context.Context, password string) (string, error) {
 	return HashPassword(password, s.Params)
 }
 
-// UserChange changes the role or the block of a user; nil: unchanged.
+// maxScopeTags bounds the tags of a scope.
+const maxScopeTags = 64
+
+// scopeFor is the scope a user of role is stored with when sc is asked
+// for: all for owners and admins (a narrower one is refused), the tags
+// normalized for the others, at least one of them.
+func scopeFor(role model.Role, sc model.Scope) (model.Scope, error) {
+	sc = sc.Normalize()
+	if role.Unscoped() {
+		if !sc.All {
+			return model.Scope{}, &model.FieldError{Field: "scope", Msg: "Владелец и администратор всегда работают со всеми серверами: область у них не сужается."}
+		}
+		return model.ScopeAll, nil
+	}
+	if sc.All {
+		return model.ScopeAll, nil
+	}
+	if len(sc.Tags) == 0 {
+		return model.Scope{}, &model.FieldError{Field: "scope", Msg: "Выберите все серверы или хотя бы одну метку."}
+	}
+	if len(sc.Tags) > maxScopeTags {
+		return model.Scope{}, &model.FieldError{Field: "scope", Msg: "Не больше 64 меток."}
+	}
+	for _, t := range sc.Tags {
+		if utf8.RuneCountInString(t) > 32 || strings.IndexFunc(t, unicode.IsControl) >= 0 {
+			return model.Scope{}, &model.FieldError{Field: "scope", Msg: "Метка: до 32 символов."}
+		}
+	}
+	return sc, nil
+}
+
+// ScopeText is a scope for the audit log: «все серверы» or the tags.
+func ScopeText(sc model.Scope) string {
+	if sc.All {
+		return "все серверы"
+	}
+	if len(sc.Tags) == 0 {
+		return "ни одного сервера"
+	}
+	return "метки " + strings.Join(sc.Tags, ", ")
+}
+
+// UserChange changes the role, the scope or the block of a user; nil:
+// unchanged.
 type UserChange struct {
 	Role     *model.Role
+	Scope    *model.Scope
 	Disabled *bool
 }
 
-// UpdateUser changes the role or the block of a user. A blocked user's
-// sessions end at once and it cannot log in until unblocked.
+// UpdateUser changes the role, the scope or the block of a user. A blocked
+// user's sessions end at once and it cannot log in until unblocked. A user
+// made owner or admin reaches every server.
 func (s *Service) UpdateUser(ctx context.Context, p Principal, id int64, c UserChange) (model.User, error) {
 	if !p.User.Role.CanManageUsers() {
 		return model.User{}, ErrForbidden
 	}
-	if c.Role == nil && c.Disabled == nil {
-		return model.User{}, &model.FieldError{Field: "role", Msg: "Укажите новую роль или блокировку."}
+	if c.Role == nil && c.Scope == nil && c.Disabled == nil {
+		return model.User{}, &model.FieldError{Field: "role", Msg: "Укажите новую роль, область или блокировку."}
 	}
 	if c.Disabled != nil && *c.Disabled && id == p.User.ID {
 		return model.User{}, ErrSelf
@@ -174,6 +223,16 @@ func (s *Service) UpdateUser(ctx context.Context, p Principal, id int64, c UserC
 				return nil, nil, err
 			}
 			u.Role = *c.Role
+		}
+		switch {
+		case c.Scope != nil:
+			sc, err := scopeFor(u.Role, *c.Scope)
+			if err != nil {
+				return nil, nil, err
+			}
+			u.Scope = sc
+		case u.Role.Unscoped():
+			u.Scope = model.ScopeAll
 		}
 		if c.Disabled != nil {
 			u.Disabled = *c.Disabled
@@ -190,6 +249,13 @@ func (s *Service) UpdateUser(ctx context.Context, p Principal, id int64, c UserC
 	}
 	if after.Role != before.Role {
 		s.audit(ctx, p.User.ID, "user_role_changed", userTarget(id), after.Username+": "+string(before.Role)+" → "+string(after.Role))
+	}
+	if !after.Scope.Equal(before.Scope) {
+		s.audit(ctx, p.User.ID, "user_scope_changed", userTarget(id), after.Username+": "+ScopeText(before.Scope)+" → "+ScopeText(after.Scope))
+	}
+	if after.Role != before.Role || !after.Scope.Equal(before.Scope) {
+		// Live streams check what the user may see again at once.
+		s.sessionsEnded()
 	}
 	switch {
 	case after.Disabled && !before.Disabled:
@@ -219,6 +285,7 @@ func (s *Service) TransferOwner(ctx context.Context, p Principal, id int64) (mod
 			return nil, nil, ErrBlocked
 		}
 		u.Role, actor.Role = model.RoleOwner, model.RoleAdmin
+		u.Scope, actor.Scope = model.ScopeAll, model.ScopeAll
 		to, from = u, actor
 		return []model.User{u, actor}, nil, nil
 	})

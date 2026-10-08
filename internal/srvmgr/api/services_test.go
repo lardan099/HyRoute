@@ -125,7 +125,7 @@ func TestRoutingServicesAPI(t *testing.T) {
 
 	// Read-only users do not use the editor.
 	var u model.User
-	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.Username, u.Role, u.Scope = "viewer", model.RoleReadOnly, model.ScopeAll
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 	e.db.CreateUser(ctx, &u)
 	ro := e.login("viewer")

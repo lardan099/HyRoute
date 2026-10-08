@@ -42,7 +42,7 @@ func TestPresetsAPI(t *testing.T) {
 
 	// Read-only sees presets, changes none.
 	var u model.User
-	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.Username, u.Role, u.Scope = "viewer", model.RoleReadOnly, model.ScopeAll
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 	e.db.CreateUser(ctx, &u)
 	viewer := e.login("viewer")
@@ -145,7 +145,7 @@ func TestPresetApplyAPI(t *testing.T) {
 	e.db.SetInstallation(ctx, model.Installation{ServerID: srv.ID, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", At: time.Now()})
 	e.db.SetHostKey(ctx, model.HostKey{ServerID: srv.ID, Type: "ssh-ed25519", Key: []byte("fake"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()})
 	var u model.User
-	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.Username, u.Role, u.Scope = "viewer", model.RoleReadOnly, model.ScopeAll
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 	e.db.CreateUser(ctx, &u)
 	code(t, e.login("viewer").do("POST", "/api/v1/servers/"+id+"/preset/apply", body, nil), http.StatusForbidden, "forbidden")

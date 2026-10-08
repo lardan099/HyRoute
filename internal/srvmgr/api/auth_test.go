@@ -341,7 +341,7 @@ func TestReadOnlyCannotWrite(t *testing.T) {
 	}
 	// An operator is not an admin: no user management.
 	var u model.User
-	u.Username, u.Role = "op", model.RoleOperator
+	u.Username, u.Role, u.Scope = "op", model.RoleOperator, model.ScopeAll
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 	e.db.CreateUser(context.Background(), &u)
 	op := e.login("op")

@@ -55,7 +55,7 @@ func TestConfigEditAPI(t *testing.T) {
 
 	// Read-only users do not get the editor's text at all.
 	var u model.User
-	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.Username, u.Role, u.Scope = "viewer", model.RoleReadOnly, model.ScopeAll
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 	e.db.CreateUser(ctx, &u)
 	ro := e.login("viewer")
@@ -139,7 +139,7 @@ func TestConfigHistoryAPI(t *testing.T) {
 
 	// Read-only: the history list, nothing else.
 	var u model.User
-	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.Username, u.Role, u.Scope = "viewer", model.RoleReadOnly, model.ScopeAll
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 	e.db.CreateUser(ctx, &u)
 	ro := e.login("viewer")
@@ -188,7 +188,7 @@ func TestRotateAPI(t *testing.T) {
 	code(t, owner.do("POST", "/api/v1/servers/"+id+"/config/rotate", map[string]any{"base": 2, "auth": true}, nil), http.StatusConflict, "config_changed")
 
 	var u model.User
-	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.Username, u.Role, u.Scope = "viewer", model.RoleReadOnly, model.ScopeAll
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 	e.db.CreateUser(ctx, &u)
 	code(t, e.login("viewer").do("POST", "/api/v1/servers/"+id+"/config/rotate", auth1, nil), http.StatusForbidden, "forbidden")
@@ -220,7 +220,7 @@ func TestPortsAPI(t *testing.T) {
 	e.db.SetHostKey(ctx, model.HostKey{ServerID: srv.ID, Type: "ssh-ed25519", Key: []byte("fake"), Fingerprint: "SHA256:fake", TrustedAt: time.Now()})
 
 	var u model.User
-	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.Username, u.Role, u.Scope = "viewer", model.RoleReadOnly, model.ScopeAll
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 	e.db.CreateUser(ctx, &u)
 	code(t, e.login("viewer").do("POST", "/api/v1/servers/"+id+"/ports", same, nil), http.StatusForbidden, "forbidden")

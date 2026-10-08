@@ -13,8 +13,8 @@ import (
 )
 
 // User management and the audit log (P4-03). Who may do what is decided
-// by auth.Service; the routes only keep operators and read-only users out
-// early (manageUsers).
+// by auth.Service; the routes only keep the roles without the users
+// permission out early (need(model.PermUsers)).
 
 // changePassword changes the caller's own password: every session of the
 // user ends, and this browser gets a new one (cookie and CSRF token).
@@ -31,10 +31,11 @@ func (s *server) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setSessionCookie(w, r, is.Token, s.Auth.MaxAge)
-	writeJSON(w, http.StatusOK, sessionJSON{User: toUserJSON(is.User), CSRFToken: is.CSRF})
+	writeJSON(w, http.StatusOK, toSessionJSON(is.User, is.CSRF))
 }
 
-// updateUser changes the role of a user or blocks and unblocks it.
+// updateUser changes the role or the scope of a user, or blocks and
+// unblocks it.
 func (s *server) updateUser(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -43,13 +44,14 @@ func (s *server) updateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Role     *model.Role
+		Scope    *model.Scope
 		Disabled *bool
 	}
 	if err := readJSON(r, &req); err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	u, err := s.Auth.UpdateUser(r.Context(), principal(r), id, auth.UserChange{Role: req.Role, Disabled: req.Disabled})
+	u, err := s.Auth.UpdateUser(r.Context(), principal(r), id, auth.UserChange{Role: req.Role, Scope: req.Scope, Disabled: req.Disabled})
 	if err != nil {
 		s.fail(w, r, mapError(err))
 		return

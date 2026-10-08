@@ -62,7 +62,7 @@ func TestServersReadOnly(t *testing.T) {
 	owner := e.setupOwner()
 	owner.do("POST", "/api/v1/servers", map[string]any{"name": "A", "host": "a.example.com", "authType": "password", "password": fakeSSHPass}, nil)
 	var u model.User
-	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.Username, u.Role, u.Scope = "viewer", model.RoleReadOnly, model.ScopeAll
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 	e.db.CreateUser(context.Background(), &u)
 	ro := e.login("viewer")

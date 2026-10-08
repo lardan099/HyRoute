@@ -93,7 +93,7 @@ func TestDeployAPI(t *testing.T) {
 	code(t, owner.do("POST", "/api/v1/servers/"+id+"/deploy", overwrite, nil), http.StatusConflict, "server_busy")
 
 	var u model.User
-	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.Username, u.Role, u.Scope = "viewer", model.RoleReadOnly, model.ScopeAll
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 	e.db.CreateUser(ctx, &u)
 	ro := e.login("viewer")
@@ -146,7 +146,7 @@ func TestMaintainAPI(t *testing.T) {
 	code(t, owner.do("POST", "/api/v1/servers/"+id+"/maintain", map[string]any{"op": "remove"}, nil), http.StatusBadRequest, "invalid")
 
 	var u model.User
-	u.Username, u.Role = "viewer", model.RoleReadOnly
+	u.Username, u.Role, u.Scope = "viewer", model.RoleReadOnly, model.ScopeAll
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 	e.db.CreateUser(ctx, &u)
 	code(t, e.login("viewer").do("POST", "/api/v1/servers/"+id+"/maintain", upgrade, nil), http.StatusForbidden, "forbidden")

@@ -33,7 +33,7 @@ func backupEnv(t *testing.T) (e *testEnv, keyText string, users map[model.Role]*
 		}})
 	users = map[model.Role]*client{model.RoleOwner: e.setupOwner()}
 	for _, r := range []model.Role{model.RoleAdmin, model.RoleOperator, model.RoleReadOnly} {
-		u := model.User{Username: string(r), Role: r}
+		u := model.User{Username: string(r), Role: r, Scope: model.ScopeAll}
 		u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 		if err := e.db.CreateUser(ctx, &u); err != nil {
 			t.Fatal(err)

@@ -27,9 +27,6 @@ func (r Role) Valid() bool {
 	return ok
 }
 
-// CanWrite: may change servers, jobs and configs.
-func (r Role) CanWrite() bool { return r.Valid() && r != RoleReadOnly }
-
 // CanManageUsers: may create, change and delete users and revoke other
 // users' sessions (an owner only by an owner: auth.Service holds the rules).
 func (r Role) CanManageUsers() bool { return r.Can(PermUsers) }
