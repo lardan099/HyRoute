@@ -3,6 +3,7 @@
   import { api, asApiError, type ApiError, type Role, type SessionInfo, type User } from '../api';
   import { locale, t, type Key } from '../i18n';
   import { canManageUsers, session, signedOut } from '../session.svelte';
+  import BackupCard from '../lib/BackupCard.svelte';
 
   let users = $state<User[]>([]);
   let sessions = $state<SessionInfo[]>([]);
@@ -129,6 +130,12 @@
     {#if createError}<div class="note error">{createError.message}</div>{/if}
   {/if}
 </section>
+
+{#if manage}
+  <section class="card">
+    <BackupCard />
+  </section>
+{/if}
 
 <style>
   section { margin-top: 16px; max-width: 900px; }

@@ -107,6 +107,29 @@ export interface SessionInfo {
   userAgent: string;
 }
 
+export interface BackupInfo {
+  name: string;
+  size: number;
+  at: string;
+  encrypted: boolean;
+}
+
+export interface Backups {
+  // interval: the schedule in seconds (0: by hand only).
+  interval: number;
+  keep: number;
+  encrypted: boolean;
+  dir: string;
+  last: { at: string; name?: string; error?: string };
+  items: BackupInfo[];
+}
+
+export interface KeyCheck {
+  ok: boolean;
+  versions: { version: number; status: 'ok' | 'wrong' | 'missing' }[];
+  unused: number[];
+}
+
 export type AuthType = 'password' | 'key';
 export type ServerRole = 'standalone' | 'entry' | 'relay' | 'exit';
 export type ServerState = 'new' | 'deploying' | 'healthy' | 'degraded' | 'offline' | 'needs_attention';
@@ -928,6 +951,9 @@ export const api = {
   revokeSession: (id: number) => request<void>('DELETE', `/sessions/${id}`),
   users: () => request<User[]>('GET', '/users'),
   createUser: (username: string, password: string, role: Role) => request<User>('POST', '/users', { username, password, role }),
+  backups: () => request<Backups>('GET', '/backups'),
+  createBackup: () => request<BackupInfo>('POST', '/backups'),
+  checkMasterKey: (key: string) => request<KeyCheck>('POST', '/master-key/check', { key }),
   servers: () => request<Server[]>('GET', '/servers'),
   server: (id: number) => request<Server>('GET', `/servers/${id}`),
   createServer: (s: ServerInput) => request<Server>('POST', '/servers', s),
