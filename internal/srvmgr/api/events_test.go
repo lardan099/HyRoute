@@ -17,7 +17,7 @@ func TestEventsAndAttention(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	owner := e.setupOwner()
-	u := model.User{Username: "viewer", Role: model.RoleReadOnly}
+	u := model.User{Username: "viewer", Role: model.RoleReadOnly, Scope: model.Scope{All: true}}
 	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
 	if err := e.db.CreateUser(ctx, &u); err != nil {
 		t.Fatal(err)

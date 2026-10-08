@@ -256,7 +256,7 @@
     {/if}
   {/if}
 
-  {#if writable}
+  {#if can('config')}
     <h2>{t('cascades.route')}</h2>
     <ChainRoute {id} />
   {/if}

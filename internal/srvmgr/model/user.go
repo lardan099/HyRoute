@@ -44,7 +44,7 @@ func (r Role) CanCheckKey() bool { return r.Can(PermSettings) }
 
 // CanDiagnose: may download the diagnostic bundle (the state, logs and
 // config summaries of every server, pseudonymized).
-func (r Role) CanDiagnose() bool { return r == RoleOwner || r == RoleAdmin }
+func (r Role) CanDiagnose() bool { return r.Can(PermSettings) }
 
 // User is an admin account. PasswordHash is a PHC argon2id string.
 type User struct {

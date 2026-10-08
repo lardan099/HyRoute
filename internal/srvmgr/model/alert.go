@@ -65,7 +65,7 @@ func (c AlertChannel) Wants(k EventKind) bool {
 }
 
 // CanManageAlerts: may set up notification channels and send tests.
-func (r Role) CanManageAlerts() bool { return r == RoleOwner || r == RoleAdmin }
+func (r Role) CanManageAlerts() bool { return r.Can(PermSettings) }
 
 // AlertSecretContext is the additional data the secret of a channel is
 // sealed with: a sealed value copied to another channel does not open.
