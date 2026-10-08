@@ -51,6 +51,9 @@ type Engine struct {
 	Lease time.Duration
 	// Poll is how often queued jobs are looked for without a wake-up.
 	Poll time.Duration
+	// Audit records every queued job and retry with its ID; New takes it
+	// from the store when that keeps the audit log too. nil: not recorded.
+	Audit store.Audit
 
 	kinds  map[string]*Kind
 	owner  string
@@ -75,10 +78,32 @@ func New(st store.Jobs, keys *secrets.Keyring, red *redact.Redactor, conn Connec
 	}
 	b := make([]byte, 8)
 	rand.Read(b)
+	audit, _ := st.(store.Audit)
 	return &Engine{
 		Store: st, Keys: keys, Redact: red, Connect: conn, Log: log, Now: time.Now,
-		Workers: 4, Lease: 2 * time.Minute, Poll: 2 * time.Second,
+		Workers: 4, Lease: 2 * time.Minute, Poll: 2 * time.Second, Audit: audit,
 		kinds: map[string]*Kind{}, owner: hex.EncodeToString(b), wake: make(chan struct{}, 1), events: newBroker(),
+	}
+}
+
+// audit records that actor (0: the controller itself, a scheduled update)
+// queued or retried j. The target is the job's first server, so the
+// server's history in the audit log shows it; details carry the job ID,
+// its kind and its other servers, never its params.
+func (e *Engine) audit(ctx context.Context, action string, j model.Job, actor int64) {
+	if e.Audit == nil {
+		return
+	}
+	target := fmt.Sprintf("job/%d", j.ID)
+	if j.ServerID != 0 {
+		target = fmt.Sprintf("server/%d", j.ServerID)
+	}
+	details := fmt.Sprintf("job=%d kind=%s", j.ID, j.Kind)
+	for _, s := range j.Servers {
+		details += fmt.Sprintf(" server/%d", s)
+	}
+	if err := e.Audit.AddAudit(ctx, model.AuditEntry{Time: e.Now(), UserID: actor, Action: action, Target: target, Details: details}); err != nil {
+		e.Log.Warn("audit of a job", "job", j.ID, "err", err)
 	}
 }
 
@@ -144,6 +169,7 @@ func (e *Engine) SubmitOn(ctx context.Context, kind string, servers []int64, par
 		}
 		return model.Job{}, err
 	}
+	e.audit(ctx, "job_submitted", j, actor)
 	e.publishState(j)
 	e.poke()
 	return j, nil
@@ -533,6 +559,7 @@ func (e *Engine) Retry(ctx context.Context, id, actor int64) (model.Job, error) 
 		return j, err
 	}
 	e.requeue(ctx, &j, env, steps, rows, fmt.Sprintf("Повтор запрошен пользователем %d.", actor))
+	e.audit(ctx, "job_retried", j, actor)
 	return j, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -232,5 +233,50 @@ func TestJobsSharingAServerTakeTurns(t *testing.T) {
 	h.wait(single.ID, model.JobCompleted)
 	if most.Load() != 1 {
 		t.Fatalf("%d jobs on server %d at once", most.Load(), b)
+	}
+}
+
+// Queued jobs and retries are audited with their IDs under their first
+// server, with the other servers in the details and no params.
+func TestSubmissionsAudited(t *testing.T) {
+	h := newHarness(t, nil, workKind(nil))
+	h.start()
+	ctx := context.Background()
+	a, b := h.newServer(), h.newServer()
+	var users [2]model.User
+	for i := range users {
+		users[i] = model.User{Username: fmt.Sprint("u", i), PasswordHash: "h", Role: model.RoleAdmin}
+		if err := h.db.CreateUser(ctx, &users[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	one, err := h.eng.Submit(ctx, "demo", a, map[string]string{"note": "fake-param-value"}, map[string]string{"pw": fakeSecret}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.wait(one.ID, model.JobCompleted)
+	two, err := h.eng.SubmitOn(ctx, "demo", []int64{a, b}, failing, nil, users[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.wait(two.ID, model.JobFailed)
+	if _, err := h.eng.Retry(ctx, two.ID, users[1].ID); err != nil {
+		t.Fatal(err)
+	}
+	es, err := h.db.ListAudit(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range es {
+		got = append(got, fmt.Sprintf("%d %s %s %s", e.UserID, e.Action, e.Target, e.Details))
+	}
+	want := []string{
+		fmt.Sprintf("%d job_retried server/%d job=%d kind=demo server/%d", users[1].ID, a, two.ID, b),
+		fmt.Sprintf("%d job_submitted server/%d job=%d kind=demo server/%d", users[0].ID, a, two.ID, b),
+		fmt.Sprintf("0 job_submitted server/%d job=%d kind=demo", a, one.ID),
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("audit %q", got)
 	}
 }
