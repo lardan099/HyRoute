@@ -157,7 +157,9 @@ func TestRollbackReconnectsAfterLostConnection(t *testing.T) {
 	if links, _ := d.count(); links != 2 || !slices.Equal(d.link(0).commands(), []string{"install"}) || !slices.Equal(d.link(1).commands(), []string{"uninstall"}) {
 		t.Fatalf("%d connections\n%s", links, h.logText(j.ID))
 	}
-	for i := 0; i < 100 && !d.link(0).closed.Load(); i++ {
+	// The job is failed in the database a moment before the rollback's
+	// connection closes: wait for both.
+	for i := 0; i < 100 && !(d.link(0).closed.Load() && d.link(1).closed.Load()); i++ {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !d.link(0).closed.Load() || !d.link(1).closed.Load() {
