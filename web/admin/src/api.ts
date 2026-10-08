@@ -208,6 +208,43 @@ export interface Attention {
   monitoring: boolean;
 }
 
+// Notification channels (P4-05b). Secrets are never sent back: hasSecret
+// says one is stored.
+export type ChannelKind = 'telegram' | 'webhook' | 'smtp';
+
+export interface QuietHours {
+  from: string;
+  to: string;
+  zone: string;
+}
+
+export interface AlertChannel {
+  id: number;
+  name: string;
+  kind: ChannelKind;
+  enabled: boolean;
+  settings: Record<string, unknown>;
+  // events: the kinds sent ([]: every kind).
+  events: EventKind[];
+  quiet: QuietHours;
+  hasSecret: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChannelInput {
+  name: string;
+  kind?: ChannelKind;
+  enabled: boolean;
+  settings: Record<string, unknown>;
+  events: EventKind[];
+  quiet: QuietHours;
+  // secret: a new one (undefined keeps the stored one); clearSecret
+  // removes it.
+  secret?: string;
+  clearSecret?: boolean;
+}
+
 export type AuthType = 'password' | 'key';
 export type ServerRole = 'standalone' | 'entry' | 'relay' | 'exit';
 export type ServerState = 'new' | 'deploying' | 'healthy' | 'degraded' | 'offline' | 'needs_attention';
@@ -1111,6 +1148,11 @@ export const api = {
   diag: (jobs: number) => request<DiagFiles>('GET', `/diag?jobs=${jobs}`),
   attention: () => request<Attention>('GET', '/attention'),
   events: (limit = 20, open = false) => request<EventInfo[]>('GET', `/events?limit=${limit}${open ? '&open=1' : ''}`),
+  alertChannels: () => request<AlertChannel[]>('GET', '/alerts/channels'),
+  createAlertChannel: (c: ChannelInput) => request<AlertChannel>('POST', '/alerts/channels', c),
+  updateAlertChannel: (id: number, c: ChannelInput) => request<AlertChannel>('PATCH', `/alerts/channels/${id}`, c),
+  deleteAlertChannel: (id: number) => request<void>('DELETE', `/alerts/channels/${id}`),
+  testAlertChannel: (id: number) => request<{ ok: boolean }>('POST', `/alerts/channels/${id}/test`),
   servers: () => request<Server[]>('GET', '/servers'),
   server: (id: number) => request<Server>('GET', `/servers/${id}`),
   createServer: (s: ServerInput) => request<Server>('POST', '/servers', s),
