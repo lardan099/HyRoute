@@ -26,6 +26,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/backup"
+	"github.com/lardan099/hyroute/internal/srvmgr/batch"
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/config"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
@@ -38,10 +39,12 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/importer"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/logbuf"
+	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/monitor"
 	"github.com/lardan099/hyroute/internal/srvmgr/preflight"
 	"github.com/lardan099/hyroute/internal/srvmgr/reconcile"
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
+	"github.com/lardan099/hyroute/internal/srvmgr/routing"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
 	"github.com/lardan099/hyroute/internal/srvmgr/service"
@@ -154,7 +157,6 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	conn := connect.New(inventory, db, red)
 	conn.Events = watch
 	engine := jobs.New(db, keys, red, conn, log)
-	engine.OnEnd = watch.JobEnded
 	engine.Register(preflight.Kind())
 	// One relay for the deploy and the maintenance: it keeps the binary it
 	// downloaded last for both.
@@ -173,6 +175,16 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	linker := cascade.New(cascade.Deps{Store: db, Keys: keys, Jobs: engine})
 	engine.Register(linker.Kind())
 	engine.Register(linker.UnlinkKind())
+	// Bulk operations (P4-07): the jobs of the batches, queued by the
+	// services of the single-server routes.
+	submitter := &deploy.Submitter{Store: db, Keys: keys, Jobs: engine}
+	editor := &apply.Editor{Store: db, Keys: keys}
+	batches := batch.New(db, &batch.Actions{Store: db, Jobs: engine, Deploy: submitter, Geo: geoJobs, Apply: applier, Editor: editor,
+		Routing: &routing.Service{Editor: editor, Applier: applier, Chains: db, Geo: geoFiles.Loader(), Connect: conn.Connect}}, log)
+	engine.OnEnd = func(ctx context.Context, j model.Job) {
+		watch.JobEnded(ctx, j)
+		batches.JobEnded(ctx, j)
+	}
 	jobsCtx, stopJobs := context.WithCancel(context.WithoutCancel(ctx))
 	// Notifications (P4-05b) of the events through the channels set up in
 	// «Настройки»; ready before the jobs' recovery raises any.
@@ -190,6 +202,12 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		stopJobs()
 		<-jobsDone
 	}()
+	batchDone := make(chan struct{})
+	go func() {
+		batches.Run(jobsCtx)
+		close(batchDone)
+	}()
+	defer func() { stopJobs(); <-batchDone }()
 	busDone := make(chan struct{})
 	go func() {
 		bus.Run(jobsCtx)
@@ -209,6 +227,20 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		defer func() { stopJobs(); <-monDone }()
 	}
 
+	// The newest Hysteria release (P4-07): the overview offers it, and
+	// «Требует внимания» measures the servers against it.
+	var releaseWatch *hyrelease.Watch
+	if cfg.ReleaseInterval > 0 {
+		releaseWatch = &hyrelease.Watch{Find: releases.Latest, Settings: db, Interval: cfg.ReleaseInterval, Log: log}
+		attention.Latest = func() string { return releaseWatch.Latest().Version }
+		releaseDone := make(chan struct{})
+		go func() {
+			releaseWatch.Run(jobsCtx)
+			close(releaseDone)
+		}()
+		defer func() { stopJobs(); <-releaseDone }()
+	}
+
 	if cfg.GeoInterval > 0 {
 		sched := &geo.Scheduler{Files: geoFiles, Jobs: geoJobs, DB: db, Keys: keys, Interval: cfg.GeoInterval, Log: log}
 		geoDone := make(chan struct{})
@@ -221,7 +253,6 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 
 	// The reconciliation (P4-06) runs with -reconcile-interval 0 too: then
 	// only when the admin asks, and for the checks after reverts.
-	submitter := &deploy.Submitter{Store: db, Keys: keys, Jobs: engine}
 	recon := &reconcile.Reconciler{Store: db, Conn: conn, Keys: keys, Log: log, Interval: cfg.ReconcileInterval, Events: watch,
 		Jobs: reconcile.Jobs{Apply: applier, Deploy: submitter, Geo: geoJobs, Links: linker}}
 	reconDone := make(chan struct{})
@@ -292,6 +323,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			Streams:   streams,
 			Attention: attention,
 			Alerts:    notifier,
+			Batches:   batches,
+			Releases:  releaseWatch,
 			OnSetupDone: func() {
 				os.Remove(tokenFile)
 				log.Info("owner created, setup token removed")

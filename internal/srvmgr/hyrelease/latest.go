@@ -111,8 +111,12 @@ type Watch struct {
 	Settings Settings // nil: kept in memory only
 	Interval time.Duration
 	Tick     time.Duration // how often to look whether it is time; an hour if 0
-	Now      func() time.Time
-	Log      *slog.Logger
+	// Delay is the wait before the first look after a start (a minute if
+	// 0): a controller restarting in a loop, or started for a moment,
+	// does not ask GitHub every time.
+	Delay time.Duration
+	Now   func() time.Time
+	Log   *slog.Logger
 
 	mu     sync.Mutex
 	cur    Release
@@ -183,9 +187,19 @@ func (w *Watch) Due() bool {
 	return now.Sub(r.CheckedAt) >= w.interval() && now.Sub(r.TriedAt) >= w.tick()
 }
 
-// Run looks whenever it is due, until ctx ends.
+// Run looks whenever it is due, from Delay after the start until ctx
+// ends.
 func (w *Watch) Run(ctx context.Context) {
 	w.load(ctx)
+	delay := w.Delay
+	if delay <= 0 {
+		delay = time.Minute
+	}
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(delay):
+	}
 	t := time.NewTicker(w.tick())
 	defer t.Stop()
 	for {

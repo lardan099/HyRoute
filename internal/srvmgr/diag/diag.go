@@ -72,6 +72,7 @@ type Settings struct {
 	LogLevel        string   `json:"logLevel,omitempty"`
 	MonitorInterval string   `json:"monitorInterval,omitempty"`
 	GeoInterval     string   `json:"geoInterval,omitempty"`
+	ReleaseInterval string   `json:"releaseInterval,omitempty"`
 	BackupInterval  string   `json:"backupInterval,omitempty"`
 	BackupKeep      int      `json:"backupKeep"`
 	BackupEncrypted bool     `json:"backupEncrypted"`
@@ -92,6 +93,7 @@ func SettingsOf(cfg config.Config, getenv func(string) string, encrypted, panel 
 		s.Listen, s.TLS, s.InsecureHTTP, s.TrustProxy, s.LogLevel = cfg.Listen, cfg.TLS(), cfg.InsecureHTTP, cfg.TrustProxy, cfg.LogLevel
 		s.AllowedHosts = cfg.AllowedHosts
 		s.MonitorInterval, s.GeoInterval, s.BackupInterval = cfg.MonitorInterval.String(), cfg.GeoInterval.String(), cfg.BackupInterval.String()
+		s.ReleaseInterval = cfg.ReleaseInterval.String()
 	}
 	return s
 }

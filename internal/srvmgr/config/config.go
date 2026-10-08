@@ -44,6 +44,9 @@ type Config struct {
 	MonitorInterval time.Duration
 	// GeoInterval is how often the geo databases are updated (0: never).
 	GeoInterval time.Duration
+	// ReleaseInterval is how often the newest Hysteria release is looked up
+	// (0: never; P4-07).
+	ReleaseInterval time.Duration
 	// AlertThreshold is how many monitoring checks in a row change the
 	// status of a server or a cascade link that events tell (P4-05).
 	AlertThreshold int
@@ -103,6 +106,7 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 	fs.DurationVar(&c.MonitorInterval, "monitor-interval", envDuration(getenv("HYROUTE_SERVER_MONITOR_INTERVAL"), time.Minute), "how often to sample the servers' CPU, memory, disk and network; 0 turns it off (env HYROUTE_SERVER_MONITOR_INTERVAL)")
 	fs.DurationVar(&c.GeoInterval, "geo-interval", envDuration(getenv("HYROUTE_SERVER_GEO_INTERVAL"), 7*24*time.Hour), "how often to look for newer geo databases and put them on the servers that use HyRoute's; 0 turns it off (env HYROUTE_SERVER_GEO_INTERVAL)")
 	fs.DurationVar(&c.ReconcileInterval, "reconcile-interval", envDuration(getenv("HYROUTE_SERVER_RECONCILE_INTERVAL"), time.Hour), "how often to compare the servers' config, unit, binary, geo databases and cascade links with what HyRoute recorded (read-only); 0 turns the schedule off (env HYROUTE_SERVER_RECONCILE_INTERVAL)")
+	fs.DurationVar(&c.ReleaseInterval, "release-interval", envDuration(getenv("HYROUTE_SERVER_RELEASE_INTERVAL"), 24*time.Hour), "how often to look for a newer Hysteria release on GitHub (the overview offers to update the servers); 0 turns it off (env HYROUTE_SERVER_RELEASE_INTERVAL)")
 	fs.DurationVar(&c.BackupInterval, "backup-interval", envDuration(getenv("HYROUTE_SERVER_BACKUP_INTERVAL"), 0), "how often to copy the database to <data-dir>/backups; 0 (the default) turns the schedule off (env HYROUTE_SERVER_BACKUP_INTERVAL)")
 	threshold := 3
 	if n, err := strconv.Atoi(env("ALERT_THRESHOLD", "")); err == nil {
@@ -232,6 +236,9 @@ func (c Config) validate() error {
 	}
 	if c.ReconcileInterval != 0 && c.ReconcileInterval < time.Minute {
 		return fmt.Errorf("reconcile-interval %s: at least 1m, or 0 to turn the reconciliation schedule off", c.ReconcileInterval)
+	}
+	if c.ReleaseInterval < 0 || c.ReleaseInterval > 0 && c.ReleaseInterval < time.Hour {
+		return fmt.Errorf("release-interval %s: at least 1h, or 0 to stop looking for Hysteria releases", c.ReleaseInterval)
 	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":

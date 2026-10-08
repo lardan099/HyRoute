@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/geo"
+	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 )
@@ -149,5 +150,43 @@ func TestPlural(t *testing.T) {
 		if got := plural(n, "ошибка", "ошибки", "ошибок"); got != want {
 			t.Errorf("%d: %q, want %q", n, got, want)
 		}
+	}
+}
+
+// Old Hysteria is old against the newest release the controller found
+// (P4-07), or against the default version while it knows none newer.
+func TestAttentionLatestRelease(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	now := f.clock.now()
+	s := f.server(t, "A", "198.51.100.1")
+	f.db.SetServerState(ctx, s.ID, model.StateHealthy, now)
+	f.db.SetInstallation(ctx, model.Installation{ServerID: s.ID, Binary: "/usr/local/bin/hysteria", Unit: "hysteria-server.service", Version: hyrelease.DefaultVersion, At: now})
+	latest := ""
+	a := &Attention{Store: f.db, Redact: f.red, Monitoring: true, Now: f.clock.now, Latest: func() string { return latest }}
+	hysteria := func() []Item {
+		t.Helper()
+		sum, err := a.Summary(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []Item
+		for _, it := range sum.Items {
+			if it.Kind == "hysteria" {
+				out = append(out, it)
+			}
+		}
+		return out
+	}
+	if got := hysteria(); len(got) != 0 {
+		t.Fatalf("default version and nothing newer: %+v", got)
+	}
+	latest = "v2.0.0" // older than the default: not the measure
+	if got := hysteria(); len(got) != 0 {
+		t.Fatalf("older release: %+v", got)
+	}
+	latest = "v9.1.0"
+	if got := hysteria(); len(got) != 1 || !strings.Contains(got[0].Text, "v9.1.0") || got[0].SubjectID != s.ID {
+		t.Fatalf("newer release: %+v", got)
 	}
 }

@@ -33,7 +33,9 @@ func TestRunServesHealthAndUI(t *testing.T) {
 		}
 		return ""
 	}
-	go func() { done <- run(ctx, []string{"-listen", "127.0.0.1:0"}, env, io.Discard, ready) }()
+	go func() {
+		done <- run(ctx, []string{"-listen", "127.0.0.1:0", "-release-interval", "0"}, env, io.Discard, ready)
+	}()
 
 	var addr string
 	select {
@@ -157,7 +159,9 @@ func runOnceEnv(env func(string) string, args ...string) error {
 	defer cancel()
 	ready := make(chan string, 1)
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, append([]string{"-listen", "127.0.0.1:0"}, args...), env, io.Discard, ready) }()
+	go func() {
+		done <- run(ctx, append([]string{"-listen", "127.0.0.1:0", "-release-interval", "0"}, args...), env, io.Discard, ready)
+	}()
 	select {
 	case <-ready:
 		cancel()
@@ -224,7 +228,9 @@ func TestRunRefusesSecondProcessOnDataDir(t *testing.T) {
 		}
 		return ""
 	}
-	go func() { done <- run(ctx, []string{"-listen", "127.0.0.1:0"}, env, io.Discard, ready) }()
+	go func() {
+		done <- run(ctx, []string{"-listen", "127.0.0.1:0", "-release-interval", "0"}, env, io.Discard, ready)
+	}()
 	select {
 	case <-ready:
 	case err := <-done:

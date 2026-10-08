@@ -147,3 +147,28 @@ func TestWatch(t *testing.T) {
 		t.Fatal("nil watch")
 	}
 }
+
+// Run waits Delay before the first lookup: a controller started for a
+// moment does not ask GitHub.
+func TestWatchRunDelay(t *testing.T) {
+	calls := make(chan struct{}, 10)
+	find := func(context.Context) (string, error) { calls <- struct{}{}; return "v2.13.0", nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { (&Watch{Find: find, Delay: time.Hour}).Run(ctx); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-done
+	if len(calls) != 0 {
+		t.Fatal("looked up before the delay")
+	}
+	w := &Watch{Find: find, Delay: time.Millisecond, Tick: time.Hour}
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+	select {
+	case <-calls:
+	case <-time.After(5 * time.Second):
+		t.Fatal("never looked up")
+	}
+}

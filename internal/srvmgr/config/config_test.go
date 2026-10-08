@@ -116,6 +116,26 @@ func TestAlertThreshold(t *testing.T) {
 	}
 }
 
+func TestReleaseInterval(t *testing.T) {
+	c, err := Load(nil, env(nil), io.Discard)
+	if err != nil || c.ReleaseInterval != 24*time.Hour {
+		t.Fatalf("default: %v %v", c.ReleaseInterval, err)
+	}
+	c, err = Load([]string{"-release-interval", "0"}, env(nil), io.Discard)
+	if err != nil || c.ReleaseInterval != 0 {
+		t.Fatalf("off: %v %v", c.ReleaseInterval, err)
+	}
+	c, err = Load(nil, env(map[string]string{"HYROUTE_SERVER_RELEASE_INTERVAL": "72h"}), io.Discard)
+	if err != nil || c.ReleaseInterval != 72*time.Hour {
+		t.Fatalf("env: %v %v", c.ReleaseInterval, err)
+	}
+	for _, v := range []string{"-1h", "10m"} {
+		if _, err := Load([]string{"-release-interval", v}, env(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "release-interval") {
+			t.Fatalf("%s: %v", v, err)
+		}
+	}
+}
+
 func TestGeoInterval(t *testing.T) {
 	c, err := Load(nil, env(nil), io.Discard)
 	if err != nil || c.GeoInterval != 7*24*time.Hour {

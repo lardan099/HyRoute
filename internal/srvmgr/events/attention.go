@@ -50,6 +50,11 @@ type Attention struct {
 	Paused     func() map[int64]time.Time
 	Now        func() time.Time
 
+	// Latest is the newest Hysteria release the controller found
+	// (hyrelease.Watch, P4-07; nil or "": none). The Hysteria of a server
+	// is old against it, or against DefaultVersion when that is newer.
+	Latest func() string
+
 	mu   sync.Mutex
 	lint map[int64]lintResult
 }
@@ -297,9 +302,9 @@ func (a *Attention) serverExtras(ctx context.Context, s model.Server, entry bool
 	if err != nil {
 		return // nothing installed: nothing to tell
 	}
-	if older(in.Version, hyrelease.DefaultVersion) {
+	if newest := a.newest(); older(in.Version, newest) {
 		add(Item{Kind: "hysteria", Severity: model.SeverityInfo, Subject: model.SubjectServer, SubjectID: s.ID, Name: s.Name,
-			Text: "Hysteria " + in.Version + " — есть " + hyrelease.DefaultVersion + ": обновите её («Обслуживание» на странице сервера)."})
+			Text: "Hysteria " + in.Version + " — есть " + newest + ": обновите её («Обслуживание» на странице сервера или «Обновить все» на «Обзоре»)."})
 	}
 	if lr, ok := a.lintOf(ctx, s.ID, entry); ok && lr.warns+lr.fails > 0 {
 		sev, text := model.SeverityInfo, "Правила маршрутизации: "
@@ -313,6 +318,18 @@ func (a *Attention) serverExtras(ctx context.Context, s model.Server, entry bool
 		}
 		add(Item{Kind: "lint", Severity: sev, Subject: model.SubjectServer, SubjectID: s.ID, Name: s.Name, Text: text + strings.Join(parts, " и ") + "."})
 	}
+}
+
+// newest is the Hysteria version servers are measured against: the
+// newest release found, or DefaultVersion when none is newer.
+func (a *Attention) newest() string {
+	v := hyrelease.DefaultVersion
+	if a.Latest != nil {
+		if l := a.Latest(); older(v, l) {
+			v = l
+		}
+	}
+	return v
 }
 
 // lintOf checks the rules of the server's current config (acl.inline,
