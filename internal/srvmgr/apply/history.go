@@ -67,15 +67,11 @@ func (e *Editor) Compare(ctx context.Context, serverID int64, from, to int) (Com
 	if err != nil {
 		return Comparison{}, err
 	}
-	ma, _, err := Mask(a)
+	diff, secrets, err := CompareConfigs(a, b)
 	if err != nil {
 		return Comparison{}, err
 	}
-	mb, _, err := Mask(b)
-	if err != nil {
-		return Comparison{}, err
-	}
-	return Comparison{From: from, To: to, Diff: Diff(string(ma), string(mb)), Secrets: append([]string{}, ChangedSecrets(a, b)...)}, nil
+	return Comparison{From: from, To: to, Diff: diff, Secrets: secrets}, nil
 }
 
 // Rollback queues the apply job that installs revision revision again,

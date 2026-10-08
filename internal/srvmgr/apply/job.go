@@ -58,6 +58,10 @@ type Params struct {
 	// Change names an edit made by a part of the panel (ChangeRouting,
 	// ChangeClients).
 	Change string `json:"change,omitempty"`
+	// Drift is the SHA-256 of the config the reconciliation found on the
+	// server, changed outside HyRoute (remote.Absent: none was there):
+	// the job puts revision Base back over it (Revert, P4-06).
+	Drift string `json:"drift,omitempty"`
 }
 
 // Store is what applying keeps in the controller's database.
@@ -246,11 +250,16 @@ func (x *applier) validate(ctx context.Context, env *jobs.Env, p Params) error {
 	if err != nil {
 		return err
 	}
-	switch sum {
-	case p.BaseSHA256:
-	case p.SHA256:
+	switch {
+	case sum == p.BaseSHA256:
+	case sum == p.SHA256:
 		env.Logf("Новый конфиг уже на сервере: задание продолжается с того места, где остановилось.")
-	case "":
+	case p.Drift != "" && (sum == p.Drift || p.Drift == remote.Absent && sum == ""):
+		// The config the reconciliation found: the revision goes back.
+		env.Logf("Конфиг на сервере изменён вне HyRoute: возвращается версия HyRoute (ревизия %d).", p.Base)
+	case p.Drift != "":
+		return jobs.Fail("Конфиг на сервере изменился ещё раз после сверки. Проверьте сервер снова и решите, принять его или вернуть версию HyRoute.", nil)
+	case sum == "":
 		return jobs.Fail("На сервере нет конфига "+in.Config+".", nil)
 	default:
 		return jobs.Fail("Конфиг на сервере изменили не через HyRoute после последнего сохранения. Импортируйте сервер заново, чтобы HyRoute увидел эти правки, и повторите.", nil)
@@ -350,6 +359,9 @@ func (x *applier) backup(ctx context.Context, env *jobs.Env, ex remote.Executor,
 	}
 	if err := env.Set("configState", state); err != nil {
 		return err
+	}
+	if state == remote.Absent {
+		return nil // a revert over a deleted config: the rollback removes it
 	}
 	if err := remote.CopyFile(ctx, ex, in.Config, in.Config+Backup, sudo(env)); err != nil {
 		return jobs.Fail("Не удалось сохранить копию конфига.", err)
@@ -851,6 +863,11 @@ func (x *applier) journal(ctx context.Context, env *jobs.Env, ex remote.Executor
 }
 
 func (x *applier) committed(ctx context.Context, env *jobs.Env, p Params) (bool, error) {
+	if p.Drift != "" {
+		// A revert stores no revision (Base is the current one) but
+		// still records the firewall and removes the copy.
+		return env.Get("reverted") == "1", nil
+	}
 	cur, err := x.Store.CurrentConfig(ctx, env.ServerID)
 	if err != nil {
 		return false, err
@@ -871,9 +888,11 @@ func (x *applier) commit(ctx context.Context, env *jobs.Env, p Params) error {
 	if err != nil {
 		return err
 	}
-	meta, err := importer.ConfigMeta(ctx, remote.ReadOnly(ex), c, in.Version, sudo(env), x.Now())
-	if err != nil {
-		return err
+	var meta model.ConfigMeta
+	if p.Drift == "" {
+		if meta, err = importer.ConfigMeta(ctx, remote.ReadOnly(ex), c, in.Version, sudo(env), x.Now()); err != nil {
+			return err
+		}
 	}
 	// The rules the job opened are HyRoute's from now on (recorded before
 	// the revision: a resumed job skips the commit once it is there).
@@ -881,6 +900,14 @@ func (x *applier) commit(ctx context.Context, env *jobs.Env, p Params) error {
 		if err := x.Store.SetFirewall(ctx, env.ServerID, fw); err != nil {
 			return err
 		}
+	}
+	if p.Drift != "" {
+		// Revision Base is on the server again: it is the current one.
+		if err := remote.RemoveFile(ctx, ex, in.Config+Backup, sudo(env)); err != nil {
+			env.Warnf("Копия конфига, изменённого вне HyRoute, осталась на сервере: %s%s.", in.Config, Backup)
+		}
+		env.Logf("Версия HyRoute (ревизия %d) снова на сервере.", p.Base)
+		return env.Set("reverted", "1")
 	}
 	rev := model.ServerConfig{ServerID: env.ServerID, SHA256: p.SHA256, Meta: meta, Source: model.ConfigEdit, JobID: env.JobID, By: env.CreatedBy, At: x.Now()}
 	switch {
