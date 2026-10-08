@@ -262,14 +262,23 @@ var jobPerms = map[string]model.Permission{
 }
 
 // jobPerm is the permission retrying j needs; false: a kind not in
-// jobPerms.
+// jobPerms. An apply job of the client manager needs what made it.
 func jobPerm(j model.Job) (model.Permission, bool) {
+	if j.Kind == apply.JobKind {
+		var p apply.Params
+		if json.Unmarshal(j.Params, &p) == nil && p.Change == apply.ChangeClients {
+			return model.PermClientsManage, true
+		}
+	}
 	p, ok := jobPerms[j.Kind]
 	return p, ok
 }
 
 // mayRetrySome: the role holds a permission some kind of job needs.
 func mayRetrySome(r model.Role) bool {
+	if r.Can(model.PermClientsManage) {
+		return true
+	}
 	for _, p := range jobPerms {
 		if r.Can(p) {
 			return true

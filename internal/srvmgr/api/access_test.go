@@ -285,7 +285,7 @@ func TestRoleRouteMatrix(t *testing.T) {
 	if len(writes[model.RoleReadOnly]) != 0 {
 		t.Errorf("readonly writes: %v", writes[model.RoleReadOnly])
 	}
-	want := []string{"POST /api/v1/servers/{id}/client/reveal"}
+	want := []string{"POST /api/v1/servers/{id}/client/reveal", "POST /api/v1/servers/{id}/clients", "POST /api/v1/servers/{id}/clients/remove", "POST /api/v1/servers/{id}/clients/password"}
 	if !slices.Equal(writes[model.RoleClients], want) {
 		t.Errorf("clients writes:\n%s", strings.Join(writes[model.RoleClients], "\n"))
 	}
