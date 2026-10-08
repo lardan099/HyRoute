@@ -21,8 +21,12 @@ import (
 // for. Its hashes are pinned (pinned.go).
 const DefaultVersion = "v2.12.3"
 
+// Releases is the releases page of Hysteria: Releases + "/latest"
+// redirects to the newest release.
+const Releases = "https://github.com/apernet/hysteria/releases"
+
 // GitHub is where releases come from.
-const GitHub = "https://github.com/apernet/hysteria/releases/download"
+const GitHub = Releases + "/download"
 
 var versionRe = regexp.MustCompile(`^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$`)
 
@@ -83,6 +87,8 @@ type Resolver struct {
 	HTTP *http.Client
 	// Base replaces GitHub (tests).
 	Base string
+	// LatestURL replaces Releases + "/latest" (tests).
+	LatestURL string
 }
 
 func (r *Resolver) base() string {
