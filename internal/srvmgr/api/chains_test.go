@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/srvmgr/acl"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
@@ -405,5 +406,79 @@ func TestChainHopsHealthAPI(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &checks)
 	if len(checks) != 2 || checks[0].Status != model.StateOffline {
 		t.Fatalf("checks of hop 2: %s", rec.Body)
+	}
+}
+
+// «Проверить правило» along a chain of two: the entry sends the request
+// into the cascade, the exit's own rule refuses it. The routing check of
+// the entry shows the same way from the editor's rules on.
+func TestChainRouteAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	cfgs := []string{`listen: :443
+auth:
+  type: password
+  password: fake-route-api
+acl:
+  inline:
+    - direct(suffix:ru)
+outbounds:
+  - name: cascade
+    type: socks5
+    socks5:
+      addr: 127.0.0.1:40001
+`, `listen: :443
+auth:
+  type: password
+  password: fake-route-api2
+acl:
+  inline:
+    - reject(suffix:blocked.example)
+`}
+	var ids []int64
+	for i, name := range []string{"Entry", "Exit"} {
+		rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": name, "host": "192.0.2.3" + strconv.Itoa(i), "authType": "password", "password": fakeSSHPass}, nil)
+		var srv serverJSON
+		json.Unmarshal(rec.Body.Bytes(), &srv)
+		cfg := cfgs[i]
+		c := model.ServerConfig{ServerID: srv.ID, SHA256: "x", Meta: model.ConfigMeta{Auth: "password"}, Source: model.ConfigDeploy, At: time.Now()}
+		e.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) { return e.keys.Seal([]byte(cfg), model.ConfigContext(srv.ID, rev)) })
+		ids = append(ids, srv.ID)
+	}
+	rec := owner.do("POST", "/api/v1/chains", map[string]any{"name": "DE", "nodes": ids}, nil)
+	var ch chainJSON
+	json.Unmarshal(rec.Body.Bytes(), &ch)
+	id := strconv.FormatInt(ch.ID, 10)
+	c, _ := e.db.ChainByID(ctx, ch.ID)
+	l := c.Links[0]
+	l.State = model.LinkActive
+	e.db.UpdateLink(ctx, l)
+
+	rec = owner.do("POST", "/api/v1/chains/"+id+"/route", acl.Request{Host: "x.blocked.example", Port: 443}, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"rejected":true`) || !strings.Contains(rec.Body.String(), "Соединение отклонит «Exit».") ||
+		!strings.Contains(rec.Body.String(), `"name":"Entry","role":"entry","verdict":{"rule":-1,"outbound":"cascade"`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	rec = owner.do("POST", "/api/v1/chains/"+id+"/route", acl.Request{Host: "mail.ru", Port: 443}, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Уйдёт в интернет с «Entry» через «direct».") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	code(t, owner.do("POST", "/api/v1/chains/"+id+"/route", acl.Request{Host: "mail.ru"}, nil), http.StatusBadRequest, "invalid")
+	code(t, owner.do("POST", "/api/v1/chains/999/route", acl.Request{Host: "mail.ru", Port: 443}, nil), http.StatusNotFound, "not_found")
+
+	// The entry's routing check: the editor's rules there, then the exit's.
+	check := func(rules ...string) string {
+		rec := owner.do("POST", "/api/v1/servers/"+strconv.FormatInt(ids[0], 10)+"/routing/check", map[string]any{"acl": acl.ParseInline(rules), "outbounds": []string{"cascade"}, "request": acl.Request{Host: "x.blocked.example", Port: 443}}, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%d %s", rec.Code, rec.Body)
+		}
+		return rec.Body.String()
+	}
+	if b := check("direct(suffix:ru)"); !strings.Contains(b, `"outbound":"cascade"`) || !strings.Contains(b, `"chain":{`) || !strings.Contains(b, "Соединение отклонит «Exit».") {
+		t.Fatalf("into the cascade: %s", b)
+	}
+	if b := check("direct(all)"); strings.Contains(b, `"chain"`) || !strings.Contains(b, `"outbound":"direct"`) {
+		t.Fatalf("direct: %s", b)
 	}
 }

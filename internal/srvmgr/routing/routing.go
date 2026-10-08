@@ -22,7 +22,6 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
 	"github.com/lardan099/hyroute/internal/srvmgr/remote"
-	"github.com/lardan099/hyroute/internal/srvmgr/topology"
 	hacl "github.com/lardan099/hyroute/third_party/hysteria-acl"
 )
 
@@ -57,7 +56,8 @@ type View struct {
 	File      string     `json:"file,omitempty"`
 	Outbounds []Outbound `json:"outbounds"`
 	Resolver  Resolver   `json:"resolver"`
-	// Cascade is the deployed cascade the server is the entry of.
+	// Cascade is the deployed cascade the server sends through: its entry
+	// or a relay (P4-08).
 	Cascade *ChainRef `json:"cascade,omitempty"`
 	// Problems are the checks and lint of the rules (for a file, the lint
 	// that holds for any rules: acl.FileLint).
@@ -92,7 +92,8 @@ func (s *Service) Open(ctx context.Context, serverID int64) (View, error) {
 	return v, nil
 }
 
-// entryOf is the deployed cascade whose entry the server is.
+// entryOf is the deployed cascade the server sends through, as its entry
+// or a relay (Sender): its outbound "cascade" belongs to the cascade.
 func (s *Service) entryOf(ctx context.Context, serverID int64) (*ChainRef, error) {
 	if s.Chains == nil {
 		return nil, nil
@@ -101,10 +102,8 @@ func (s *Service) entryOf(ctx context.Context, serverID int64) (*ChainRef, error
 	if err != nil {
 		return nil, err
 	}
-	for _, c := range chains {
-		if len(c.Nodes) > 1 && c.Entry() == serverID && topology.Deployed(c) {
-			return &ChainRef{ID: c.ID, Name: c.Name}, nil
-		}
+	if c, _, ok := Sender(chains, serverID); ok {
+		return &ChainRef{ID: c.ID, Name: c.Name}, nil
 	}
 	return nil, nil
 }

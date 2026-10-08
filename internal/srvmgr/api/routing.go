@@ -6,10 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/acl"
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
+	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/remote"
 	"github.com/lardan099/hyroute/internal/srvmgr/routing"
 )
@@ -102,6 +104,15 @@ type routingCheckInput struct {
 	Request   acl.Request  `json:"request"`
 }
 
+// routingCheckJSON is the rule a request matches on the server and, when
+// that sends it into the server's deployed cascade, where it goes from
+// there (P4-08): the editor's rules on this server, the current ones on
+// the next.
+type routingCheckJSON struct {
+	acl.Verdict
+	Chain *routing.Trace `json:"chain,omitempty"`
+}
+
 // checkRouting says which rule a request matches, as the server would.
 func (s *server) checkRouting(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.routingServer(w, r)
@@ -123,7 +134,36 @@ func (s *server) checkRouting(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &Error{Status: http.StatusBadRequest, Code: "invalid", Message: err.Error(), Details: "request"})
 		return
 	}
-	writeJSON(w, http.StatusOK, v)
+	out := routingCheckJSON{Verdict: v}
+	if !v.Builtin && strings.EqualFold(v.Outbound, cascade.OutboundName) {
+		out.Chain = s.traceFrom(r, id, &routing.Draft{ACL: in.ACL, Outbounds: in.Outbounds}, in.Request)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// traceFrom follows a request along the deployed cascade server id sends
+// through, from that server with the draft rules; nil: it sends through
+// none, or the trace failed (only logged: the verdict stands alone).
+func (s *server) traceFrom(r *http.Request, id int64, draft *routing.Draft, q acl.Request) *routing.Trace {
+	cs, err := s.Store.ListChains(r.Context())
+	if err != nil {
+		s.Log.Warn("routing: chains not read for the trace", "server", id, "err", err)
+		return nil
+	}
+	c, idx, ok := routing.Sender(cs, id)
+	if !ok {
+		return nil
+	}
+	names, err := s.serverNames(r)
+	if err != nil {
+		return nil
+	}
+	t, err := s.routing().Trace(r.Context(), c, idx, draft, q, names)
+	if err != nil {
+		s.Log.Warn("routing: trace along the cascade failed", "chain", c.ID, "err", err)
+		return nil
+	}
+	return &t
 }
 
 // routingServices is the «По сервисам» tab for the editor's draft ({acl}):

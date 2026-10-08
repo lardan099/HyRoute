@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/hyconfig"
+	"github.com/lardan099/hyroute/internal/srvmgr/acl"
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/topology"
@@ -432,6 +433,39 @@ func (s *server) directOut(r *http.Request, id int64) bool {
 	}
 	c, err := hyconfig.ParseServer(b)
 	return err == nil && cascade.DirectOut(c)
+}
+
+// routeChain says where a request goes along the chain (P4-08): the rule
+// it matches on the entry and, while that sends it into the cascade, on
+// each next server, as Hysteria matches them there, and the server it
+// leaves from for the internet.
+func (s *server) routeChain(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, errNotFound)
+		return
+	}
+	var q acl.Request
+	if err := readJSON(r, &q); err != nil {
+		writeError(w, err)
+		return
+	}
+	c, err := s.Store.ChainByID(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	names, err := s.serverNames(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	t, err := s.routing().Trace(r.Context(), c, 0, nil, q, names)
+	if err != nil {
+		s.fail(w, r, configError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
 }
 
 // checkFrom checks the deployed links that start at server sid now; false:
