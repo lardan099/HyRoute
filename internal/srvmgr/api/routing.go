@@ -143,7 +143,9 @@ func (s *server) checkRouting(w http.ResponseWriter, r *http.Request) {
 
 // traceFrom follows a request along the deployed cascade server id sends
 // through, from that server with the draft rules; nil: it sends through
-// none, or the trace failed (only logged: the verdict stands alone).
+// none, the cascade is not wholly in the caller's scope (the trace would
+// show the names, roles and rules of servers out of it), or the trace
+// failed (only logged: the verdict stands alone).
 func (s *server) traceFrom(r *http.Request, id int64, draft *routing.Draft, q acl.Request) *routing.Trace {
 	cs, err := s.Store.ListChains(r.Context())
 	if err != nil {
@@ -152,6 +154,9 @@ func (s *server) traceFrom(r *http.Request, id int64, draft *routing.Draft, q ac
 	}
 	c, idx, ok := routing.Sender(cs, id)
 	if !ok {
+		return nil
+	}
+	if set, err := s.scopeSet(r); err != nil || !set.hasAll(c.Nodes) {
 		return nil
 	}
 	names, err := s.serverNames(r)
