@@ -140,7 +140,7 @@ env), `setup-token` на время первого запуска и `lock`: con
 |---|---|---|
 | `schema_migrations` | version, name, applied_at | миграции только вперёд, в транзакции |
 | `settings` | key, value, updated_at | настройки controller без секретов; `master_key_check` — проверочное значение мастер-ключа |
-| `users` | id, username (unique), password_hash (PHC argon2id), role, disabled, created_at, updated_at | роли: owner, admin, operator, readonly |
+| `users` | id, username (unique), password_hash (PHC argon2id), role, disabled, created_at, updated_at, last_login_at | роли: owner, admin, operator, readonly; last_login_at — последний вход (0 — неизвестен; миграция `users_audit` взяла его из `audit_log` для прежних входов) |
 | `sessions` | id, token_hash (SHA-256 токена, unique), user_id, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent | в БД только хеш токена; CSRF-токен не хранится, а вычисляется как HMAC от токена сессии |
 | `servers` | id, name, tags (json), country, location, host, ssh_port, ssh_user, auth_type (password/key), role (standalone/entry/relay/exit), notes, state, hop_interval, created_at, updated_at | state: new, deploying, healthy, degraded, offline, needs_attention; role следует из каскадов (миграция 0016); hop_interval — интервал смены портов у клиентов, с (0 — по умолчанию клиента; миграция 0014) |
 | `server_credentials` | server_id, kind (ssh_password/ssh_key/ssh_key_passphrase), sealed (envelope), updated_at | никогда не возвращаются в API |
@@ -150,7 +150,7 @@ env), `setup-token` на время первого запуска и `lock`: con
 | `jobs` | id, kind, server_id, state, current_step, params (json без секретов), data (json без секретов: результаты шагов), secret (envelope, контекст `job/<id>/secret`), attempt, error_message, error_details, created_by, created_at, started_at, finished_at, lease_owner, lease_until | |
 | `job_steps` | job_id, idx, name, phase, state, attempt, started_at, finished_at, error | |
 | `job_logs` | job_id, seq, ts, level, step, message | message уже прошёл redaction |
-| `audit_log` | id, ts, user_id, action, target, details | кто что сделал (вход, выход, пользователи, подтверждение ключа, показ ссылок, удаление каскада без недоступного сервера — `chain_force_delete`); из неудачных входов и попыток setup хранятся последние 10 000 |
+| `audit_log` | id, ts, user_id, action, target, details | кто что сделал (вход, выход, пользователи, подтверждение ключа, показ ссылок, удаление каскада без недоступного сервера — `chain_force_delete`, постановка и повтор заданий — `job_submitted`/`job_retried`); target — `server/<id>`, `chain/<id>`, `preset/<id>`, `user/<id>` (у входов — имя, у заданий — первый сервер задания), details без секретов; индексы (user_id, id), (action, id), (target, id) для фильтров `GET /api/v1/audit`; из неудачных входов и попыток setup хранятся последние 10 000 |
 | `chains` | id, name (unique), notes, created_by, created_at, updated_at | каскад (P3-01), миграция 0016 |
 | `chain_nodes` | chain_id, idx, server_id | серверы цепочки по порядку, entry — idx 0; сервер из цепочки не удаляется |
 | `chain_links` | chain_id, idx, params (json без секретов), secrets (envelope, контекст `chain/<id>/link/<idx>`), state (new/linking/active/stale/unlinking/failed), from_revision, to_revision, config_sha256, updated_at | связь узлов idx и idx + 1 |
@@ -214,8 +214,10 @@ P1-04 сканирует файл БД на открытые значения т
   reverse proxy с `X-Forwarded-Proto: https`; на `127.0.0.1` по HTTP —
   без Secure). В БД — SHA-256 токена. Idle timeout 12 ч, абсолютный — 7 дней.
   Живые потоки (SSE журнала и заданий) перепроверяют сессию на каждом
-  keepalive (20 с) и закрываются после выхода, отзыва, конца сессии или
-  отключения пользователя; сам поток сессию не продлевает. При остановке
+  keepalive (20 с) и сразу, когда сессии заканчиваются (выход, отзыв,
+  смена или сброс пароля, блокировка или удаление пользователя:
+  `auth.Service.Revocations`), и закрываются, если их сессии больше нет;
+  сам поток сессию не продлевает. При остановке
   controller потоки закрываются сразу, а обычные запросы не отменяются и
   завершаются в пределах таймаута остановки (10 с).
 - CSRF: токен сессии, выдаётся в ответе логина и `GET /api/v1/session`;
@@ -245,8 +247,32 @@ P1-04 сканирует файл БД на открытые значения т
 - Роли: owner/admin — всё; operator — развёртывание и управление
   сервисом, без пользователей и настроек; readonly — только чтение
   (Phase 1 гарантирует: readonly получает 403 на любой изменяющий
-  запрос, кроме выхода и отзыва своих сессий; список пользователей с
-  ролями он видит, как и любая роль). Полный RBAC — Phase 4.
+  запрос, кроме выхода, отзыва своих сессий и смены своего пароля;
+  список пользователей с ролями он видит, как и любая роль). Полный
+  RBAC — Phase 4.
+- Управление пользователями (P4-03): правила — в одном месте,
+  `internal/srvmgr/auth/users.go`. Owner и admin управляют
+  пользователями, operator и readonly — никем (403); owner-а трогает
+  (роль, пароль, блокировка, удаление) и делает owner-ом только owner;
+  admin управляет всеми ниже owner, admin-ами тоже (как `CreateUser`).
+  Себя нельзя заблокировать, удалить и сбросить себе пароль (`self`):
+  свой пароль меняется с текущим (`POST /api/v1/session/password`, лимит
+  попыток как у логина). Ни одно изменение не оставляет панель без
+  owner-а, который может войти (`last_owner`): проверка идёт внутри
+  транзакции изменения (`store.Users.ChangeUsers`/`DeleteUser`) по
+  пользователям как они есть в ней, вызывающий тоже читается заново —
+  два одновременных изменения не снимут последнего owner-а. Передача
+  роли (`TransferOwner`) делает пользователя owner-ом, а вызывающего —
+  admin-ом в одной транзакции. Сброс и смена пароля и блокировка
+  отзывают все сессии пользователя в той же транзакции; при смене своего
+  пароля браузер получает новую сессию в ответе. Смена роли сессии не
+  трогает: роль читается при каждом запросе. Каждое действие пишется в
+  аудит под `user/<id>` с именем пользователя, без пароля.
+- Аудит заданий: `jobs.Engine.SubmitOn` и `Retry` — единственные места,
+  где ставится задание (из API и по расписанию geo), там и пишется
+  `job_submitted`/`job_retried`: кто (0 — сам controller), target —
+  первый сервер задания, details — `job=<id> kind=<kind>` и остальные
+  серверы, без params и секретов.
 
 ## Удалённое выполнение
 
@@ -1508,8 +1534,14 @@ JSON-строкой) и должно прийти за минуту; тело б
 | DELETE | `/api/v1/session` | любая | выход |
 | GET | `/api/v1/sessions` | любая; `?all=1` — owner/admin (иначе 403) | свои сессии; с `?all=1` — сессии всех пользователей |
 | DELETE | `/api/v1/sessions/{id}` | своя — любая; чужая — owner/admin | отзыв сессии (с CSRF, как любое изменение) |
-| GET | `/api/v1/users` | любая | пользователи: имя, роль, `disabled`, дата создания (без хешей паролей) |
-| POST | `/api/v1/users` | owner/admin | `{username, password, role}`: admin, operator или readonly (второго owner не создать) |
+| POST | `/api/v1/session/password` | любая | `{current, password}`: смена своего пароля; все сессии пользователя отзываются, в ответе (как у логина) — новая сессия этого браузера; неверный текущий — 400 `invalid` с details `current`, попытки ограничены как у логина (429) |
+| GET | `/api/v1/users` | любая | пользователи: имя, роль, `disabled`, дата создания, `lastLoginAt` (null — неизвестен), без хешей паролей |
+| POST | `/api/v1/users` | owner/admin | `{username, password, role}`: admin, operator или readonly (owner-ом делают существующего пользователя) |
+| PATCH | `/api/v1/users/{id}` | owner/admin (owner-а — только owner) | `{role?, disabled?}`: смена роли (`owner` — только owner), блокировка (отзывает все сессии) и разблокировка; 409 `last_owner` — не осталось бы owner-а, который может войти; 409 `self` — блокировка себя |
+| DELETE | `/api/v1/users/{id}` | owner/admin (owner-а — только owner) | удаление; сессии удаляются, авторство заданий, ревизий, пресетов и каскадов обнуляется, аудит остаётся; себя — 409 `self`, последнего owner-а — 409 `last_owner` |
+| POST | `/api/v1/users/{id}/password` | owner/admin (owner-а — только owner) | `{password}` или `{generate: true}`: новый пароль, все сессии пользователя отзываются; сгенерированный (20 символов, 100 бит) возвращается один раз `{password}`, заданный — 204; себе — 409 `self` |
+| POST | `/api/v1/users/{id}/owner` | owner | передача роли владельца: пользователь — owner, вызывающий — admin; заблокированному — 409 `user_blocked` |
+| GET | `/api/v1/audit` | owner/admin | журнал аудита, новые сверху: `{entries: [{id, time, userId, user, action, target, object, details}], next}`; фильтры `user` (ID), `action` (одно или несколько через запятую), `target` (`server/3` или `server/` — все такого вида), `from`/`to` (RFC 3339, `to` не включается); страницы — курсор `before=next` (`limit` до 200, по умолчанию 100; `next` 0 — последняя страница): записи, добавленные между запросами, не сдвигают и не повторяют строки, как при offset, и запрос идёт по индексу; `object` — имя сервера, каскада, пресета или пользователя, пока он есть; details — через `redact` |
 | GET/POST | `/api/v1/servers` | читать: любая; создать: operator+ | инвентарь; роль сервера только для чтения (следует из каскадов), `chains` — каскады сервера (id, название, состояние) |
 | GET/PATCH/DELETE | `/api/v1/servers/{id}` | | удаление сервера из каскада — 409 `chain_member` |
 | GET | `/api/v1/chains`, `/api/v1/chains/{id}` | все | каскады: серверы по порядку с ролями, связи с параметрами и состоянием (секреты связей не отдаются); ответы об одном каскаде — ещё `unreachable`: серверы, до которых не дошло последнее «Удалить каскад» (`Linker.Unreached`), `{serverId, name, role, left}`, `left` — что связь там оставит |
