@@ -78,7 +78,7 @@ func (s *server) diagBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := principal(r)
-	if err := s.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), UserID: p.User.ID, Action: "diag.download", Target: "diag/" + bundle.Name(),
+	if err := s.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), UserID: p.User.ID, Action: "diag_downloaded", Target: "diag/" + bundle.Name(),
 		Details: fmt.Sprintf("jobs=%d files=%d", b.Jobs, len(bundle.Files))}); err != nil {
 		s.fail(w, r, err)
 		return

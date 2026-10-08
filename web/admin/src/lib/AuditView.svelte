@@ -20,7 +20,7 @@
     { key: 'audit.gJobs', actions: ['job_submitted', 'job_retried'] },
     { key: 'audit.gChains', actions: ['chain_created', 'chain_updated', 'chain_deleted', 'chain_force_delete'] },
     { key: 'audit.gPresets', actions: ['preset.create', 'preset.import', 'preset.clone', 'preset.rename', 'preset.delete'] },
-    { key: 'audit.gPanel', actions: ['backup_created', 'backup_downloaded', 'master_key_checked'] },
+    { key: 'audit.gPanel', actions: ['backup_created', 'backup_downloaded', 'master_key_checked', 'diag_downloaded'] },
   ];
 
   let users = $state<User[]>([]);

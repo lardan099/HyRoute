@@ -1597,7 +1597,7 @@ controller её бы не понял, берут блокировку катал
 базу без миграций и без блокировки каталога данных (`sqlite.OpenExisting`)
 и проверяет ключ, как `doctor` (`secrets.Verify`): служба может работать.
 Буфер журнала controller (`logbuf`) живёт в памяти процесса, поэтому
-`controller.log` есть только в пакете из панели. Аудит (`diag.download`)
+`controller.log` есть только в пакете из панели. Аудит (`diag_downloaded`)
 пишет только панель: команда в базу не пишет.
 
 - **Файлы.** `README.txt` (что в пакете и как он обезличен),
@@ -1754,7 +1754,7 @@ JSON-строкой) и должно прийти за минуту; тело б
 | GET | `/api/v1/backups/{name}` | owner | скачать копию (`Content-Disposition: attachment`); имя — только из списка, аудит `backup_downloaded` |
 | POST | `/api/v1/master-key/check` | owner, admin | `{"key": "<текст файла ключа>"}` → `ok` и по каждой версии ключа, которой зашифрованы данные, `ok`/`wrong`/`missing`, плюс версии текста, которые база не использует; не ключ — 400 `not_a_key`. Ключ не сохраняется и не пишется ни в журнал, ни в аудит (там — `master_key_checked` с итогом) |
 | GET | `/api/v1/diag` | owner, admin | `?jobs=` (1–200, по умолчанию 20) → `{name, jobs, controllerLog, size, files: [{name, about, size}]}`: список файлов пакета, который даст скачивание (пакет собирается и выбрасывается); вне диапазона — 400 `invalid` |
-| GET | `/api/v1/diag/bundle` | owner, admin | `?jobs=` — диагностический пакет (ZIP, `Content-Disposition: attachment`, `no-store`), собирается заново; аудит `diag.download` (имя файла, число заданий и файлов) |
+| GET | `/api/v1/diag/bundle` | owner, admin | `?jobs=` — диагностический пакет (ZIP, `Content-Disposition: attachment`, `no-store`), собирается заново; аудит `diag_downloaded` (имя файла, число заданий и файлов) |
 
 ## Модель угроз
 

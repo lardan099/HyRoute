@@ -70,7 +70,7 @@ func TestDiagBundle(t *testing.T) {
 	audit, _ := e.db.ListAudit(context.Background(), 20)
 	n := 0
 	for _, a := range audit {
-		if a.Action == "diag.download" {
+		if a.Action == "diag_downloaded" {
 			n++
 			if !strings.HasPrefix(a.Target, "diag/hyroute-diag-") || !strings.Contains(a.Details, "jobs=20") {
 				t.Fatalf("audit %+v", a)
@@ -101,7 +101,7 @@ func TestDiagForbidden(t *testing.T) {
 	}
 	audit, _ := e.db.ListAudit(context.Background(), 20)
 	for _, a := range audit {
-		if a.Action == "diag.download" {
+		if a.Action == "diag_downloaded" {
 			t.Fatalf("a refused download audited: %+v", a)
 		}
 	}

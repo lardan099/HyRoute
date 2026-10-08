@@ -750,6 +750,7 @@ export const ru = {
   'audit.a.backup_created': 'Резервная копия сделана',
   'audit.a.backup_downloaded': 'Резервная копия скачана',
   'audit.a.master_key_checked': 'Проверка копии мастер-ключа',
+  'audit.a.diag_downloaded': 'Диагностический пакет скачан',
 
   'deploy.button': 'Развернуть',
   'deploy.title': 'Развернуть Hysteria 2 на «{name}»',
