@@ -34,6 +34,13 @@ func (r Role) CanManageUsers() bool { return r == RoleOwner || r == RoleAdmin }
 // answer (a cascade deleted without its unreachable server).
 func (r Role) CanForce() bool { return r == RoleOwner || r == RoleAdmin }
 
+// CanBackup: may make and download copies of the database; a copy holds
+// every user's password hash and every server.
+func (r Role) CanBackup() bool { return r == RoleOwner }
+
+// CanCheckKey: may try a copy of the master key against the database.
+func (r Role) CanCheckKey() bool { return r == RoleOwner || r == RoleAdmin }
+
 // User is an admin account. PasswordHash is a PHC argon2id string.
 type User struct {
 	ID           int64

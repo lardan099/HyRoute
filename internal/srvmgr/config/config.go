@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -43,13 +44,31 @@ type Config struct {
 	MonitorInterval time.Duration
 	// GeoInterval is how often the geo databases are updated (0: never).
 	GeoInterval time.Duration
+	// BackupInterval is how often a copy of the database goes to
+	// BackupDir (0: never; the owner can still make one in the admin).
+	BackupInterval time.Duration
+	// BackupKeep is how many copies BackupDir keeps.
+	BackupKeep int
+	// BackupPassphraseFile holds the passphrase the copies are encrypted
+	// with; HYROUTE_SERVER_BACKUP_PASSPHRASE overrides it. Neither: the
+	// copies are not encrypted.
+	BackupPassphraseFile string
 }
+
+// EnvBackupPassphrase holds the passphrase of the copies.
+const EnvBackupPassphrase = "HYROUTE_SERVER_BACKUP_PASSPHRASE"
+
+// DefaultBackupKeep is how many copies are kept by default.
+const DefaultBackupKeep = 7
 
 // DefaultListen is the address used when none is given.
 const DefaultListen = "127.0.0.1:8480"
 
 // DBPath is the SQLite database file.
 func (c Config) DBPath() string { return filepath.Join(c.DataDir, "hyroute-server.db") }
+
+// BackupDir holds the copies of the database.
+func (c Config) BackupDir() string { return filepath.Join(c.DataDir, "backups") }
 
 // DefaultDataDir is the data directory for this OS.
 func DefaultDataDir() string {
@@ -65,35 +84,28 @@ func DefaultDataDir() string {
 // Load parses args (without the program name) on top of the environment.
 // Usage and errors go to out.
 func Load(args []string, getenv func(string) string, out io.Writer) (Config, error) {
-	env := func(k, def string) string {
-		if v := strings.TrimSpace(getenv("HYROUTE_SERVER_" + k)); v != "" {
-			return v
-		}
-		return def
-	}
+	env := envOf(getenv)
 	fs := flag.NewFlagSet("hyroute-server", flag.ContinueOnError)
 	fs.SetOutput(out)
 	var c Config
 	fs.StringVar(&c.Listen, "listen", env("LISTEN", DefaultListen), "HTTP address (env HYROUTE_SERVER_LISTEN)")
-	fs.StringVar(&c.DataDir, "data-dir", env("DATA_DIR", DefaultDataDir()), "data directory (env HYROUTE_SERVER_DATA_DIR)")
-	fs.StringVar(&c.MasterKeyFile, "master-key-file", env("MASTER_KEY_FILE", ""), "master key file, when HYROUTE_MASTER_KEY is not set (default <data-dir>/master.key)")
+	c.dataFlags(fs, getenv)
 	fs.StringVar(&c.TLSCert, "tls-cert", env("TLS_CERT", ""), "TLS certificate chain (PEM) to serve HTTPS (env HYROUTE_SERVER_TLS_CERT)")
 	fs.StringVar(&c.TLSKey, "tls-key", env("TLS_KEY", ""), "TLS private key (PEM) (env HYROUTE_SERVER_TLS_KEY)")
 	fs.BoolVar(&c.InsecureHTTP, "insecure-http", isTrue(env("INSECURE_HTTP", "")), "allow plaintext HTTP on an address reachable from the network (env HYROUTE_SERVER_INSECURE_HTTP)")
 	fs.BoolVar(&c.TrustProxy, "trust-proxy", isTrue(env("TRUST_PROXY", "")), "trust X-Forwarded-* from a reverse proxy on loopback (env HYROUTE_SERVER_TRUST_PROXY)")
 	fs.DurationVar(&c.MonitorInterval, "monitor-interval", envDuration(getenv("HYROUTE_SERVER_MONITOR_INTERVAL"), time.Minute), "how often to sample the servers' CPU, memory, disk and network; 0 turns it off (env HYROUTE_SERVER_MONITOR_INTERVAL)")
 	fs.DurationVar(&c.GeoInterval, "geo-interval", envDuration(getenv("HYROUTE_SERVER_GEO_INTERVAL"), 7*24*time.Hour), "how often to look for newer geo databases and put them on the servers that use HyRoute's; 0 turns it off (env HYROUTE_SERVER_GEO_INTERVAL)")
+	fs.DurationVar(&c.BackupInterval, "backup-interval", envDuration(getenv("HYROUTE_SERVER_BACKUP_INTERVAL"), 0), "how often to copy the database to <data-dir>/backups; 0 (the default) turns the schedule off (env HYROUTE_SERVER_BACKUP_INTERVAL)")
 	fs.StringVar(&c.LogLevel, "log-level", env("LOG_LEVEL", "info"), "debug, info, warn or error (env HYROUTE_SERVER_LOG_LEVEL)")
 	allowed := fs.String("allowed-host", env("ALLOWED_HOST", ""), "names the panel answers to besides localhost, comma separated, e.g. panel.example.com (env HYROUTE_SERVER_ALLOWED_HOST)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
 	if fs.NArg() > 0 {
-		return Config{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+		return Config{}, fmt.Errorf("unexpected argument %q: the commands are listed by hyroute-server help", fs.Arg(0))
 	}
-	if c.MasterKeyFile == "" {
-		c.MasterKeyFile = filepath.Join(c.DataDir, "master.key")
-	}
+	c.dataDefaults()
 	for _, h := range strings.Split(*allowed, ",") {
 		h = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(h), "."))
 		if h == "" {
@@ -105,6 +117,61 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 		c.AllowedHosts = append(c.AllowedHosts, h)
 	}
 	return c, c.validate()
+}
+
+// envOf reads HYROUTE_SERVER_<k>, def when it is empty.
+func envOf(getenv func(string) string) func(k, def string) string {
+	return func(k, def string) string {
+		if v := strings.TrimSpace(getenv("HYROUTE_SERVER_" + k)); v != "" {
+			return v
+		}
+		return def
+	}
+}
+
+// dataFlags are the flags of the data directory, the master key and the
+// copies: the controller and the maintenance commands take them alike.
+func (c *Config) dataFlags(fs *flag.FlagSet, getenv func(string) string) {
+	env := envOf(getenv)
+	fs.StringVar(&c.DataDir, "data-dir", env("DATA_DIR", DefaultDataDir()), "data directory (env HYROUTE_SERVER_DATA_DIR)")
+	fs.StringVar(&c.MasterKeyFile, "master-key-file", env("MASTER_KEY_FILE", ""), "master key file, when HYROUTE_MASTER_KEY is not set (default <data-dir>/master.key)")
+	keep := DefaultBackupKeep
+	if n, err := strconv.Atoi(env("BACKUP_KEEP", "")); err == nil {
+		keep = n
+	}
+	fs.IntVar(&c.BackupKeep, "backup-keep", keep, "how many copies <data-dir>/backups keeps (env HYROUTE_SERVER_BACKUP_KEEP)")
+	fs.StringVar(&c.BackupPassphraseFile, "backup-passphrase-file", env("BACKUP_PASSPHRASE_FILE", ""), "file with the passphrase the copies are encrypted with; "+EnvBackupPassphrase+" overrides it (env HYROUTE_SERVER_BACKUP_PASSPHRASE_FILE)")
+}
+
+func (c *Config) dataDefaults() {
+	if c.MasterKeyFile == "" {
+		c.MasterKeyFile = filepath.Join(c.DataDir, "master.key")
+	}
+}
+
+// LoadTool parses the flags of a maintenance command (hyroute-server
+// <name> …): those of the data directory, the master key and the copies,
+// as the controller takes them, and the command's own, which define adds.
+// It returns the arguments after the flags.
+func LoadTool(name string, args []string, getenv func(string) string, out io.Writer, define func(*flag.FlagSet)) (Config, []string, error) {
+	fs := flag.NewFlagSet("hyroute-server "+name, flag.ContinueOnError)
+	fs.SetOutput(out)
+	var c Config
+	c.dataFlags(fs, getenv)
+	if define != nil {
+		define(fs)
+	}
+	if err := fs.Parse(args); err != nil {
+		return Config{}, nil, err
+	}
+	c.dataDefaults()
+	if c.DataDir == "" {
+		return Config{}, nil, errors.New("data-dir is empty")
+	}
+	if c.BackupKeep < 1 {
+		return Config{}, nil, fmt.Errorf("backup-keep %d: at least 1", c.BackupKeep)
+	}
+	return c, fs.Args(), nil
 }
 
 func isTrue(v string) bool { return v == "1" || strings.EqualFold(v, "true") }
@@ -138,6 +205,12 @@ func (c Config) validate() error {
 	}
 	if c.MonitorInterval != 0 && c.MonitorInterval < 10*time.Second {
 		return fmt.Errorf("monitor-interval %s: at least 10s, or 0 to turn monitoring off", c.MonitorInterval)
+	}
+	if c.BackupInterval != 0 && c.BackupInterval < 10*time.Minute {
+		return fmt.Errorf("backup-interval %s: at least 10m, or 0 to turn the backup schedule off", c.BackupInterval)
+	}
+	if c.BackupKeep < 1 {
+		return fmt.Errorf("backup-keep %d: at least 1", c.BackupKeep)
 	}
 	if c.GeoInterval < 0 {
 		return fmt.Errorf("geo-interval %s: a positive duration, or 0 to turn the geo schedule off", c.GeoInterval)

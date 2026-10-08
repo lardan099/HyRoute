@@ -17,12 +17,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/api"
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
+	"github.com/lardan099/hyroute/internal/srvmgr/backup"
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/config"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
@@ -60,8 +62,12 @@ func main() {
 }
 
 // run starts the controller and blocks until ctx is done, then shuts down
-// gracefully. ready, if not nil, receives the listening address.
+// gracefully. ready, if not nil, receives the listening address. A first
+// argument that is not a flag names a maintenance command instead.
 func run(ctx context.Context, args []string, getenv func(string) string, stderr io.Writer, ready chan<- string) error {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return runTool(ctx, args[0], args[1:], toolEnv{getenv: getenv, stdin: os.Stdin, stdout: os.Stdout, stderr: stderr})
+	}
 	cfg, err := config.Load(args, getenv, stderr)
 	if err != nil {
 		return err
@@ -188,6 +194,20 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		defer func() { stopJobs(); <-geoDone }()
 	}
 
+	pass, err := backup.Passphrase(getenv, config.EnvBackupPassphrase, cfg.BackupPassphraseFile)
+	if err != nil {
+		return err
+	}
+	backups := &backup.Manager{DB: db, Dir: cfg.BackupDir(), Keep: cfg.BackupKeep, Passphrase: pass, Interval: cfg.BackupInterval, Log: log}
+	if cfg.BackupInterval > 0 {
+		backupDone := make(chan struct{})
+		go func() {
+			backups.Run(jobsCtx)
+			close(backupDone)
+		}()
+		defer func() { stopJobs(); <-backupDone }()
+	}
+
 	var certs *certFiles
 	if cfg.TLS() {
 		if certs, err = loadCert(cfg.TLSCert, cfg.TLSKey, log); err != nil {
@@ -224,8 +244,12 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			TrustProxy:   cfg.TrustProxy,
 			Loopback:     cfg.Loopback(),
 			AllowedHosts: cfg.AllowedHosts,
-			UI:           admin.FS(),
-			Streams:      streams,
+			Backups:      backups,
+			KeyCheck: func(ctx context.Context, text string) (secrets.KeyReport, error) {
+				return secrets.CheckKeyText(ctx, text, db)
+			},
+			UI:      admin.FS(),
+			Streams: streams,
 			OnSetupDone: func() {
 				os.Remove(tokenFile)
 				log.Info("owner created, setup token removed")

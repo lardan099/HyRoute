@@ -19,6 +19,7 @@ import (
 	"github.com/lardan099/hyroute/internal/hyconfig"
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
+	"github.com/lardan099/hyroute/internal/srvmgr/backup"
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
@@ -68,6 +69,11 @@ type Deps struct {
 	// UI is the built admin app (a directory with index.html); nil
 	// serves no UI.
 	UI fs.FS
+	// Backups are the copies of the database (nil: none).
+	Backups *backup.Manager
+	// KeyCheck tries a copy of the master key against the database (nil:
+	// not offered).
+	KeyCheck func(ctx context.Context, text string) (secrets.KeyReport, error)
 	// Streams ends the live event streams (job events, the Hysteria
 	// journal) when it is done: main cancels it when shutdown starts, so
 	// they do not hold Shutdown while other requests finish. nil: a
@@ -172,6 +178,10 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/jobs/{id}/events", s.authed(anyRole, s.jobEvents))
 	mux.HandleFunc("POST /api/v1/jobs/{id}/retry", s.authed(anyRole, s.retryJob))
 	mux.HandleFunc("GET /api/v1/logs", s.authed(anyRole, s.logs))
+	mux.HandleFunc("GET /api/v1/backups", s.authed(anyRole, s.listBackups))
+	mux.HandleFunc("POST /api/v1/backups", s.authed(anyRole, s.createBackup))
+	mux.HandleFunc("GET /api/v1/backups/{name}", s.authed(anyRole, s.downloadBackup))
+	mux.HandleFunc("POST /api/v1/master-key/check", s.authed(anyRole, s.checkMasterKey))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { writeError(w, errNotFound) })
 	if d.UI != nil {
 		mux.Handle("/", uiHandler(d.UI))

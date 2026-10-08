@@ -115,3 +115,14 @@ func (d *DB) InUse(ctx context.Context) (bool, error) {
 	err := d.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM users) OR EXISTS (SELECT 1 FROM servers)`).Scan(&used)
 	return used, err
 }
+
+// CountUnfinishedJobs counts the jobs neither completed nor failed, in a
+// database of any schema version (0 before the jobs table).
+func (d *DB) CountUnfinishedJobs(ctx context.Context) (int, error) {
+	var n int
+	err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE state NOT IN ('completed', 'failed')`).Scan(&n)
+	if err != nil && strings.Contains(err.Error(), "no such table") {
+		return 0, nil
+	}
+	return n, err
+}

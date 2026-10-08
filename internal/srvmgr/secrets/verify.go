@@ -60,6 +60,13 @@ func Verify(ctx context.Context, keys *Keyring, db Samples, from string) error {
 	return nil
 }
 
+// NeedsKey reports whether the database holds anything only the master
+// key opens: the check value or sealed values.
+func NeedsKey(ctx context.Context, db Samples) (bool, error) {
+	ss, err := samples(ctx, db)
+	return len(ss) > 0, err
+}
+
 // Key check results of one version.
 const (
 	KeyOK      = "ok"      // the text has the version and it opens the values
