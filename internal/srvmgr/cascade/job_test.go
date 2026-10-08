@@ -514,7 +514,8 @@ func TestLinkUserpassExit(t *testing.T) {
 		t.Fatalf("revisions %+v %+v", er, xr)
 	}
 	l := w.link()
-	if l.State != model.LinkActive || l.FromRevision != er[0].Revision || l.ToRevision != xr[0].Revision || l.ConfigSHA256 != sha([]byte(client)) {
+	unitText, _ := w.entry.file("/etc/systemd/system/" + UnitName(w.chain, 0))
+	if l.State != model.LinkActive || l.FromRevision != er[0].Revision || l.ToRevision != xr[0].Revision || l.ConfigSHA256 != sha([]byte(client)) || l.UnitSHA256 != sha([]byte(unitText)) {
 		t.Fatalf("link %+v", l)
 	}
 	for _, f := range []string{cfgPath + Backup, linkCfg(w) + Backup} {

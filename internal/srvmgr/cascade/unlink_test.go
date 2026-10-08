@@ -91,7 +91,7 @@ func TestUnlinkKeepsChain(t *testing.T) {
 	if j, log := w.unlink(false); j.State != model.JobCompleted {
 		t.Fatalf("%s: %s\n%s", j.State, j.ErrorMessage, log)
 	}
-	if l := w.link(); l.State != model.LinkNew || l.ConfigSHA256 != "" {
+	if l := w.link(); l.State != model.LinkNew || l.ConfigSHA256 != "" || l.UnitSHA256 != "" {
 		t.Fatalf("link %+v", l)
 	}
 	if sealed, _ := w.db.LinkSecrets(context.Background(), w.chain, 0); sealed != nil {

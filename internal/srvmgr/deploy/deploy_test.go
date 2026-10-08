@@ -930,6 +930,18 @@ func TestInstallationRecorded(t *testing.T) {
 	if err != nil || !in.Managed || in.Unit != Unit || in.Config != ConfigPath || in.Binary != BinaryPath || in.User != User || in.Version != testVersion {
 		t.Fatalf("%+v %v", in, err)
 	}
+	// What the reconciliation compares (P4-06): the release binary and
+	// the unit the job wrote.
+	if in.BinarySHA256 != sum(fakeBinary) || in.UnitSHA256 != sum([]byte(UnitText)) {
+		t.Fatalf("hashes: %+v", in)
+	}
+	// A redeploy that finds the binary in place records it too.
+	if j := h.deploy(params(), nil); j.State != model.JobCompleted {
+		t.Fatalf("%s: %s", j.State, j.ErrorMessage)
+	}
+	if in, _ := h.db.Installation(context.Background(), h.server); in.BinarySHA256 != sum(fakeBinary) {
+		t.Fatalf("after a redeploy: %+v", in)
+	}
 }
 
 func TestDeployOverImport(t *testing.T) {

@@ -61,6 +61,12 @@ type Found struct {
 	Meta         model.ConfigMeta `json:"meta"`
 	Unknown      []string         `json:"unknown,omitempty"` // config fields HyRoute does not know
 	Findings     []Finding        `json:"findings"`
+	// BinarySHA256 and UnitSHA256 are the SHA-256 of the binary and the
+	// fingerprint of the unit (remote.UnitSHA256) as found: the import
+	// records them, and the reconciliation compares them (P4-06). "": not
+	// read.
+	BinarySHA256 string `json:"binarySha256,omitempty"`
+	UnitSHA256   string `json:"unitSha256,omitempty"`
 }
 
 // NeedsAttention: some finding is a warning.

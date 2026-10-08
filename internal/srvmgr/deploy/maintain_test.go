@@ -63,7 +63,7 @@ func TestUpgrade(t *testing.T) {
 	if s.state != "active" || !s.ran("systemctl restart") {
 		t.Fatalf("service %s", s.state)
 	}
-	if in := h.installation(); in.Version != newVersion || !in.Managed {
+	if in := h.installation(); in.Version != newVersion || !in.Managed || in.BinarySHA256 != sum(newBinary) || in.UnitSHA256 != sum([]byte(UnitText)) {
 		t.Fatalf("installation %+v", in)
 	}
 	if h.state() != model.StateHealthy {
@@ -340,6 +340,12 @@ func TestReinstall(t *testing.T) {
 	h := deployed(t, s)
 	cfg, _ := s.file(ConfigPath)
 	cert, _ := s.file(CertPath)
+	// Recorded before P4-06: no hashes.
+	in := h.installation()
+	in.BinarySHA256, in.UnitSHA256 = "", ""
+	if err := h.db.SetInstallation(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
 	// Damage: a broken binary, an edited unit, rights too wide.
 	s.files[BinaryPath] = []byte("garbage")
 	s.files[UnitPath] = []byte("[Service]\nExecStart=/bin/false\n")
@@ -369,6 +375,11 @@ func TestReinstall(t *testing.T) {
 	}
 	if s.state != "active" || h.installation().Version != testVersion || h.state() != model.StateHealthy {
 		t.Fatalf("service %s, %+v, %s", s.state, h.installation(), h.state())
+	}
+	// The hashes of what it put back (an older record without them gets
+	// them now).
+	if in := h.installation(); in.BinarySHA256 != sum(fakeBinary) || in.UnitSHA256 != sum([]byte(UnitText)) {
+		t.Fatalf("hashes %+v", in)
 	}
 
 	// A sound installation: nothing to do.

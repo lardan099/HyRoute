@@ -102,6 +102,16 @@ func (x *importer) inspect(ctx context.Context, env *jobs.Env) error {
 	if err != nil {
 		return fail(err)
 	}
+	// What the reconciliation compares from now on (P4-06): without them
+	// the binary and the unit are not compared until a job writes them.
+	var herr error
+	if f.BinarySHA256, herr = remote.FileSHA256(ctx, ex, f.Binary, sudo(env)); herr == nil {
+		f.UnitSHA256, _, herr = remote.UnitSHA256(ctx, ex, f.Unit, sudo(env))
+	}
+	if herr != nil {
+		f.BinarySHA256, f.UnitSHA256 = "", ""
+		env.Logf("Хеши бинарника и службы не прочитаны (%v): сверка их сравнит, когда их запишет задание HyRoute.", herr)
+	}
 	b, _ := json.Marshal(f)
 	env.Set("report", string(b))
 	state := "не работает"
@@ -131,7 +141,8 @@ func report(env *jobs.Env) (Found, error) {
 }
 
 func (f *Found) installation(serverID int64, managed bool, at time.Time) model.Installation {
-	return model.Installation{ServerID: serverID, Binary: f.Binary, Config: f.Config, Unit: f.Unit, User: f.User, Version: f.Version, Managed: managed, At: at}
+	return model.Installation{ServerID: serverID, Binary: f.Binary, Config: f.Config, Unit: f.Unit, User: f.User, Version: f.Version, Managed: managed,
+		BinarySHA256: f.BinarySHA256, UnitSHA256: f.UnitSHA256, At: at}
 }
 
 // saved: the controller already has this config and installation (a

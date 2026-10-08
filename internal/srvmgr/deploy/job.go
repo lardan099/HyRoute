@@ -395,7 +395,7 @@ func (x *deployer) binaryDone(ctx context.Context, env *jobs.Env, version, path 
 	}
 	if sum == a.SHA256 {
 		env.Logf("Hysteria %s уже установлена, SHA-256 совпадает с хешем релиза.", a.Version)
-		return true, nil
+		return true, env.Set("binarySHA", a.SHA256)
 	}
 	return false, nil
 }
@@ -452,7 +452,9 @@ func (x *deployer) binary(ctx context.Context, env *jobs.Env, version, source st
 		return jobs.Fail("Не удалось установить Hysteria.", err)
 	}
 	env.Logf("Установлено: %s.", path)
-	return nil
+	// The commit records it: the reconciliation compares the binary with
+	// it (P4-06).
+	return env.Set("binarySHA", a.SHA256)
 }
 
 // backup records the state of the file at path (its SHA-256 or
@@ -992,9 +994,12 @@ func (x *deployer) commitDone(ctx context.Context, env *jobs.Env, p Params) (boo
 	return cur.SHA256 == sha(want) && cur.Meta == meta && in == x.installation(env, p, in.At) && fw == fwRecord(env, p, fw), nil
 }
 
-// installation is what a deploy puts on the server.
+// installation is what a deploy puts on the server, with the hashes of
+// the binary and the unit it wrote (a job of an older controller resumed
+// here may not know the binary's: "" is then recorded, not compared).
 func (x *deployer) installation(env *jobs.Env, p Params, at time.Time) model.Installation {
-	return model.Installation{ServerID: env.ServerID, Binary: BinaryPath, Config: ConfigPath, Unit: Unit, User: User, Version: p.Version, Managed: true, At: at}
+	return model.Installation{ServerID: env.ServerID, Binary: BinaryPath, Config: ConfigPath, Unit: Unit, User: User, Version: p.Version, Managed: true,
+		BinarySHA256: env.Get("binarySHA"), UnitSHA256: sha([]byte(UnitText)), At: at}
 }
 
 func (x *deployer) commit(ctx context.Context, env *jobs.Env, p Params) error {

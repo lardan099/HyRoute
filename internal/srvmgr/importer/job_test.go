@@ -118,6 +118,10 @@ func TestImportJob(t *testing.T) {
 	if err != nil || in.Managed || in.Unit != "hysteria-server.service" || in.Config != "/etc/hysteria/config.yaml" || in.User != "hysteria" || in.Version != "v2.6.0" {
 		t.Fatalf("%+v %v", in, err)
 	}
+	// The binary and the unit as found: what the reconciliation compares.
+	if in.BinarySHA256 != sha([]byte("binary")) || in.UnitSHA256 != sha([]byte(officialUnit)) {
+		t.Fatalf("hashes %+v", in)
+	}
 	if s, _ := e.db.ServerByID(ctx, e.server); s.State != model.StateNeedsAttention {
 		t.Fatalf("state %s", s.State)
 	}

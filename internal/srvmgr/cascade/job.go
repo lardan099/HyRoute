@@ -1344,6 +1344,9 @@ func (x *linker) commit(ctx context.Context, env *jobs.Env, p jobParams) error {
 	for i, h := range hs {
 		link := plans[i].link
 		link.State, link.FromRevision, link.ToRevision, link.ConfigSHA256, link.UpdatedAt = model.LinkActive, revs[h.Entry], revs[h.Exit], sha(plans[i].client), x.Now()
+		// The unit as the job wrote it: the reconciliation compares the
+		// one on the entry with it (P4-06).
+		link.UnitSHA256 = sha([]byte(plans[i].unit))
 		if err := x.Store.UpdateLink(ctx, link); err != nil {
 			return err
 		}

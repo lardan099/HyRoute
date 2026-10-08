@@ -830,7 +830,7 @@ func (x *linker) unCommit(ctx context.Context, env *jobs.Env, p unlinkParams) er
 			continue
 		}
 		link := c.Links[h.Idx]
-		link.State, link.FromRevision, link.ToRevision, link.ConfigSHA256, link.UpdatedAt = model.LinkNew, 0, 0, "", x.Now()
+		link.State, link.FromRevision, link.ToRevision, link.ConfigSHA256, link.UnitSHA256, link.UpdatedAt = model.LinkNew, 0, 0, "", "", x.Now()
 		if err := x.Store.UpdateLink(ctx, link); err != nil {
 			return err
 		}

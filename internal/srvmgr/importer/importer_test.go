@@ -114,11 +114,23 @@ func newMachine() *machine {
 		}
 		return remote.Result{Stdout: []byte(mode + " " + itoa(len(b)) + "\n")}, nil
 	})
+	m.On("sha256sum", "--").Do(func(c remote.Cmd) (remote.Result, error) {
+		p := c.Args[len(c.Args)-1]
+		b, ok := m.File(p)
+		if !ok {
+			return remote.Result{ExitCode: 1, Stderr: []byte("sha256sum: " + p + ": No such file or directory")}, nil
+		}
+		s := sha256.Sum256(b)
+		return remote.Result{Stdout: []byte(hex.EncodeToString(s[:]) + "  " + p + "\n")}, nil
+	})
 	m.RootPaths()
 	return m
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// officialUnit is the unit file of the official installer.
+const officialUnit = "[Unit]\nDescription=Hysteria Server Service (config.yaml)\n\n[Service]\nExecStart=/usr/local/bin/hysteria server --config /etc/hysteria/config.yaml\nUser=hysteria\n"
 
 // official is a server set up by the official installer.
 func official() *machine {
@@ -126,6 +138,7 @@ func official() *machine {
 	m.units["hysteria-server.service"] = unit{load: "loaded", active: "active", fragment: "/etc/systemd/system/hysteria-server.service",
 		exec: execStart("/usr/local/bin/hysteria server --config /etc/hysteria/config.yaml"), user: "hysteria", wd: "~", fileState: "enabled", restart: "no"}
 	m.SetFile("/usr/local/bin/hysteria", []byte("binary"))
+	m.SetFile("/etc/systemd/system/hysteria-server.service", []byte(officialUnit))
 	m.On("/usr/local/bin/hysteria", "version").Reply("Version:\tv2.6.0\nBuildDate:\t2024-10-19\n", 0)
 	m.SetFile("/etc/hysteria/config.yaml", []byte(officialConfig))
 	m.modes["/etc/hysteria/config.yaml"] = "644 root root"

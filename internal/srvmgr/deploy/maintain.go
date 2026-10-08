@@ -511,15 +511,25 @@ func (x *deployer) maintainJournal(ctx context.Context, env *jobs.Env, ex remote
 	}
 }
 
-// maintainCommit records the version. The copies of the replaced files
-// stay on the server (.hyroute-prev), as after a deploy.
+// maintainCommit records the version and the hashes of what the job put
+// there: the binary and, for a reinstall, the unit (the reconciliation
+// compares them, P4-06). The copies of the replaced files stay on the
+// server (.hyroute-prev), as after a deploy.
 func (x *deployer) maintainCommit(ctx context.Context, env *jobs.Env, p MaintainParams) error {
 	in, err := x.installed(ctx, env)
 	if err != nil {
 		return err
 	}
-	if in.Version != p.Version {
-		in.Version, in.At = p.Version, x.Now()
+	was := in
+	in.Version = p.Version
+	if sum := env.Get("binarySHA"); sum != "" {
+		in.BinarySHA256 = sum
+	}
+	if p.Op == OpReinstall {
+		in.UnitSHA256 = sha([]byte(UnitText))
+	}
+	if in != was {
+		in.At = x.Now()
 		if err := x.Store.SetInstallation(ctx, in); err != nil {
 			return err
 		}
