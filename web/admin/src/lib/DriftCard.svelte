@@ -92,7 +92,8 @@
     }
   }
 
-  const thing = (x: DriftThing) => (x.kind === 'link' ? t('drift.thing.link', { name: x.chain?.name ?? '' }) : t(`drift.thing.${x.kind}` as Key));
+  const thing = (x: DriftThing) =>
+    x.kind !== 'link' ? t(`drift.thing.${x.kind}` as Key) : x.chain?.hidden ? t('drift.thing.linkHidden') : t('drift.thing.link', { name: x.chain?.name ?? '' });
   const every = (sec: number) => (sec % 3600 === 0 ? `${sec / 3600} ч` : t('unit.min', { n: Math.round(sec / 60) }));
   const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
   const acceptText = (it: DriftItem) =>
@@ -140,7 +141,9 @@
               <button class="link" onclick={() => go('deployments', it.job!.id)}>{t('drift.openJob')}</button>
             </p>
           {/if}
-          {#if decides(it.kind)}
+          {#if decides(it.kind) && it.chain?.hidden}
+            <p class="small muted">{t('drift.hiddenChain')}</p>
+          {:else if decides(it.kind)}
             <div class="row actions">
               <button disabled={busy || reverting(it)} onclick={() => (confirm = { item: it, action: 'accept' })}>
                 {it.kind === 'config' ? t('drift.acceptConfig') : t('drift.accept')}

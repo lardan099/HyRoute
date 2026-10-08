@@ -31,7 +31,9 @@ func countNodes(n int) error {
 }
 
 // Check accepts chain c among existing, every chain stored so far (c is
-// not among them). name gives a server's name for the messages.
+// not among them). name gives a server's name for the messages, chain an
+// existing chain's after the word «каскада» («AB», or no name for one the
+// caller does not see whole).
 //
 // The outbound of a link is the default of its server: all traffic of the
 // server goes that way. So a server sends through at most one link, and a
@@ -42,7 +44,7 @@ func countNodes(n int) error {
 // the link before it and the entry of the next, and the chain shows the
 // whole way. An exit may serve several chains. The graph of all links is
 // checked for circles as well.
-func Check(c model.Chain, existing []model.Chain, name func(id int64) string) error {
+func Check(c model.Chain, existing []model.Chain, name func(id int64) string, chain func(model.Chain) string) error {
 	for _, o := range existing {
 		if strings.EqualFold(o.Name, c.Name) {
 			return &model.FieldError{Field: "name", Msg: "Каскад с таким названием уже есть."}
@@ -75,15 +77,15 @@ func Check(c model.Chain, existing []model.Chain, name func(id int64) string) er
 		as := nodeName(i, len(c.Nodes), true)
 		if i < len(c.Nodes)-1 {
 			if o, ok := sends[id]; ok {
-				return nodesErr("%s уже %s каскада «%s»: сервер выпускает трафик только через один каскад.", name(id), roleIn(o, id), o.Name)
+				return nodesErr("%s уже %s каскада %s: сервер выпускает трафик только через один каскад.", name(id), roleIn(o, id), chain(o))
 			}
 			if o, ok := receives[id]; ok {
-				return nodesErr("%s — выход каскада «%s» и не может быть %s другого: трафик того каскада ушёл бы дальше незаметно или пошёл по кругу.", name(id), o.Name, as)
+				return nodesErr("%s — выход каскада %s и не может быть %s другого: трафик того каскада ушёл бы дальше незаметно или пошёл по кругу.", name(id), chain(o), as)
 			}
 		}
 		if i > 0 {
 			if o, ok := sends[id]; ok {
-				return nodesErr("%s — %s каскада «%s» и не может быть %s другого: трафик этого каскада ушёл бы дальше незаметно или пошёл по кругу.", name(id), roleIn(o, id), o.Name, as)
+				return nodesErr("%s — %s каскада %s и не может быть %s другого: трафик этого каскада ушёл бы дальше незаметно или пошёл по кругу.", name(id), roleIn(o, id), chain(o), as)
 			}
 		}
 	}

@@ -56,7 +56,7 @@ func TestCheck(t *testing.T) {
 		{"a loop into a relay", chain("x", 3, 4, 2), []model.Chain{abc}, "S3 — выход каскада «ABC»"},
 		{"a loop of two 3-node chains", chain("x", 3, 4, 1), []model.Chain{abc}, "S3 — выход каскада «ABC»"},
 	} {
-		err := Check(tc.c, tc.existing, name)
+		err := Check(tc.c, tc.existing, name, func(c model.Chain) string { return "«" + c.Name + "»" })
 		var fe *model.FieldError
 		switch {
 		case tc.want == "" && err != nil:

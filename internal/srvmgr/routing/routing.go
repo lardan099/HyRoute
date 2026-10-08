@@ -39,12 +39,28 @@ type Service struct {
 	Connect func(ctx context.Context, serverID int64) (remote.Executor, error)
 	// Geo reads the controller's geo databases (P3-07); nil: none.
 	Geo hacl.GeoLoader
+	// Shown tells whether the caller sees a cascade whole (P4-04); one
+	// they do not is named only as out of their scope. nil: every one.
+	Shown func(model.Chain) bool
 }
 
-// ChainRef names a cascade.
+// ChainRef names a cascade. Hidden: one not wholly in the caller's scope,
+// without its ID and name (Name is HiddenChain).
 type ChainRef struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
+	ID     int64  `json:"id,omitempty"`
+	Name   string `json:"name"`
+	Hidden bool   `json:"hidden,omitempty"`
+}
+
+// HiddenChain names a cascade not wholly in the caller's scope.
+const HiddenChain = "каскад вне вашей области"
+
+// Text names the cascade in a message: каскад «name», or HiddenChain.
+func (r *ChainRef) Text() string {
+	if r.Hidden {
+		return HiddenChain
+	}
+	return "каскад «" + r.Name + "»"
 }
 
 // View is a server's routing as the editor opens it.
@@ -93,7 +109,8 @@ func (s *Service) Open(ctx context.Context, serverID int64) (View, error) {
 }
 
 // entryOf is the deployed cascade the server sends through, as its entry
-// or a relay (Sender): its outbound "cascade" belongs to the cascade.
+// or a relay (Sender): its outbound "cascade" belongs to the cascade. One
+// the caller does not see whole is hidden (Shown).
 func (s *Service) entryOf(ctx context.Context, serverID int64) (*ChainRef, error) {
 	if s.Chains == nil {
 		return nil, nil
@@ -102,10 +119,14 @@ func (s *Service) entryOf(ctx context.Context, serverID int64) (*ChainRef, error
 	if err != nil {
 		return nil, err
 	}
-	if c, _, ok := Sender(chains, serverID); ok {
-		return &ChainRef{ID: c.ID, Name: c.Name}, nil
+	c, _, ok := Sender(chains, serverID)
+	switch {
+	case !ok:
+		return nil, nil
+	case s.Shown != nil && !s.Shown(c):
+		return &ChainRef{Name: HiddenChain, Hidden: true}, nil
 	}
-	return nil, nil
+	return &ChainRef{ID: c.ID, Name: c.Name}, nil
 }
 
 func (s *Service) env(c *hyconfig.Server, ref *ChainRef) acl.Env {

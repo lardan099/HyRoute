@@ -103,7 +103,11 @@ func chainError(err error) error {
 	return mapError(err)
 }
 
-func (s *server) chains() *topology.Service { return &topology.Service{Store: s.Store} }
+// chains is the cascade service for the caller of r: its messages name a
+// cascade the caller does not see whole only as out of their scope.
+func (s *server) chains(r *http.Request) *topology.Service {
+	return &topology.Service{Store: s.Store, Shown: s.shownChains(r)}
+}
 
 // serverNames are the names of all servers by ID.
 func (s *server) serverNames(r *http.Request) (map[int64]string, error) {
@@ -234,7 +238,7 @@ func (s *server) createChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	c, err := s.chains().Create(r.Context(), topology.Input{Name: in.Name, Notes: in.Notes, Nodes: in.Nodes, Link: in.Link}, principal(r).User.ID)
+	c, err := s.chains(r).Create(r.Context(), topology.Input{Name: in.Name, Notes: in.Notes, Nodes: in.Nodes, Link: in.Link}, principal(r).User.ID)
 	if err != nil {
 		s.fail(w, r, chainError(err))
 		return
@@ -256,7 +260,7 @@ func (s *server) updateChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	c, err := s.chains().Update(r.Context(), id, in.Name, in.Notes, principal(r).User.ID)
+	c, err := s.chains(r).Update(r.Context(), id, in.Name, in.Notes, principal(r).User.ID)
 	if err != nil {
 		s.fail(w, r, chainError(err))
 		return
@@ -270,7 +274,7 @@ func (s *server) deleteChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errNotFound)
 		return
 	}
-	if err := s.chains().Delete(r.Context(), id, principal(r).User.ID); err != nil {
+	if err := s.chains(r).Delete(r.Context(), id, principal(r).User.ID); err != nil {
 		s.fail(w, r, chainError(err))
 		return
 	}
@@ -470,7 +474,7 @@ func (s *server) routeChain(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	t, err := s.routing().Trace(r.Context(), c, 0, nil, q, names)
+	t, err := s.routing(r).Trace(r.Context(), c, 0, nil, q, names)
 	if err != nil {
 		s.fail(w, r, configError(err))
 		return

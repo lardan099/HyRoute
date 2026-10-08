@@ -389,6 +389,26 @@ P1-04 сканирует файл БД на открытые значения т
   каскада в области вызывающего: трасса называет следующие серверы, их
   роли и что с запросом делают их правила. Иначе в ответе только вердикт
   правил самого сервера.
+- **Каскад вне области** — тот, не все узлы которого в области
+  вызывающего. В ответах о сервере из области он назван только
+  «каскад вне вашей области», без ID, названия и участков
+  (`routing.ChainRef` с `hidden: true`): маршрутизация сервера и
+  «По сервисам» (`cascade`), отказ убрать или переименовать outbound
+  `cascade`, отказ создать каскад через его серверы, связь в сверке
+  сервера (`chain` без `idx` и `hops`; заголовок и описание без названия
+  и участка — `reconcile.HiddenLink`). Принять или вернуть такую связь
+  (`…/reconcile/accept|revert` с ключом `link/<id>/<idx>`) — 404
+  `not_found`, как и с каскадом, которого нет (у пользователя всех
+  серверов каскад, удалённый тем временем, по-прежнему доходит до 409
+  `drift_gone`); разрешение роли проверяется раньше (403). Решает API:
+  `server.shownChains` — тот же `scopeSet.hasAll`, что у списка
+  каскадов; пакеты routing и topology получают его функцией `Shown`.
+- **Известные ограничения области.** Названия серверов и каскадов
+  уникальны на всю панель: создание или переименование в занятое
+  название отклоняется («… с таким названием уже есть»), даже если
+  сервер или каскад с ним вне области, — так видно, что такое название
+  есть. Номер каскада и связи виден в ключе расхождения и в именах файлов
+  и пользователя связи на сервере (`link-<id>-<idx>`).
 - **Менеджер клиентов**: `POST /servers/{id}/clients`, `…/clients/remove`,
   `…/clients/password` (`{base, user}`, `clients.manage`) — обычное
   задание `apply` (`change: clients`): кандидат — текущий конфиг через
@@ -2148,11 +2168,11 @@ JSON-строкой) и должно прийти за минуту; тело б
 | POST | `/api/v1/presets/import` | `presets` | `{data}` — текст файла пресета; файл другого вида или версии получает понятную ошибку, занятое название — номер « (N)», длинное укорачивается до 64 символов вместе с ним |
 | POST | `/api/v1/servers/{id}/preset/preview` | `config` | `{base, preset, sections}`: проверка и diff конфига с разделами пресета |
 | POST | `/api/v1/servers/{id}/preset/apply` | `config` | то же — задание `apply` |
-| GET | `/api/v1/servers/{id}/routing` | `config` | правила (`acl`), outbounds и resolver без паролей, `file` (acl.file), `cascade` (вход развёрнутого каскада), проверки правил |
+| GET | `/api/v1/servers/{id}/routing` | `config` | правила (`acl`), outbounds и resolver без паролей, `file` (acl.file), `cascade` (вход развёрнутого каскада: `{id, name}`, вне области — `{name, hidden: true}`), проверки правил |
 | POST | `/api/v1/servers/{id}/routing/preview` | `config` | `{base, acl, keepFile, outbounds, resolver, requests}` → проверка и diff конфига, правила после переименований, проблемы правил, dry-run (`changes`), `ok`, `same` |
 | POST | `/api/v1/servers/{id}/routing/apply` | `config` | то же — задание `apply` (`change: routing`); ошибка в правилах или без изменений — 400 `invalid` |
-| POST | `/api/v1/servers/{id}/routing/check` | `config` | `{acl, outbounds, request}` → правило, outbound, подмена, объяснение; на entry или relay развёрнутого каскада, если правила отправили запрос в `cascade`, — ещё `chain`: путь дальше по каскаду, как у `/chains/{id}/route` |
-| POST | `/api/v1/servers/{id}/routing/services` | `config` | `{acl}` — черновик → вкладка «По сервисам»: `version` каталога, `sections` — разделы с сервисами, чьи категории есть в базах geo controller, `hidden` — остальные, `noGeo`, `ownGeo` (сервер читает свои базы), `cascade` (вход каскада: доступно «через выход»), `state` — группа черновика (`found`, `version`, `choices`, `edited`, `changes`) |
+| POST | `/api/v1/servers/{id}/routing/check` | `config` | `{acl, outbounds, request}` → правило, outbound, подмена, объяснение; на entry или relay развёрнутого каскада, если правила отправили запрос в `cascade`, — ещё `chain`: путь дальше по каскаду, как у `/chains/{id}/route` (только если все узлы каскада в области) |
+| POST | `/api/v1/servers/{id}/routing/services` | `config` | `{acl}` — черновик → вкладка «По сервисам»: `version` каталога, `sections` — разделы с сервисами, чьи категории есть в базах geo controller, `hidden` — остальные, `noGeo`, `ownGeo` (сервер читает свои базы), `cascade` (вход каскада: доступно «через выход»; вне области — как у `GET …/routing`), `state` — группа черновика (`found`, `version`, `choices`, `edited`, `changes`) |
 | POST | `/api/v1/servers/{id}/routing/services/build` | `config` | `{acl, outbounds, choices, overwrite}` → `{acl, state}`: черновик с группой, собранной из выбора; ничего не сохраняется. `cascade` не на входе каскада, неизвестный outbound или сервис, сервис без категорий в базах — 400 `invalid`; изменённая вручную группа без `overwrite` — 409 `services_edited` |
 | GET | `/api/v1/servers/{id}/routing/export` | `config` | `format=json` (по умолчанию: правила, outbounds без паролей и каскада, resolver) или `text` (правила как читает Hysteria); правила `acl.file` читаются с сервера по SSH, как в `routing/file` |
 | GET | `/api/v1/servers/{id}/routing/file` | `config` | acl.file с сервера по SSH (до 1 МБ, полный путь): `{path, acl, problems}` |
@@ -2182,10 +2202,10 @@ JSON-строкой) и должно прийти за минуту; тело б
 | GET | `/api/v1/servers/{id}/metrics?period=` | `view` | ряд метрик: 1h/6h/24h/48h — замеры, 7d/30d — средние по 15 мин |
 | GET | `/api/v1/metrics/latest` | `view` (серверы области) | последний замер каждого сервера за 5 минут (Overview) |
 | GET | `/api/v1/servers/{id}/health` | `view` | последняя проверка и смены статуса или причины за неделю (до 50) |
-| GET | `/api/v1/servers/{id}/reconcile` | `view`; diff конфига — с `config` | последняя сверка: `interval` (с, 0 — без расписания), `at` (null — не сверялся), `error`, `checked` и `skipped` (`{key, kind, chain: {id, name}, idx, hops}`), `items` — расхождения: `files` (`path`, `want`, `got`; '' — файла нет), `revision`, `units`, `title`, `summary`, `since`, `job` возврата (`id`, `state`, `errorMessage`), `canRevert`/`revertNote`; ролям с правом записи — `diff` и `secrets` конфига, замаскированные как в редакторе, или `diffNote` |
+| GET | `/api/v1/servers/{id}/reconcile` | `view`; diff конфига — с `config` | последняя сверка: `interval` (с, 0 — без расписания), `at` (null — не сверялся), `error`, `checked` и `skipped` (`{key, kind, chain: {id, name}, idx, hops}`; каскад вне области — `chain: {name, hidden: true}` без `idx` и `hops`), `items` — расхождения: `files` (`path`, `want`, `got`; '' — файла нет), `revision`, `units`, `title`, `summary`, `since`, `job` возврата (`id`, `state`, `errorMessage`), `canRevert`/`revertNote`; ролям с правом записи — `diff` и `secrets` конфига, замаскированные как в редакторе, или `diffNote` |
 | POST | `/api/v1/servers/{id}/reconcile/check` | `service` | проверить сейчас (и сервер offline), ответ — как у GET; сервер не ответил — 200 с `error`; 409 `server_busy` во время задания, `host_key_required`, `no_installation` |
-| POST | `/api/v1/servers/{id}/reconcile/accept` | `config`; служба и бинарник — `deploy`, связь каскада — `chains` на всех его серверах | `{key}` — принять то, что на сервере (ревизия `external` или хеши); ответ — сверка без него; 409 `drift_gone`, `drift_changed`, `server_busy`; конфига нет или он не разбирается — 400 `invalid`; аудит `drift_accepted` |
-| POST | `/api/v1/servers/{id}/reconcile/revert` | `config`; служба и бинарник — `deploy`, связь каскада — `chains` на всех его серверах | `{key}` — задание, которое вернёт версию HyRoute (apply, maintain, geo, link; 202); 409 `cannot_revert`, `drift_gone`, `server_busy`, `no_geo` |
+| POST | `/api/v1/servers/{id}/reconcile/accept` | `config`; служба и бинарник — `deploy`, связь каскада — `chains` на всех его серверах | `{key}` — принять то, что на сервере (ревизия `external` или хеши); ответ — сверка без него; каскад вне области — 404 `not_found`; 409 `drift_gone`, `drift_changed`, `server_busy`; конфига нет или он не разбирается — 400 `invalid`; аудит `drift_accepted` |
+| POST | `/api/v1/servers/{id}/reconcile/revert` | `config`; служба и бинарник — `deploy`, связь каскада — `chains` на всех его серверах | `{key}` — задание, которое вернёт версию HyRoute (apply, maintain, geo, link; 202); каскад вне области — 404 `not_found`; 409 `cannot_revert`, `drift_gone`, `server_busy`, `no_geo` |
 | GET | `/api/v1/servers/{id}/config/revisions` | `view` | история ревизий без текста конфига |
 | GET | `/api/v1/servers/{id}/config/revisions/{rev}` | `config` | конфиг ревизии, секреты замаскированы |
 | GET | `/api/v1/servers/{id}/config/compare?from=&to=` | `config` | diff двух ревизий без секретов, изменённые секреты — путями |

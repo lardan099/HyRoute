@@ -536,6 +536,22 @@ func (set scopeSet) hasAll(ids []int64) bool {
 	return true
 }
 
+// shownChains tells whether the caller sees a cascade whole: all of its
+// servers in their scope, as the list of cascades shows it. One they do
+// not see is named only as out of their scope (its name, ID and hops
+// hidden). nil for a user of every server; a scope that cannot be read
+// hides every cascade.
+func (s *server) shownChains(r *http.Request) func(model.Chain) bool {
+	if reach(r).All {
+		return nil
+	}
+	set, err := s.scopeSet(r)
+	if err != nil {
+		return func(model.Chain) bool { return false }
+	}
+	return func(c model.Chain) bool { return set.hasAll(c.Nodes) }
+}
+
 // within is the set for model.JobFilter.Within: nil for all servers.
 func (set scopeSet) within() *[]int64 {
 	if set.all {

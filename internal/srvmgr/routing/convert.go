@@ -108,7 +108,7 @@ func outbounds(cur []hyconfig.Outbound, in []Outbound, ref *ChainRef) (out []hyc
 	for i, o := range in {
 		if lock != nil && (strings.EqualFold(o.From, lock.Name) || strings.EqualFold(o.Name, lock.Name)) {
 			if i != 0 || !strings.EqualFold(o.From, lock.Name) || o.Name != lock.Name {
-				return nil, nil, &model.FieldError{Field: "outbounds", Msg: "Outbound «" + lock.Name + "» ведёт в каскад «" + ref.Name + "»: он остаётся первым и без изменений. Чтобы убрать его, снимите связь на странице каскада."}
+				return nil, nil, &model.FieldError{Field: "outbounds", Msg: "Outbound «" + lock.Name + "» ведёт в " + ref.Text() + ": он остаётся первым и без изменений. Чтобы убрать его, снимите связь на странице каскада."}
 			}
 			out = append(out, *lock)
 			continue
@@ -131,7 +131,7 @@ func outbounds(cur []hyconfig.Outbound, in []Outbound, ref *ChainRef) (out []hyc
 		}
 	}
 	if lock != nil && (len(out) == 0 || out[0].Name != lock.Name) {
-		return nil, nil, &model.FieldError{Field: "outbounds", Msg: "Outbound «" + lock.Name + "» ведёт в каскад «" + ref.Name + "»: он остаётся первым и без изменений. Чтобы убрать его, снимите связь на странице каскада."}
+		return nil, nil, &model.FieldError{Field: "outbounds", Msg: "Outbound «" + lock.Name + "» ведёт в " + ref.Text() + ": он остаётся первым и без изменений. Чтобы убрать его, снимите связь на странице каскада."}
 	}
 	return out, renames, nil
 }

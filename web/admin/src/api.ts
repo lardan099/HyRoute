@@ -839,13 +839,21 @@ export interface RoutingResolver {
   insecure?: boolean;
 }
 
+// ChainRef names a cascade; hidden: one not wholly in the user's scope,
+// without its id and name (P4-04).
+export interface ChainRef {
+  id?: number;
+  name: string;
+  hidden?: boolean;
+}
+
 export interface RoutingView {
   revision: number;
   acl: AclDocument;
   file?: string;
   outbounds: RoutingOutbound[];
   resolver: RoutingResolver;
-  cascade?: { id: number; name: string };
+  cascade?: ChainRef;
   problems: AclProblem[];
 }
 
@@ -954,7 +962,7 @@ export interface ServicesView {
   hidden: CatalogService[];
   noGeo?: boolean;
   ownGeo?: boolean;
-  cascade?: { id: number; name: string };
+  cascade?: ChainRef;
   state: ServicesState;
 }
 
@@ -991,11 +999,12 @@ export interface ServerGeo {
 export type DriftKind = 'config' | 'unit' | 'binary' | 'geo' | 'link';
 
 // DriftThing is a thing the reconciliation compares; a link with its
-// cascade (hops: how many links the cascade has).
+// cascade (hops: how many links the cascade has; neither idx nor hops for
+// a hidden cascade).
 export interface DriftThing {
   key: string;
   kind: DriftKind;
-  chain?: { id: number; name: string };
+  chain?: ChainRef;
   idx?: number;
   hops?: number;
 }

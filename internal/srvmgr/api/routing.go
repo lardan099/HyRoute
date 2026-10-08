@@ -16,12 +16,14 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/routing"
 )
 
-func (s *server) routing() *routing.Service {
-	r := &routing.Service{Editor: s.editor(), Applier: s.Apply, Chains: s.Store, Geo: s.Geo.Loader()}
+// routing is the routing editor for the caller of r: a cascade they do
+// not see whole is named only as out of their scope.
+func (s *server) routing(r *http.Request) *routing.Service {
+	rs := &routing.Service{Editor: s.editor(), Applier: s.Apply, Chains: s.Store, Geo: s.Geo.Loader(), Shown: s.shownChains(r)}
 	if s.Connect != nil {
-		r.Connect = func(ctx context.Context, id int64) (remote.Executor, error) { return s.Connect.Connect(ctx, id) }
+		rs.Connect = func(ctx context.Context, id int64) (remote.Executor, error) { return s.Connect.Connect(ctx, id) }
 	}
-	return r
+	return rs
 }
 
 // routingServer is the server of the path, known to the inventory.
@@ -45,7 +47,7 @@ func (s *server) getRouting(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	v, err := s.routing().Open(r.Context(), id)
+	v, err := s.routing(r).Open(r.Context(), id)
 	if err != nil {
 		s.fail(w, r, configError(err))
 		return
@@ -66,7 +68,7 @@ func (s *server) previewRouting(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	p, err := s.routing().Preview(r.Context(), id, in)
+	p, err := s.routing(r).Preview(r.Context(), id, in)
 	if err != nil {
 		s.fail(w, r, configError(err))
 		return
@@ -89,7 +91,7 @@ func (s *server) applyRouting(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	j, err := s.routing().Apply(r.Context(), id, in, principal(r).User.ID)
+	j, err := s.routing(r).Apply(r.Context(), id, in, principal(r).User.ID)
 	if err != nil {
 		s.fail(w, r, jobError(configError(err)))
 		return
@@ -124,7 +126,7 @@ func (s *server) checkRouting(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	g, err := s.routing().GeoOf(r.Context(), id)
+	g, err := s.routing(r).GeoOf(r.Context(), id)
 	if err != nil {
 		s.fail(w, r, configError(err))
 		return
@@ -163,7 +165,7 @@ func (s *server) traceFrom(r *http.Request, id int64, draft *routing.Draft, q ac
 	if err != nil {
 		return nil
 	}
-	t, err := s.routing().Trace(r.Context(), c, idx, draft, q, names)
+	t, err := s.routing(r).Trace(r.Context(), c, idx, draft, q, names)
 	if err != nil {
 		s.Log.Warn("routing: trace along the cascade failed", "chain", c.ID, "err", err)
 		return nil
@@ -186,7 +188,7 @@ func (s *server) routingServices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	v, err := s.routing().Services(r.Context(), id, in.ACL)
+	v, err := s.routing(r).Services(r.Context(), id, in.ACL)
 	if err != nil {
 		s.fail(w, r, configError(err))
 		return
@@ -207,7 +209,7 @@ func (s *server) buildRoutingServices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	res, err := s.routing().BuildServices(r.Context(), id, in)
+	res, err := s.routing(r).BuildServices(r.Context(), id, in)
 	var edited *routing.ServicesEditedError
 	if errors.As(err, &edited) {
 		writeError(w, &Error{Status: http.StatusConflict, Code: "services_edited", Message: edited.Error()})
@@ -226,7 +228,7 @@ func (s *server) exportRouting(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	v, err := s.routing().Open(r.Context(), id)
+	v, err := s.routing(r).Open(r.Context(), id)
 	if err != nil {
 		s.fail(w, r, configError(err))
 		return
@@ -240,7 +242,7 @@ func (s *server) exportRouting(w http.ResponseWriter, r *http.Request) {
 		defer release()
 		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 		defer cancel()
-		f, err := s.routing().File(ctx, id)
+		f, err := s.routing(r).File(ctx, id)
 		if err != nil {
 			s.fail(w, r, configError(err))
 			return
@@ -302,7 +304,7 @@ func (s *server) routingFile(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	f, err := s.routing().File(ctx, id)
+	f, err := s.routing(r).File(ctx, id)
 	if err != nil {
 		s.fail(w, r, configError(err))
 		return
@@ -358,7 +360,7 @@ func (s *server) chainTemplate(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, mapError(err))
 		return
 	}
-	v, err := s.routing().Open(r.Context(), c.Entry())
+	v, err := s.routing(r).Open(r.Context(), c.Entry())
 	if errors.Is(err, apply.ErrNoConfig) {
 		v = routing.View{Resolver: routing.Resolver{Type: "system"}}
 	} else if err != nil {

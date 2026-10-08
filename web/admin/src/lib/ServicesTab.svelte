@@ -101,7 +101,7 @@
 
     {#if view.sections.length}
       <div class="row bar small">
-        <span class="grow muted">{view.cascade ? t('svc.exitNote', { name: view.cascade.name }) : t('svc.noExit')}</span>
+        <span class="grow muted">{view.cascade ? (view.cascade.hidden ? t('svc.exitNoteHidden') : t('svc.exitNote', { name: view.cascade.name })) : t('svc.noExit')}</span>
         <span class="muted">{t('svc.count', { n: count })}</span>
         {#if st.found}<button class="link" onclick={onshow}>{t('svc.show')}</button>{/if}
       </div>

@@ -424,7 +424,7 @@
   {#if loading}
     <p class="muted">{t('cfg.loading')}</p>
   {:else if view}
-    {#if view.cascade}<div class="note info small">{t('rt.cascadeNote', { name: view.cascade.name })}</div>{/if}
+    {#if view.cascade}<div class="note info small">{view.cascade.hidden ? t('rt.cascadeNoteHidden') : t('rt.cascadeNote', { name: view.cascade.name })}</div>{/if}
 
     {#each whole as p, i (i)}
       <div class="note {p.level === 'error' ? 'error' : 'warn'} small lint">
@@ -608,7 +608,7 @@
                 <b>{o.name}</b>
                 <span class="small muted">{o.type}{o.socks5 ? ' · ' + o.socks5.addr : o.http ? ' · ' + o.http.url : o.direct?.bindDevice ? ' · ' + o.direct.bindDevice : ''}</span>
                 {#if i === 0}<span class="pill direct small">{t('ob.default')}</span>{/if}
-                {#if o.locked && view.cascade}<span class="small muted">{t('ob.chain', { name: view.cascade.name })}</span>{/if}
+                {#if o.locked && view.cascade}<span class="small muted">{view.cascade.hidden ? t('ob.chainHidden') : t('ob.chain', { name: view.cascade.name })}</span>{/if}
               </span>
               {#if !o.locked}
                 <span class="acts">

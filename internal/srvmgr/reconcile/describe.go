@@ -156,6 +156,21 @@ func linkTitle(chain string, idx, nodes int) string {
 }
 
 func linkSummary(chain string, idx, nodes int, files []model.DriftFile, units []string) string {
+	return changedLink(linkTitle(chain, idx, nodes), files, units)
+}
+
+// hiddenLink names a link of a cascade the caller does not see whole.
+const hiddenLink = "связь каскада вне вашей области"
+
+// HiddenLink is the title and summary of link difference it for a user
+// who does not see its cascade whole (P4-04): without the cascade's name
+// and the link's place in it.
+func HiddenLink(it model.DriftItem) (title, summary string) {
+	return hiddenLink, changedLink(hiddenLink, it.Files, it.Units)
+}
+
+// changedLink is the summary of the link title whose files differ.
+func changedLink(title string, files []model.DriftFile, units []string) string {
 	var parts []string
 	for _, f := range files {
 		unit := strings.HasSuffix(f.Path, ".service")
@@ -170,5 +185,5 @@ func linkSummary(chain string, idx, nodes int, files []model.DriftFile, units []
 			parts = append(parts, "конфиг клиента связи "+f.Path+" изменён")
 		}
 	}
-	return "Связь" + strings.TrimPrefix(linkTitle(chain, idx, nodes), "связь") + " изменена вне HyRoute: " + strings.Join(parts, "; ") + "."
+	return "Связь" + strings.TrimPrefix(title, "связь") + " изменена вне HyRoute: " + strings.Join(parts, "; ") + "."
 }

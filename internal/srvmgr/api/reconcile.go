@@ -12,6 +12,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/reconcile"
+	"github.com/lardan099/hyroute/internal/srvmgr/routing"
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
 
@@ -26,15 +27,11 @@ type driftThingJSON struct {
 	Key  string          `json:"key"`
 	Kind model.DriftKind `json:"kind"`
 	// Chain is the cascade of a link, Idx the link, Hops how many links
-	// the cascade has.
-	Chain *chainRefJSON `json:"chain,omitempty"`
-	Idx   int           `json:"idx,omitempty"`
-	Hops  int           `json:"hops,omitempty"`
-}
-
-type chainRefJSON struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
+	// the cascade has (neither for a cascade the caller does not see
+	// whole).
+	Chain *routing.ChainRef `json:"chain,omitempty"`
+	Idx   int               `json:"idx,omitempty"`
+	Hops  int               `json:"hops,omitempty"`
 }
 
 type driftJobJSON struct {
@@ -100,8 +97,11 @@ func reconcileError(err error) error {
 	return mapError(err)
 }
 
-// driftThing describes key for the UI (the cascade of a link by name).
-func (s *server) driftThing(r *http.Request, key string, chains map[int64]model.Chain) driftThingJSON {
+// driftThing describes key for the UI (the cascade of a link by name). A
+// cascade the caller does not see whole (shown), or one gone for a user
+// with a narrower scope, is named only as out of their scope: no name,
+// ID or hops.
+func (s *server) driftThing(r *http.Request, key string, chains map[int64]model.Chain, shown func(model.Chain) bool) driftThingJSON {
 	kind, chain, idx, _ := model.ParseDriftKey(key)
 	out := driftThingJSON{Key: key, Kind: kind}
 	if kind == model.DriftLink {
@@ -113,7 +113,11 @@ func (s *server) driftThing(r *http.Request, key string, chains map[int64]model.
 				ok = true
 			}
 		}
-		out.Chain, out.Idx = &chainRefJSON{ID: chain}, idx
+		if shown != nil && !shown(c) {
+			out.Chain = &routing.ChainRef{Name: routing.HiddenChain, Hidden: true}
+			return out
+		}
+		out.Chain, out.Idx = &routing.ChainRef{ID: chain}, idx
 		if ok {
 			out.Chain.Name, out.Hops = c.Name, len(c.Links)
 		}
@@ -127,12 +131,12 @@ func (s *server) toDriftJSON(r *http.Request, serverID int64, d model.Drift) (dr
 	if s.Reconcile != nil {
 		out.Interval = int64(s.Reconcile.Interval / time.Second)
 	}
-	chains := map[int64]model.Chain{}
+	chains, shown := map[int64]model.Chain{}, s.shownChains(r)
 	for _, k := range d.Checked {
-		out.Checked = append(out.Checked, s.driftThing(r, k, chains))
+		out.Checked = append(out.Checked, s.driftThing(r, k, chains, shown))
 	}
 	for _, k := range d.Skipped {
-		out.Skipped = append(out.Skipped, s.driftThing(r, k, chains))
+		out.Skipped = append(out.Skipped, s.driftThing(r, k, chains, shown))
 	}
 	in, err := s.Store.Installation(r.Context(), serverID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -144,7 +148,11 @@ func (s *server) toDriftJSON(r *http.Request, serverID int64, d model.Drift) (dr
 	}
 	writer := principal(r).User.Can(model.PermConfig, srv.Tags)
 	for _, it := range d.Items {
-		x := driftItemJSON{driftThingJSON: s.driftThing(r, it.Key, chains), Files: it.Files, Revision: it.Revision, Units: it.Units, Title: it.Title, Summary: it.Summary, Since: it.Since}
+		x := driftItemJSON{driftThingJSON: s.driftThing(r, it.Key, chains, shown), Files: it.Files, Revision: it.Revision, Units: it.Units, Title: it.Title, Summary: it.Summary, Since: it.Since}
+		if x.Chain != nil && x.Chain.Hidden {
+			// The stored texts name the cascade and the link's place in it.
+			x.Title, x.Summary = reconcile.HiddenLink(it)
+		}
 		if s.Reconcile != nil {
 			x.CanRevert, x.RevertNote = s.Reconcile.Revertible(in, it)
 		}
@@ -229,38 +237,36 @@ type driftKey struct {
 	Key string `json:"key"`
 }
 
-// mayDecide: the route asks for `config`; a difference of the unit or the
-// binary needs `deploy` as their jobs do, one of a cascade link `chains`
-// on every server of the cascade.
-func (s *server) mayDecide(r *http.Request, serverID int64, key string) error {
-	u := principal(r).User
+// mayDecide: the route asks for `config` on the server; a difference of
+// the unit or the binary needs `deploy` as their jobs do, one of a
+// cascade link `chains` and every server of the cascade in the caller's
+// scope. As in guard the role comes first (403); a cascade not wholly in
+// scope answers 404 as one that does not exist (for a user of every
+// server a cascade gone meanwhile goes on to drift_gone).
+func (s *server) mayDecide(r *http.Request, key string) error {
 	kind, chain, _, ok := model.ParseDriftKey(key)
 	if !ok {
 		return &Error{Status: http.StatusBadRequest, Code: "bad_request", Message: "Неизвестное расхождение."}
 	}
-	perm, servers := model.PermConfig, []int64{serverID}
+	perm := model.PermConfig
 	switch kind {
 	case model.DriftUnit, model.DriftBinary:
 		perm = model.PermDeploy
 	case model.DriftLink:
 		perm = model.PermChains
-		c, err := s.Store.ChainByID(r.Context(), chain)
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			return err
-		}
-		servers = append(servers, c.Nodes...)
 	}
-	for _, id := range servers {
-		srv, err := s.Store.ServerByID(r.Context(), id)
-		if errors.Is(err, store.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if !u.Can(perm, srv.Tags) {
-			return errForbidden
-		}
+	if !principal(r).User.Role.Can(perm) {
+		return errForbidden
+	}
+	if kind != model.DriftLink {
+		return nil
+	}
+	c, err := s.Store.ChainByID(r.Context(), chain)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	if shown := s.shownChains(r); shown != nil && !shown(c) {
+		return errNotFound
 	}
 	return nil
 }
@@ -277,7 +283,7 @@ func (s *server) acceptDrift(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := s.mayDecide(r, id, in.Key); err != nil {
+	if err := s.mayDecide(r, in.Key); err != nil {
 		s.fail(w, r, err)
 		return
 	}
@@ -305,7 +311,7 @@ func (s *server) revertDrift(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := s.mayDecide(r, id, in.Key); err != nil {
+	if err := s.mayDecide(r, in.Key); err != nil {
 		s.fail(w, r, err)
 		return
 	}

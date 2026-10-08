@@ -27,6 +27,18 @@ type Store interface {
 type Service struct {
 	Store Store
 	Now   func() time.Time
+	// Shown tells whether the caller sees a chain whole (P4-04): the
+	// messages name one they do not only as out of their scope. nil:
+	// every one.
+	Shown func(model.Chain) bool
+}
+
+// chainName names an existing chain in the messages of Check.
+func (s *Service) chainName(c model.Chain) string {
+	if s.Shown != nil && !s.Shown(c) {
+		return "вне вашей области"
+	}
+	return "«" + c.Name + "»"
 }
 
 // ErrDeployed: a link of the chain may be in effect on its servers, so the
@@ -137,7 +149,7 @@ func (s *Service) Create(ctx context.Context, in Input, actor int64) (Info, erro
 		c.Links[i].Params = in.Link.Raw()
 	}
 	name2 := func(id int64) string { return "«" + names[id] + "»" }
-	err = s.Store.CreateChain(ctx, &c, func(existing []model.Chain) error { return Check(c, existing, name2) })
+	err = s.Store.CreateChain(ctx, &c, func(existing []model.Chain) error { return Check(c, existing, name2, s.chainName) })
 	if errors.Is(err, store.ErrConflict) {
 		return Info{}, &model.FieldError{Field: "name", Msg: "Каскад с таким названием уже есть."}
 	} else if err != nil {
