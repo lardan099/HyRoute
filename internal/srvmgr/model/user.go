@@ -27,7 +27,8 @@ func (r Role) Valid() bool {
 // CanWrite: may change servers, jobs and configs.
 func (r Role) CanWrite() bool { return r.Valid() && r != RoleReadOnly }
 
-// CanManageUsers: may create users and revoke other users' sessions.
+// CanManageUsers: may create, change and delete users and revoke other
+// users' sessions (an owner only by an owner: auth.Service holds the rules).
 func (r Role) CanManageUsers() bool { return r == RoleOwner || r == RoleAdmin }
 
 // CanForce: may remove what HyRoute cannot take off a server that does not
@@ -50,6 +51,8 @@ type User struct {
 	Disabled     bool
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	// LastLoginAt is the newest login (zero: none known).
+	LastLoginAt time.Time
 }
 
 // Session is a login. Only the SHA-256 of its token is stored.
@@ -73,6 +76,21 @@ type AuditEntry struct {
 	Action  string
 	Target  string
 	Details string
+}
+
+// AuditFilter selects audit entries, newest first; zero fields match all.
+type AuditFilter struct {
+	UserID int64
+	// Actions: any of them.
+	Actions []string
+	// Target: this target ("server/3"); ending in "/", any target of that
+	// kind ("server/").
+	Target string
+	// From <= Time < To.
+	From, To time.Time
+	// BeforeID pages: entries older than this one.
+	BeforeID int64
+	Limit    int
 }
 
 // FieldError: an input field does not pass validation. Msg is for people

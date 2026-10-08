@@ -52,15 +52,15 @@ func conflict(err error) error {
 
 type rowScanner interface{ Scan(...any) error }
 
-const userCols = `id, username, password_hash, role, disabled, created_at, updated_at`
+const userCols = `id, username, password_hash, role, disabled, created_at, updated_at, last_login_at`
 
 func scanUser(r rowScanner) (model.User, error) {
 	var u model.User
-	var created, updated int64
+	var created, updated, login int64
 	var role string
-	err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &role, &u.Disabled, &created, &updated)
+	err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &role, &u.Disabled, &created, &updated, &login)
 	u.Role = model.Role(role)
-	u.CreatedAt, u.UpdatedAt = fromUnix(created), fromUnix(updated)
+	u.CreatedAt, u.UpdatedAt, u.LastLoginAt = fromUnix(created), fromUnix(updated), fromUnix(login)
 	return u, err
 }
 
@@ -112,7 +112,13 @@ func (d *DB) UserByName(ctx context.Context, username string) (model.User, error
 }
 
 func (d *DB) ListUsers(ctx context.Context) ([]model.User, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT `+userCols+` FROM users ORDER BY id`)
+	return listUsers(ctx, d.db)
+}
+
+func listUsers(ctx context.Context, q interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}) ([]model.User, error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+userCols+` FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -148,6 +154,62 @@ func (d *DB) SetUserDisabled(ctx context.Context, id int64, disabled bool, at ti
 		return store.ErrNotFound
 	}
 	return nil
+}
+
+func (d *DB) SetLastLogin(ctx context.Context, id int64, at time.Time) error {
+	_, err := d.db.ExecContext(ctx, `UPDATE users SET last_login_at = ? WHERE id = ?`, unixTime(at), id)
+	return err
+}
+
+func (d *DB) ChangeUsers(ctx context.Context, at time.Time, change func(all []model.User) ([]model.User, []int64, error)) error {
+	return d.tx(ctx, func(t *sql.Tx) error {
+		all, err := listUsers(ctx, t)
+		if err != nil {
+			return err
+		}
+		changed, revoke, err := change(all)
+		if err != nil {
+			return err
+		}
+		for _, u := range changed {
+			res, err := t.ExecContext(ctx, `UPDATE users SET role = ?, disabled = ?, password_hash = ?, updated_at = ? WHERE id = ?`,
+				string(u.Role), u.Disabled, u.PasswordHash, unixTime(at), u.ID)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return store.ErrNotFound
+			}
+		}
+		for _, id := range revoke {
+			if _, err := t.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, unixTime(at), id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (d *DB) DeleteUser(ctx context.Context, id int64, check func(all []model.User) error) error {
+	return d.tx(ctx, func(t *sql.Tx) error {
+		all, err := listUsers(ctx, t)
+		if err != nil {
+			return err
+		}
+		if err := check(all); err != nil {
+			return err
+		}
+		// Sessions go with the user (ON DELETE CASCADE); what the user made
+		// stays without its author (ON DELETE SET NULL).
+		res, err := t.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
 }
 
 const sessionCols = `id, token_hash, user_id, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent`
@@ -253,7 +315,50 @@ func (d *DB) TrimAudit(ctx context.Context, actions []string, keep int) error {
 }
 
 func (d *DB) ListAudit(ctx context.Context, limit int) ([]model.AuditEntry, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT id, ts, user_id, action, target, details FROM audit_log ORDER BY id DESC LIMIT ?`, limit)
+	return d.queryAudit(ctx, `SELECT id, ts, user_id, action, target, details FROM audit_log ORDER BY id DESC LIMIT ?`, limit)
+}
+
+func (d *DB) QueryAudit(ctx context.Context, f model.AuditFilter) ([]model.AuditEntry, error) {
+	var where []string
+	var args []any
+	if f.UserID != 0 {
+		where, args = append(where, "user_id = ?"), append(args, f.UserID)
+	}
+	if len(f.Actions) > 0 {
+		where = append(where, "action IN ("+strings.Repeat(",?", len(f.Actions))[1:]+")")
+		for _, a := range f.Actions {
+			args = append(args, a)
+		}
+	}
+	if kind, ok := strings.CutSuffix(f.Target, "/"); ok && kind != "" {
+		// A range rather than LIKE: no wildcards to escape, and the index
+		// on target serves it ('0' follows '/').
+		where, args = append(where, "target >= ? AND target < ?"), append(args, kind+"/", kind+"0")
+	} else if f.Target != "" {
+		where, args = append(where, "target = ?"), append(args, f.Target)
+	}
+	if !f.From.IsZero() {
+		where, args = append(where, "ts >= ?"), append(args, f.From.Unix())
+	}
+	if !f.To.IsZero() {
+		where, args = append(where, "ts < ?"), append(args, f.To.Unix())
+	}
+	if f.BeforeID != 0 {
+		where, args = append(where, "id < ?"), append(args, f.BeforeID)
+	}
+	q := `SELECT id, ts, user_id, action, target, details FROM audit_log`
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+	limit := f.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	return d.queryAudit(ctx, q+` ORDER BY id DESC LIMIT ?`, append(args, limit)...)
+}
+
+func (d *DB) queryAudit(ctx context.Context, q string, args ...any) ([]model.AuditEntry, error) {
+	rows, err := d.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

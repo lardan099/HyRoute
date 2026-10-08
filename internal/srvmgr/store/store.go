@@ -107,6 +107,17 @@ type Users interface {
 	// UpdatePasswordHash replaces the hash (rehash with new parameters).
 	UpdatePasswordHash(ctx context.Context, id int64, hash string, at time.Time) error
 	SetUserDisabled(ctx context.Context, id int64, disabled bool, at time.Time) error
+	// SetLastLogin records a login of the user.
+	SetLastLogin(ctx context.Context, id int64, at time.Time) error
+	// ChangeUsers lets change edit users in one transaction: it gets every
+	// user and returns those it changed (their role, password hash and
+	// disabled flag are written, updated_at set to at) and the users whose
+	// sessions end at at. A check across users (the last owner) made in
+	// change holds when it commits: two changes at once cannot both pass it.
+	ChangeUsers(ctx context.Context, at time.Time, change func(all []model.User) (changed []model.User, revoke []int64, err error)) error
+	// DeleteUser removes the user and its sessions once check accepted it
+	// against every user, atomically like ChangeUsers.
+	DeleteUser(ctx context.Context, id int64, check func(all []model.User) error) error
 }
 
 // Sessions stores logins by the hash of their token.
@@ -131,6 +142,9 @@ type Audit interface {
 	AddAudit(ctx context.Context, e model.AuditEntry) error
 	// ListAudit returns the newest entries first.
 	ListAudit(ctx context.Context, limit int) ([]model.AuditEntry, error)
+	// QueryAudit returns the entries f selects, newest first (Limit: 1 to
+	// 500, 100 by default).
+	QueryAudit(ctx context.Context, f model.AuditFilter) ([]model.AuditEntry, error)
 	// TrimAudit deletes the entries with one of actions except the newest
 	// keep of them.
 	TrimAudit(ctx context.Context, actions []string, keep int) error
