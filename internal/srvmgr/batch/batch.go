@@ -108,6 +108,13 @@ func (r *Runner) Run(ctx context.Context) {
 // Create stores a batch of b's action, params and servers (b.Items: their
 // server IDs in order) and starts it. Parallel 0 is DefaultParallel.
 func (r *Runner) Create(ctx context.Context, b model.Batch) (model.Batch, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.create(ctx, b)
+}
+
+// create is Create for a caller that holds r.mu.
+func (r *Runner) create(ctx context.Context, b model.Batch) (model.Batch, error) {
 	if b.Parallel == 0 {
 		b.Parallel = DefaultParallel
 	}
@@ -117,8 +124,6 @@ func (r *Runner) Create(ctx context.Context, b model.Batch) (model.Batch, error)
 	if len(b.Items) == 0 {
 		return b, &model.FieldError{Field: "servers", Msg: "Выберите серверы."}
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	now := r.Now()
 	b.State, b.Stop, b.StoppedBy, b.CreatedAt, b.UpdatedAt, b.FinishedAt = model.BatchRunning, model.StopNone, 0, now, now, time.Time{}
 	for i := range b.Items {
@@ -156,9 +161,11 @@ func (r *Runner) Stop(ctx context.Context, id, actor int64) (model.Batch, error)
 // Retry starts a new batch of the same action over the servers that
 // failed or were skipped, the canary first again.
 func (r *Runner) Retry(ctx context.Context, id, actor int64) (model.Batch, error) {
+	// One lock for the check and the new batch: two retries at once make
+	// one batch.
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	b, err := r.Store.BatchByID(ctx, id)
-	r.mu.Unlock()
 	if err != nil {
 		return b, err
 	}
@@ -177,7 +184,7 @@ func (r *Runner) Retry(ctx context.Context, id, actor int64) (model.Batch, error
 	if len(next.Items) == 0 {
 		return b, ErrNothingToRetry
 	}
-	return r.Create(ctx, next)
+	return r.create(ctx, next)
 }
 
 func (r *Runner) save(ctx context.Context, b *model.Batch) error {
