@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/lardan099/hyroute/internal/hyconfig"
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/backup"
@@ -361,6 +363,7 @@ func (x *build) loadServer(ctx context.Context, s model.Server) error {
 			x.notes = append(x.notes, fmt.Sprintf("Конфиг сервера %d (ревизия %d) не открылся.", s.ID, rev.Revision))
 			break
 		}
+		x.p.secret(yamlSecrets(b)...)
 		if c, err := hyconfig.ParseServer(b); err == nil {
 			cur.cfg = c
 			x.p.secret(service.ConfigSecrets(c)...)
@@ -381,6 +384,36 @@ func (x *build) loadServer(ctx context.Context, s model.Server) error {
 		}
 	}
 	return nil
+}
+
+// yamlSecrets are the strings of a config under secret keys, in
+// userpass, or with a secret pattern in them: what the typed model may
+// not list (a field it does not know, a config it does not read).
+func yamlSecrets(b []byte) []string {
+	var doc any
+	if yaml.Unmarshal(b, &doc) != nil {
+		return nil
+	}
+	var out []string
+	var walk func(key string, v any, all bool)
+	walk = func(key string, v any, all bool) {
+		switch x := v.(type) {
+		case map[string]any:
+			for k, e := range x {
+				walk(k, e, all || strings.EqualFold(k, "userpass"))
+			}
+		case []any:
+			for _, e := range x {
+				walk(key, e, all)
+			}
+		case string:
+			if all || redact.IsSecretKey(key) || redact.String(x) != x {
+				out = append(out, x)
+			}
+		}
+	}
+	walk("", doc, false)
+	return out
 }
 
 // connectedRe is the line a job logs when it connects: the user and the

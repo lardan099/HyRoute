@@ -59,6 +59,7 @@ var Canaries = []string{
 	sshPassword, keyPassphrase, keyLine1, keyLine2, pin, fingerprint,
 	"canary-auth-Pa55-6", "canary-user-Pa55-1", "canary-user-Pa55-2", "canary-obfs-Pa55-3", "canary-stats-secret-4", "canary-socks-Pa55-5",
 	"canary-dns-token-8", "canary-out-Pa55-9", "canary-link-Pa55-10", "canary-link-socks-11", "canary-link-socks-Pa55-12",
+	"canary-unknown-secret-13", "canary-broken-Pa55-14",
 	"canary-ivan", "canary-masha", "canary-removed-user", "canary-socks-user", "canary-admin-boris", "canary-operator-vera",
 	"acme-canary.example.net", "canary-acme@example.org", "sni-canary.example.com", "masq-canary.example.com", "acl-canary.example.com",
 	"check-canary.example.com", "dns-canary.example.com", "evil-canary.example.com", AllowedHost,
@@ -106,6 +107,15 @@ tls:
 auth:
   type: password
   password: canary-auth-Pa55-6
+futureOption:
+  apiSecret: canary-unknown-secret-13
+`
+
+// config3 is not a config Hysteria's model reads.
+const config3 = `listen: [not, a, string]
+auth:
+  type: password
+  password: canary-broken-Pa55-14
 `
 
 // Seed is what Fill stored.
@@ -147,7 +157,7 @@ func Fill(t testing.TB, st store.Store, keys *secrets.Keyring) Seed {
 	}
 	s1 := server(ServerName, ServerHost, model.AuthPassword, map[model.CredKind]string{model.CredSSHPassword: sshPassword})
 	s2 := server(ExitName, ExitHost, model.AuthKey, map[model.CredKind]string{model.CredSSHKey: sshKey, model.CredSSHKeyPassphrase: keyPassphrase})
-	server(V6Name, V6Host, model.AuthPassword, map[model.CredKind]string{model.CredSSHPassword: sshPassword})
+	s3 := server(V6Name, V6Host, model.AuthPassword, map[model.CredKind]string{model.CredSSHPassword: sshPassword})
 	must(st.SetServerState(ctx, s1, model.StateDegraded, now))
 
 	addConfig := func(id int64, yaml string, meta model.ConfigMeta) {
@@ -156,6 +166,7 @@ func Fill(t testing.TB, st store.Store, keys *secrets.Keyring) Seed {
 	}
 	addConfig(s1, config1, model.ConfigMeta{Version: "v2.6.0", Listen: ":443", Ports: "443", TLS: "acme", PinSHA256: pin, SNI: "sni-canary.example.com", Obfs: "salamander", Auth: "userpass"})
 	addConfig(s2, config2, model.ConfigMeta{Version: "v2.6.0", Listen: ":8443", Ports: "8443", TLS: "file", Auth: "password"})
+	addConfig(s3, config3, model.ConfigMeta{Version: "v2.6.0", Auth: "password"})
 	must(st.SetInstallation(ctx, model.Installation{ServerID: s1, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", User: "hysteria", Version: "v2.6.0", Managed: true, At: now}))
 	must(st.SetServerGeo(ctx, model.ServerGeo{ServerID: s1, Release: "202610010000", At: now}))
 	listening := false
@@ -202,6 +213,7 @@ func Fill(t testing.TB, st store.Store, keys *secrets.Keyring) Seed {
 		"user canary-removed-user removed, canary-masha kept; ACME account canary-acme@example.org",
 		"egress 198.51.100.200, key "+sshKey+" passphrase "+keyPassphrase,
 		"stats secret canary-stats-secret-4 auth canary-auth-Pa55-6",
+		"options canary-unknown-secret-13 and canary-broken-Pa55-14",
 		"Не удалось подключиться к серверу "+ServerName+".")
 
 	ch := model.Chain{Name: ChainName, Nodes: []int64{s1, s2}, Links: []model.ChainLink{{Params: json.RawMessage(`{"localPort":20000,"checkTarget":"check-canary.example.com:443"}`)}}, CreatedAt: now, UpdatedAt: now}
