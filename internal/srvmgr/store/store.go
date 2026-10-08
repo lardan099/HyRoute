@@ -112,8 +112,8 @@ type Users interface {
 	// SetLastLogin records a login of the user.
 	SetLastLogin(ctx context.Context, id int64, at time.Time) error
 	// ChangeUsers lets change edit users in one transaction: it gets every
-	// user and returns those it changed (their role, password hash and
-	// disabled flag are written, updated_at set to at) and the users whose
+	// user and returns those it changed (their role, scope, password hash
+	// and disabled flag are written, updated_at set to at) and the users whose
 	// sessions end at at. A check across users (the last owner) made in
 	// change holds when it commits: two changes at once cannot both pass it.
 	ChangeUsers(ctx context.Context, at time.Time, change func(all []model.User) (changed []model.User, revoke []int64, err error)) error

@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -27,6 +28,11 @@ var _ store.Store = (*DB)(nil)
 // Open opens (creating if needed) the database file and applies pending
 // migrations. A database written by a newer controller is refused.
 func Open(ctx context.Context, path string) (*DB, error) {
+	return openFS(ctx, path, migrationFS)
+}
+
+// openFS is Open with the migrations of fsys (tests stop at a version).
+func openFS(ctx context.Context, path string, fsys fs.FS) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
@@ -51,7 +57,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, err
 	}
 	d := &DB{db: sqldb}
-	if err := d.migrate(ctx); err != nil {
+	if err := d.migrateFS(ctx, fsys); err != nil {
 		sqldb.Close()
 		return nil, err
 	}

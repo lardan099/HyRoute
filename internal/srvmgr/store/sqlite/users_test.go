@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -338,5 +339,125 @@ func TestLastLoginMigration(t *testing.T) {
 	v, _ := d.UserByID(ctx, 2)
 	if o.LastLoginAt.Unix() != 20 || !v.LastLoginAt.IsZero() {
 		t.Fatalf("last logins %v %v", o.LastLoginAt, v.LastLoginAt)
+	}
+}
+
+// The scope migration (P4-04) rebuilds users with foreign keys on in the
+// pool, as the controller opens the database: sessions and the authors of
+// what users made stay, everyone reaches all servers, the ID sequence
+// goes on, and foreign keys hold afterwards.
+func TestUserScopeMigration(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "old.db")
+	ms, err := migrations(migrationFS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := fstest.MapFS{}
+	for _, m := range ms {
+		if m.name == "user_scope" {
+			break
+		}
+		old[filepathName(m)] = &fstest.MapFile{Data: []byte(m.sql)}
+	}
+	if len(old) == len(ms) {
+		t.Fatal("no user_scope migration")
+	}
+	d, err := openFS(ctx, path, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.db.ExecContext(ctx, `INSERT INTO users (id, username, password_hash, role, disabled, created_at, updated_at, last_login_at) VALUES
+			(1, 'owner', 'h1', 'owner', 0, 1, 2, 3), (2, 'op', 'h2', 'operator', 1, 1, 2, 0), (3, 'viewer', 'h3', 'readonly', 0, 1, 2, 0), (4, 'gone', 'h4', 'readonly', 0, 1, 2, 0);
+		DELETE FROM users WHERE id = 4;
+		INSERT INTO sessions (token_hash, user_id, created_at, last_seen_at, expires_at) VALUES (x'01', 2, 1, 1, 9999999999), (x'02', 3, 1, 1, 9999999999);
+		INSERT INTO presets (id, name, config, created_by, created_at, updated_at) VALUES (1, 'p', '{}', 2, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	d, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	us, err := d.ListUsers(ctx)
+	if err != nil || len(us) != 3 {
+		t.Fatalf("%+v %v", us, err)
+	}
+	for _, u := range us {
+		if !u.Scope.All {
+			t.Fatalf("%s: scope %+v", u.Username, u.Scope)
+		}
+	}
+	if us[1].Role != model.RoleOperator || !us[1].Disabled || us[1].PasswordHash != "h2" || us[0].LastLoginAt.Unix() != 3 {
+		t.Fatalf("users changed: %+v", us)
+	}
+	count := func(q string, args ...any) int {
+		var n int
+		if err := d.db.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := count(`SELECT COUNT(*) FROM sessions`); n != 2 {
+		t.Fatalf("%d sessions left", n)
+	}
+	if n := count(`SELECT COUNT(*) FROM presets WHERE created_by = 2`); n != 1 {
+		t.Fatal("the author of a preset lost")
+	}
+	// A deleted user's ID does not come back: the audit log names users
+	// by ID.
+	u := model.User{Username: "new", PasswordHash: "h", Role: model.RoleClients, Scope: model.Scope{Tags: []string{"de"}}}
+	if err := d.CreateUser(ctx, &u); err != nil || u.ID != 5 {
+		t.Fatalf("new user: id %d, %v", u.ID, err)
+	}
+	if got, _ := d.UserByID(ctx, u.ID); got.Role != model.RoleClients || !got.Scope.Equal(u.Scope) {
+		t.Fatalf("%+v", got)
+	}
+	// Foreign keys are on again in every connection of the pool.
+	conns := make([]*sql.Conn, 3)
+	for i := range conns {
+		if conns[i], err = d.db.Conn(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var on int
+		if err := conns[i].QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&on); err != nil || on != 1 {
+			t.Fatalf("connection %d: foreign_keys %d %v", i, on, err)
+		}
+	}
+	for _, c := range conns {
+		c.Close()
+	}
+	if _, err := d.db.ExecContext(ctx, `DELETE FROM users WHERE id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if count(`SELECT COUNT(*) FROM sessions WHERE user_id = 2`) != 0 || count(`SELECT COUNT(*) FROM presets WHERE created_by IS NULL`) != 1 {
+		t.Fatal("ON DELETE actions do not run after the migration")
+	}
+	if _, err := d.db.ExecContext(ctx, `INSERT INTO sessions (token_hash, user_id, created_at, last_seen_at, expires_at) VALUES (x'03', 99, 1, 1, 1)`); err == nil {
+		t.Fatal("a session of no user was stored")
+	}
+}
+
+// A migration that turns foreign keys off commits only when they hold.
+func TestNoForeignKeysMigrationChecked(t *testing.T) {
+	d, _ := openTemp(t)
+	ctx := context.Background()
+	have, _ := d.SchemaVersion(ctx)
+	fsys := fstest.MapFS{}
+	ms, _ := migrations(migrationFS)
+	for _, m := range ms {
+		fsys[filepathName(m)] = &fstest.MapFile{Data: []byte(m.sql)}
+	}
+	fsys[filepathName(migration{version: len(ms) + 1, name: "orphan"})] = &fstest.MapFile{Data: []byte(noForeignKeys + "\nINSERT INTO sessions (token_hash, user_id, created_at, last_seen_at, expires_at) VALUES (x'09', 77, 1, 1, 1);")}
+	if err := d.migrateFS(ctx, fsys); err == nil || !strings.Contains(err.Error(), "foreign key") {
+		t.Fatalf("orphan row committed: %v", err)
+	}
+	if v, _ := d.SchemaVersion(ctx); v != have {
+		t.Fatalf("version %d", v)
+	}
+	var on int
+	if err := d.db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&on); err != nil || on != 1 {
+		t.Fatalf("foreign_keys %d %v", on, err)
 	}
 }

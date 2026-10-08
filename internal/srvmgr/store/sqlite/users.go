@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -52,23 +53,40 @@ func conflict(err error) error {
 
 type rowScanner interface{ Scan(...any) error }
 
-const userCols = `id, username, password_hash, role, disabled, created_at, updated_at, last_login_at`
+const userCols = `id, username, password_hash, role, scope, disabled, created_at, updated_at, last_login_at`
 
 func scanUser(r rowScanner) (model.User, error) {
 	var u model.User
 	var created, updated, login int64
-	var role string
-	err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &role, &u.Disabled, &created, &updated, &login)
-	u.Role = model.Role(role)
+	var role, scope string
+	err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &role, &scope, &u.Disabled, &created, &updated, &login)
+	u.Role, u.Scope = model.Role(role), decodeScope(scope)
 	u.CreatedAt, u.UpdatedAt, u.LastLoginAt = fromUnix(created), fromUnix(updated), fromUnix(login)
 	return u, err
+}
+
+// encodeScope is how users.scope is stored: {"all":true} or
+// {"tags":[...]}.
+func encodeScope(s model.Scope) string {
+	b, _ := json.Marshal(s.Normalize())
+	return string(b)
+}
+
+// decodeScope reads users.scope; a value that does not parse reaches no
+// server.
+func decodeScope(v string) model.Scope {
+	var s model.Scope
+	if json.Unmarshal([]byte(v), &s) != nil {
+		return model.Scope{}
+	}
+	return s.Normalize()
 }
 
 func insertUser(ctx context.Context, q interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }, u *model.User) error {
-	res, err := q.ExecContext(ctx, `INSERT INTO users (username, password_hash, role, disabled, created_at, updated_at, last_login_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		u.Username, u.PasswordHash, string(u.Role), u.Disabled, unixTime(u.CreatedAt), unixTime(u.UpdatedAt), unixTime(u.LastLoginAt))
+	res, err := q.ExecContext(ctx, `INSERT INTO users (username, password_hash, role, scope, disabled, created_at, updated_at, last_login_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.Username, u.PasswordHash, string(u.Role), encodeScope(u.Scope), u.Disabled, unixTime(u.CreatedAt), unixTime(u.UpdatedAt), unixTime(u.LastLoginAt))
 	if err != nil {
 		return conflict(err)
 	}
@@ -172,8 +190,8 @@ func (d *DB) ChangeUsers(ctx context.Context, at time.Time, change func(all []mo
 			return err
 		}
 		for _, u := range changed {
-			res, err := t.ExecContext(ctx, `UPDATE users SET role = ?, disabled = ?, password_hash = ?, updated_at = ? WHERE id = ?`,
-				string(u.Role), u.Disabled, u.PasswordHash, unixTime(at), u.ID)
+			res, err := t.ExecContext(ctx, `UPDATE users SET role = ?, scope = ?, disabled = ?, password_hash = ?, updated_at = ? WHERE id = ?`,
+				string(u.Role), encodeScope(u.Scope), u.Disabled, u.PasswordHash, unixTime(at), u.ID)
 			if err != nil {
 				return err
 			}

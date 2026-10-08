@@ -4,24 +4,27 @@ package model
 
 import "time"
 
-// Role is what a user may do. Phase 1 enforces only that ReadOnly cannot
-// change anything and that user management needs Owner or Admin.
+// Role is a named set of permissions (see Permissions, P4-04); there are
+// no custom roles.
 type Role string
 
 const (
 	RoleOwner    Role = "owner"
 	RoleAdmin    Role = "admin"
 	RoleOperator Role = "operator"
+	// RoleClients (менеджер клиентов): the client users and links of the
+	// servers in scope, nothing else of their configs.
+	RoleClients  Role = "clients"
 	RoleReadOnly Role = "readonly"
 )
 
+// Roles are the built-in roles, the most powerful first.
+var Roles = []Role{RoleOwner, RoleAdmin, RoleOperator, RoleClients, RoleReadOnly}
+
 // Valid reports whether r is a known role.
 func (r Role) Valid() bool {
-	switch r {
-	case RoleOwner, RoleAdmin, RoleOperator, RoleReadOnly:
-		return true
-	}
-	return false
+	_, ok := rolePerms[r]
+	return ok
 }
 
 // CanWrite: may change servers, jobs and configs.
@@ -29,7 +32,7 @@ func (r Role) CanWrite() bool { return r.Valid() && r != RoleReadOnly }
 
 // CanManageUsers: may create, change and delete users and revoke other
 // users' sessions (an owner only by an owner: auth.Service holds the rules).
-func (r Role) CanManageUsers() bool { return r == RoleOwner || r == RoleAdmin }
+func (r Role) CanManageUsers() bool { return r.Can(PermUsers) }
 
 // CanForce: may remove what HyRoute cannot take off a server that does not
 // answer (a cascade deleted without its unreachable server).
@@ -40,7 +43,7 @@ func (r Role) CanForce() bool { return r == RoleOwner || r == RoleAdmin }
 func (r Role) CanBackup() bool { return r == RoleOwner }
 
 // CanCheckKey: may try a copy of the master key against the database.
-func (r Role) CanCheckKey() bool { return r == RoleOwner || r == RoleAdmin }
+func (r Role) CanCheckKey() bool { return r.Can(PermSettings) }
 
 // CanDiagnose: may download the diagnostic bundle (the state, logs and
 // config summaries of every server, pseudonymized).
@@ -52,9 +55,12 @@ type User struct {
 	Username     string
 	PasswordHash string
 	Role         Role
-	Disabled     bool
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// Scope: the servers the user's server-bound permissions reach; Reach
+	// is what holds for the role.
+	Scope     Scope
+	Disabled  bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 	// LastLoginAt is the newest login (zero: none known).
 	LastLoginAt time.Time
 }

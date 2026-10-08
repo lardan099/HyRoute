@@ -242,7 +242,7 @@ func (s *Service) Setup(ctx context.Context, token, username, password string, m
 	if err != nil {
 		return Issued{}, err
 	}
-	u := model.User{Username: username, PasswordHash: hash, Role: model.RoleOwner, CreatedAt: now, UpdatedAt: now, LastLoginAt: now}
+	u := model.User{Username: username, PasswordHash: hash, Role: model.RoleOwner, Scope: model.ScopeAll, CreatedAt: now, UpdatedAt: now, LastLoginAt: now}
 	if err := s.Store.CreateFirstUser(ctx, &u); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return Issued{}, ErrSetupDone
@@ -496,7 +496,7 @@ func (s *Service) CreateUser(ctx context.Context, p Principal, username, passwor
 		return model.User{}, err
 	}
 	now := s.Now()
-	u := model.User{Username: username, PasswordHash: hash, Role: role, CreatedAt: now, UpdatedAt: now}
+	u := model.User{Username: username, PasswordHash: hash, Role: role, Scope: model.ScopeAll, CreatedAt: now, UpdatedAt: now}
 	if err := s.Store.CreateUser(ctx, &u); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return model.User{}, &model.FieldError{Field: "username", Msg: "Пользователь с таким именем уже есть."}
