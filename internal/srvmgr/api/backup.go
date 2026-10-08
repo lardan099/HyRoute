@@ -63,7 +63,7 @@ func (s *server) createBackup(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, &Error{Status: http.StatusInternalServerError, Code: "backup_failed", Message: "Копия не сделана.", Details: err.Error()})
 		return
 	}
-	s.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), UserID: p.User.ID, Action: "backup.create", Target: "backup/" + info.Name})
+	s.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), UserID: p.User.ID, Action: "backup_created", Target: "backup/" + info.Name})
 	writeJSON(w, http.StatusCreated, info)
 }
 
@@ -88,7 +88,7 @@ func (s *server) downloadBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	if err := s.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), UserID: p.User.ID, Action: "backup.download", Target: "backup/" + info.Name}); err != nil {
+	if err := s.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), UserID: p.User.ID, Action: "backup_downloaded", Target: "backup/" + info.Name}); err != nil {
 		s.fail(w, r, err)
 		return
 	}
@@ -136,7 +136,7 @@ func (s *server) checkMasterKey(w http.ResponseWriter, r *http.Request) {
 	if rep.OK() {
 		outcome = "ok"
 	}
-	s.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), UserID: p.User.ID, Action: "master_key.check", Details: outcome})
+	s.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), UserID: p.User.ID, Action: "master_key_checked", Details: outcome})
 	if rep.Versions == nil {
 		rep.Versions = []secrets.VersionCheck{}
 	}

@@ -1489,11 +1489,11 @@ controller её бы не понял, берут блокировку катал
 миграций (`sqlite.OpenExisting`), а сессии и пароли controller читает из
 базы на каждый запрос.
 
-- `reset-password` — `auth.ResetPasswordLocal`: новый хеш, отзыв всех
-  живых сессий пользователя, аудит `user.password_reset` без
-  пользователя. Пароль создаётся (18 случайных байт, base64url) или
-  читается из первой строки stdin (`-password-stdin`) и проверяется как
-  при создании пользователя.
+- `reset-password` — `auth.ResetPasswordLocal`: новый хеш и отзыв всех
+  сессий пользователя в одной транзакции (`ChangeUsers`), аудит
+  `user_password_reset` без пользователя. Пароль создаётся
+  (`auth.GeneratePassword`) или читается из первой строки stdin
+  (`-password-stdin`) и проверяется как при создании пользователя.
 - `rekey` — `secrets.Verify`, затем `secrets.Rekey`:
   `RewrapSealed` по `sealedColumns` порциями до 100 строк или 16 МБ в
   транзакции (прерванный запуск повторяется с оставшихся), проверочное
@@ -1609,9 +1609,9 @@ JSON-строкой) и должно прийти за минуту; тело б
 | POST | `/api/v1/jobs/{id}/retry` | operator+; `unlink` с `force` — owner/admin | повтор с безопасного шага |
 | GET | `/api/v1/logs` | любая | `source=controller` (буфер последних записей процесса) или `jobs` (журналы заданий), фильтры `server`, `level`, `q` (подстрока без учёта регистра в любом алфавите); всё уже отредактировано |
 | GET | `/api/v1/backups` | owner | копии базы (`items`: имя, размер, время, зашифрована ли), расписание (`interval` в секундах, `keep`), шифруются ли, каталог, итог последней копии этого процесса (`last`) |
-| POST | `/api/v1/backups` | owner | сделать копию сейчас; 201 с описанием копии, аудит `backup.create`; ошибка — 500 `backup_failed` |
-| GET | `/api/v1/backups/{name}` | owner | скачать копию (`Content-Disposition: attachment`); имя — только из списка, аудит `backup.download` |
-| POST | `/api/v1/master-key/check` | owner, admin | `{"key": "<текст файла ключа>"}` → `ok` и по каждой версии ключа, которой зашифрованы данные, `ok`/`wrong`/`missing`, плюс версии текста, которые база не использует; не ключ — 400 `not_a_key`. Ключ не сохраняется и не пишется ни в журнал, ни в аудит (там — `master_key.check` с итогом) |
+| POST | `/api/v1/backups` | owner | сделать копию сейчас; 201 с описанием копии, аудит `backup_created`; ошибка — 500 `backup_failed` |
+| GET | `/api/v1/backups/{name}` | owner | скачать копию (`Content-Disposition: attachment`); имя — только из списка, аудит `backup_downloaded` |
+| POST | `/api/v1/master-key/check` | owner, admin | `{"key": "<текст файла ключа>"}` → `ok` и по каждой версии ключа, которой зашифрованы данные, `ok`/`wrong`/`missing`, плюс версии текста, которые база не использует; не ключ — 400 `not_a_key`. Ключ не сохраняется и не пишется ни в журнал, ни в аудит (там — `master_key_checked` с итогом) |
 
 ## Модель угроз
 

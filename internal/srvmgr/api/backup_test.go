@@ -66,7 +66,7 @@ func TestBackupsOwnerOnly(t *testing.T) {
 	for _, a := range audit {
 		actions = append(actions, a.Action)
 	}
-	if !strings.Contains(strings.Join(actions, " "), "backup.download") || !strings.Contains(strings.Join(actions, " "), "backup.create") {
+	if !strings.Contains(strings.Join(actions, " "), "backup_downloaded") || !strings.Contains(strings.Join(actions, " "), "backup_created") {
 		t.Fatalf("audit %v", actions)
 	}
 	for _, bad := range []string{"..%2Fhyroute-server.db", "t.db", "hyroute-server-20990101-000000.db"} {
@@ -106,7 +106,7 @@ func TestMasterKeyCheck(t *testing.T) {
 	n := 0
 	secret := strings.TrimPrefix(strings.TrimSpace(keyText), "1:")
 	for _, a := range audit {
-		if a.Action == "master_key.check" {
+		if a.Action == "master_key_checked" {
 			n++
 		}
 		if strings.Contains(a.Details+a.Target, secret[:16]) {

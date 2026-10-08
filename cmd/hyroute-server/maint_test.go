@@ -134,7 +134,7 @@ func TestToolResetPassword(t *testing.T) {
 	audit, _ := db.ListAudit(context.Background(), 50)
 	resets := 0
 	for _, a := range audit {
-		if a.Action == "user.password_reset" && a.Target == "alice" {
+		if a.Action == "user_password_reset" && strings.HasPrefix(a.Details, "alice ") {
 			resets++
 		}
 		if strings.Contains(a.Details, m[1]) || strings.Contains(a.Details, "brand new") {

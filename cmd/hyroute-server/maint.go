@@ -3,8 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -146,11 +144,10 @@ func toolResetPassword(ctx context.Context, args []string, env toolEnv) error {
 		}
 		password = strings.TrimRight(line, "\r\n")
 	} else {
-		b := make([]byte, 18)
-		if _, err := rand.Read(b); err != nil {
+		if password, err = auth.GeneratePassword(); err != nil {
 			return err
 		}
-		password, made = base64.RawURLEncoding.EncodeToString(b), true
+		made = true
 	}
 	a := auth.New(db)
 	u, err := a.ResetPasswordLocal(ctx, rest[0], password)
