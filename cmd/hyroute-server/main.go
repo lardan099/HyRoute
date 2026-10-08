@@ -189,9 +189,11 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		close(busDone)
 	}()
 	defer func() { stopJobs(); <-busDone }()
+	attention := &events.Attention{Store: db, Keys: keys, Redact: red, Geo: geoFiles, GeoInterval: cfg.GeoInterval, Monitoring: cfg.MonitorInterval > 0}
 	if cfg.MonitorInterval > 0 {
 		mon := &monitor.Collector{Store: db, Conn: conn, Keys: keys, Log: log, Interval: cfg.MonitorInterval,
 			Links: &cascade.Checker{Store: db, Keys: keys, Events: watch}, Events: watch, Online: monitor.Online}
+		attention.Paused = mon.Paused
 		monDone := make(chan struct{})
 		go func() {
 			mon.Run(jobsCtx)
@@ -266,8 +268,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			},
 			Diag: &diag.Builder{Store: db, Keys: keys, Logs: logs, Geo: geoFiles, Backups: backups, Version: version,
 				Settings: diag.SettingsOf(cfg, getenv, pass != "", true)},
-			UI:      admin.FS(),
-			Streams: streams,
+			UI:        admin.FS(),
+			Streams:   streams,
+			Attention: attention,
 			OnSetupDone: func() {
 				os.Remove(tokenFile)
 				log.Info("owner created, setup token removed")

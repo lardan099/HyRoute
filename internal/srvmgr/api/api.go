@@ -24,6 +24,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
 	"github.com/lardan099/hyroute/internal/srvmgr/diag"
+	"github.com/lardan099/hyroute/internal/srvmgr/events"
 	"github.com/lardan099/hyroute/internal/srvmgr/geo"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/logbuf"
@@ -77,6 +78,8 @@ type Deps struct {
 	KeyCheck func(ctx context.Context, text string) (secrets.KeyReport, error)
 	// Diag builds the diagnostic bundle (nil: not offered).
 	Diag *diag.Builder
+	// Attention is the summary «Требует внимания» (nil: an empty one).
+	Attention *events.Attention
 	// Streams ends the live event streams (job events, the Hysteria
 	// journal) when it is done: main cancels it when shutdown starts, so
 	// they do not hold Shutdown while other requests finish. nil: a
@@ -196,6 +199,8 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/master-key/check", s.authed(anyRole, s.checkMasterKey))
 	mux.HandleFunc("GET /api/v1/diag", s.authed(anyRole, s.diagFiles))
 	mux.HandleFunc("GET /api/v1/diag/bundle", s.authed(anyRole, s.diagBundle))
+	mux.HandleFunc("GET /api/v1/events", s.authed(anyRole, s.listEvents))
+	mux.HandleFunc("GET /api/v1/attention", s.authed(anyRole, s.attention))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { writeError(w, errNotFound) })
 	if d.UI != nil {
 		mux.Handle("/", uiHandler(d.UI))
