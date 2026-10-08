@@ -96,10 +96,12 @@ type ChainLink struct {
 	State  LinkState
 	// FromRevision and ToRevision are the config revisions of both
 	// servers the link was last deployed with; ConfigSHA256 is the hash
-	// of its client config then.
+	// of its client config then, UnitSHA256 of its unit (P4-06; "": not
+	// recorded).
 	FromRevision int
 	ToRevision   int
 	ConfigSHA256 string
+	UnitSHA256   string
 	UpdatedAt    time.Time
 }
 

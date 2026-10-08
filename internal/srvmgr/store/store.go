@@ -51,7 +51,18 @@ type Store interface {
 	ServerGeos
 	Events
 	AlertChannels
+	Drifts
 	Close() error
+}
+
+// Drifts stores the latest reconciliation of each server (P4-06).
+type Drifts interface {
+	// SetDrift replaces what is stored for d.ServerID.
+	SetDrift(ctx context.Context, d model.Drift) error
+	// Drift is the server's (ErrNotFound: never checked).
+	Drift(ctx context.Context, serverID int64) (model.Drift, error)
+	// Drifts is every server's, by server.
+	Drifts(ctx context.Context) ([]model.Drift, error)
 }
 
 // Chains stores cascades (P3-01). The role of a server follows its place

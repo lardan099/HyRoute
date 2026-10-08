@@ -40,6 +40,7 @@ var sealedColumns = []sealedColumn{
 		return model.LinkSecretContext(id, n)
 	}},
 	{"alert_channels", "secret", "id, ''", func(id int64, _ string) string { return model.AlertSecretContext(id) }},
+	{"drift", "config", "server_id, ''", func(id int64, _ string) string { return model.DriftContext(id) }},
 }
 
 // isSealed is the SQL condition that column holds a sealed value: it

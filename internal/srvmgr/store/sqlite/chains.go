@@ -74,7 +74,7 @@ func loadChains(ctx context.Context, q querier, id int64) ([]model.Chain, error)
 		return nil, err
 	}
 
-	rows, err = q.QueryContext(ctx, `SELECT chain_id, idx, params, state, from_revision, to_revision, config_sha256, updated_at FROM chain_links`+where+` ORDER BY chain_id, idx`, args...)
+	rows, err = q.QueryContext(ctx, `SELECT chain_id, idx, params, state, from_revision, to_revision, config_sha256, unit_sha256, updated_at FROM chain_links`+where+` ORDER BY chain_id, idx`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func loadChains(ctx context.Context, q querier, id int64) ([]model.Chain, error)
 		var l model.ChainLink
 		var params, state string
 		var updated int64
-		if err := rows.Scan(&l.ChainID, &l.Idx, &params, &state, &l.FromRevision, &l.ToRevision, &l.ConfigSHA256, &updated); err != nil {
+		if err := rows.Scan(&l.ChainID, &l.Idx, &params, &state, &l.FromRevision, &l.ToRevision, &l.ConfigSHA256, &l.UnitSHA256, &updated); err != nil {
 			return nil, err
 		}
 		l.Params, l.State, l.UpdatedAt = []byte(params), model.LinkState(state), fromUnix(updated)
@@ -242,8 +242,8 @@ func (d *DB) UpdateLink(ctx context.Context, l model.ChainLink) error {
 	if params == "" {
 		params = "{}"
 	}
-	res, err := d.db.ExecContext(ctx, `UPDATE chain_links SET params = ?, state = ?, from_revision = ?, to_revision = ?, config_sha256 = ?, updated_at = ? WHERE chain_id = ? AND idx = ?`,
-		params, l.State, l.FromRevision, l.ToRevision, l.ConfigSHA256, unixTime(l.UpdatedAt), l.ChainID, l.Idx)
+	res, err := d.db.ExecContext(ctx, `UPDATE chain_links SET params = ?, state = ?, from_revision = ?, to_revision = ?, config_sha256 = ?, unit_sha256 = ?, updated_at = ? WHERE chain_id = ? AND idx = ?`,
+		params, l.State, l.FromRevision, l.ToRevision, l.ConfigSHA256, l.UnitSHA256, unixTime(l.UpdatedAt), l.ChainID, l.Idx)
 	if err != nil {
 		return err
 	}

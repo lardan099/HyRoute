@@ -22,6 +22,9 @@ const (
 	ConfigCascade ConfigSource = "cascade"
 	// ConfigGeo: the geo job set the paths of the databases (P3-07).
 	ConfigGeo ConfigSource = "geo"
+	// ConfigExternal: the config found on the server, changed outside
+	// HyRoute, which the admin accepted (P4-06).
+	ConfigExternal ConfigSource = "external"
 )
 
 // ServerGeo is the release of the geo databases a server has (P3-07).
@@ -93,7 +96,13 @@ type Installation struct {
 	// Managed: HyRoute installed it (deploy); an imported installation is
 	// left as it is until the admin replaces it.
 	Managed bool
-	At      time.Time
+	// BinarySHA256 and UnitSHA256 are what HyRoute last installed or
+	// found there (P4-06): the SHA-256 of the binary and the unit's
+	// fingerprint (remote.UnitSHA256). "": nothing recorded, the
+	// reconciliation does not compare it.
+	BinarySHA256 string
+	UnitSHA256   string
+	At           time.Time
 	// Firewall is kept by SetFirewall; SetInstallation leaves it alone.
 	Firewall Firewall
 }
