@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/batch"
@@ -339,7 +341,9 @@ func (s *server) hysteriaRelease(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		if hyrelease.Older(in.Version, out.Target) {
+		// A service that runs Hysteria through docker, env or a shell is
+		// not updated by HyRoute (deploy.ErrNotHysteria): not offered.
+		if hyrelease.Older(in.Version, out.Target) && strings.HasPrefix(path.Base(in.Binary), "hysteria") {
 			out.Outdated = append(out.Outdated, outdatedJSON{ID: srv.ID, Name: srv.Name, Version: in.Version})
 		}
 	}

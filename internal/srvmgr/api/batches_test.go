@@ -205,6 +205,10 @@ func TestReleaseNotice(t *testing.T) {
 	s.ready(s.a, "v2.6.0")
 	s.ready(s.b, "v2.6.0")
 	s.ready(s.c, "v9.0.0")
+	// Hysteria run through docker: HyRoute does not update it.
+	d := s.addServer("d", "de")
+	s.ready(d, "v2.6.0")
+	s.db.SetInstallation(context.Background(), model.Installation{ServerID: d, Binary: "/usr/bin/docker", Version: "v2.6.0", At: time.Now()})
 	get := func(c *client) releaseJSON {
 		t.Helper()
 		rec := c.do("GET", "/api/v1/hysteria/release", nil, nil)
