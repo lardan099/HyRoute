@@ -114,6 +114,7 @@ internal/srvmgr/
   diag                        диагностический пакет: сбор из базы, вычистка секретов, псевдонимы, ZIP
   events                      события: шина, сигналы мониторинга, заданий, SSH и geo, сводка «Требует внимания»
   alerts                      каналы оповещений: Telegram, вебхук с подписью HMAC, SMTP; очередь, склейка, тихие часы, повторы
+  reconcile                   сверка серверов с тем, что записала панель: круги, «Принять», «Вернуть версию HyRoute» (P4-06)
   api                         HTTP /api/v1: handlers, middleware, ошибки
 third_party/hysteria-acl      компилятор ACL Hysteria v2.12.3 (копия, MIT)
 ```
@@ -148,15 +149,15 @@ env), `setup-token` на время первого запуска и `lock`: con
 | `servers` | id, name, tags (json), country, location, host, ssh_port, ssh_user, auth_type (password/key), role (standalone/entry/relay/exit), notes, state, hop_interval, created_at, updated_at | state: new, deploying, healthy, degraded, offline, needs_attention; role следует из каскадов (миграция 0016); hop_interval — интервал смены портов у клиентов, с (0 — по умолчанию клиента; миграция 0014) |
 | `server_credentials` | server_id, kind (ssh_password/ssh_key/ssh_key_passphrase), sealed (envelope), updated_at | никогда не возвращаются в API |
 | `host_keys` | server_id, key_type, key (raw), fingerprint (`SHA256:…`), trusted_at, trusted_by | TOFU; смена ключа — только явный re-trust |
-| `installations` | server_id, binary_path, config_path, unit, service_user, version, managed (bool), firewall_tool, firewall_ports, firewall_keep, updated_at | managed = установлено HyRoute (deploy); импорт записывает найденную установку с managed = 0; firewall_* — открытые HyRoute правила ufw/firewalld и «не трогать брандмауэр» (миграция 0008) |
-| `server_configs` | id, server_id, revision, config (envelope, контекст `server/<id>/config/<rev>`), sha256, meta (json: версия, listen, порты, TLS, pin, SNI, obfs, auth), source (deploy/import/edit/rollback/rotate/cascade/geo), from_revision, job_id, created_by, created_at | ревизия появляется только после успешного применения; YAML с паролями — зашифрован; from_revision — ревизия, к которой вернулись (rollback) |
+| `installations` | server_id, binary_path, config_path, unit, service_user, version, managed (bool), binary_sha256, unit_sha256, firewall_tool, firewall_ports, firewall_keep, updated_at | managed = установлено HyRoute (deploy); импорт записывает найденную установку с managed = 0; firewall_* — открытые HyRoute правила ufw/firewalld и «не трогать брандмауэр» (миграция 0008); binary_sha256, unit_sha256 — бинарник и отпечаток unit, которые поставил или нашёл HyRoute (миграция reconcile, '' — не записано, не сверяется) |
+| `server_configs` | id, server_id, revision, config (envelope, контекст `server/<id>/config/<rev>`), sha256, meta (json: версия, listen, порты, TLS, pin, SNI, obfs, auth), source (deploy/import/edit/rollback/rotate/cascade/geo/external), from_revision, job_id, created_by, created_at | ревизия появляется только после успешного применения; YAML с паролями — зашифрован; from_revision — ревизия, к которой вернулись (rollback); external — конфиг, изменённый вне HyRoute и принятый админом (P4-06) |
 | `jobs` | id, kind, server_id, state, current_step, params (json без секретов), data (json без секретов: результаты шагов), secret (envelope, контекст `job/<id>/secret`), attempt, error_message, error_details, created_by, created_at, started_at, finished_at, lease_owner, lease_until | |
 | `job_steps` | job_id, idx, name, phase, state, attempt, started_at, finished_at, error | |
 | `job_logs` | job_id, seq, ts, level, step, message | message уже прошёл redaction |
 | `audit_log` | id, ts, user_id, action, target, details | кто что сделал (вход, выход, пользователи, подтверждение ключа, показ ссылок, удаление каскада без недоступного сервера — `chain_force_delete`, постановка и повтор заданий — `job_submitted`/`job_retried`); target — `server/<id>`, `chain/<id>`, `preset/<id>`, `user/<id>` (у входов — имя, у заданий — первый сервер задания), details без секретов; индексы (user_id, id), (action, id), (target, id) для фильтров `GET /api/v1/audit`; из неудачных входов и попыток setup хранятся последние 10 000 |
 | `chains` | id, name (unique), notes, created_by, created_at, updated_at | каскад (P3-01), миграция 0016 |
 | `chain_nodes` | chain_id, idx, server_id | серверы цепочки по порядку, entry — idx 0; сервер из цепочки не удаляется |
-| `chain_links` | chain_id, idx, params (json без секретов), secrets (envelope, контекст `chain/<id>/link/<idx>`), state (new/linking/active/stale/unlinking/failed), from_revision, to_revision, config_sha256, updated_at | связь узлов idx и idx + 1 |
+| `chain_links` | chain_id, idx, params (json без секретов), secrets (envelope, контекст `chain/<id>/link/<idx>`), state (new/linking/active/stale/unlinking/failed), from_revision, to_revision, config_sha256, unit_sha256, updated_at | связь узлов idx и idx + 1; unit_sha256 — unit связи, который записало задание link (P4-06) |
 | `link_checks` | chain_id, idx, at, status, reason, service, handshake_ms, tcp_ms | проверки связей с сервера, где связь начинается (P3-03), 7 дней |
 | `job_servers` | job_id, server_id | другие серверы задания (связь каскада меняет entry и exit, задание цепочки — все её серверы) |
 | `metrics` | server_id, step (0/900), at, cpu, mem_used, mem_total, disk_used, disk_total, load1, rx, tx | нагрузка серверов (миграция 0010): замеры 48 ч, 15-минутные средние 30 дней |
@@ -166,6 +167,7 @@ env), `setup-token` на время первого запуска и `lock`: con
 | `server_geo` | server_id, release, geoip, geosite (SHA-256 файлов), job_id, at | какие базы geo стоят на сервере (миграция 0020) |
 | `events` | id, kind, dedupe_key, severity (critical/warning/info), subject (server/chain/job/controller), subject_id, text, count, opened_at, last_at, closed_at, close_text | события (P4-05): одно открытое событие на ключ (частичный уникальный индекс `WHERE closed_at IS NULL`), повторы склеиваются в него; закрытые хранятся 30 дней; текст без секретов и адресов |
 | `alert_channels` | id, name, kind (telegram/webhook/smtp), enabled, settings (json без секретов), events (json: виды событий, `[]` — все), quiet (json: from, to, zone), secret (envelope, контекст `alert/<id>/secret`), created_by, created_at, updated_at | каналы оповещений (P4-05b): токен бота, ключ подписи вебхука или пароль SMTP — только в `secret`, в API не отдаётся |
+| `drift` | server_id, at, error, checked, skipped, items (json), config (envelope, контекст `server/<id>/drift/config`), attention_at, reverts (json) | последняя сверка сервера (P4-06): что сравнивалось и что не записано, расхождения без секретов, найденный конфиг, пока он отличается от ревизии; когда сверка сделала сервер needs_attention и какие задания возврата поставлены с тех пор |
 
 Ссылки для клиентов не хранятся: они собираются из текущей ревизии по
 запросу (`profile`).
@@ -386,7 +388,7 @@ P1-04 сканирует файл БД на открытые значения т
   `DiskFree`, `Uptime`, `LoadAverage`, `Listeners`, `ReadFirewall`,
   `Unit`, `ServiceUnits`, `UnitOfPID`, `ActiveState`, `Systemctl`,
   `DaemonReload`, `JournalTail`, `JournalEntries`, `JournalFollow`,
-  `HysteriaVersion`, `Stat`, `FileSHA256`, `Download`, `InstallFile`,
+  `HysteriaVersion`, `Stat`, `FileSHA256`, `UnitFiles`, `UnitSHA256`, `Download`, `InstallFile`,
   `CopyFile`, `Rename`, `RemoveFile`, `MakeDir`, `TempDir`,
   `CreateSystemUser`, `UserHome`, `UFWAllow`, `FirewalldAllow`,
   `PortAllowed`, `OpenPort`, `ClosePort`. Каждый
@@ -394,7 +396,8 @@ P1-04 сканирует файл БД на открытые значения т
   абсолютный, без `..`), argv экранируется для shell на стороне SSH
   (`remote.Quote`). Произвольную команду из API выполнить нельзя.
 - `remote.ReadOnly(ex)` — исполнитель для работы, которая не должна
-  ничего менять (импорт, статус, журнал, сводка конфига после apply):
+  ничего менять (импорт, статус, журнал, сводка конфига после apply,
+  сверка состояния P4-06):
   запись файлов отклоняется, команды — только читающие typed-операции с
   их читающими флагами.
 - Привилегии: пользователь SSH — root или пользователь с `sudo -n`
@@ -839,8 +842,9 @@ SQLite не меняет CHECK). Неудачный возврат откаты�
 перезапустил службу (отметка `restarted`, снимается после перезапуска в
 откате): сама Hysteria файлы не перечитывает, и при ошибке раньше,
 например на firewall, служба работает с прежним конфигом, сессии
-клиентов не рвутся. Регулярная сверка desired/actual (reconciliation) —
-Phase 4.
+клиентов не рвутся. Регулярная сверка desired/actual и возврат версии
+HyRoute тем же заданием (`Params.Drift`) — раздел «Сверка состояния
+(P4-06)».
 
 ## Обслуживание (P2-05)
 
@@ -1661,7 +1665,7 @@ dry-run, diff) и задание `apply`. Изменённую группу ин
 - **Где лежат зашифрованные значения** — один список `sealedColumns` в
   `store/sqlite` (таблица, столбец, как собрать контекст из строки):
   `server_credentials.sealed`, `server_configs.config`, `jobs.secret`,
-  `chain_links.secrets`, `alert_channels.secret`. Его читают проверка ключа при запуске, проверка
+  `chain_links.secrets`, `alert_channels.secret`, `drift.config` (P4-06). Его читают проверка ключа при запуске, проверка
   копии ключа, восстановление и перешифровка; новый зашифрованный столбец
   добавляется туда.
 
@@ -1872,6 +1876,107 @@ Hysteria старше `hyrelease.DefaultVersion`, `server_geo` с другим �
   отправителя и до 20 получателей (`net/mail`), пароль при пользователе.
   Неизвестные поля настроек — ошибка.
 
+## Сверка состояния (P4-06)
+
+Пакет `reconcile` сравнивает серверы с тем, что записала панель, и ничего
+на них не меняет сам. `Reconciler.Run` работает всегда; раз в
+`-reconcile-interval` (`HYROUTE_SERVER_RECONCILE_INTERVAL`, по умолчанию
+час, не меньше минуты, `0` — без расписания: только «Проверить сейчас» и
+проверки после возвратов; первый круг — через 2 минуты после запуска,
+чтобы recovery заданий прошло раньше) `Round` обходит серверы с
+подтверждённым ключом хоста и записанной установкой. Пропускаются
+`offline` (их ведёт монитор) и серверы незавершённого задания (с другими
+серверами заданий) — они в следующем круге. Не больше 4 подключений
+сразу, минута на сервер; тайм-аут закрывает подключение, как у монитора.
+Всё читается через `remote.ReadOnly` (`RunProbe` решает про sudo: root
+или sudo без пароля нужны, чтобы прочитать конфиг): команд записи нет,
+тест прогоняет каждую команду, которую получил fake executor за круг,
+через фильтр `ReadOnly`.
+
+Что сравнивается (ключ расхождения — `model.DriftKey`):
+
+| Ключ | На сервере | С чем | Кто записывает |
+|---|---|---|---|
+| `config` | конфиг `installations.config_path` (содержимое и SHA-256) | `sha256` текущей ревизии | задания, которые сохраняют ревизию |
+| `unit` | отпечаток unit `remote.UnitSHA256`: SHA-256 файла `FragmentPath`, а с drop-in (`DropInPaths`) — SHA-256 строк «хеш  путь» файла и каждого drop-in | `installations.unit_sha256` | deploy и maintain `reinstall` — SHA-256 `deploy.UnitText` (без drop-in отпечаток и есть хеш файла); import — найденный отпечаток |
+| `binary` | SHA-256 `installations.binary_path` | `installations.binary_sha256` | deploy и maintain — хеш релиза, который шаг `binary` поставил или нашёл на месте (данные задания `binarySHA`); import — найденный |
+| `geo` | `/etc/hysteria/geo/geoip.dat`, `geosite.dat` | `server_geo` | задание geo |
+| `link/<chain>/<idx>` | на сервере, где связь начинается (entry, relay): конфиг клиента связи и отпечаток `hyroute-link-…` | `chain_links.config_sha256`, `unit_sha256` | задание link (unlink очищает); только связи `active` и `stale` |
+
+Базовая линия для установленного раньше: пустой хеш — «не записано», пункт
+не сравнивается и попадает в `skipped`, пока его не запишет задание
+(deploy, maintain, import; unit связи — link). Задание старого controller,
+продолженное новым, может не знать хеша бинарника и записывает пустой.
+Конфиг, базы geo и конфиг клиента связи записаны и раньше — они
+сравниваются сразу.
+
+Результат — строка `drift` на сервер, заменяется целиком: время, ошибка
+(сервер не ответил: прежние расхождения остаются, состояние — дело
+монитора), `checked`, `skipped`, `items` — расхождения в JSON (ключ, вид,
+файлы с записанным и найденным SHA-256, ревизия, файлы unit сейчас,
+`title`, `summary` — имена, пути и имена разделов конфига, без значений;
+с какого времени; задание возврата) и `config` — найденный конфиг,
+запечатанный (контекст `server/<id>/drift/config`, в `sealedColumns`),
+пока он отличается от ревизии: из него и ревизии API собирает diff
+(`apply.CompareConfigs` — маскирование редактора, плюс redactor с
+паролями обоих конфигов; не YAML — diff не показывается). Круг
+сохраняет результат, только если за время чтения у сервера не появилось
+задания (самое новое задание сервера то же самое); расхождение с теми же
+файлами сохраняет время и задание возврата. Чтение, «Принять» и
+«Вернуть» одного сервера идут по одному (замок в памяти: controller
+один на каталог данных).
+
+Состояние: при расхождениях `SwapServerState` healthy/degraded →
+needs_attention, и сверка запоминает `attention_at`. Когда расхождений не
+осталось (круг, «Принять», проверка после возврата), сервер переходит
+needs_attention → healthy, только если отметку поставила сверка и с
+`attention_at` на сервере не было заданий, кроме возвратов из этой
+сверки (`reverts`); иначе состояние — того задания (откат не закончился,
+импорт с предупреждениями). Монитор в следующем круге ставит настоящее.
+
+События (`Events`, для P4-05; nil — никому): `Drift(ctx, srv, what)` —
+когда расхождения новые или изменились и после «Принять», если что-то
+осталось; `what` — `Brief`: «Отличаются от записанного HyRoute: конфиг
+Hysteria /etc/hysteria/config.yaml, служба hysteria-server.service.»
+(diff в событие не попадает); `DriftGone(ctx, srv)` — когда расхождений
+нет.
+
+«Принять» (`Accept`): у сервера нет незавершённого задания; сервер
+читается снова (read-only) и должен быть таким, каким его нашла сверка,
+иначе `ErrChanged` (409 `drift_changed`). `config` — ревизия с источником
+`external` (миграция пересобирает `server_configs` ради CHECK) из
+прочитанного файла, meta — `importer.ConfigMeta`; файла нет, он не
+разбирается (`hyconfig.ParseServer`) или текущая ревизия уже другая —
+отказ. `unit`, `binary` — хеши в установку (у бинарника `hysteria*` и
+версия из `hysteria version`); `geo` — хеши в `server_geo` (релиз
+остаётся, job_id обнуляется); связь — `config_sha256` и `unit_sha256`
+найденные, и `Linker.Sync` считает её `stale`, пока её не развернут
+заново. Аудит `drift_accepted` (`server/<id>`, `what=<ключ>` и номер
+ревизии).
+
+«Вернуть версию HyRoute» (`Revert`) ставит существующее задание
+(`reconcile.Jobs`): `config` — `apply.Applier.Revert`, задание apply с
+текущей ревизией кандидатом и `Params.Drift` — SHA-256 найденного
+(`absent`, если файла нет). `validate` принимает файл с этим хешем (или
+ревизию — продолжение), иначе «изменился ещё раз после сверки»; копия,
+перезапуск, проверка и откат — как у любого apply (откат возвращает
+найденный конфиг), `commit` ревизию не добавляет и убирает копию; файла
+не было — копировать нечего, откат его удаляет. `unit` — maintain
+`reinstall` (только своя установка, `Revertible` иначе отказывает:
+409 `cannot_revert`); `binary` — `reinstall` своей установки, иначе
+`upgrade` до записанной версии (программа `hysteria*`, версия
+известна); `geo` — задание geo (`auto`, базы controller); связь — задание
+link этой связи. Задание записывается в расхождение и в `reverts`; когда
+оно закончится успешно, сверка проверяет сервер снова (наблюдение до 6 ч,
+`Run` дожидается наблюдений при остановке), неудачное остаётся в
+расхождении с ошибкой. Drop-in `reinstall` не убирает: после него
+расхождение останется.
+
+UI: карточка «Сверка с сервером» на странице сервера (`DriftCard`):
+время и что сверено, что не записано, расхождения с описанием, diff
+конфига, заданием возврата и кнопками с подтверждением, «Проверить
+сейчас»; в заголовке — «изменено вне HyRoute».
+
 ## REST API v1
 
 Ошибки: `{"error": {"code": "host_key_unknown", "message": "понятный текст",
@@ -1961,6 +2066,10 @@ JSON-строкой) и должно прийти за минуту; тело б
 | GET | `/api/v1/servers/{id}/metrics?period=` | `view` | ряд метрик: 1h/6h/24h/48h — замеры, 7d/30d — средние по 15 мин |
 | GET | `/api/v1/metrics/latest` | `view` (серверы области) | последний замер каждого сервера за 5 минут (Overview) |
 | GET | `/api/v1/servers/{id}/health` | `view` | последняя проверка и смены статуса или причины за неделю (до 50) |
+| GET | `/api/v1/servers/{id}/reconcile` | `view`; diff конфига — с `config` | последняя сверка: `interval` (с, 0 — без расписания), `at` (null — не сверялся), `error`, `checked` и `skipped` (`{key, kind, chain: {id, name}, idx, hops}`), `items` — расхождения: `files` (`path`, `want`, `got`; '' — файла нет), `revision`, `units`, `title`, `summary`, `since`, `job` возврата (`id`, `state`, `errorMessage`), `canRevert`/`revertNote`; ролям с правом записи — `diff` и `secrets` конфига, замаскированные как в редакторе, или `diffNote` |
+| POST | `/api/v1/servers/{id}/reconcile/check` | `service` | проверить сейчас (и сервер offline), ответ — как у GET; сервер не ответил — 200 с `error`; 409 `server_busy` во время задания, `host_key_required`, `no_installation` |
+| POST | `/api/v1/servers/{id}/reconcile/accept` | `config`; служба и бинарник — `deploy`, связь каскада — `chains` на всех его серверах | `{key}` — принять то, что на сервере (ревизия `external` или хеши); ответ — сверка без него; 409 `drift_gone`, `drift_changed`, `server_busy`; конфига нет или он не разбирается — 400 `invalid`; аудит `drift_accepted` |
+| POST | `/api/v1/servers/{id}/reconcile/revert` | `config`; служба и бинарник — `deploy`, связь каскада — `chains` на всех его серверах | `{key}` — задание, которое вернёт версию HyRoute (apply, maintain, geo, link; 202); 409 `cannot_revert`, `drift_gone`, `server_busy`, `no_geo` |
 | GET | `/api/v1/servers/{id}/config/revisions` | `view` | история ревизий без текста конфига |
 | GET | `/api/v1/servers/{id}/config/revisions/{rev}` | `config` | конфиг ревизии, секреты замаскированы |
 | GET | `/api/v1/servers/{id}/config/compare?from=&to=` | `config` | diff двух ревизий без секретов, изменённые секреты — путями |
