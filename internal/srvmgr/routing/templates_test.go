@@ -48,3 +48,41 @@ func TestFromPreset(t *testing.T) {
 		t.Fatalf("%+v", tp.Outbounds)
 	}
 }
+
+// A template goes into a server's routing as the rule templates dialog
+// puts it: its rules at the top, at the end or instead, the outbounds the
+// server lacks, its resolver when asked.
+func TestMerged(t *testing.T) {
+	own := acl.Rule{Outbound: "direct", Address: "all", Text: "direct(all)"}
+	v := View{Revision: 7, ACL: acl.Document{Rules: []acl.Rule{own}, Tail: []string{"# end"}},
+		Outbounds: []Outbound{{Name: "NL", From: "NL", Type: "socks5", SOCKS5: &SOCKS5{Addr: "198.51.100.1:1080"}}}, Resolver: Resolver{Type: "system"}}
+	tp := Template{ACL: acl.Document{Rules: []acl.Rule{{Outbound: "reject", Address: "geoip:private"}}},
+		Outbounds: []Outbound{{Name: "nl", Type: "socks5", SOCKS5: &SOCKS5{Addr: "203.0.113.5:1080"}}, {Name: "us", From: "us", Type: "direct", Locked: true}},
+		Resolver:  &Resolver{Type: "https", Addr: "1.1.1.1:443"}}
+	addr := func(in Input) []string {
+		var out []string
+		for _, r := range in.ACL.Rules {
+			out = append(out, r.Address)
+		}
+		return out
+	}
+	top := Merged(v, tp, PlaceTop, true, false)
+	if top.Base != 7 || !slices.Equal(addr(top), []string{"geoip:private", "all"}) || !slices.Equal(top.ACL.Tail, v.ACL.Tail) || top.Resolver.Type != "system" {
+		t.Fatalf("top %+v", top)
+	}
+	if len(top.Outbounds) != 2 || top.Outbounds[0].From != "NL" || top.Outbounds[1].Name != "us" || top.Outbounds[1].From != "" || top.Outbounds[1].Locked {
+		t.Fatalf("outbounds %+v", top.Outbounds)
+	}
+	if b := Merged(v, tp, PlaceBottom, false, true); !slices.Equal(addr(b), []string{"all", "geoip:private"}) || len(b.Outbounds) != 1 || b.Resolver.Type != "https" {
+		t.Fatalf("bottom %+v", b)
+	}
+	if r := Merged(v, tp, PlaceReplace, false, false); !slices.Equal(addr(r), []string{"geoip:private"}) {
+		t.Fatalf("replace %+v", r)
+	}
+	if len(v.ACL.Rules) != 1 || len(v.Outbounds) != 1 || len(tp.ACL.Rules) != 1 {
+		t.Fatal("the view or the template changed")
+	}
+	if got := Templates([]model.Preset{{ID: 2, Name: "x", Config: "acl:\n  inline:\n    - reject(all)\n"}}); len(got) != len(Builtins())+1 || got[len(got)-1].ID != "preset:2" {
+		t.Fatalf("templates %+v", got)
+	}
+}

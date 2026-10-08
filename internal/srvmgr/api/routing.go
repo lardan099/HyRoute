@@ -313,13 +313,7 @@ func (s *server) routingTemplates(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	out := routing.Builtins()
-	for _, p := range ps {
-		if t, ok := routing.FromPreset(p); ok {
-			out = append(out, t)
-		}
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, routing.Templates(ps))
 }
 
 // chainTemplates are the built-in cascade templates.

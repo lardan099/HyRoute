@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 
@@ -84,4 +85,56 @@ func FromPreset(p model.Preset) (Template, bool) {
 		t.Outbounds = append(t.Outbounds, outboundOf(o).public())
 	}
 	return t, true
+}
+
+// Templates are the built-in templates and those of the presets with an
+// acl section, as the rule templates page lists them.
+func Templates(presets []model.Preset) []Template {
+	out := Builtins()
+	for _, p := range presets {
+		if t, ok := FromPreset(p); ok {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// Where a template's rules go.
+const (
+	PlaceTop     = "top"
+	PlaceBottom  = "bottom"
+	PlaceReplace = "replace"
+)
+
+// Merged is the editor's input that puts template t into the routing v
+// of a server, as the rule templates dialog does (P4-07 applies it to
+// many servers): its rules at the top, at the end or instead of the
+// server's; with outbounds, its outbounds the server lacks (by name,
+// without passwords) at the end; with resolver, its resolver if it has
+// one.
+func Merged(v View, t Template, place string, outbounds, resolver bool) Input {
+	add := slices.Clone(t.ACL.Rules)
+	var rules []acl.Rule
+	switch place {
+	case PlaceBottom:
+		rules = append(slices.Clone(v.ACL.Rules), add...)
+	case PlaceReplace:
+		rules = add
+	default:
+		rules = append(add, v.ACL.Rules...)
+	}
+	obs := slices.Clone(v.Outbounds)
+	if outbounds {
+		for _, o := range t.Outbounds {
+			if !slices.ContainsFunc(obs, func(x Outbound) bool { return strings.EqualFold(x.Name, o.Name) }) {
+				o.From, o.Locked = "", false
+				obs = append(obs, o)
+			}
+		}
+	}
+	in := Input{Base: v.Revision, ACL: acl.Document{Rules: rules, Tail: v.ACL.Tail}, Outbounds: obs, Resolver: v.Resolver}
+	if resolver && t.Resolver != nil {
+		in.Resolver = *t.Resolver
+	}
+	return in
 }
