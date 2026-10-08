@@ -94,7 +94,7 @@ internal/srvmgr/
   remote/fake, remote/sshtest fake executor и in-process SSH-сервер для тестов
   jobs                        job engine: шаги, Done/Run/Undo, откат, recovery, журнал, SSE
   preflight                   проверки сервера перед развёртыванием (задание preflight)
-  hyrelease                   релизы Hysteria: ассет, SHA-256, источники direct, relay и node
+  hyrelease                   релизы Hysteria: ассет, SHA-256, источники direct, relay и node, последний релиз
   deploy                      Quick Deploy (задание deploy) и запуск с секретами
   importer                    импорт установленного сервера (задание import, только чтение)
   service                     статус, start/stop/restart (задание service), journal
@@ -113,6 +113,7 @@ internal/srvmgr/
   geo                         базы geo: у controller, задание geo, расписание
   diag                        диагностический пакет: сбор из базы, вычистка секретов, псевдонимы, ZIP
   events                      события: шина, сигналы мониторинга, заданий, SSH и geo, сводка «Требует внимания»
+  batch                       массовые операции: пакеты обычных заданий, канарейка, по K сразу, каскады не одновременно
   alerts                      каналы оповещений: Telegram, вебхук с подписью HMAC, SMTP; очередь, склейка, тихие часы, повторы
   reconcile                   сверка серверов с тем, что записала панель: круги, «Принять», «Вернуть версию HyRoute» (P4-06)
   api                         HTTP /api/v1: handlers, middleware, ошибки
@@ -120,7 +121,7 @@ third_party/hysteria-acl      компилятор ACL Hysteria v2.12.3 (коп�
 ```
 
 Зависимости направлены сверху вниз: `api` → сервисы (`deploy`, `importer`,
-`service`, `apply`, `profile`, `auth`, `preflight`) → `firewall` → `jobs`, `remote`, `hyconfig`,
+`service`, `apply`, `profile`, `auth`, `preflight`, `batch`) → `firewall` → `jobs`, `remote`, `hyconfig`,
 `secrets`, `redact` → `store` (интерфейсы) → `model`. `store/sqlite`
 подключается только в `cmd/hyroute-server` и тестах. Бизнес-логика не
 знает про HTTP и SQL; `api` не содержит логики, кроме разбора запроса и
@@ -154,7 +155,7 @@ env), `setup-token` на время первого запуска и `lock`: con
 | `jobs` | id, kind, server_id, state, current_step, params (json без секретов), data (json без секретов: результаты шагов), secret (envelope, контекст `job/<id>/secret`), attempt, error_message, error_details, created_by, created_at, started_at, finished_at, lease_owner, lease_until | |
 | `job_steps` | job_id, idx, name, phase, state, attempt, started_at, finished_at, error | |
 | `job_logs` | job_id, seq, ts, level, step, message | message уже прошёл redaction |
-| `audit_log` | id, ts, user_id, action, target, details | кто что сделал (вход, выход, пользователи, подтверждение ключа, показ ссылок, удаление каскада без недоступного сервера — `chain_force_delete`, постановка и повтор заданий — `job_submitted`/`job_retried`); target — `server/<id>`, `chain/<id>`, `preset/<id>`, `user/<id>` (у входов — имя, у заданий — первый сервер задания), details без секретов; индексы (user_id, id), (action, id), (target, id) для фильтров `GET /api/v1/audit`; из неудачных входов и попыток setup хранятся последние 10 000 |
+| `audit_log` | id, ts, user_id, action, target, details | кто что сделал (вход, выход, пользователи, подтверждение ключа, показ ссылок, удаление каскада без недоступного сервера — `chain_force_delete`, постановка и повтор заданий — `job_submitted`/`job_retried`, создание, остановка и повтор пакетов — `batch_created`/`batch_stopped`/`batch_retried`); target — `server/<id>`, `chain/<id>`, `preset/<id>`, `user/<id>`, `batch/<id>` (у входов — имя, у заданий — первый сервер задания), details без секретов; индексы (user_id, id), (action, id), (target, id) для фильтров `GET /api/v1/audit`; из неудачных входов и попыток setup хранятся последние 10 000 |
 | `chains` | id, name (unique), notes, created_by, created_at, updated_at | каскад (P3-01), миграция 0016 |
 | `chain_nodes` | chain_id, idx, server_id | серверы цепочки по порядку, entry — idx 0; сервер из цепочки не удаляется |
 | `chain_links` | chain_id, idx, params (json без секретов), secrets (envelope, контекст `chain/<id>/link/<idx>`), state (new/linking/active/stale/unlinking/failed), from_revision, to_revision, config_sha256, unit_sha256, updated_at | связь узлов idx и idx + 1; unit_sha256 — unit связи, который записало задание link (P4-06) |
@@ -168,6 +169,8 @@ env), `setup-token` на время первого запуска и `lock`: con
 | `events` | id, kind, dedupe_key, severity (critical/warning/info), subject (server/chain/job/controller), subject_id, text, count, opened_at, last_at, closed_at, close_text | события (P4-05): одно открытое событие на ключ (частичный уникальный индекс `WHERE closed_at IS NULL`), повторы склеиваются в него; закрытые хранятся 30 дней; текст без секретов и адресов |
 | `alert_channels` | id, name, kind (telegram/webhook/smtp), enabled, settings (json без секретов), events (json: виды событий, `[]` — все), quiet (json: from, to, zone), secret (envelope, контекст `alert/<id>/secret`), created_by, created_at, updated_at | каналы оповещений (P4-05b): токен бота, ключ подписи вебхука или пароль SMTP — только в `secret`, в API не отдаётся |
 | `drift` | server_id, at, error, checked, skipped, items (json), config (envelope, контекст `server/<id>/drift/config`), attention_at, reverts (json) | последняя сверка сервера (P4-06): что сравнивалось и что не записано, расхождения без секретов, найденный конфиг, пока он отличается от ревизии; когда сверка сделала сервер needs_attention и какие задания возврата поставлены с тех пор |
+| `batches` | id, action (maintain/geo/preset/routing/tuning/rotate), params (json без секретов), parallel (1–10), state (running/stopping/completed/failed/stopped), stop (''/user/failed/denied), stopped_by, retry_of, created_by, created_at, updated_at, finished_at | пакеты массовых операций (P4-07); пакеты `running` и `stopping` продолжаются после перезапуска controller; retry_of — пакет, неудачные серверы которого повторяет этот |
+| `batch_items` | batch_id, idx, server_id, state (pending/starting/running/completed/unchanged/failed/skipped), job_id, canary, message, at | серверы пакета по порядку (idx 0 — первым) и задание каждого; message — почему ошибка, пропуск или «без изменений»; удалённый сервер уходит из пакетов (задание идёт — сервер не удаляется) |
 
 Ссылки для клиентов не хранятся: они собираются из текущей ревизии по
 запросу (`profile`).
@@ -346,6 +349,16 @@ P1-04 сканирует файл БД на открытые значения т
   `chains`; вид не из таблицы — только owner и admin) на всех его
   серверах в текущей области. `GET /jobs/{id}` отвечает `mayRetry` по
   тому же правилу.
+- **Пакеты** (P4-07): у каждого действия свой маршрут создания с
+  разрешением его задания на одном сервере (`model.BatchAction.Permission`:
+  `maintain` — `deploy`, остальные — `config`) и finder `bodyServers`
+  (поле `servers` тела; у `maintain` и `geo` ещё `bodyVia`). Сервер вне
+  области отвечает 404 на весь пакет, как ответил бы сам: пакет не
+  создаётся, а не теряет сервер молча. Остановка и повтор — `batchRule`:
+  разрешение действия пакета на всех его серверах и `via` (finder
+  `onBatch`) в момент запроса. Перед каждым заданием пакета планировщик
+  проверяет автора ещё раз (раздел «Массовые операции»). Список пакетов —
+  те, все серверы которых и `via` в области (`BatchFilter.Within`, в SQL).
 - **Списки** показывают только область: серверы (у каждого `perms` —
   разрешения вызывающего на нём, чтобы UI не повторял правила), каскады
   (все узлы в области — и в `chains` у серверов), задания и строки их
@@ -1832,7 +1845,8 @@ controller её бы не понял, берут блокировку катал
 `stale` и `failed` и связи, чья последняя проверка за час — Offline или
 Degraded, число ошибок и предупреждений `acl.Check` по `acl.inline`
 текущего конфига (без баз geo; результат кешируется по ревизии),
-Hysteria старше `hyrelease.DefaultVersion`, `server_geo` с другим релизом,
+Hysteria старше `Release.Target` (последний релиз, P4-07, или
+`hyrelease.DefaultVersion`, если он новее), `server_geo` с другим релизом,
 чем у controller, базы controller без проверки релиза дольше двух
 `-geo-interval`, серверы на паузе после отказа во входе
 (`Collector.Paused`), выключенный мониторинг и открытые события
@@ -1997,6 +2011,68 @@ UI: карточка «Сверка с сервером» на странице 
 конфига, заданием возврата и кнопками с подтверждением, «Проверить
 сейчас»; в заголовке — «изменено вне HyRoute».
 
+## Массовые операции (P4-07)
+
+Пакет `batch`. Пакет — запись в `batches` с серверами по порядку в
+`batch_items` и обычные задания: на каждом сервере — то задание, которое
+поставил бы маршрут этого сервера, через те же сервисы и на текущей
+ревизии конфига: `deploy.Submitter.Maintain` (upgrade),
+`geo.Installer.Submit`, `apply.Applier.ApplyPreset`,
+`routing.Service.Apply` (шаблон кладётся в правила `routing.Merged`, как в
+диалоге шаблона), задание `tuning`, `apply.Applier.Rotate`. Своих путей
+записи на серверы у пакетов нет: проверки, копии и откат — у заданий.
+
+- **Действия** (`batch.Actions`): `Check` проверяет и нормализует
+  параметры при создании (`FieldError` → 400), `Queue` ставит задание
+  одного сервера от имени автора пакета. Сервер, на котором уже так
+  (предпросмотр пресета без изменений, `Same` шаблона), — `Unchanged`:
+  элемент `unchanged` без задания. Ротация меняет то, что у сервера есть:
+  `auth` (кроме пользователей связей каскадов, `cascade.Users`),
+  Salamander — где он включён, сертификат — где он самоподписанный с
+  абсолютными путями; чего нет — в `message` элемента, нечего — `Unchanged`.
+  Шаблон на сервере с `acl.file` — ошибка элемента.
+- **Планировщик** (`batch.Runner`, в процессе controller): проход
+  (`Pass`) — по пробуждению (`JobEnded` из `jobs.Engine.OnEnd`, создание,
+  остановка) и раз в 5 с. Сначала итоги: элемент `running`, чьё задание
+  закончилось, — `completed` или `failed` с текстом ошибки задания. Затем
+  запуск по порядку: пока ни одно задание пакета не выполнено — одно
+  сразу (канарейка, `canary`; `unchanged` ею не считается), потом —
+  `parallel` (1–10, по умолчанию 3) одновременно. Элемент ждёт, пока у
+  его сервера или у любого сервера его каскадов (`chain_nodes`) идёт
+  задание любого пакета, и пока у сервера есть другое незавершённое
+  задание (`message` «Ждёт…»); пакет тем временем идёт по остальным.
+  Первая ошибка (задание упало или не поставилось) переводит пакет в
+  `stopping` (`stop = failed`): `pending` → `skipped`, идущие задания
+  заканчиваются; когда идущих не осталось — `failed`, `stopped`
+  (остановлен пользователем или правами) или `completed`.
+- **Права** — при создании (маршрут, раздел «Права») и перед каждым
+  заданием: автор (`created_by`) как он сейчас в базе — существует, не
+  заблокирован, роль даёт разрешение действия, сервер и `via` в его
+  области. Иначе пакет останавливается (`stop = denied`), а у элемента
+  сервера вне области — причина.
+- **Перезапуск controller.** Всё состояние — в базе: новый процесс
+  продолжает пакеты `running` и `stopping` с того же места (задания
+  восстанавливает движок). Элемент пишется `starting` со временем до
+  постановки задания; после перезапуска `starting` находит своё задание
+  (новейшее задание сервера того же вида и автора, созданное не раньше
+  записи) или снова становится `pending`.
+- **Остановка и повтор** (`Stop`, `Retry`) идут под той же блокировкой,
+  что и проход: на элемент, который остановка пропустила, задание уже не
+  встанет. Повтор — новый пакет (`retry_of`) из `failed` и `skipped` с тем
+  же действием, параметрами и `parallel`, снова с канарейки; повторить
+  пакет можно один раз (`retriedBy`).
+- **Последний релиз Hysteria** (`hyrelease.Watch`, `-release-interval`,
+  по умолчанию сутки, не меньше часа, 0 — не проверять): первая проверка
+  через минуту после старта, затем раз в интервал, неудачная — через час.
+  `Resolver.Latest` — тег, на который ведёт `releases/latest`
+  (`…/releases/tag/app/vX.Y.Z`), если в `hashes.txt` релиза есть сборка
+  amd64 (так же `Resolve` берёт хеши при развёртывании; задание `maintain`
+  берёт их оттуда же). Найденное хранится в `settings`
+  (`hysteria_release`), перезапуск его не теряет. `Release.Target` — этот
+  релиз, если он новее `DefaultVersion`, иначе `DefaultVersion`: с ним
+  сравнивают «Требует внимания», `GET /hysteria/release` и «Обновить все»
+  на «Обзоре». В тестах поиск подменяется, сети нет.
+
 ## REST API v1
 
 Ошибки: `{"error": {"code": "host_key_unknown", "message": "понятный текст",
@@ -2118,6 +2194,17 @@ JSON-строкой) и должно прийти за минуту; тело б
 | PATCH | `/api/v1/alerts/channels/{id}` | `settings` | то же без `kind` (другой вид — 400): поля заменяются целиком, `secret` не передан — прежний, `clearSecret` — убрать; аудит `alert_channel_updated` |
 | DELETE | `/api/v1/alerts/channels/{id}` | `settings` | 204; аудит `alert_channel_deleted` |
 | POST | `/api/v1/alerts/channels/{id}/test` | `settings` | проверочное сообщение сейчас (и выключенным каналом), до 15 с: `{ok: true}` или 502 `send_failed` с причиной без секрета; аудит `alert_channel_tested` с итогом |
+| GET | `/api/v1/batches` | `view` (пакеты, все серверы которых и `via` в области) | пакеты, новые первыми (`?before=`, `?limit=`): `{id, action, params, parallel, state, stop, stoppedBy, retryOf, retriedBy, createdBy, createdAt, finishedAt, items: [{idx, serverId, state, jobId, canary, message, at}], mayStop, mayRetry}`; имена — пользователей |
+| GET | `/api/v1/batches/{id}` | `view` | пакет; у элементов с заданием — `job` (состояние, шаг, ошибка) |
+| POST | `/api/v1/batches/maintain` | `deploy` (все серверы и `via` в области) | `{servers, parallel, version, source, via}` — пакет обновления Hysteria (201): первый сервер — канарейка, `parallel` 1–10 (0 — 3); сервер вне области — 404 на весь пакет, без установки — 409 `no_installation`, без подтверждённого ключа SSH — 409 `host_key_required` (с названием сервера), `via` среди серверов — 400 `invalid`; аудит `batch_created` |
+| POST | `/api/v1/batches/geo` | `config` (и `via` в области) | `{servers, parallel, source, via}` — базы geo controller; без баз — 409 `no_geo` |
+| POST | `/api/v1/batches/preset` | `config` | `{servers, parallel, preset, sections}` — разделы пресета |
+| POST | `/api/v1/batches/routing` | `config` | `{servers, parallel, template, place: top\|bottom\|replace, outbounds, resolver}` — шаблон из `/routing/templates` |
+| POST | `/api/v1/batches/tuning` | `config` | `{servers, parallel, keys}` |
+| POST | `/api/v1/batches/rotate` | `config` | `{servers, parallel, auth, obfs, cert}` — ссылки клиентов меняются (UI просит подтвердить) |
+| POST | `/api/v1/batches/{id}/stop` | разрешение действия пакета на всех его серверах и `via` | новых заданий нет, идущие заканчиваются; не идёт — 409 `batch_not_running`; аудит `batch_stopped` |
+| POST | `/api/v1/batches/{id}/retry` | то же | новый пакет из неудачных и пропущенных серверов (201); идёт — 409 `batch_running`, уже повторён — 409 `batch_retried`, нечего — 409 `nothing_to_retry`; аудит `batch_retried` |
+| GET | `/api/v1/hysteria/release` | `view` (серверы области) | `{check, latest, checkedAt, target, outdated: [{id, name, version}]}` — последний найденный релиз и серверы области с Hysteria старше `target` |
 
 ## Модель угроз
 
@@ -2137,12 +2224,16 @@ JSON-строкой) и должно прийти за минуту; тело б
 | Утечка копии базы | Мастер-ключ в копию не кладётся, без него секреты копии бесполезны; копия по желанию шифруется парольной фразой; файлы копий 0600 в каталоге 0700; делает и скачивает копии только владелец, скачивание — в аудит |
 | Журналы и конфиги в публичном issue | Диагностический пакет: секреты вычищаются `redact` со всеми известными панели паролями и шаблонами ключей, сводки — из замаскированных конфигов, имена, адреса, домены и пользователи — псевдонимы, таблица замен в пакет не входит; собирают owner и admin, скачивание — в аудит; тест с канареечными значениями проверяет каждый файл пакета |
 | Пароли и адреса серверов в оповещениях, токен бота в журнале | Тексты событий — через redactor controller и замену адресов названиями (`events.Clean`), в сообщения каналов идут только они; секреты каналов — в envelope, в API не отдаются, в журнал не попадают (redactor, ошибка запроса без URL) |
+| Массовое действие задевает чужие серверы, ломает всё сразу или идёт после понижения автора | Каждый сервер пакета проверяется по области при создании (404 на весь пакет), права автора — перед каждым заданием; сначала одна канарейка, первая ошибка останавливает ещё не начатые, серверы каскада не одновременно; задания пакета — обычные, со своими проверками, копиями и откатом |
 
 ## Решения и допущения
 
 - Версия Hysteria по умолчанию — v2.12.3 (`hyrelease.DefaultVersion`, её
   хеши встроены); другую версию можно указать при развёртывании, её хеши
   берутся из `hashes.txt` релиза.
+- Последний релиз Hysteria панель узнаёт сама раз в сутки (P4-07) и
+  только предлагает обновиться: «Обновить все» — пакет с канарейкой,
+  автоматически серверы не обновляются.
 - Встроенный диапазон портов в `listen` работает только на Linux —
   развёртывание поддерживает только Linux-серверы с systemd.
 - Поддерживаемые ОС сервера в Phase 1: Debian 11+, Ubuntu 22.04+ (как
