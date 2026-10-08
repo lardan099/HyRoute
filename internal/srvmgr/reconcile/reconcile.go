@@ -354,6 +354,11 @@ func (r *Reconciler) merge(ctx context.Context, prev model.Drift, f found) (d mo
 	for _, it := range f.items {
 		if old, ok := prev.Item(it.Key); ok && slices.Equal(old.Files, it.Files) {
 			it.Since, it.Job = old.Since, old.Job
+			// A revert that completed and left the thing as it was
+			// (a drop-in reinstall does not remove) is done with.
+			if j, err := r.Store.JobByID(ctx, it.Job); it.Job != 0 && err == nil && j.State == model.JobCompleted {
+				it.Job = 0
+			}
 		} else {
 			it.Since = now
 			news = append(news, it)

@@ -329,3 +329,28 @@ func waitJob(t *testing.T, w *world, id int64) model.Job {
 	t.Fatal("job stuck")
 	return model.Job{}
 }
+
+// A revert that completed but left the difference as it was (a drop-in
+// that a reinstall does not remove) no longer holds the difference: it is
+// the admin's to decide again. A failed one stays with it.
+func TestRevertThatDidNotHelp(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	w.m.SetFile(dropIn, []byte("[Service]\nUser=root\n"))
+	w.m.unit(unitName, unitPath, dropIn)
+	w.r.Round(ctx)
+	for _, x := range []struct {
+		state model.JobState
+		keep  bool
+	}{{model.JobFailed, true}, {model.JobCompleted, false}} {
+		j := model.Job{Kind: deploy.MaintainKind, ServerID: w.a, State: x.state, Params: []byte("{}"), CreatedAt: time.Now(), FinishedAt: time.Now()}
+		w.db.CreateJob(ctx, &j, []model.JobStep{{Idx: 0, Name: "connect"}}, nil)
+		d := w.drift(w.a)
+		d.Items[0].Job = j.ID
+		w.db.SetDrift(ctx, d)
+		w.r.Round(ctx)
+		if it, _ := w.drift(w.a).Item("unit"); (it.Job == j.ID) != x.keep {
+			t.Fatalf("%s: job %d", x.state, it.Job)
+		}
+	}
+}
