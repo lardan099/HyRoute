@@ -36,6 +36,27 @@ type Probe struct {
 	// Sudo: the SSH user is not root (the link config is readable by
 	// root and the service's group only).
 	Sudo bool
+	// Hop: the chain has more than two servers (P4-08), so the reasons
+	// name the servers of the link (EntryName, Exit.Name) instead of
+	// «вход» and «выход», which are the chain's.
+	Hop       bool
+	EntryName string
+}
+
+// entryOf names the link's entry after «сервер» in the genitive.
+func (pr Probe) entryOf() string {
+	if pr.Hop {
+		return "«" + pr.EntryName + "»"
+	}
+	return "входа"
+}
+
+// exitOf names the link's exit after «сервер».
+func (pr Probe) exitOf() string {
+	if pr.Hop {
+		return "«" + pr.Exit.Name + "»"
+	}
+	return "выхода"
 }
 
 // CheckLink checks a link from its entry over ex (P3-03). SOCKS5 of the
@@ -95,11 +116,11 @@ func CheckLink(ctx context.Context, ex remote.Executor, pr Probe, now time.Time)
 		case errors.Is(err, remote.ErrNoTunnel):
 			// This connection cannot reach the loopback: ping alone.
 		case errors.Is(err, socks5.ErrAuth):
-			return off("клиент связи не принял пароль outbound «%s» сервера входа: обновите связь", OutboundName)
+			return off("клиент связи не принял пароль outbound «%s» сервера %s: обновите связь", OutboundName, pr.entryOf())
 		case errors.As(err, &rep):
 			// The client answered: the exit or the target did not.
 		case err != nil:
-			return off("клиент связи не отвечает на 127.0.0.1:%d сервера входа: %v", pr.Params.LocalPort, err)
+			return off("клиент связи не отвечает на 127.0.0.1:%d сервера %s: %v", pr.Params.LocalPort, pr.entryOf(), err)
 		default:
 			conn.Close()
 			tunnelTCP, tunnelTook = true, took
@@ -108,14 +129,14 @@ func CheckLink(ctx context.Context, ex remote.Executor, pr Probe, now time.Time)
 
 	ping, err := PingLink(ctx, ex, pr.Entry.Binary, ConfigPath(pr.Entry, pr.Chain, pr.Link.Idx), target, pr.Sudo)
 	if err != nil {
-		return off("проверка связи не выполнилась на сервере входа: %v", err)
+		return off("проверка связи не выполнилась на сервере %s: %v", pr.entryOf(), err)
 	}
 	if !ping.Connected {
 		why := ping.Error
 		if why == "" {
 			why = "нет ответа"
 		}
-		return off("сервер выхода не отвечает клиенту связи (%s)", why)
+		return off("сервер %s не отвечает клиенту связи (%s)", pr.exitOf(), why)
 	}
 	c.HandshakeMillis = int(ping.Handshake / time.Millisecond)
 	switch {
@@ -126,7 +147,7 @@ func CheckLink(ctx context.Context, ex remote.Executor, pr Probe, now time.Time)
 	}
 	switch {
 	case c.TCPMillis == 0:
-		c.Status, c.Reason = model.StateDegraded, red.String("сервер выхода не открывает "+target)
+		c.Status, c.Reason = model.StateDegraded, red.String("сервер "+pr.exitOf()+" не открывает "+target)
 	case ping.Handshake > SlowHandshake:
 		c.Status, c.Reason = model.StateDegraded, "связь медленная: рукопожатие "+strconv.Itoa(c.HandshakeMillis)+" мс"
 	}
@@ -206,7 +227,7 @@ func (k *Checker) CheckLinks(ctx context.Context, entry model.Server, ex remote.
 				}
 				sudoKnown, su = true, !p.Root
 			}
-			pr := Probe{Chain: c.ID, Link: l, Sudo: su}
+			pr := Probe{Chain: c.ID, Link: l, Sudo: su, Hop: len(c.Nodes) > 2, EntryName: entry.Name}
 			if pr.Params, err = ParseParams(l.Params); err != nil {
 				return "", err
 			}

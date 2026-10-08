@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -174,23 +175,32 @@ func (s *server) writeChain(w http.ResponseWriter, r *http.Request, status int, 
 	writeJSON(w, status, j)
 }
 
+// firstDeployed is the first link of c on its servers (-1: none): the
+// unlink job of a chain covers it.
+func firstDeployed(c model.Chain) int {
+	for i, l := range c.Links {
+		if l.State != model.LinkNew && l.State != model.LinkFailed {
+			return i
+		}
+	}
+	return -1
+}
+
 // unreachable adds the servers the latest «Удалить каскад» of the chain
-// could not reach, with what the link leaves on them; a failure only
+// could not reach, with what the links leave on them; a failure only
 // leaves them out.
 func (s *server) unreachable(r *http.Request, out *chainJSON, c model.Chain, names map[int64]string) {
-	if s.Cascade == nil || len(c.Links) == 0 {
+	idx := firstDeployed(c)
+	if s.Cascade == nil || idx < 0 {
 		return
 	}
-	un, err := s.Cascade.Unreached(r.Context(), c, 0)
+	un, err := s.Cascade.Unreached(r.Context(), c, idx)
 	if err != nil {
 		s.Log.Warn("cascade: unreachable servers not looked up", "chain", c.ID, "err", err)
 		return
 	}
 	for _, u := range un {
-		role := model.RoleExit
-		if u.Entry {
-			role = model.RoleEntry
-		}
+		role := model.NodeRole(slices.Index(c.Nodes, u.Server), len(c.Nodes))
 		left := u.Left
 		if left == nil {
 			left = []string{}
@@ -253,7 +263,8 @@ func (s *server) deleteChain(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// linkChain queues the job that deploys the chain's link (again).
+// linkChain queues the job that deploys the chain's links that need it
+// (again): from the exit towards the entry, one job (P4-08).
 func (s *server) linkChain(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -264,7 +275,7 @@ func (s *server) linkChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errNotFound)
 		return
 	}
-	j, err := s.Cascade.Submit(r.Context(), id, 0, principal(r).User.ID)
+	j, err := s.Cascade.Deploy(r.Context(), id, principal(r).User.ID)
 	switch {
 	case errors.Is(err, cascade.ErrNoConfig):
 		s.fail(w, r, &Error{Status: http.StatusConflict, Code: "no_config", Message: "HyRoute не знает конфиг одного из серверов каскада: разверните на нём Hysteria или импортируйте его."})
@@ -279,9 +290,10 @@ func (s *server) linkChain(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, toJobJSON(j))
 }
 
-// unlinkChain queues the job that takes the chain's link off its servers
-// ({"delete": true}: the chain goes too; with "force": true, without the
-// servers the latest delete could not reach, forceDelete).
+// unlinkChain queues the job that takes the chain's links off its
+// servers, from the entry towards the exit ({"delete": true}: the chain
+// goes too; with "force": true, without the servers the latest delete
+// could not reach, forceDelete).
 func (s *server) unlinkChain(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok || s.Cascade == nil {
@@ -302,7 +314,7 @@ func (s *server) unlinkChain(w http.ResponseWriter, r *http.Request) {
 		s.forceDelete(w, r, id, in.Delete)
 		return
 	}
-	j, err := s.Cascade.Unlink(r.Context(), id, 0, in.Delete, principal(r).User.ID)
+	j, err := s.Cascade.UnlinkChain(r.Context(), id, in.Delete, principal(r).User.ID)
 	if err != nil {
 		s.fail(w, r, unlinkError(err))
 		return
@@ -343,7 +355,12 @@ func (s *server) forceDelete(w http.ResponseWriter, r *http.Request, id int64, d
 		s.fail(w, r, mapError(err))
 		return
 	}
-	j, un, err := s.Cascade.ForceDelete(r.Context(), id, 0, p.User.ID)
+	idx := firstDeployed(c)
+	if idx < 0 {
+		s.fail(w, r, unlinkError(cascade.ErrNotDeployed))
+		return
+	}
+	j, un, err := s.Cascade.ForceDelete(r.Context(), id, idx, p.User.ID)
 	if err != nil {
 		s.fail(w, r, unlinkError(err))
 		return

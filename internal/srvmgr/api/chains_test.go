@@ -274,3 +274,81 @@ func TestChainHealthAPI(t *testing.T) {
 		t.Fatalf("%s", rec.Body)
 	}
 }
+
+// A chain of three: the relay's role shows, one job deploys both links on
+// all three servers, and the chain is taken off by one job too.
+func TestChainThreeNodesAPI(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	ctx := context.Background()
+	var ids []int64
+	for i, name := range []string{"Entry", "Relay", "Exit"} {
+		rec := owner.do("POST", "/api/v1/servers", map[string]any{"name": name, "host": "192.0.2.4" + strconv.Itoa(i), "authType": "password", "password": fakeSSHPass}, nil)
+		var srv serverJSON
+		json.Unmarshal(rec.Body.Bytes(), &srv)
+		c := model.ServerConfig{ServerID: srv.ID, SHA256: "x", Meta: model.ConfigMeta{Auth: "userpass"}, Source: model.ConfigDeploy, At: time.Now()}
+		e.db.AddConfig(ctx, &c, func(rev int) ([]byte, error) {
+			return e.keys.Seal([]byte("listen: :443\nauth:\n  type: userpass\n  userpass:\n    alice: fake-three-api\n"), model.ConfigContext(srv.ID, rev))
+		})
+		e.db.SetInstallation(ctx, model.Installation{ServerID: srv.ID, Binary: "/usr/local/bin/hysteria", Config: "/etc/hysteria/config.yaml", Unit: "hysteria-server.service", User: "hysteria", At: time.Now()})
+		ids = append(ids, srv.ID)
+	}
+	code(t, owner.do("POST", "/api/v1/chains", map[string]any{"name": "x", "nodes": []int64{ids[0], ids[1], ids[2], ids[0]}}, nil), http.StatusBadRequest, "invalid")
+	rec := owner.do("POST", "/api/v1/chains", map[string]any{"name": "Через два", "nodes": ids}, nil)
+	var ch chainJSON
+	json.Unmarshal(rec.Body.Bytes(), &ch)
+	if rec.Code != http.StatusCreated || len(ch.Nodes) != 3 || ch.Nodes[1].Role != model.RoleRelay || len(ch.Links) != 2 || ch.Links[1].From != ids[1] || ch.Links[1].To != ids[2] {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	id := strconv.FormatInt(ch.ID, 10)
+	if rec = owner.do("GET", "/api/v1/servers/"+strconv.FormatInt(ids[1], 10), nil, nil); !strings.Contains(rec.Body.String(), `"role":"relay"`) {
+		t.Fatalf("relay role: %s", rec.Body)
+	}
+	// The relay sends through this chain only.
+	code(t, owner.do("POST", "/api/v1/chains", map[string]any{"name": "y", "nodes": []int64{ids[1], ids[0]}}, nil), http.StatusBadRequest, "invalid")
+
+	rec = owner.do("POST", "/api/v1/chains/"+id+"/link", nil, nil)
+	var job jobJSON
+	json.Unmarshal(rec.Body.Bytes(), &job)
+	if rec.Code != http.StatusAccepted || job.Kind != "link" || job.ServerID != ids[0] || len(job.Servers) != 2 || job.Servers[0] != ids[1] || job.Servers[1] != ids[2] || !strings.Contains(string(job.Params), `"hops"`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	for idx := range 2 {
+		if sealed, _ := e.db.LinkSecrets(ctx, ch.ID, idx); len(sealed) == 0 {
+			t.Fatalf("no secrets of link %d", idx)
+		}
+	}
+	queued, _ := e.db.JobByID(ctx, job.ID)
+	queued.State = model.JobFailed
+	e.db.UpdateJob(ctx, queued)
+
+	// Deployed: one unlink job on all three servers takes both links off.
+	c, _ := e.db.ChainByID(ctx, ch.ID)
+	for _, l := range c.Links {
+		l.State = model.LinkActive
+		e.db.UpdateLink(ctx, l)
+	}
+	rec = owner.do("POST", "/api/v1/chains/"+id+"/unlink", map[string]any{"delete": true}, nil)
+	json.Unmarshal(rec.Body.Bytes(), &job)
+	if rec.Code != http.StatusAccepted || job.Kind != "unlink" || job.ServerID != ids[0] || len(job.Servers) != 2 || !strings.Contains(string(job.Params), `"hops"`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	// The relay did not answer: the chain shows it as the relay, with
+	// what the links left there (its config has neither the outbound nor
+	// the user of the link before).
+	failed, _ := e.db.JobByID(ctx, job.ID)
+	failed.State, failed.CurrentStep = model.JobFailed, "connect"
+	e.db.UpdateJob(ctx, failed)
+	e.db.SetJobData(ctx, job.ID, map[string]string{"unreached:" + strconv.FormatInt(ids[1], 10): "1"})
+	rec = owner.do("GET", "/api/v1/chains/"+id, nil, nil)
+	json.Unmarshal(rec.Body.Bytes(), &ch)
+	if len(ch.Unreachable) != 1 || ch.Unreachable[0].ServerID != ids[1] || ch.Unreachable[0].Role != model.RoleRelay || len(ch.Unreachable[0].Left) != 2 ||
+		!strings.Contains(ch.Unreachable[0].Left[0], cascade.UnitName(ch.ID, 1)) {
+		t.Fatalf("%s", rec.Body)
+	}
+	rec = owner.do("POST", "/api/v1/chains/"+id+"/unlink", map[string]any{"delete": true, "force": true}, nil)
+	json.Unmarshal(rec.Body.Bytes(), &job)
+	if rec.Code != http.StatusAccepted || !strings.Contains(string(job.Params), `"force":true`) || !strings.Contains(string(job.Params), `"hops"`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
