@@ -1,14 +1,16 @@
 // A minimal history router: the controller answers every non-API path with
 // index.html, so pages have real URLs (/servers, /deployments…).
 
-export type Page = 'overview' | 'servers' | 'cascades' | 'rules' | 'presets' | 'deployments' | 'logs' | 'settings';
+export type Page = 'overview' | 'servers' | 'cascades' | 'rules' | 'presets' | 'deployments' | 'logs' | 'settings' | 'batches';
 
+// pages are those of the menu; batches is under deployments.
 export const pages: Page[] = ['overview', 'servers', 'cascades', 'rules', 'presets', 'deployments', 'logs', 'settings'];
+const known: Page[] = [...pages, 'batches'];
 
 // fromPath reads "/deployments/42" as page deployments, id 42.
 function fromPath(path: string): { page: Page; id: number | null } {
   const [first = '', second] = path.split('/').filter(Boolean);
-  const page = (pages as string[]).includes(first) ? (first as Page) : 'overview';
+  const page = (known as string[]).includes(first) ? (first as Page) : 'overview';
   const id = second && /^\d+$/.test(second) ? Number(second) : null;
   return { page, id };
 }

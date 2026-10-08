@@ -31,7 +31,10 @@
     <JobView id={route.id} {servers} />
   {/key}
 {:else}
-  <h1>{t('nav.deployments')}</h1>
+  <div class="row head">
+    <h1 class="grow">{t('nav.deployments')}</h1>
+    <button class="ghost" onclick={() => go('batches')}>{t('batches.open')} →</button>
+  </div>
   {#if error}<div class="note error">{error.message}</div>{/if}
   {#if list && list.length === 0}
     <div class="card empty"><p>{t('jobs.empty')}</p></div>
@@ -66,7 +69,7 @@
 {/if}
 
 <style>
-  h1 { margin-bottom: 16px; }
+  .head { margin-bottom: 16px; }
   .back { margin-bottom: 12px; }
   .empty p { margin: 0; color: var(--muted); }
   .table { padding: 6px 8px; }

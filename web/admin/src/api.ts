@@ -1194,6 +1194,66 @@ export const journalURL = (serverId: number, lines = 200) => `/api/v1/servers/${
 
 export const jobEventsURL = (id: number) => `/api/v1/jobs/${id}/events`;
 
+// A batch (P4-07) is one action over many servers as ordinary jobs: the
+// canary first, then `parallel` at a time; the first failure skips what
+// has not started.
+export type BatchAction = 'maintain' | 'geo' | 'preset' | 'routing' | 'tuning' | 'rotate';
+export const batchActions: BatchAction[] = ['maintain', 'geo', 'preset', 'routing', 'tuning', 'rotate'];
+// batchPerm is what an action needs on every server of its batch.
+export const batchPerm = (a: BatchAction): Permission => (a === 'maintain' ? 'deploy' : 'config');
+export type BatchState = 'running' | 'stopping' | 'completed' | 'failed' | 'stopped';
+export type BatchItemState = 'pending' | 'starting' | 'running' | 'completed' | 'unchanged' | 'failed' | 'skipped';
+
+export interface BatchItem {
+  idx: number;
+  serverId: number;
+  state: BatchItemState;
+  jobId?: number;
+  canary?: boolean;
+  message?: string;
+  at: string | null;
+  // job: the item's job as it is now (one batch only).
+  job?: { state: JobState; currentStep: string; errorMessage?: string };
+}
+
+export interface Batch {
+  id: number;
+  action: BatchAction;
+  params: Record<string, unknown>;
+  parallel: number;
+  state: BatchState;
+  // stop: why no more jobs start.
+  stop?: 'user' | 'failed' | 'denied';
+  stoppedBy?: string;
+  retryOf?: number;
+  retriedBy?: number;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+  items: BatchItem[];
+  mayStop: boolean;
+  mayRetry: boolean;
+}
+
+// BatchInput: the servers in order (the first is the canary), how many
+// run at once, and the params of the action beside them.
+export interface BatchInput {
+  servers: number[];
+  parallel?: number;
+  [param: string]: unknown;
+}
+
+// HysteriaRelease is the release notice: the newest release the
+// controller found and the servers in scope with an older Hysteria.
+export interface HysteriaRelease {
+  check: boolean;
+  latest: string;
+  checkedAt: string | null;
+  target: string;
+  outdated: { id: number; name: string; version: string }[];
+}
+
 // ServerInput: credentials left undefined keep the stored ones on update.
 // The role is not entered: it follows the server's place in cascades.
 export interface ServerInput {
@@ -1354,4 +1414,10 @@ export const api = {
   clientPassword: (serverId: number, base: number, user: string) => request<ClientChange>('POST', `/servers/${serverId}/clients/password`, { base, user }),
   serverConfig: (serverId: number) => request<ServerConfig>('GET', `/servers/${serverId}/config`),
   startPreflight: (serverId: number, udpPort = 443) => request<Job>('POST', `/servers/${serverId}/preflight`, { udpPort }),
+  batches: (before = 0) => request<Batch[]>('GET', '/batches' + (before ? `?before=${before}` : '')),
+  batch: (id: number) => request<Batch>('GET', `/batches/${id}`),
+  createBatch: (action: BatchAction, input: BatchInput) => request<Batch>('POST', `/batches/${action}`, input),
+  stopBatch: (id: number) => request<Batch>('POST', `/batches/${id}/stop`),
+  retryBatch: (id: number) => request<Batch>('POST', `/batches/${id}/retry`),
+  hysteriaRelease: () => request<HysteriaRelease>('GET', '/hysteria/release'),
 };

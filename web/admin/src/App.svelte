@@ -10,6 +10,7 @@
   import Servers from './pages/Servers.svelte';
   import Deployments from './pages/Deployments.svelte';
   import Logs from './pages/Logs.svelte';
+  import Batches from './pages/Batches.svelte';
   import { session, loadSession } from './session.svelte';
 
   const title = (p: Page) => t(`nav.${p}` as Key);
@@ -36,7 +37,7 @@
       {#each pages as p (p)}
         <a
           class="nav"
-          class:active={route.page === p}
+          class:active={route.page === p || (p === 'deployments' && route.page === 'batches')}
           href={p === 'overview' ? '/' : '/' + p}
           aria-current={route.page === p ? 'page' : undefined}
           onclick={(e) => {
@@ -64,6 +65,8 @@
         <Servers />
       {:else if route.page === 'deployments'}
         <Deployments />
+      {:else if route.page === 'batches'}
+        <Batches />
       {:else if route.page === 'logs'}
         <Logs />
       {:else if route.page === 'presets'}

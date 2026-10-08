@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, asApiError, type ApiError, type Server } from '../api';
+  import { SvelteSet } from 'svelte/reactivity';
+  import { api, asApiError, batchActions, batchPerm, type ApiError, type BatchAction, type Server, type ServerRole, type ServerState } from '../api';
   import { t, type Key } from '../i18n';
   import { can, canOn } from '../session.svelte';
   import Dialog from '../lib/Dialog.svelte';
@@ -8,6 +9,7 @@
   import CheckDialog from '../lib/CheckDialog.svelte';
   import DeployDialog from '../lib/DeployDialog.svelte';
   import Menu from '../lib/Menu.svelte';
+  import BatchDialog from '../lib/BatchDialog.svelte';
   import ServerPage from './ServerPage.svelte';
   import { flag, stateTone } from '../lib/format';
   import { go, route } from '../router.svelte';
@@ -25,10 +27,52 @@
   // scope is narrower: the controller checks it).
   let adding = $derived(can('deploy'));
 
+  // Search, filters and the selection a batch starts for (P4-07). The
+  // selection keeps the servers a filter hides; «выбрать все найденные»
+  // adds what the filters show.
+  let q = $state('');
+  let fState = $state<ServerState | ''>('');
+  let fTag = $state('');
+  let fRole = $state<ServerRole | ''>('');
+  const selected = new SvelteSet<number>();
+  let batching = $state<BatchAction | null>(null);
+  const states: ServerState[] = ['healthy', 'degraded', 'offline', 'needs_attention', 'deploying', 'new'];
+  const roles: ServerRole[] = ['standalone', 'entry', 'relay', 'exit'];
+  let tags = $derived([...new Set((list ?? []).flatMap((s) => s.tags.map((x) => x.toLowerCase())))].sort());
+  let found = $derived(
+    (list ?? []).filter((s) => {
+      const text = q.trim().toLowerCase();
+      const hay = [s.name, s.host, s.location, ...s.tags].join(' ').toLowerCase();
+      return (!text || hay.includes(text)) && (!fState || s.state === fState) && (!fRole || s.role === fRole) && (!fTag || s.tags.some((x) => x.toLowerCase() === fTag));
+    }),
+  );
+  let filtered = $derived(!!q.trim() || !!fState || !!fTag || !!fRole);
+  let chosen = $derived((list ?? []).filter((s) => selected.has(s.id)));
+  let allFound = $derived(found.length > 0 && found.every((s) => selected.has(s.id)));
+  // batches: the role may start some batch; the servers' perms decide
+  // each action.
+  let batches = $derived(can('config') || can('deploy'));
+  const allowed = (a: BatchAction) => chosen.length > 0 && chosen.every((s) => canOn(s, batchPerm(a)));
+
+  function toggleFound() {
+    if (allFound) for (const s of found) selected.delete(s.id);
+    else for (const s of found) selected.add(s.id);
+  }
+
+  function toggle(id: number) {
+    if (selected.has(id)) selected.delete(id);
+    else selected.add(id);
+  }
+
+  function resetFilters() {
+    [q, fState, fTag, fRole] = ['', '', '', ''];
+  }
+
   async function load() {
     try {
       list = await api.servers();
       error = null;
+      for (const id of [...selected]) if (!list.some((s) => s.id === id)) selected.delete(id);
     } catch (e) {
       error = asApiError(e);
     }
@@ -105,10 +149,51 @@
     <p>{adding ? t('servers.empty') : t('servers.emptyReadonly')}</p>
   </div>
 {:else if list}
+  <div class="filters">
+    <input class="search" type="search" placeholder={t('srv.search')} aria-label={t('srv.search')} bind:value={q} />
+    <select bind:value={fState} aria-label={t('servers.state')}>
+      <option value="">{t('srv.allStates')}</option>
+      {#each states as st (st)}<option value={st}>{t(`state.${st}` as Key)}</option>{/each}
+    </select>
+    {#if tags.length}
+      <select bind:value={fTag} aria-label={t('servers.tags')}>
+        <option value="">{t('srv.allTags')}</option>
+        {#each tags as tag (tag)}<option value={tag}>{tag}</option>{/each}
+      </select>
+    {/if}
+    <select bind:value={fRole} aria-label={t('servers.role')}>
+      <option value="">{t('srv.allRoles')}</option>
+      {#each roles as r (r)}<option value={r}>{t(`srvrole.${r}` as Key)}</option>{/each}
+    </select>
+    {#if filtered}
+      <span class="small muted">{t('srv.found', { n: found.length, total: list.length })}</span>
+      <button class="link small" onclick={resetFilters}>{t('srv.reset')}</button>
+    {/if}
+  </div>
+
+  {#if batches && selected.size > 0}
+    <div class="selbar card">
+      <span class="small"><b>{t('srv.selected', { n: selected.size })}</b></span>
+      {#if !allFound && found.length}<button class="link small" onclick={toggleFound}>{t('srv.selectFound', { n: found.length })}</button>{/if}
+      <button class="link small" onclick={() => selected.clear()}>{t('srv.clearSelection')}</button>
+      <span class="grow"></span>
+      <span class="small muted">{t('srv.batchFor')}</span>
+      {#each batchActions as a (a)}
+        <button class="ghost" disabled={!allowed(a)} title={allowed(a) ? undefined : t('srv.noPermSome')} onclick={() => (batching = a)}>{t(`batch.action.${a}` as Key)}</button>
+      {/each}
+    </div>
+  {/if}
+
+  {#if found.length === 0}
+    <div class="card empty"><p>{t('srv.nothingFound')}</p></div>
+  {:else}
   <div class="card table">
     <table>
       <thead>
         <tr>
+          {#if batches}
+            <th class="pick"><input type="checkbox" checked={allFound} onchange={toggleFound} aria-label={t('srv.selectFound', { n: found.length })} title={t('srv.selectFound', { n: found.length })} /></th>
+          {/if}
           <th>{t('servers.name')}</th>
           <th>{t('servers.host')}</th>
           <th>{t('servers.role')}</th>
@@ -117,8 +202,11 @@
         </tr>
       </thead>
       <tbody>
-        {#each list as s (s.id)}
-          <tr>
+        {#each found as s (s.id)}
+          <tr class:sel={selected.has(s.id)}>
+            {#if batches}
+              <td class="pick"><input type="checkbox" checked={selected.has(s.id)} onchange={() => toggle(s.id)} aria-label={t('srv.selectRow', { name: s.name })} /></td>
+            {/if}
             <td>
               <a class="name" href="/servers/{s.id}" onclick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return; e.preventDefault(); go('servers', s.id); }}>{flag(s.country)} {s.name}</a>
               {#if s.location || s.tags.length}
@@ -153,6 +241,11 @@
       </tbody>
     </table>
   </div>
+  {/if}
+{/if}
+
+{#if batching}
+  <BatchDialog action={batching} servers={chosen} onclose={() => (batching = null)} oncreated={(b) => ((batching = null), selected.clear(), go('batches', b.id))} />
 {/if}
 
 {#if editing !== undefined}
@@ -215,4 +308,10 @@
   .acts button { padding: 6px 8px; }
   p { margin: 0; }
   :global(button.danger-bg) { background: var(--block); }
+  .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .search { flex: 1; min-width: 220px; max-width: 420px; }
+  .selbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 12px; }
+  .selbar button.ghost { padding: 6px 10px; }
+  th.pick, td.pick { width: 28px; padding-right: 0; }
+  tr.sel td { background: var(--accent-soft); }
 </style>

@@ -6,6 +6,7 @@
   import { can } from '../session.svelte';
   import { flag, jobTone, pct, stateTone, when } from '../lib/format';
   import AttentionCard from '../lib/AttentionCard.svelte';
+  import ReleaseCard from '../lib/ReleaseCard.svelte';
 
   let writable = $derived(can('deploy'));
 
@@ -44,6 +45,7 @@
 {/if}
 
 <AttentionCard />
+<ReleaseCard {servers} />
 
 <div class="grid">
   <section class="card">
