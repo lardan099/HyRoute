@@ -1533,7 +1533,7 @@ JSON-строкой) и должно прийти за минуту; тело б
 | GET | `/api/v1/session` | любая | текущий пользователь, CSRF-токен |
 | DELETE | `/api/v1/session` | любая | выход |
 | GET | `/api/v1/sessions` | любая; `?all=1` — owner/admin (иначе 403) | свои сессии; с `?all=1` — сессии всех пользователей |
-| DELETE | `/api/v1/sessions/{id}` | своя — любая; чужая — owner/admin | отзыв сессии (с CSRF, как любое изменение) |
+| DELETE | `/api/v1/sessions/{id}` | своя — любая; чужая — owner/admin (сессию owner-а — только owner) | отзыв сессии (с CSRF, как любое изменение) |
 | POST | `/api/v1/session/password` | любая | `{current, password}`: смена своего пароля; все сессии пользователя отзываются, в ответе (как у логина) — новая сессия этого браузера; неверный текущий — 400 `invalid` с details `current`, попытки ограничены как у логина (429) |
 | GET | `/api/v1/users` | любая | пользователи: имя, роль, `disabled`, дата создания, `lastLoginAt` (null — неизвестен), без хешей паролей |
 | POST | `/api/v1/users` | owner/admin | `{username, password, role}`: admin, operator или readonly (owner-ом делают существующего пользователя) |

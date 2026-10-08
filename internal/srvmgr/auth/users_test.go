@@ -198,6 +198,8 @@ func TestWhoManagesWhom(t *testing.T) {
 	}
 	_, err := s.UpdateUser(ctx, tm.admin, tm.ro.User.ID, UserChange{Role: role(model.RoleOwner)})
 	wantErr(t, "admin grants owner", err, ErrForbidden)
+	wantErr(t, "admin ends the owner's session", s.RevokeSession(ctx, tm.admin, tm.owner.Session.ID), ErrForbidden)
+	mustNoErr(t, s.RevokeSession(ctx, tm.admin, tm.ro.Session.ID))
 	_, err = s.ResetPassword(ctx, tm.admin, tm.owner.User.ID, "")
 	wantErr(t, "admin resets the owner's password", err, ErrForbidden)
 	u, err := s.UpdateUser(ctx, tm.admin, tm.op.User.ID, UserChange{Role: role(model.RoleAdmin)})

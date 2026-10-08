@@ -16,6 +16,9 @@
 
   const fmt = (s: string) => new Date(s).toLocaleString(locale);
   const who = (id: number) => users.find((u) => u.id === id)?.username ?? '#' + id;
+  // An owner's sessions are ended only by an owner (or the owner).
+  const mayEnd = (s: SessionInfo) =>
+    s.userId === session.user?.id || session.user?.role === 'owner' || users.find((u) => u.id === s.userId)?.role !== 'owner';
 
   async function load() {
     try {
@@ -86,7 +89,9 @@
           <td class="mono">{s.ip}</td>
           <td>{fmt(s.lastSeenAt)}{#if s.current} <span class="badge">{t('settings.current')}</span>{/if}</td>
           <td class="ua ellipsis" title={s.userAgent}>{s.userAgent}</td>
-          <td class="act"><button class="ghost danger" onclick={() => revoke(s)}>{s.current ? t('settings.logout') : t('settings.revoke')}</button></td>
+          <td class="act">
+            {#if mayEnd(s)}<button class="ghost danger" onclick={() => revoke(s)}>{s.current ? t('settings.logout') : t('settings.revoke')}</button>{/if}
+          </td>
         </tr>
       {/each}
     </tbody>

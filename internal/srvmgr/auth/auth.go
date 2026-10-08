@@ -448,15 +448,24 @@ func (s *Service) Sessions(ctx context.Context, p Principal, all bool) ([]model.
 	return live, nil
 }
 
-// RevokeSession ends a session: one's own, or anyone's for owners and
-// admins.
+// RevokeSession ends a session: one's own, or that of a user p manages
+// (see mayManage: an owner's only for an owner).
 func (s *Service) RevokeSession(ctx context.Context, p Principal, id int64) error {
 	sess, err := s.Store.SessionByID(ctx, id)
 	if err != nil {
 		return err
 	}
-	if sess.UserID != p.User.ID && !p.User.Role.CanManageUsers() {
-		return ErrForbidden
+	if sess.UserID != p.User.ID {
+		if !p.User.Role.CanManageUsers() {
+			return ErrForbidden
+		}
+		u, err := s.Store.UserByID(ctx, sess.UserID)
+		if err != nil {
+			return err
+		}
+		if err := mayManage(p.User, u); err != nil {
+			return err
+		}
 	}
 	s.audit(ctx, p.User.ID, "session_revoked", userTarget(sess.UserID), fmt.Sprint("session ", id))
 	err = s.Store.RevokeSession(ctx, id, s.Now())
