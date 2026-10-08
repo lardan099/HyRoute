@@ -42,6 +42,10 @@ func (r Role) CanBackup() bool { return r == RoleOwner }
 // CanCheckKey: may try a copy of the master key against the database.
 func (r Role) CanCheckKey() bool { return r == RoleOwner || r == RoleAdmin }
 
+// CanDiagnose: may download the diagnostic bundle (the state, logs and
+// config summaries of every server, pseudonymized).
+func (r Role) CanDiagnose() bool { return r == RoleOwner || r == RoleAdmin }
+
 // User is an admin account. PasswordHash is a PHC argon2id string.
 type User struct {
 	ID           int64

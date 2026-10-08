@@ -30,6 +30,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/datadir"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
+	"github.com/lardan099/hyroute/internal/srvmgr/diag"
 	"github.com/lardan099/hyroute/internal/srvmgr/geo"
 	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
 	"github.com/lardan099/hyroute/internal/srvmgr/importer"
@@ -248,6 +249,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			KeyCheck: func(ctx context.Context, text string) (secrets.KeyReport, error) {
 				return secrets.CheckKeyText(ctx, text, db)
 			},
+			Diag: &diag.Builder{Store: db, Keys: keys, Logs: logs, Geo: geoFiles, Backups: backups, Version: version,
+				Settings: diag.SettingsOf(cfg, getenv, pass != "", true)},
 			UI:      admin.FS(),
 			Streams: streams,
 			OnSetupDone: func() {
