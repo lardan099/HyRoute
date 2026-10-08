@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -45,4 +46,46 @@ func lock(f *os.File) error {
 		return ErrLocked
 	}
 	return err
+}
+
+// check reads the ACL of path, inherited entries included: it may allow
+// only SYSTEM, Administrators and the current user. A file in the data
+// directory inherits the directory's entries, which Dir narrowed.
+func check(path string, _ fs.FileInfo, _ bool) error {
+	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	if dacl == nil {
+		return fmt.Errorf("%s has no access list: everyone may open it", path)
+	}
+	for i := uint16(0); i < dacl.AceCount; i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, uint32(i), &ace); err != nil {
+			return err
+		}
+		// Entries only for what is created inside (CREATOR OWNER of a
+		// parent, say) do not open the object itself.
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 {
+			continue
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		if sid.IsWellKnown(windows.WinLocalSystemSid) || sid.IsWellKnown(windows.WinBuiltinAdministratorsSid) || sid.Equals(tu.User.Sid) {
+			continue
+		}
+		who := sid.String()
+		if account, domain, _, err := sid.LookupAccount(""); err == nil {
+			who = domain + `\` + account
+		}
+		return fmt.Errorf("%s is open to %s: only SYSTEM, Administrators and the controller's user may reach it", path, who)
+	}
+	return nil
 }

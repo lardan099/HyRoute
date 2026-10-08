@@ -3,10 +3,14 @@ package secrets
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/store"
 )
@@ -141,4 +145,76 @@ func CheckKeyText(ctx context.Context, text string, db Samples) (KeyReport, erro
 		}
 	}
 	return r, nil
+}
+
+// RekeyDB is what rekey needs from a database.
+type RekeyDB interface {
+	Samples
+	SetSetting(ctx context.Context, key, value string, at time.Time) error
+	SealedVersions(ctx context.Context) ([]uint32, error)
+	// RewrapSealed seals again every value not sealed with current, in
+	// small transactions (an interrupted run is safe to repeat).
+	RewrapSealed(ctx context.Context, current uint32, rewrap func(sealed []byte, context string) ([]byte, error)) (int, error)
+}
+
+// Rekey seals every stored value and the check value with the current
+// key version, after Verify accepted keys. It returns how many values it
+// rewrapped and the loaded versions nothing needs any more: their lines
+// can go from the key file.
+func Rekey(ctx context.Context, keys *Keyring, db RekeyDB) (n int, unused []uint32, err error) {
+	n, err = db.RewrapSealed(ctx, keys.Current(), keys.Rewrap)
+	if err != nil {
+		return n, nil, err
+	}
+	if err := storeCheck(ctx, db, keys); err != nil {
+		return n, nil, err
+	}
+	used, err := db.SealedVersions(ctx)
+	if err != nil {
+		return n, nil, err
+	}
+	for _, v := range keys.Versions() {
+		if v != keys.Current() && !slices.Contains(used, v) {
+			unused = append(unused, v)
+		}
+	}
+	return n, unused, nil
+}
+
+// AddVersion appends a new key version (the highest loaded one plus one)
+// to the key file and returns the keyring with it: rekey -rotate. The
+// file is replaced in one rename and keeps its other lines.
+func AddVersion(file string, keys *Keyring) (*Keyring, error) {
+	b, err := readKeyFile(file)
+	if err != nil {
+		return nil, err
+	}
+	raw := make([]byte, KeySize)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, err
+	}
+	v := keys.Current() + 1
+	text := string(b)
+	if text != "" && !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	text += fmt.Sprintf("%d:%s\n", v, base64.StdEncoding.EncodeToString(raw))
+	parsed, err := parseKeys(text)
+	if err != nil {
+		return nil, err
+	}
+	next, err := NewKeyring(parsed)
+	if err != nil {
+		return nil, err
+	}
+	tmp := file + ".new"
+	os.Remove(tmp)
+	if err := writeKeyFile(tmp, text); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp, file); err != nil {
+		os.Remove(tmp)
+		return nil, err
+	}
+	return next, nil
 }

@@ -64,3 +64,19 @@ func Lock(dir string) (*os.File, error) {
 	}
 	return f, nil
 }
+
+// Check reports, changing nothing, whether a directory or a file holding
+// secrets is guarded the way Dir and File want it: doctor asks it. On
+// Unix it is the very check of Dir and File; on Windows the ACL, with
+// what it inherits, must allow only SYSTEM, Administrators and the
+// current user.
+func Check(path string, dir bool) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if dir != st.IsDir() || (!dir && !st.Mode().IsRegular()) {
+		return fmt.Errorf("%s is not a %s", path, map[bool]string{true: "directory", false: "regular file"}[dir])
+	}
+	return check(path, st, dir)
+}

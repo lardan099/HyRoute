@@ -33,3 +33,5 @@ func lock(f *os.File) error {
 	}
 	return err
 }
+
+func check(path string, st fs.FileInfo, dir bool) error { return protect(path, st, dir) }

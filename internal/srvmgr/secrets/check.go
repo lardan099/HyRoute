@@ -166,8 +166,13 @@ func mismatch(err error, from string) error {
 	return fmt.Errorf("проверочное значение мастер-ключа в базе (settings, %s): %w", checkSetting, err)
 }
 
+// settingWriter stores a value of the settings table.
+type settingWriter interface {
+	SetSetting(ctx context.Context, key, value string, at time.Time) error
+}
+
 // storeCheck seals the check value with the current key version.
-func storeCheck(ctx context.Context, db Database, keys *Keyring) error {
+func storeCheck(ctx context.Context, db settingWriter, keys *Keyring) error {
 	b, err := keys.SealString(checkText, checkContext)
 	if err != nil {
 		return err
