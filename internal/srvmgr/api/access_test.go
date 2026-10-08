@@ -47,7 +47,7 @@ func TestRoutesDeclared(t *testing.T) {
 			t.Errorf("%s: no declaration", rt.pattern)
 			continue
 		}
-		if !rl.byJob && !rl.perm.Valid() {
+		if !rl.byJob && !rl.byBatch && !rl.perm.Valid() {
 			t.Errorf("%s: unknown permission %q", rt.pattern, rl.perm)
 		}
 		if len(rl.find) == 0 {
@@ -61,7 +61,7 @@ func TestRoutesDeclared(t *testing.T) {
 		for _, f := range rl.find {
 			names = append(names, f.name)
 		}
-		for prefix, want := range map[string]string{"/api/v1/servers/{id}": "server", "/api/v1/chains/{id}": "chain", "/api/v1/jobs/{id}": "job"} {
+		for prefix, want := range map[string]string{"/api/v1/servers/{id}": "server", "/api/v1/chains/{id}": "chain", "/api/v1/jobs/{id}": "job", "/api/v1/batches/{id}": "batch"} {
 			if strings.HasPrefix(path, prefix) && !slices.Contains(names, want) {
 				t.Errorf("%s: the {id} of the path is not checked (finders %v)", rt.pattern, names)
 			}
@@ -127,6 +127,7 @@ type matrixEnv struct {
 	clients map[model.Role]*client
 	vars    map[string]string
 	job     model.Job
+	batch   model.Batch
 }
 
 func newMatrix(t *testing.T) *matrixEnv {
@@ -179,6 +180,14 @@ func newMatrix(t *testing.T) *matrixEnv {
 		t.Fatal(err)
 	}
 	m.job = j
+	// An ended batch of the tuning action with a failed server: stopped
+	// and retried by the holders of config.
+	b := model.Batch{Action: model.BatchTuning, Params: json.RawMessage(`{"keys":["net.core.rmem_max"]}`), Parallel: 1, State: model.BatchFailed, CreatedBy: 1,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(), Items: []model.BatchItem{{ServerID: ids[0], State: model.ItemFailed}}}
+	if err := e.db.CreateBatch(ctx, &b); err != nil {
+		t.Fatal(err)
+	}
+	m.batch = b
 	m.vars = map[string]string{
 		"{rev}":    "1",
 		"{action}": "restart",
@@ -187,6 +196,7 @@ func newMatrix(t *testing.T) *matrixEnv {
 	m.vars["server"] = strconv.FormatInt(ids[0], 10)
 	m.vars["chain"] = strconv.FormatInt(chain.ID, 10)
 	m.vars["job"] = strconv.FormatInt(j.ID, 10)
+	m.vars["batch"] = strconv.FormatInt(b.ID, 10)
 	m.vars["preset"] = strconv.FormatInt(preset.ID, 10)
 	m.vars["user"] = strconv.FormatInt(victim.ID, 10)
 	return m
@@ -196,7 +206,7 @@ func newMatrix(t *testing.T) *matrixEnv {
 func (m *matrixEnv) path(pattern string) (method, path string) {
 	method, path, _ = strings.Cut(pattern, " ")
 	id := "999999" // sessions: a missing one (revoking one's own would log out)
-	for prefix, v := range map[string]string{"/api/v1/servers/": "server", "/api/v1/chains/": "chain", "/api/v1/jobs/": "job", "/api/v1/presets/": "preset", "/api/v1/users/": "user"} {
+	for prefix, v := range map[string]string{"/api/v1/servers/": "server", "/api/v1/chains/": "chain", "/api/v1/jobs/": "job", "/api/v1/presets/": "preset", "/api/v1/users/": "user", "/api/v1/batches/": "batch"} {
 		if strings.HasPrefix(path, prefix) {
 			id = m.vars[v]
 		}
@@ -245,7 +255,7 @@ func (m *matrixEnv) call(c *client, role model.Role, method, path string) *httpt
 }
 
 // expect is what the declaration of a route says about role.
-func expect(rl rule, role model.Role, job model.Job) bool {
+func expect(rl rule, role model.Role, job model.Job, b model.Batch) bool {
 	switch rl.kind {
 	case rulePublic, ruleSignedIn:
 		return true
@@ -256,6 +266,9 @@ func expect(rl rule, role model.Role, job model.Job) bool {
 	if rl.byJob {
 		p, ok := jobPerm(job)
 		return ok && role.Can(p)
+	}
+	if rl.byBatch {
+		return role.Can(b.Action.Permission())
 	}
 	return role.Can(rl.perm)
 }
@@ -270,7 +283,7 @@ func TestRoleRouteMatrix(t *testing.T) {
 		method, path := m.path(rt.pattern)
 		for _, role := range model.Roles {
 			rec := m.call(m.clients[role], role, method, path)
-			allowed := expect(rt.rule, role, m.job)
+			allowed := expect(rt.rule, role, m.job, m.batch)
 			if allowed && rec.Code == http.StatusForbidden || !allowed && rec.Code != http.StatusForbidden {
 				t.Errorf("%s as %s: %d %s (allowed: %v)", rt.pattern, role, rec.Code, strings.TrimSpace(rec.Body.String()), allowed)
 			}

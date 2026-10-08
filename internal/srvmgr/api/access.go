@@ -11,6 +11,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
+	"github.com/lardan099/hyroute/internal/srvmgr/batch"
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
 	"github.com/lardan099/hyroute/internal/srvmgr/geo"
@@ -57,6 +58,9 @@ type rule struct {
 	// byJob: the permission is that of the job of the path (jobPerm), for
 	// retries; perm is not used.
 	byJob bool
+	// byBatch: the permission is that of the action of the batch of the
+	// path (stopping and retrying it, P4-07); perm is not used.
+	byBatch bool
 	// owner: the owner only (backups, handing the owner role over).
 	owner bool
 }
@@ -81,6 +85,10 @@ func ownerOnly(r rule) rule {
 // kind on all of its servers, checked at the time of the retry.
 var retryRule = rule{kind: rulePerm, byJob: true, find: []finder{onJob}}
 
+// batchRule is a change of the batch of the path: the permission of its
+// action on all of its servers, as creating it needed.
+var batchRule = rule{kind: rulePerm, byBatch: true, find: []finder{onBatch}}
+
 // targets are what the finders of a request found.
 type targets struct {
 	// servers are existing servers the request acts on.
@@ -90,6 +98,8 @@ type targets struct {
 	tags [][]string
 	// job is the job of the path (onJob).
 	job *model.Job
+	// batch is the batch of the path (onBatch).
+	batch *model.Batch
 }
 
 // finder names what a request acts on. Body finders decode the fields
@@ -139,6 +149,21 @@ var (
 		t.servers = append(t.servers, jobServers(j)...)
 		return nil
 	}}
+	// onBatch: every server of the batch of the path, the node it
+	// downloads through too.
+	onBatch = finder{name: "batch", find: func(s *server, r *http.Request, t *targets) error {
+		id, ok := pathID(r)
+		if !ok {
+			return errNotFound
+		}
+		b, err := s.Store.BatchByID(r.Context(), id)
+		if err != nil {
+			return mapError(err)
+		}
+		t.batch = &b
+		t.servers = append(t.servers, batchServers(b)...)
+		return nil
+	}}
 	// bodyVia: the server a binary or the geo databases come through
 	// ({"via": id}: deploy, maintain, geo).
 	bodyVia = bodyFinder("via", func(b []byte, t *targets) error {
@@ -162,6 +187,17 @@ var (
 			return err
 		}
 		t.servers = append(t.servers, in.Nodes...)
+		return nil
+	})
+	// bodyServers: the servers of a new batch ({"servers": [...]}).
+	bodyServers = bodyFinder("servers", func(b []byte, t *targets) error {
+		var in struct {
+			Servers []int64 `json:"servers"`
+		}
+		if err := json.Unmarshal(b, &in); err != nil {
+			return err
+		}
+		t.servers = append(t.servers, in.Servers...)
 		return nil
 	})
 	// bodyServerID: the server a preset is made of ({"serverId": id}).
@@ -245,6 +281,25 @@ func jobServers(j model.Job) []int64 {
 	return out
 }
 
+// batchServers are the servers a batch reaches: its own and the node it
+// downloads through (params "via").
+func batchServers(b model.Batch) []int64 {
+	out := b.Servers()
+	if via := batch.Via(b); via != 0 {
+		out = append(out, via)
+	}
+	return out
+}
+
+// mayBatch: the role may create, stop and retry a batch of action a (on
+// servers of its scope).
+func mayBatch(r model.Role, a model.BatchAction) bool { return a.Valid() && r.Can(a.Permission()) }
+
+// mayBatchSome: the role may do some action of a batch.
+func mayBatchSome(r model.Role) bool {
+	return slices.ContainsFunc(model.BatchActions, func(a model.BatchAction) bool { return mayBatch(r, a) })
+}
+
 // jobPerms is the permission that retrying a job of each kind needs (the
 // one that starts it). A kind not listed is retried by owners and admins
 // only.
@@ -315,7 +370,16 @@ func (s *server) allowed(r *http.Request, rl rule, p auth.Principal) error {
 	if rl.owner && u.Role != model.RoleOwner {
 		return errForbidden
 	}
-	if rl.byJob && !mayRetrySome(u.Role) || !rl.byJob && !u.Role.Can(rl.perm) {
+	switch {
+	case rl.byJob:
+		if !mayRetrySome(u.Role) {
+			return errForbidden
+		}
+	case rl.byBatch:
+		if !mayBatchSome(u.Role) {
+			return errForbidden
+		}
+	case !u.Role.Can(rl.perm):
 		return errForbidden
 	}
 	var t targets
@@ -333,6 +397,9 @@ func (s *server) allowed(r *http.Request, rl rule, p auth.Principal) error {
 	if rl.byJob && t.job != nil && !kindAllows(u.Role, *t.job) {
 		return errForbidden
 	}
+	if rl.byBatch && t.batch != nil && !mayBatch(u.Role, t.batch.Action) {
+		return errForbidden
+	}
 	return nil
 }
 
@@ -343,7 +410,7 @@ func (s *server) inScope(ctx context.Context, sc model.Scope, t targets) error {
 	if sc.All {
 		return nil
 	}
-	if t.job != nil && len(t.servers) == 0 {
+	if (t.job != nil || t.batch != nil) && len(t.servers) == 0 {
 		return errNotFound
 	}
 	for _, id := range t.servers {

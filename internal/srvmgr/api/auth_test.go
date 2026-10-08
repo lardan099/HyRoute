@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
+	"github.com/lardan099/hyroute/internal/srvmgr/batch"
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
@@ -26,6 +28,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 	"github.com/lardan099/hyroute/internal/srvmgr/reconcile"
 	"github.com/lardan099/hyroute/internal/srvmgr/redact"
+	"github.com/lardan099/hyroute/internal/srvmgr/routing"
 	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
 	"github.com/lardan099/hyroute/internal/srvmgr/servers"
 	"github.com/lardan099/hyroute/internal/srvmgr/service"
@@ -50,6 +53,10 @@ type testEnv struct {
 	// connector.
 	reconcile *reconcile.Reconciler
 	clock     time.Time
+	// batches run bulk operations (not started: runBatches);
+	// releases is the release notice, looked up by a lookup of the test.
+	batches  *batch.Runner
+	releases *hyrelease.Watch
 }
 
 func newEnv(t *testing.T) *testEnv {
@@ -86,8 +93,13 @@ func newEnv(t *testing.T) *testEnv {
 	submitter := &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}
 	e.reconcile = &reconcile.Reconciler{Store: db, Conn: e.connect, Keys: keys, Interval: time.Hour,
 		Jobs: reconcile.Jobs{Apply: e.apply, Deploy: submitter, Geo: geoJobs, Links: linker}}
+	ed := &apply.Editor{Store: db, Keys: keys}
+	e.batches = batch.New(db, &batch.Actions{Store: db, Jobs: e.jobs, Deploy: submitter, Geo: geoJobs, Apply: e.apply, Editor: ed,
+		Routing: &routing.Service{Editor: ed, Applier: e.apply, Chains: db}}, nil)
+	e.batches.Poll = 20 * time.Millisecond
+	e.releases = &hyrelease.Watch{Find: func(context.Context) (string, error) { return "", errors.New("no lookups in tests") }}
 	e.h = New(Deps{Store: db, Auth: e.auth, Servers: e.servers, Connect: e.connect, Jobs: e.jobs,
-		Deploy: submitter, Apply: e.apply, Cascade: linker, Geo: e.geo, GeoJobs: geoJobs, Keys: keys, Reconcile: e.reconcile})
+		Deploy: submitter, Apply: e.apply, Cascade: linker, Geo: e.geo, GeoJobs: geoJobs, Keys: keys, Reconcile: e.reconcile, Batches: e.batches, Releases: e.releases})
 	return e
 }
 

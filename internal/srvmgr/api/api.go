@@ -21,12 +21,14 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/backup"
+	"github.com/lardan099/hyroute/internal/srvmgr/batch"
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/connect"
 	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
 	"github.com/lardan099/hyroute/internal/srvmgr/diag"
 	"github.com/lardan099/hyroute/internal/srvmgr/events"
 	"github.com/lardan099/hyroute/internal/srvmgr/geo"
+	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
 	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
 	"github.com/lardan099/hyroute/internal/srvmgr/logbuf"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
@@ -89,6 +91,11 @@ type Deps struct {
 	// Alerts sends notifications through the channels (nil: channels are
 	// stored, but nothing sends, and there is no test).
 	Alerts *alerts.Notifier
+	// Batches runs bulk operations (P4-07; nil: none), Releases is the
+	// newest Hysteria release the controller found (nil: it does not
+	// look).
+	Batches  *batch.Runner
+	Releases *hyrelease.Watch
 	// Streams ends the live event streams (job events, the Hysteria
 	// journal) when it is done: main cancels it when shutdown starts, so
 	// they do not hold Shutdown while other requests finish. nil: a
@@ -249,6 +256,17 @@ func (s *server) routes() []route {
 		{"PATCH /api/v1/alerts/channels/{id}", need(model.PermSettings, global), s.updateChannel},
 		{"DELETE /api/v1/alerts/channels/{id}", need(model.PermSettings, global), s.deleteChannel},
 		{"POST /api/v1/alerts/channels/{id}/test", need(model.PermSettings, global), s.testChannel},
+		{"GET /api/v1/batches", need(model.PermView, global), s.listBatches},
+		{"GET /api/v1/batches/{id}", need(model.PermView, onBatch), s.getBatch},
+		{"POST /api/v1/batches/maintain", need(model.PermDeploy, bodyServers, bodyVia), s.createBatch(model.BatchMaintain)},
+		{"POST /api/v1/batches/geo", need(model.PermConfig, bodyServers, bodyVia), s.createBatch(model.BatchGeo)},
+		{"POST /api/v1/batches/preset", need(model.PermConfig, bodyServers), s.createBatch(model.BatchPreset)},
+		{"POST /api/v1/batches/routing", need(model.PermConfig, bodyServers), s.createBatch(model.BatchRouting)},
+		{"POST /api/v1/batches/tuning", need(model.PermConfig, bodyServers), s.createBatch(model.BatchTuning)},
+		{"POST /api/v1/batches/rotate", need(model.PermConfig, bodyServers), s.createBatch(model.BatchRotate)},
+		{"POST /api/v1/batches/{id}/stop", batchRule, s.stopBatch},
+		{"POST /api/v1/batches/{id}/retry", batchRule, s.retryBatch},
+		{"GET /api/v1/hysteria/release", need(model.PermView, global), s.hysteriaRelease},
 	}
 }
 
