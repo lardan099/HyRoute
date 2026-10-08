@@ -134,3 +134,44 @@ func TestServiceCreate(t *testing.T) {
 		t.Fatalf("audit %s", got)
 	}
 }
+
+// A chain of three: the relay gets its role and needs an auth the link
+// before it can make credentials with, as an exit does (P4-08).
+func TestServiceCreateRelay(t *testing.T) {
+	ctx := context.Background()
+	s, db, ids := servers(t, "password", "http", "userpass", "password", "", "password")
+	a, httpRelay, r, x, noConfig, e := ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]
+
+	_, err := s.Create(ctx, Input{Name: "x", Nodes: []int64{a, httpRelay, x}}, 0)
+	fieldMsg(t, err, "На промежуточном сервере SB вход клиентов — \"http\"")
+	_, err = s.Create(ctx, Input{Name: "x", Nodes: []int64{a, noConfig, x}}, 0)
+	fieldMsg(t, err, "конфиг промежуточного сервера SE")
+	_, err = s.Create(ctx, Input{Name: "x", Nodes: []int64{a, r, x, e, httpRelay}}, 0)
+	fieldMsg(t, err, "до 4 серверов")
+
+	c, err := s.Create(ctx, Input{Name: "Через два", Nodes: []int64{a, r, x}}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Links) != 2 || c.Links[0].From != a || c.Links[0].To != r || c.Links[1].From != r || c.Links[1].To != x {
+		t.Fatalf("links %+v", c.Links)
+	}
+	for id, want := range map[int64]model.ServerRole{a: model.RoleEntry, r: model.RoleRelay, x: model.RoleExit} {
+		if srv, _ := db.ServerByID(ctx, id); srv.Role != want {
+			t.Fatalf("server %d: role %s, want %s", id, srv.Role, want)
+		}
+	}
+	// The relay sends through this chain only, and receives from it only.
+	_, err = s.Create(ctx, Input{Name: "y", Nodes: []int64{e, r}}, 0)
+	fieldMsg(t, err, "«SC» — промежуточный узел каскада «Через два»")
+	// The exit serves another chain.
+	if _, err := s.Create(ctx, Input{Name: "z", Nodes: []int64{e, x}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, c.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if srv, _ := db.ServerByID(ctx, r); srv.Role != model.RoleStandalone {
+		t.Fatalf("relay role after delete %s", srv.Role)
+	}
+}

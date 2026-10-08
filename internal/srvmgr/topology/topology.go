@@ -4,44 +4,57 @@ package topology
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
 )
 
-// MaxNodes is how many servers a chain may have in Phase 3: entry and
-// exit. The schema has N; Phase 4 raises this.
-const MaxNodes = 2
+// MaxNodes is how many servers a chain may have (P4-08): the entry, up to
+// two relays and the exit. Each hop adds a link client and its latency;
+// the schema has no limit.
+const MaxNodes = 4
 
 func nodesErr(format string, a ...any) error {
 	return &model.FieldError{Field: "nodes", Msg: fmt.Sprintf(format, a...)}
+}
+
+// countNodes checks how many servers a chain has.
+func countNodes(n int) error {
+	switch {
+	case n < 2:
+		return nodesErr("Выберите сервер входа и сервер выхода.")
+	case n > MaxNodes:
+		return nodesErr("В каскаде может быть до %d серверов: вход, до %d промежуточных и выход.", MaxNodes, MaxNodes-2)
+	}
+	return nil
 }
 
 // Check accepts chain c among existing, every chain stored so far (c is
 // not among them). name gives a server's name for the messages.
 //
 // The outbound of a link is the default of its server: all traffic of the
-// server goes that way. So a server sends through at most one link, and in
-// Phase 3 a server that receives a link (an exit) sends through none: A →
-// B with B → A would pass traffic round in circles until both servers fall
-// over, and A → B with B → C would leave A → B through C unseen. The graph
-// of all links is checked for circles as well, for N-node chains.
+// server goes that way. So a server sends through at most one link, and a
+// server that receives a link of one chain sends through none of another:
+// A → B with B → A would pass traffic round in circles until both servers
+// fall over, and A → B with B → C would leave A → B through C unseen.
+// Within one chain that is what a relay does (P4-08): it is the exit of
+// the link before it and the entry of the next, and the chain shows the
+// whole way. An exit may serve several chains. The graph of all links is
+// checked for circles as well.
 func Check(c model.Chain, existing []model.Chain, name func(id int64) string) error {
 	for _, o := range existing {
 		if strings.EqualFold(o.Name, c.Name) {
 			return &model.FieldError{Field: "name", Msg: "Каскад с таким названием уже есть."}
 		}
 	}
-	if len(c.Nodes) < 2 {
-		return nodesErr("Выберите сервер входа и сервер выхода.")
-	}
-	if len(c.Nodes) > MaxNodes {
-		return nodesErr("Каскад пока может быть только из двух серверов: вход и выход.")
+	if err := countNodes(len(c.Nodes)); err != nil {
+		return err
 	}
 	seen := map[int64]bool{}
 	for _, id := range c.Nodes {
 		if seen[id] {
-			return nodesErr("Сервер %s встречается в каскаде дважды: вход и выход — разные серверы.", name(id))
+			return nodesErr("Сервер %s встречается в каскаде дважды: каждый узел каскада — свой сервер.", name(id))
 		}
 		seen[id] = true
 	}
@@ -59,18 +72,18 @@ func Check(c model.Chain, existing []model.Chain, name func(id int64) string) er
 		}
 	}
 	for i, id := range c.Nodes {
-		last := i == len(c.Nodes)-1
-		if !last {
+		as := nodeName(i, len(c.Nodes), true)
+		if i < len(c.Nodes)-1 {
 			if o, ok := sends[id]; ok {
-				return nodesErr("%s уже вход каскада «%s»: сервер выпускает трафик только через один каскад.", name(id), o.Name)
+				return nodesErr("%s уже %s каскада «%s»: сервер выпускает трафик только через один каскад.", name(id), roleIn(o, id), o.Name)
 			}
 			if o, ok := receives[id]; ok {
-				return nodesErr("%s — выход каскада «%s» и не может быть входом другого: трафик того каскада ушёл бы дальше незаметно или пошёл по кругу.", name(id), o.Name)
+				return nodesErr("%s — выход каскада «%s» и не может быть %s другого: трафик того каскада ушёл бы дальше незаметно или пошёл по кругу.", name(id), o.Name, as)
 			}
 		}
 		if i > 0 {
 			if o, ok := sends[id]; ok {
-				return nodesErr("%s — вход каскада «%s» и не может быть выходом другого: трафик этого каскада ушёл бы дальше незаметно или пошёл по кругу.", name(id), o.Name)
+				return nodesErr("%s — %s каскада «%s» и не может быть %s другого: трафик этого каскада ушёл бы дальше незаметно или пошёл по кругу.", name(id), roleIn(o, id), o.Name, as)
 			}
 		}
 	}
@@ -82,6 +95,37 @@ func Check(c model.Chain, existing []model.Chain, name func(id int64) string) er
 		return nodesErr("Каскады образовали бы круг: %s.", strings.Join(names, " → "))
 	}
 	return nil
+}
+
+// roleIn names the role of server id in chain o, for the messages.
+func roleIn(o model.Chain, id int64) string {
+	switch model.NodeRole(slices.Index(o.Nodes, id), len(o.Nodes)) {
+	case model.RoleEntry:
+		return "вход"
+	case model.RoleRelay:
+		return "промежуточный узел"
+	}
+	return "выход"
+}
+
+// nodeName names node idx of a chain of n nodes in the instrumental case
+// («быть входом»), or in the genitive with the word server («сервер
+// входа», «промежуточный сервер»: instr false) for the messages.
+func nodeName(idx, n int, instr bool) string {
+	role := model.NodeRole(idx, n)
+	switch {
+	case instr && role == model.RoleEntry:
+		return "входом"
+	case instr && role == model.RoleRelay:
+		return "промежуточным узлом"
+	case instr:
+		return "выходом"
+	case role == model.RoleEntry:
+		return "сервера входа"
+	case role == model.RoleRelay:
+		return "промежуточного сервера"
+	}
+	return "сервера выхода"
 }
 
 // circle is a cycle of the graph of all links, as servers from the first

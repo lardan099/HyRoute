@@ -46,7 +46,8 @@ func Of(c model.Chain) Info { return Info{Chain: c, State: State(c)} }
 type Input struct {
 	Name  string
 	Notes string
-	// Nodes are the server IDs, entry first and exit last.
+	// Nodes are the server IDs, entry first and exit last, relays between
+	// (up to MaxNodes in all).
 	Nodes []int64
 	// Link are the settings of every link of the chain.
 	Link cascade.Params
@@ -93,8 +94,8 @@ func (s *Service) Create(ctx context.Context, in Input, actor int64) (Info, erro
 	if err := checkNotes(in.Notes); err != nil {
 		return Info{}, err
 	}
-	if len(in.Nodes) < 2 {
-		return Info{}, nodesErr("Выберите сервер входа и сервер выхода.")
+	if err := countNodes(len(in.Nodes)); err != nil {
+		return Info{}, err
 	}
 	// The local port is the entry's: the first deployment picks a free one.
 	in.Link.LocalPort = 0
@@ -112,20 +113,21 @@ func (s *Service) Create(ctx context.Context, in Input, actor int64) (Info, erro
 		names[id] = srv.Name
 	}
 	// Every node runs a Hysteria server HyRoute knows the config of: the
-	// entry gets the outbound, the exit the link's credentials.
+	// entry gets the outbound, the exit the link's credentials, a relay
+	// both.
 	for i, id := range in.Nodes {
 		cur, err := s.Store.CurrentConfig(ctx, id)
 		if errors.Is(err, store.ErrNotFound) {
-			role := "входа"
-			if i == len(in.Nodes)-1 {
-				role = "выхода"
-			}
-			return Info{}, nodesErr("HyRoute не знает конфиг сервера %s %s: разверните на нём Hysteria или импортируйте его.", role, names[id])
+			return Info{}, nodesErr("HyRoute не знает конфиг %s %s: разверните на нём Hysteria или импортируйте его.", nodeName(i, len(in.Nodes), false), names[id])
 		} else if err != nil {
 			return Info{}, err
 		}
-		if i == len(in.Nodes)-1 && !authOK[cur.Meta.Auth] {
-			return Info{}, nodesErr("На сервере выхода %s вход клиентов — %q: каскад умеет только password и userpass (для связи нужен свой пароль или пользователь).", names[id], cur.Meta.Auth)
+		if i > 0 && !authOK[cur.Meta.Auth] {
+			where := "сервере выхода"
+			if i < len(in.Nodes)-1 {
+				where = "промежуточном сервере"
+			}
+			return Info{}, nodesErr("На %s %s вход клиентов — %q: каскад умеет только password и userpass (для связи нужен свой пароль или пользователь).", where, names[id], cur.Meta.Auth)
 		}
 	}
 
