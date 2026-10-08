@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/hyconfig"
+	"github.com/lardan099/hyroute/internal/srvmgr/alerts"
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
 	"github.com/lardan099/hyroute/internal/srvmgr/backup"
@@ -80,6 +81,9 @@ type Deps struct {
 	Diag *diag.Builder
 	// Attention is the summary «Требует внимания» (nil: an empty one).
 	Attention *events.Attention
+	// Alerts sends notifications through the channels (nil: channels are
+	// stored, but nothing sends, and there is no test).
+	Alerts *alerts.Notifier
 	// Streams ends the live event streams (job events, the Hysteria
 	// journal) when it is done: main cancels it when shutdown starts, so
 	// they do not hold Shutdown while other requests finish. nil: a
@@ -201,6 +205,11 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/diag/bundle", s.authed(anyRole, s.diagBundle))
 	mux.HandleFunc("GET /api/v1/events", s.authed(anyRole, s.listEvents))
 	mux.HandleFunc("GET /api/v1/attention", s.authed(anyRole, s.attention))
+	mux.HandleFunc("GET /api/v1/alerts/channels", s.authed(anyRole, s.listChannels))
+	mux.HandleFunc("POST /api/v1/alerts/channels", s.authed(anyRole, s.createChannel))
+	mux.HandleFunc("PATCH /api/v1/alerts/channels/{id}", s.authed(anyRole, s.updateChannel))
+	mux.HandleFunc("DELETE /api/v1/alerts/channels/{id}", s.authed(anyRole, s.deleteChannel))
+	mux.HandleFunc("POST /api/v1/alerts/channels/{id}/test", s.authed(anyRole, s.testChannel))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { writeError(w, errNotFound) })
 	if d.UI != nil {
 		mux.Handle("/", uiHandler(d.UI))

@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/srvmgr/alerts"
 	"github.com/lardan099/hyroute/internal/srvmgr/api"
 	"github.com/lardan099/hyroute/internal/srvmgr/apply"
 	"github.com/lardan099/hyroute/internal/srvmgr/auth"
@@ -172,6 +173,11 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	engine.Register(linker.Kind())
 	engine.Register(linker.UnlinkKind())
 	jobsCtx, stopJobs := context.WithCancel(context.WithoutCancel(ctx))
+	// Notifications (P4-05b) of the events through the channels set up in
+	// «Настройки»; ready before the jobs' recovery raises any.
+	notifier := &alerts.Notifier{Store: db, Keys: keys, Redact: red, Log: log}
+	notifier.Start(jobsCtx)
+	bus.Subscribe(notifier.Notify)
 	jobsDone := make(chan struct{})
 	go func() {
 		engine.Run(jobsCtx)
@@ -271,6 +277,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 			UI:        admin.FS(),
 			Streams:   streams,
 			Attention: attention,
+			Alerts:    notifier,
 			OnSetupDone: func() {
 				os.Remove(tokenFile)
 				log.Info("owner created, setup token removed")
