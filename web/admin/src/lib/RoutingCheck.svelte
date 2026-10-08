@@ -1,8 +1,10 @@
 <script lang="ts">
   // "Check a rule": which rule of the draft a connection matches, as the
-  // server would decide it.
-  import { api, asApiError, type AclDocument, type AclVerdict, type ApiError } from '../api';
+  // server would decide it, and on a server that sends through a cascade,
+  // where the cascade's next servers send it (P4-08).
+  import { api, asApiError, type AclDocument, type ApiError, type RoutingCheck } from '../api';
   import { t } from '../i18n';
+  import RouteTrace from './RouteTrace.svelte';
 
   let { serverId, acl, outbounds, onrule }: { serverId: number; acl: () => AclDocument; outbounds: string[]; onrule: (i: number) => void } = $props();
 
@@ -10,7 +12,7 @@
   let ips = $state('');
   let proto = $state('tcp');
   let port = $state(443);
-  let verdict = $state<AclVerdict | null>(null);
+  let verdict = $state<RoutingCheck | null>(null);
   let error = $state<ApiError | null>(null);
   let busy = $state(false);
 
@@ -54,6 +56,12 @@
     </div>
     <p class="small">{verdict.reason}</p>
     {#if verdict.unknown?.length}<p class="small warn">{t('rc.unknown', { list: verdict.unknown.map((i) => i + 1).join(', ') })}</p>{/if}
+    {#if verdict.chain && verdict.chain.hops.length > 1}
+      <p class="small muted chain">{t('rc.chain')}</p>
+      <RouteTrace trace={verdict.chain} skip={1} />
+    {:else if verdict.chain}
+      <p class="small">{verdict.chain.summary}</p>
+    {/if}
   </div>
 {/if}
 
@@ -68,4 +76,5 @@
   .verdict { margin-top: 12px; padding: 10px; background: var(--surface-2); border-radius: var(--radius-sm); display: flex; flex-direction: column; gap: 6px; }
   .warn { color: var(--warn); }
   p { margin: 0; }
+  .chain { margin-top: 6px; }
 </style>

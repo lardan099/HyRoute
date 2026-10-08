@@ -1,7 +1,8 @@
 <script lang="ts">
-  // One cascade: its servers with the services on each, the link between
-  // them (state, latest check, latency), the egress address, the check
-  // history and what can be done with it.
+  // One cascade: its servers with the services on each, every link between
+  // them (state, latest check, latency) and the latency of all of them, the
+  // egress address, the check history of each link, the rule check along
+  // the cascade and what can be done with it.
   import { onDestroy, onMount } from 'svelte';
   import { api, asApiError, type ApiError, type Chain, type LinkCheck, type RoutingTemplate, type Server } from '../api';
   import { t, type Key } from '../i18n';
@@ -10,6 +11,7 @@
   import { flag, stateTone, when } from './format';
   import { busy, deployed, linkStateText, linkTone, pendingEntry } from './chain';
   import ChainConfirm from './ChainConfirm.svelte';
+  import ChainRoute from './ChainRoute.svelte';
   import Dialog from './Dialog.svelte';
   import TemplateApplyDialog from './TemplateApplyDialog.svelte';
 
@@ -28,7 +30,10 @@
   // unreachable: the servers «Удалить каскад» could not reach; owners and
   // admins may delete the cascade without them.
   let unreachable = $derived(chain && !busy(chain) ? (chain.unreachable ?? []) : []);
-  let link = $derived(chain?.links[0] ?? null);
+  // multi: more than one link (relays).
+  let multi = $derived((chain?.links.length ?? 0) > 1);
+  // hop is the link whose check history is shown.
+  let hop = $state(0);
   let timer: ReturnType<typeof setInterval> | undefined;
   // gone: the view is destroyed before the reads of onMount ended.
   let gone = false;
@@ -62,7 +67,7 @@
     checking = true;
     try {
       chain = await api.checkChain(id);
-      checks = await api.chainChecks(id, 0, 50);
+      checks = await api.chainChecks(id, hop, 50);
       error = null;
     } catch (e) {
       error = asApiError(e);
@@ -74,7 +79,8 @@
   async function load() {
     try {
       chain = await api.chain(id);
-      checks = await api.chainChecks(id, 0, 50);
+      if (hop >= chain.links.length) hop = 0;
+      checks = await api.chainChecks(id, hop, 50);
       error = null;
     } catch (e) {
       error = asApiError(e);
@@ -121,8 +127,18 @@
     }
   }
 
+  async function showHop(i: number) {
+    hop = i;
+    try {
+      checks = await api.chainChecks(id, i, 50);
+    } catch (e) {
+      error = asApiError(e);
+    }
+  }
+
   const ms = (n: number) => (n ? t('cascades.ms', { n }) : '—');
   const srv = (sid: number) => servers[sid];
+  const hopName = (c: Chain, i: number) => t('cascades.hopOf', { n: i + 1, from: c.nodes[i]?.name ?? '', to: c.nodes[i + 1]?.name ?? '' });
 </script>
 
 <button class="ghost back" onclick={() => go('cascades')}>{t('cascades.back')}</button>
@@ -135,16 +151,16 @@
     <h1 class="grow">{chain.name}</h1>
     {#if writable}
       {#if !busy(chain)}
-        <button class="primary" onclick={deploy}>{deployed(chain) ? t('cascades.refresh') : t('cascades.deploy')}</button>
+        <button class="primary" onclick={deploy}>{deployed(chain) ? t(multi ? 'cascades.refreshN' : 'cascades.refresh') : t('cascades.deploy')}</button>
         {#if deployed(chain)}<button onclick={checkNow} disabled={checking}>{t('cascades.check')}</button>{/if}
-        {#if deployed(chain)}<button onclick={() => (confirm = 'unlink')}>{t('cascades.unlink')}</button>{/if}
+        {#if deployed(chain)}<button onclick={() => (confirm = 'unlink')}>{t(multi ? 'cascades.unlinkN' : 'cascades.unlink')}</button>{/if}
       {/if}
       <button onclick={edit}>{t('cascades.rename')}</button>
       <button onclick={() => ((tplDesc = ''), (tplOpen = true))}>{t('ctpl.save')}</button>
       {#if !busy(chain)}<button class="danger" onclick={() => (confirm = 'delete')}>{t('cascades.delete')}</button>{/if}
     {/if}
   </div>
-  {#if link?.state === 'stale'}<div class="note warn">{t('cascades.staleNote')}</div>{/if}
+  {#if chain.links.some((l) => l.state === 'stale')}<div class="note warn">{t('cascades.staleNote')}</div>{/if}
   {#if unreachable.length && writable}
     <div class="note warn row offer">
       <span class="grow">
@@ -162,17 +178,20 @@
     </div>
   {/if}
 
-  <div class="card schema">
+  <div class="card schema" class:multi>
     {#each chain.nodes as n, i (n.serverId)}
-      {#if i > 0 && link}
+      {@const link = i > 0 ? chain.links[i - 1] : null}
+      {@const out = chain.links[i] ?? null}
+      {#if link}
         <div class="link">
           <span class="arrow" aria-hidden="true">→</span>
+          {#if multi}<span class="small faint">{t('cascades.hop', { n: i })}</span>{/if}
           <span><span class="dot {linkTone(link.state)}"></span> {linkStateText(link.state)}</span>
           {#if link.check}
             <span><span class="dot {stateTone(link.check.status)}"></span> {t(`state.${link.check.status}` as Key)}</span>
             <span class="small muted">{t('cascades.latency')}: {ms(link.check.handshakeMs)}</span>
             {#if link.check.reason}<span class="small reason">{link.check.reason}</span>{/if}
-          {:else if deployed(chain)}
+          {:else if link.state !== 'new' && link.state !== 'failed'}
             <span class="small faint">{t('cascades.notChecked')}</span>
           {/if}
           {#if link.params.up || link.params.noUdp || link.params.checkTarget}
@@ -190,8 +209,8 @@
         {#if srv(n.serverId)}<div class="small mono faint">{srv(n.serverId).host}</div>{/if}
         <ul class="svc small">
           <li><span class="dot {srv(n.serverId) ? stateTone(srv(n.serverId).state) : ''}"></span> {t('cascades.server')}</li>
-          {#if i === 0 && deployed(chain)}
-            <li><span class="dot {link?.check ? (link.check.service === 'active' ? 'ok' : 'bad') : ''}"></span> {t('cascades.client')}</li>
+          {#if out && out.state !== 'new' && out.state !== 'failed'}
+            <li><span class="dot {out.check ? (out.check.service === 'active' ? 'ok' : 'bad') : ''}"></span> {t('cascades.client')}</li>
           {/if}
         </ul>
       </div>
@@ -199,12 +218,20 @@
   </div>
 
   <div class="facts small">
+    {#if multi && chain.latencyMs}<span>{t('cascades.latencyTotal')}: {ms(chain.latencyMs)}</span>{/if}
     {#if chain.egress}<span>{t('cascades.egress')}: <span class="mono">{chain.egress}</span></span>{/if}
     {#if chain.notes}<span class="notes">{chain.notes}</span>{/if}
   </div>
 
   {#if deployed(chain)}
     <h2>{t('cascades.checks')}</h2>
+    {#if multi}
+      <div class="tabs small" role="tablist">
+        {#each chain.links as l, i (l.idx)}
+          <button role="tab" class="ghost" class:on={hop === i} aria-selected={hop === i} onclick={() => showHop(i)}>{hopName(chain, i)}</button>
+        {/each}
+      </div>
+    {/if}
     {#if checks.length === 0}
       <p class="muted small">{t('cascades.checksEmpty')}</p>
     {:else}
@@ -227,6 +254,11 @@
         </table>
       </div>
     {/if}
+  {/if}
+
+  {#if writable}
+    <h2>{t('cascades.route')}</h2>
+    <ChainRoute {id} />
   {/if}
 {/if}
 
@@ -291,6 +323,7 @@
   .link { flex: 1; min-width: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; text-align: center; }
   .arrow { font-size: 26px; color: var(--muted); line-height: 1; }
   .reason { color: var(--muted); max-width: 260px; }
+  .schema.multi .node, .schema.multi .link { min-width: 130px; }
   .link-btn { background: none; border: 0; padding: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; }
   .name { font-weight: 600; font-size: 15px; }
   .name:hover { color: var(--accent); }
@@ -307,4 +340,7 @@
   .form label span { color: var(--muted); font-size: 12.5px; }
   .note { margin: 0 0 12px; }
   .offer { gap: 8px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  .tabs button { padding: 4px 10px; border-radius: var(--radius-sm); }
+  .tabs button.on { background: var(--surface-2); color: var(--text); font-weight: 600; }
 </style>

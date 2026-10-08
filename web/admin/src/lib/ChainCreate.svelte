@@ -1,6 +1,6 @@
 <script lang="ts">
-  // A new cascade: entry and exit, the link's settings, and (by default)
-  // the job that deploys the link right away.
+  // A new cascade: entry, up to two relays and exit (P4-08), the links'
+  // settings, and (by default) the job that deploys the links right away.
   import { onMount } from 'svelte';
   import { api, asApiError, type ApiError, type Chain, type ChainTemplate, type Job, type Server } from '../api';
   import { t } from '../i18n';
@@ -17,9 +17,13 @@
     oncreated: (c: Chain, job: Job | null, linkError: ApiError | null, tpl: ChainTemplate | null) => void;
   } = $props();
 
+  // maxNodes is topology.MaxNodes: the entry, two relays, the exit.
+  const maxNodes = 4;
+
   let name = $state('');
-  let entry = $state(0);
-  let exit = $state(0);
+  // nodes are the servers in order, entry first and exit last (0: none
+  // picked yet).
+  let nodes = $state<number[]>([0, 0]);
   let notes = $state('');
   let up = $state('');
   let down = $state('');
@@ -66,11 +70,20 @@
   let errField = $derived(error?.code === 'invalid' ? error.details : '');
 
   const label = (s: Server) => `${flag(s.country)} ${s.name}`.trim();
+  // taken: another node has server id.
+  const taken = (id: number, at: number) => nodes.some((n, i) => i !== at && n === id);
+  const role = (i: number) => (i === 0 ? t('cascades.entry') : i === nodes.length - 1 ? t('cascades.exit') : t('cascades.relay'));
+  const hint = (i: number) => (i === 0 ? t('cascades.entryHint') : i === nodes.length - 1 ? t('cascades.exitHint') : t('cascades.relayHint'));
+
+  // insert puts a relay before node i.
+  function insert(i: number) {
+    if (nodes.length < maxNodes) nodes.splice(i, 0, 0);
+  }
 
   async function save(e: SubmitEvent) {
     e.preventDefault();
-    if (!entry || !exit || entry === exit) {
-      error = { code: 'invalid', message: t('cascades.pickTwo'), details: 'nodes' } as ApiError;
+    if (nodes.some((n, i) => !n || taken(n, i))) {
+      error = { code: 'invalid', message: t('cascades.pickAll'), details: 'nodes' } as ApiError;
       return;
     }
     busy = true;
@@ -79,7 +92,7 @@
       const c = await api.createChain({
         name,
         notes,
-        nodes: [entry, exit],
+        nodes: [...nodes],
         link: { up: up.trim() || undefined, down: down.trim() || undefined, noUdp: noUdp || undefined, checkTarget: checkTarget.trim() || undefined },
       });
       let job: Job | null = null;
@@ -120,22 +133,30 @@
       <span>{t('cascades.name')}</span>
       <input type="text" maxlength="64" bind:value={name} required />
     </label>
-    <div class="pair" class:bad={errField === 'nodes'}>
-      <label>
-        <span>{t('cascades.entry')} · <span class="faint">{t('cascades.entryHint')}</span></span>
-        <select bind:value={entry} required>
-          <option value={0} disabled>—</option>
-          {#each servers as s (s.id)}<option value={s.id} disabled={s.id === exit}>{label(s)}</option>{/each}
-        </select>
-      </label>
-      <span class="arrow" aria-hidden="true">→</span>
-      <label>
-        <span>{t('cascades.exit')} · <span class="faint">{t('cascades.exitHint')}</span></span>
-        <select bind:value={exit} required>
-          <option value={0} disabled>—</option>
-          {#each servers as s (s.id)}<option value={s.id} disabled={s.id === entry}>{label(s)}</option>{/each}
-        </select>
-      </label>
+    <div class="chain" class:bad={errField === 'nodes'}>
+      {#each nodes as _, i (i)}
+        {#if i > 0}
+          <div class="hop">
+            <span class="arrow" aria-hidden="true">↓</span>
+            {#if nodes.length < maxNodes}
+              <button type="button" class="ghost add" title={t('cascades.addRelay')} aria-label={t('cascades.addRelay')} onclick={() => insert(i)}>+</button>
+            {/if}
+          </div>
+        {/if}
+        <div class="node">
+          <label class="grow">
+            <span>{role(i)} · <span class="faint">{hint(i)}</span></span>
+            <select bind:value={nodes[i]} required>
+              <option value={0} disabled>—</option>
+              {#each servers as s (s.id)}<option value={s.id} disabled={taken(s.id, i)}>{label(s)}</option>{/each}
+            </select>
+          </label>
+          {#if i > 0 && i < nodes.length - 1}
+            <button type="button" class="ghost remove" title={t('cascades.removeRelay')} aria-label={t('cascades.removeRelay')} onclick={() => nodes.splice(i, 1)}>×</button>
+          {/if}
+        </div>
+      {/each}
+      <p class="small faint">{nodes.length > 2 ? t('cascades.relayNote') : t('cascades.maxNodes', { n: maxNodes })}</p>
     </div>
     <details>
       <summary>{t('cascades.advanced')}</summary>
@@ -174,10 +195,13 @@
   label { display: flex; flex-direction: column; gap: 5px; }
   label > span:first-child { color: var(--muted); font-size: 12.5px; }
   label.check { flex-direction: row; align-items: center; gap: 8px; }
-  label.bad input, label.bad textarea, .pair.bad select { border-color: var(--block); }
-  .pair { display: flex; align-items: flex-end; gap: 10px; }
-  .pair label { flex: 1; min-width: 0; }
-  .arrow { padding-bottom: 8px; color: var(--muted); font-size: 18px; }
+  label.bad input, label.bad textarea, .chain.bad select { border-color: var(--block); }
+  .chain { display: flex; flex-direction: column; gap: 4px; }
+  .chain p { margin: 4px 0 0; }
+  .node { display: flex; align-items: flex-end; gap: 6px; }
+  .hop { display: flex; align-items: center; gap: 8px; padding-left: 12px; }
+  .arrow { color: var(--muted); font-size: 16px; line-height: 1; }
+  .add, .remove { padding: 2px 8px; line-height: 1.2; }
   .adv { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
   .two { display: flex; gap: 8px; }
   .two input { flex: 1; min-width: 0; }

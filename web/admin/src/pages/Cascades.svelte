@@ -1,6 +1,7 @@
 <script lang="ts">
-  // Cascades: chains of an entry and an exit server. The list shows each
-  // chain's servers, link state, latest check and egress; /cascades/<id>
+  // Cascades: chains of an entry, up to two relays and an exit server. The
+  // list shows each chain's servers, the state of its links, the worst
+  // latest check, the latency of all hops and the egress; /cascades/<id>
   // is one chain.
   import { onMount } from 'svelte';
   import { api, asApiError, type ApiError, type Chain, type Server } from '../api';
@@ -55,6 +56,10 @@
   }
 
   const ms = (n: number) => t('cascades.ms', { n });
+  // latency is the sum of the hops' handshakes (one hop: its own).
+  const latency = (c: Chain) => c.latencyMs || (c.links.length === 1 ? (c.links[0].check?.handshakeMs ?? 0) : 0);
+  // worst is the reason of the worst latest check of a hop.
+  const worst = (c: Chain) => c.links.find((l) => l.check && l.check.status === c.health && l.check.status !== 'healthy')?.check?.reason ?? '';
 </script>
 
 {#if route.id}
@@ -73,15 +78,15 @@
   {:else if list}
     <div class="list">
       {#each list as c (c.id)}
-        {@const link = c.links[0]}
+        {@const multi = c.links.length > 1}
         <div class="card chain">
           <div class="row">
             <a class="name grow" href="/cascades/{c.id}" onclick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return; e.preventDefault(); go('cascades', c.id); }}>{c.name}</a>
             {#if writable}
               <div class="acts">
-                {#if !busy(c)}<button class="ghost" onclick={() => deploy(c)}>{deployed(c) ? t('cascades.refresh') : t('cascades.deploy')}</button>{/if}
+                {#if !busy(c)}<button class="ghost" onclick={() => deploy(c)}>{deployed(c) ? t(multi ? 'cascades.refreshN' : 'cascades.refresh') : t('cascades.deploy')}</button>{/if}
                 <Menu label={t('servers.more')}>
-                  {#if deployed(c) && !busy(c)}<button onclick={() => (confirm = { chain: c, kind: 'unlink' })}>{t('cascades.unlink')}</button>{/if}
+                  {#if deployed(c) && !busy(c)}<button onclick={() => (confirm = { chain: c, kind: 'unlink' })}>{t(multi ? 'cascades.unlinkN' : 'cascades.unlink')}</button>{/if}
                   {#if !busy(c)}<button class="danger" onclick={() => (confirm = { chain: c, kind: 'delete' })}>{t('cascades.delete')}</button>{/if}
                 </Menu>
               </div>
@@ -94,12 +99,12 @@
             {/each}
           </div>
           <div class="facts small">
-            {#if link}<span><span class="dot {linkTone(link.state)}"></span> {linkStateText(link.state)}</span>{/if}
+            {#if c.links.length}<span><span class="dot {linkTone(c.state)}"></span> {linkStateText(c.state)}</span>{/if}
             {#if c.health}<span><span class="dot {stateTone(c.health)}"></span> {t('cascades.health')}: {t(`state.${c.health}` as Key)}</span>{/if}
-            {#if link?.check?.handshakeMs}<span class="muted">{t('cascades.latency')}: {ms(link.check.handshakeMs)}</span>{/if}
+            {#if latency(c)}<span class="muted">{t(multi ? 'cascades.latencyTotal' : 'cascades.latency')}: {ms(latency(c))}</span>{/if}
             {#if c.egress}<span class="muted">{t('cascades.egress')}: <span class="mono">{c.egress}</span></span>{/if}
           </div>
-          {#if link?.check?.reason && link.check.status !== 'healthy'}<div class="small reason">{link.check.reason}</div>{/if}
+          {#if worst(c)}<div class="small reason">{worst(c)}</div>{/if}
         </div>
       {/each}
     </div>

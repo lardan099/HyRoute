@@ -14,6 +14,9 @@
   let busy = $state(false);
   let error = $state<ApiError | null>(null);
   const onServers = $derived(deployed(chain));
+  // multi: a cascade with relays (several links).
+  const multi = $derived(chain.links.length > 1);
+  const leftKey = (role: string) => (role === 'entry' ? 'cascades.forceLeftEntry' : role === 'relay' ? 'cascades.forceLeftRelay' : 'cascades.forceLeftExit');
   const title = $derived(kind === 'unlink' ? t('cascades.unlinkTitle') : kind === 'force' ? t('cascades.forceDelete') : t('cascades.deleteTitle'));
 
   async function go() {
@@ -37,9 +40,9 @@
 
 <Dialog {title} {onclose}>
   {#if kind === 'force'}
-    <p>{t('cascades.forceText', { name: chain.name })}</p>
+    <p>{t(multi ? 'cascades.forceTextN' : 'cascades.forceText', { name: chain.name })}</p>
     {#each chain.unreachable ?? [] as u (u.serverId)}
-      <p class="head">{t(u.role === 'entry' ? 'cascades.forceLeftEntry' : 'cascades.forceLeftExit', { name: u.name })}</p>
+      <p class="head">{t(leftKey(u.role), { name: u.name })}</p>
       {#if u.left.length}
         <ul>
           {#each u.left as l (l)}<li>{l}</li>{/each}
@@ -51,15 +54,15 @@
     <p class="small muted">{t('cascades.forceMark')}</p>
   {:else}
     <p>
-      {#if kind === 'unlink'}{t('cascades.unlinkText', { name: chain.name })}
-      {:else if onServers}{t('cascades.deleteDeployed', { name: chain.name })}
+      {#if kind === 'unlink'}{t(multi ? 'cascades.unlinkTextN' : 'cascades.unlinkText', { name: chain.name })}
+      {:else if onServers}{t(multi ? 'cascades.deleteDeployedN' : 'cascades.deleteDeployed', { name: chain.name })}
       {:else}{t('cascades.deleteNew', { name: chain.name })}{/if}
     </p>
   {/if}
   {#if error}<div class="note error" role="alert">{error.message}</div>{/if}
   {#snippet actions()}
     <button onclick={onclose}>{t('common.cancel')}</button>
-    <button class="primary danger-bg" onclick={go} disabled={busy}>{kind === 'unlink' ? t('cascades.unlink') : kind === 'force' ? t('cascades.forceConfirm') : t('cascades.delete')}</button>
+    <button class="primary danger-bg" onclick={go} disabled={busy}>{kind === 'unlink' ? t(multi ? 'cascades.unlinkN' : 'cascades.unlink') : kind === 'force' ? t('cascades.forceConfirm') : t('cascades.delete')}</button>
   {/snippet}
 </Dialog>
 

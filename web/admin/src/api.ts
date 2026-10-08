@@ -737,8 +737,33 @@ export interface AclVerdict {
   rule: number;
   outbound: string;
   hijack?: string;
+  builtin?: boolean;
   reason: string;
   unknown?: number[];
+}
+
+// RouteHop is what one server of a cascade does with a request; verdict
+// null: its rules were not read (error says why).
+export interface RouteHop {
+  serverId: number;
+  name: string;
+  role: ServerRole;
+  verdict?: AclVerdict;
+  error?: string;
+  next: boolean;
+}
+
+// RouteTrace is where a request goes along a cascade, server by server.
+export interface RouteTrace {
+  hops: RouteHop[];
+  rejected: boolean;
+  summary: string;
+}
+
+// RoutingCheck is the rule a request matches on a server and, when that
+// sends it into the server's cascade, the way on from there.
+export interface RoutingCheck extends AclVerdict {
+  chain?: RouteTrace;
 }
 
 export interface RoutingInput {
@@ -843,7 +868,7 @@ export interface ServerGeo {
 export const presetSections: PresetSection[] = ['ports', 'obfs', 'masquerade', 'speed', 'quic', 'udp', 'resolver', 'sniff', 'acl', 'outbounds'];
 export const deploySections: PresetSection[] = ['masquerade', 'speed', 'quic', 'udp', 'resolver', 'sniff', 'acl', 'outbounds'];
 
-// ==== cascades (Phase 3) ====
+// ==== cascades (Phase 3; N nodes: P4-08) ====
 
 export type LinkState = 'new' | 'linking' | 'active' | 'stale' | 'unlinking' | 'failed';
 
@@ -898,6 +923,8 @@ export interface Chain {
   notes: string;
   state: LinkState;
   health: ServerState | '';
+  // latencyMs: the sum of the hops' latest handshakes (0: not known).
+  latencyMs: number;
   egress: string;
   nodes: ChainNode[];
   links: ChainLink[];
@@ -1099,12 +1126,13 @@ export const api = {
   unlinkChain: (id: number, del: boolean) => request<Job>('POST', `/chains/${id}/unlink`, { delete: del }),
   forceDeleteChain: (id: number) => request<Job>('POST', `/chains/${id}/unlink`, { delete: true, force: true }),
   checkChain: (id: number) => request<Chain>('POST', `/chains/${id}/check`),
+  routeChain: (id: number, req: AclRequest) => request<RouteTrace>('POST', `/chains/${id}/route`, req),
   chainChecks: (id: number, idx = 0, limit = 100) => request<LinkCheck[]>('GET', `/chains/${id}/checks?idx=${idx}&limit=${limit}`),
   routing: (serverId: number) => request<RoutingView>('GET', `/servers/${serverId}/routing`),
   routingPreview: (serverId: number, input: RoutingInput) => request<RoutingPreview>('POST', `/servers/${serverId}/routing/preview`, input),
   routingApply: (serverId: number, input: RoutingInput) => request<Job>('POST', `/servers/${serverId}/routing/apply`, input),
   routingCheck: (serverId: number, input: { acl: AclDocument; outbounds: string[]; request: AclRequest }) =>
-    request<AclVerdict>('POST', `/servers/${serverId}/routing/check`, input),
+    request<RoutingCheck>('POST', `/servers/${serverId}/routing/check`, input),
   routingServices: (serverId: number, acl: AclDocument) => request<ServicesView>('POST', `/servers/${serverId}/routing/services`, { acl }),
   routingServicesBuild: (serverId: number, input: { acl: AclDocument; outbounds: string[]; choices: Record<string, string>; overwrite?: boolean }) =>
     request<{ acl: AclDocument; state: ServicesState }>('POST', `/servers/${serverId}/routing/services/build`, input),

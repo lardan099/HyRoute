@@ -34,8 +34,14 @@
     }
   });
 
-  // A kind may name a step its own way (step.<kind>.<step>).
-  const stepName = (n: string) => tOr(`step.${job?.kind}.${n}`, tOr(`step.${n}`, n));
+  // A kind may name a step its own way (step.<kind>.<step>); a step of one
+  // link of a cascade job ends in :<link> (P4-08).
+  const stepName = (n: string) => {
+    const hop = /^(.+):(\d+)$/.exec(n);
+    const base = hop ? hop[1] : n;
+    const s = tOr(`step.${job?.kind}.${base}`, tOr(`step.${base}`, base));
+    return hop ? t('step.hop', { s, n: Number(hop[2]) + 1 }) : s;
+  };
   const kindName = (k: string) => tOr(`kind.${k}`, k);
 
   async function scrollDown() {
