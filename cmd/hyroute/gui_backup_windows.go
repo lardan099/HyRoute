@@ -132,10 +132,14 @@ func (g *GUI) afterRestore(ksWas bool, cliWas string) {
 	}
 }
 
-// cliMode is the effective hyroutectl mode ("off" while prefs.json is
-// broken).
+// cliMode is what the control pipe serves: the effective hyroutectl mode
+// ("off" while prefs.json is broken), or "browser" when only the browser
+// extension uses it.
 func (g *GUI) cliMode() string {
 	m, _ := g.ctl.CLIMode()
+	if m == "off" && g.ctl.BrowserOn() {
+		return "browser"
+	}
 	return m
 }
 

@@ -119,19 +119,18 @@ func (g *GUI) startCLI() {
 	if cs.runErr != nil {
 		g.ctl.Log.Warn("command line: run event not created: hyroutectl cannot tell «starting» apart", "err", cs.runErr)
 	}
-	mode, err := g.ctl.CLIMode()
-	if err != nil {
+	if _, err := g.ctl.CLIMode(); err != nil {
 		g.ctl.Log.Warn("command line off: prefs.json did not load")
 	}
-	g.applyCLI(mode)
+	g.applyCLI(g.cliMode())
 	if cs.run != 0 {
 		windows.SetEvent(cs.run)
 	}
 }
 
-// applyCLI makes the pipe follow mode: "off" stops it, otherwise it is
-// started unless it runs (full ↔ read needs no restart: the server reads
-// the mode per request).
+// applyCLI makes the pipe follow mode (cliMode): "off" stops it, otherwise
+// it is started unless it runs (full ↔ read ↔ browser needs no restart:
+// the server reads the mode and the extension's switch per request).
 func (g *GUI) applyCLI(mode string) {
 	cs := g.cli
 	if cs == nil || cs.owner == nil {
@@ -191,8 +190,7 @@ func (g *GUI) applyCLI(mode string) {
 			cs.mu.Lock()
 			cs.retry = nil
 			cs.mu.Unlock()
-			mode, _ := g.ctl.CLIMode()
-			g.applyCLI(mode)
+			g.applyCLI(g.cliMode())
 		})
 		cs.mu.Unlock()
 		g.ctl.Log.Warn("command line: pipe not created, retrying in 30 s", "err", err)
@@ -298,8 +296,7 @@ func (g *GUI) SetCLIMode(mode string) error {
 		return err
 	}
 	g.ctl.Log.Info("command line mode changed", "mode", mode)
-	eff, _ := g.ctl.CLIMode()
-	g.applyCLI(eff)
+	g.applyCLI(g.cliMode())
 	return nil
 }
 
@@ -385,6 +382,16 @@ func (b ctlBackend) SetNetModesEnabled(on bool) (app.NetModesView, error) {
 	return b.g.ctl.SetNetModesEnabled(on)
 }
 func (b ctlBackend) Stats(period string) (stats.Report, error) { return b.g.ctl.Stats(period) }
+func (b ctlBackend) BrowserOn() bool                           { return b.g.ctl.BrowserOn() }
+func (b ctlBackend) BrowserInfo(q app.BrowserQuery) (app.BrowserInfo, error) {
+	return b.g.ctl.BrowserInfo(q)
+}
+func (b ctlBackend) BrowserAdd(e app.BrowserEdit) (app.BrowserResult, error) {
+	return b.g.ctl.BrowserAdd(e)
+}
+func (b ctlBackend) BrowserRemove(e app.BrowserEdit) (app.BrowserResult, error) {
+	return b.g.ctl.BrowserRemove(e)
+}
 
 // ShowWindow brings the window up; an error until it exists.
 func (b ctlBackend) ShowWindow() error {

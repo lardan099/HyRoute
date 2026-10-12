@@ -7,6 +7,7 @@
   import Backup from './Backup.svelte';
   import DNSSettings from './DNSSettings.svelte'; // dns
   import CLISettings from './CLISettings.svelte'; // cli
+  import BrowserExtension from './BrowserExtension.svelte'; // browser
 
   let {
     updates,
@@ -344,6 +345,8 @@
       говорит «не менять» или сети ещё нет.
     </p>
   </section>
+
+  <BrowserExtension />
 
   {#if ui.expert}<CLISettings />{/if}
 

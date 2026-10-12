@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,6 +48,7 @@ type fakeAPI struct {
 	panicCmd  bool
 	blockStat chan struct{}
 	netOn     bool // «Действовать по сети»
+	browserOn bool // «Расширение для браузера»
 }
 
 func newFake() *fakeAPI {
@@ -240,6 +242,24 @@ func (f *fakeAPI) Stats(period string) (stats.Report, error) {
 	return stats.Report{Period: period, From: "2026-09-28", To: "2026-09-28", Total: stats.Counters{TC: 3, TU: 100, TD: 200},
 		Days: []stats.DayTotal{}, Apps: []stats.Row{},
 		Servers: []stats.Row{}, Groups: []stats.Row{}, Months: []string{"2026-09"}}, nil
+}
+
+func (f *fakeAPI) BrowserOn() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.browserOn }
+func (f *fakeAPI) BrowserInfo(q app.BrowserQuery) (app.BrowserInfo, error) {
+	f.call("BrowserInfo:" + q.App + ":" + strings.Join(q.Hosts, ","))
+	return app.BrowserInfo{State: "connected", Ruleset: "Дом", Targets: []app.BrowserTarget{{To: "id:a1b2c3d4e5f6", Name: "DE"}},
+		Sites: []app.BrowserSite{{Host: "www.example.com", Label: "www.example.com", Site: "example.com", Route: app.BrowserRoute{To: "vpn", Index: 0}}}}, nil
+}
+func (f *fakeAPI) BrowserAdd(e app.BrowserEdit) (app.BrowserResult, error) {
+	f.call("BrowserAdd:" + strings.Join(e.Sites, ",") + ":" + e.To)
+	if e.To == "nowhere" {
+		return app.BrowserResult{}, errors.New("неизвестно, куда отправить сайт")
+	}
+	return app.BrowserResult{Rule: "Из браузера: VPN", Added: len(e.Sites), Lost: []app.BrowserLoss{}}, nil
+}
+func (f *fakeAPI) BrowserRemove(e app.BrowserEdit) (app.BrowserResult, error) {
+	f.call("BrowserRemove:" + strings.Join(e.Sites, ","))
+	return app.BrowserResult{Removed: len(e.Sites), Lost: []app.BrowserLoss{}}, nil
 }
 
 // pipeListener hands out net.Pipe server ends with a chosen identity.
@@ -520,6 +540,60 @@ func TestModeOff(t *testing.T) {
 	c.Close()
 	if f.called("ConnectOrResume") {
 		t.Fatal("ran while off")
+	}
+}
+
+func TestBrowserCommands(t *testing.T) {
+	f := newFake()
+	f.mode = "off"
+	_, l := serve(t, f, true)
+	// Command line off, extension off: no hello.
+	c := l.dial()
+	if fr := readFrame(t, c); fr.Error == nil || fr.Error.Code != ctl.CodeOff {
+		t.Fatalf("%+v", fr)
+	}
+	c.Close()
+	// Extension on: its commands only.
+	f.mu.Lock()
+	f.browserOn = true
+	f.mu.Unlock()
+	c = l.dial()
+	if h := readFrame(t, c); h.Hello == nil || h.Hello.Mode != "browser" {
+		t.Fatalf("%+v", h)
+	}
+	c.Close()
+	fr, _ := doReq(t, l, "browser-info", app.BrowserQuery{App: "chrome.exe", Hosts: []string{"www.example.com"}}, false)
+	if !fr.OK || !strings.Contains(string(fr.Result), `"site":"example.com"`) || !f.called("BrowserInfo:chrome.exe:www.example.com") {
+		t.Fatalf("%+v %s", fr.Error, fr.Result)
+	}
+	if fr, _ = doReq(t, l, "status", nil, false); fr.Error == nil || fr.Error.Code != ctl.CodeOff {
+		t.Fatalf("%+v", fr)
+	}
+	// Read-only command line: the extension still edits its rules.
+	f.mu.Lock()
+	f.mode = "read"
+	f.mu.Unlock()
+	if fr, _ = doReq(t, l, "browser-add", app.BrowserEdit{Sites: []string{".example.com"}, To: "vpn"}, false); !fr.OK || !strings.Contains(string(fr.Result), `"added":1`) {
+		t.Fatalf("%+v %s", fr.Error, fr.Result)
+	}
+	if fr, _ = doReq(t, l, "browser-remove", app.BrowserEdit{Sites: []string{".example.com"}}, false); !fr.OK || !f.called("BrowserRemove:.example.com") {
+		t.Fatalf("%+v %s", fr.Error, fr.Result)
+	}
+	if fr, _ = doReq(t, l, "browser-add", app.BrowserEdit{Sites: []string{"x"}, To: "nowhere"}, false); fr.Error == nil || fr.Error.Code != ctl.CodeFailed || fr.Error.Message != "Неизвестно, куда отправить сайт" {
+		t.Fatalf("%+v", fr)
+	}
+	if fr, _ = doReq(t, l, "browser-add", map[string]any{"sites": []string{"x"}, "extra": 1}, false); fr.Error == nil || fr.Error.Code != ctl.CodeUnknownArg {
+		t.Fatalf("%+v", fr)
+	}
+	// Extension off, full command line: its commands are refused.
+	f.mu.Lock()
+	f.mode, f.browserOn = "full", false
+	f.mu.Unlock()
+	if fr, _ = doReq(t, l, "browser-info", app.BrowserQuery{}, false); fr.Error == nil || fr.Error.Code != ctl.CodeBrowserOff || !strings.Contains(fr.Error.Message, "Расширение для браузера") {
+		t.Fatalf("%+v", fr)
+	}
+	if ctl.ExitCode(ctl.CodeBrowserOff) != 4 {
+		t.Fatal("exit code")
 	}
 }
 
@@ -870,5 +944,20 @@ func TestNetworksApplyConfirm(t *testing.T) {
 	fr, _ = doReq(t, l, "networks-apply", ctl.NetworksApplyArgs{Yes: true}, false)
 	if fr.Error == nil || fr.Error.Message != "Правила сетей выключены" {
 		t.Fatalf("%+v", fr.Error)
+	}
+}
+
+// hyroutectl passes on exactly the commands marked for the extension.
+func TestBrowserCommandList(t *testing.T) {
+	var got []string
+	for name, c := range commands() {
+		if c.browser {
+			got = append(got, name)
+		}
+	}
+	slices.Sort(got)
+	want := slices.Sorted(slices.Values(ctl.BrowserCommands))
+	if !slices.Equal(got, want) {
+		t.Fatalf("%v, want %v", got, want)
 	}
 }

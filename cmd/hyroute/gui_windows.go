@@ -448,7 +448,8 @@ func (g *GUI) systemLines() []string {
 		proxyRules = strings.Join(info.ProxyRules, ", ")
 	}
 	lines = append(lines, "Правила брандмауэра для прокси: "+proxyRules)
-	lines = append(lines, g.cliLine()) // cli
+	lines = append(lines, g.cliLine())     // cli
+	lines = append(lines, g.browserLine()) // browser
 	return lines
 }
 

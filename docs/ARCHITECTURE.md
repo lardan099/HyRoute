@@ -110,7 +110,8 @@ HyRoute. Данные WebView2 лежат не здесь, а в `%LOCALAPPDATA%
 | `internal/store`, `internal/settings`, `internal/backup` | файлы данных; файл правил; формат резервной копии |
 | `internal/netmode`, `internal/netwatch` | правила сетей; чтение сетей Windows |
 | `internal/release`, `internal/core`, `internal/update`, `internal/runtimefiles`, `internal/autostart` | релизы GitHub; ядро Hysteria; обновление HyRoute; защищённые копии бинарников; автозапуск |
-| `internal/ctl` | протокол и канал hyroutectl, клиент и сервер команд |
+| `internal/ctl` | протокол и канал hyroutectl, клиент и сервер команд, хост расширения браузера |
+| `browser/` | расширение для браузеров на Chromium (`browser/extension`) и его установка: файлы рядом с HyRoute, манифест хоста |
 | `frontend/` | интерфейс на Svelte 5 + TypeScript; собранный `frontend/dist` лежит в репозитории |
 | `tools/` | `genicon` (иконка), `wdfilter` (компилятор фильтров WinDivert для тестов), `udpprobe` (ручная проверка больших UDP-датаграмм) |
 
@@ -143,5 +144,5 @@ HyRoute. Данные WebView2 лежат не здесь, а в `%LOCALAPPDATA%
 | [updates.md](architecture/updates.md) | обновление ядра Hysteria и HyRoute, журнал и откат |
 | [backup.md](architecture/backup.md) | резервная копия: формат, разделы, план, применение, отмена |
 | [networks.md](architecture/networks.md) | «Сети»: чтение сети, идентичность, асимметричное решение |
-| [cli.md](architecture/cli.md) | hyroutectl: канал, права, протокол, режимы |
+| [cli.md](architecture/cli.md) | hyroutectl: канал, права, протокол, режимы; расширение для браузера |
 | [testing.md](architecture/testing.md) | что покрыто тестами |

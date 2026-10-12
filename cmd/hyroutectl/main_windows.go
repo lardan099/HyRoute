@@ -12,8 +12,10 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 	"unicode/utf16"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 
@@ -49,7 +51,14 @@ func main() {
 			procAllowSetForegroundWindow.Call(uintptr(pid))
 		},
 	}
-	code := cli.Run(ctx, os.Args[1:], d)
+	var code int
+	if cli.IsNativeHost(os.Args[1:]) {
+		// Started by a browser for the HyRoute extension: binary messages
+		// on stdin and stdout, never the console.
+		code = cli.NativeHost(ctx, os.Args[1:], os.Stdin, os.Stdout, browserExe(), d)
+	} else {
+		code = cli.Run(ctx, os.Args[1:], d)
+	}
 	stop()
 	os.Exit(code)
 }
@@ -96,4 +105,43 @@ func (c consoleWriter) Write(b []byte) (int, error) {
 		u = u[n:]
 	}
 	return len(b), nil
+}
+
+// browserExe is the program of the browser that started this host: the
+// first ancestor that is not a shell (Chrome starts hosts through cmd.exe);
+// "" when unknown.
+func browserExe() string {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return ""
+	}
+	defer windows.CloseHandle(snap)
+	type proc struct {
+		parent uint32
+		exe    string
+	}
+	procs := map[uint32]proc{}
+	var e windows.ProcessEntry32
+	e.Size = uint32(unsafe.Sizeof(e))
+	for err = windows.Process32First(snap, &e); err == nil; err = windows.Process32Next(snap, &e) {
+		procs[e.ProcessID] = proc{e.ParentProcessID, windows.UTF16ToString(e.ExeFile[:])}
+	}
+	pid := windows.GetCurrentProcessId()
+	for range 4 {
+		p, ok := procs[pid]
+		if !ok {
+			return ""
+		}
+		parent, ok := procs[p.parent]
+		if !ok {
+			return ""
+		}
+		switch strings.ToLower(parent.exe) {
+		case "cmd.exe", "conhost.exe":
+			pid = p.parent
+			continue
+		}
+		return parent.exe
+	}
+	return ""
 }

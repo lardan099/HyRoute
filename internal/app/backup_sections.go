@@ -75,9 +75,10 @@ var importLimits = struct{ serversTotal, subs, rules, proxies, nameRunes int }{
 var (
 	ruleKeys = []string{"defaultAction", "defaultProfile", "defaultFallback", "rules"}
 	geoKeys  = []string{"geoSource", "geoSiteURL", "geoIPURL", "geoAutoOff", "geoIntervalHours"}
-	// prefsNever: prefs that stay this computer's: the skipped version, and
-	// hyroutectl's access (a copy never widens it).
-	prefsNever = []string{"skipVersion", "cli"}
+	// prefsNever: prefs that stay this computer's: the skipped version,
+	// hyroutectl's access and the browser extension's (a copy never widens
+	// them).
+	prefsNever = []string{"skipVersion", "cli", "browser"}
 	// settingsSecretKeys, prefsSecretKeys: keys of settings.json and
 	// prefs.json that hold credentials, dropped from a copy without a
 	// password (backup B4). None today.

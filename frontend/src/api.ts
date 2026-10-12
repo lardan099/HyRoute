@@ -1507,6 +1507,37 @@ interface GUI {
   ParseRulesTextFor(text: string, replace: boolean): Promise<RulesTextResult>;
 }
 
+// ==== browser ====
+
+// A Chromium browser on this computer (the extension's card).
+export interface BrowserApp {
+  id: string;
+  name: string;
+  exe: string; // '' = not found
+  linked: boolean; // its registry key points at HyRoute's host
+}
+
+// «Настройки» → «Расширение для браузера».
+export interface BrowserExtView {
+  on: boolean; // the extension may talk to HyRoute
+  installed: boolean; // the folder and the host manifest are in place
+  dir: string; // the extension's folder (for «Загрузить распакованное»)
+  version: string; // of the folder ('' = none)
+  host: boolean; // hyroutectl.exe is next to HyRoute.exe
+  browsers: BrowserApp[];
+  seen: number; // the extension's last request, Unix seconds (0 = none since start)
+}
+
+interface GUI {
+  BrowserExtInfo(): Promise<BrowserExtView>;
+  InstallBrowserExt(): Promise<BrowserExtView>;
+  SetBrowserExtOn(on: boolean): Promise<BrowserExtView>;
+  RemoveBrowserExt(): Promise<BrowserExtView>;
+  // Opens the browser's extensions page, shows the folder in Explorer and
+  // copies its path.
+  OpenBrowserExtensions(id: string): Promise<void>;
+}
+
 // ==== conn-rules ====
 
 // A Connections row as Go needs it to find the flow's record (app.ConnFacts).

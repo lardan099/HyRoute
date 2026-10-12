@@ -20,6 +20,9 @@ type command struct {
 	run      func(r *request, args any) (any, *ctl.Error)
 	// detail: the handler logs the command itself, with its arguments.
 	detail bool
+	// browser: a command of the browser extension (BrowserCommands): it
+	// needs «Расширение для браузера» on, not the command line's access.
+	browser bool
 }
 
 func always(any) bool { return true }
@@ -55,6 +58,10 @@ func commands() map[string]command {
 		"networks-set":   {args: func() any { return &ctl.NetworksSetArgs{} }, mutating: always, run: cmdNetworksSet, detail: true},
 		// stats
 		"stats": {args: func() any { return &ctl.StatsArgs{} }, run: cmdStats},
+		// browser
+		"browser-info":   {args: func() any { return &app.BrowserQuery{} }, run: cmdBrowserInfo, browser: true},
+		"browser-add":    {args: func() any { return &app.BrowserEdit{} }, mutating: always, run: cmdBrowserAdd, browser: true, detail: true},
+		"browser-remove": {args: func() any { return &app.BrowserEdit{} }, mutating: always, run: cmdBrowserRemove, browser: true, detail: true},
 	}
 }
 

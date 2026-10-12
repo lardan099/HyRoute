@@ -63,6 +63,12 @@ type API interface {
 	SetNetModesEnabled(on bool) (app.NetModesView, error)
 	// stats: the report of a period (today, yesterday, 7d, 30d, YYYY-MM).
 	Stats(period string) (stats.Report, error)
+	// browser: the browser extension, through hyroutectl as its native
+	// messaging host. BrowserOn is its switch, apart from Mode.
+	BrowserOn() bool
+	BrowserInfo(q app.BrowserQuery) (app.BrowserInfo, error)
+	BrowserAdd(e app.BrowserEdit) (app.BrowserResult, error)
+	BrowserRemove(e app.BrowserEdit) (app.BrowserResult, error)
 }
 
 // Listener is what Serve accepts from (ctl.Listener; tests feed net.Pipe
@@ -235,8 +241,12 @@ func (s *Server) handle(c net.Conn, id ctl.Identity, allowed bool) {
 	}
 	mode := s.api.Mode()
 	if mode == "off" {
-		s.fail(c, offError)
-		return
+		if !s.api.BrowserOn() {
+			s.fail(c, offError)
+			return
+		}
+		// The pipe is up for the browser extension only.
+		mode = "browser"
 	}
 	if err := s.write(c, ctl.Frame{V: ctl.Proto, OK: true, Hello: &ctl.Hello{App: s.appVersion(), Proto: ctl.Proto, MinProto: ctl.MinProto, Mode: mode}}); err != nil {
 		return
@@ -272,14 +282,22 @@ func (s *Server) handle(c net.Conn, id ctl.Identity, allowed bool) {
 		s.fail(c, aerr)
 		return
 	}
-	switch s.api.Mode() { // re-read: the user may have changed it meanwhile
-	case "off":
-		s.fail(c, offError)
-		return
-	case "read":
-		if cmd.mutating != nil && cmd.mutating(args) {
-			s.fail(c, &ctl.Error{Code: ctl.CodeReadOnly, Message: "Команда недоступна: разрешён только просмотр. Включите «Полный доступ» в «Настройки» → «Командная строка» (интерфейс «Для опытных»)."})
+	if cmd.browser {
+		// The extension's own switch, re-read like the mode.
+		if !s.api.BrowserOn() {
+			s.fail(c, browserOffError)
 			return
+		}
+	} else {
+		switch s.api.Mode() { // re-read: the user may have changed it meanwhile
+		case "off":
+			s.fail(c, offError)
+			return
+		case "read":
+			if cmd.mutating != nil && cmd.mutating(args) {
+				s.fail(c, &ctl.Error{Code: ctl.CodeReadOnly, Message: "Команда недоступна: разрешён только просмотр. Включите «Полный доступ» в «Настройки» → «Командная строка» (интерфейс «Для опытных»)."})
+				return
+			}
 		}
 	}
 
@@ -366,6 +384,8 @@ func (s *Server) appVersion() string {
 	a, _ := s.api.Version()
 	return a
 }
+
+var browserOffError = &ctl.Error{Code: ctl.CodeBrowserOff, Message: app.ErrBrowserOff.Error()}
 
 var offError = &ctl.Error{Code: ctl.CodeOff, Message: "Командная строка выключена в «Настройки» → «Командная строка» (интерфейс «Для опытных»)"}
 

@@ -1536,8 +1536,10 @@ func (x *planCtx) planSettings() {
 	}
 	if x.cur.Broken["prefs.json"] != nil {
 		// cli: the access chosen in the unreadable file is unknown and
-		// reads as off (CLIMode); a restore never widens it.
+		// reads as off (CLIMode); a restore never widens it. The browser
+		// extension's likewise.
 		next.Prefs.CLI = "off"
+		next.Prefs.Browser = ""
 	}
 	pl.geoChanged = oldPrefs.GeoSource != next.Prefs.GeoSource || oldPrefs.GeoSiteURL != next.Prefs.GeoSiteURL || oldPrefs.GeoIPURL != next.Prefs.GeoIPURL
 	switch {

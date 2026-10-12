@@ -30,7 +30,14 @@ func openFolder(dir string) error {
 }
 
 func shellExecuteInExplorer(target string) error {
-	return inSTA(func() error { return shellExecuteSTA(target) })
+	return shellExecuteArgs(target, "")
+}
+
+// shellExecuteArgs runs file with args in Explorer's process: with the
+// user's normal rights, not HyRoute's (a browser started elevated would
+// run with another profile's rights and refuse extensions' hosts).
+func shellExecuteArgs(file, args string) error {
+	return inSTA(func() error { return shellExecuteSTA(file, args) })
 }
 
 // inSTA runs f on a thread of its own in a single-threaded COM apartment,
@@ -62,7 +69,7 @@ func inSTA(f func() error) error {
 	return <-done
 }
 
-func shellExecuteSTA(target string) error {
+func shellExecuteSTA(target, args string) error {
 	unk, err := oleutil.CreateObject("Shell.Application")
 	if err != nil {
 		return err
@@ -119,6 +126,6 @@ func shellExecuteSTA(target string) error {
 
 	// ShellExecute(file, args, dir, verb, show): runs in Explorer's
 	// process, with the user's normal rights.
-	_, err = oleutil.CallMethod(app, "ShellExecute", target, "", "", "open", int32(1))
+	_, err = oleutil.CallMethod(app, "ShellExecute", target, args, "", "open", int32(1))
 	return err
 }

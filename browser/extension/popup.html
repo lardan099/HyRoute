@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>HyRoute</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="icons/icon32.png" width="20" height="20" alt="">
+    <strong>HyRoute</strong>
+    <span id="state" class="pill" hidden></span>
+    <span id="ruleset" class="muted small grow"></span>
+  </header>
+
+  <main id="main">
+    <p class="muted center" id="loading">Спрашиваю HyRoute…</p>
+  </main>
+
+  <section id="problem" class="problem" hidden>
+    <p id="problem-text"></p>
+    <ol id="problem-steps" class="small" hidden></ol>
+    <button id="retry" type="button">Повторить</button>
+  </section>
+
+  <footer id="actions" hidden>
+    <div class="sel muted small"><span id="selcount"></span></div>
+    <div class="buttons">
+      <button id="to-vpn" class="tunnel" type="button">Через VPN</button>
+      <button id="to-direct" class="direct" type="button">Напрямую</button>
+      <button id="to-block" class="block" type="button">Блок</button>
+    </div>
+    <label class="server muted small">Сервер для «Через VPN»: <select id="server"></select></label>
+  </footer>
+
+  <section id="done" class="done" hidden>
+    <p id="done-text"></p>
+    <ul id="done-lost" class="small"></ul>
+    <p class="muted small">Открытые соединения вкладки остаются на прежнем пути, новые идут по-новому.</p>
+    <button id="reload" type="button" class="primary">Обновить страницу</button>
+  </section>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

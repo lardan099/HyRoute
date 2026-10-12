@@ -191,6 +191,7 @@ type Controller struct {
 	cliState      // cli: prefsMu, the exit guard (cliapi.go)
 	// conn-rules: undo entries under their own leaf lock (connrules.go)
 	connRulesState
+	browserState
 	backupState // backup: backupMu and importMu (backup.go)
 }
 

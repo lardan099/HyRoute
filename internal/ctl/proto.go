@@ -89,6 +89,9 @@ const (
 	CodeUnknown    = "unknown-command"
 	CodeUnknownArg = "unknown-arg" // Field set
 	CodeVersion    = "version"     // v outside [MinProto, Proto]
+	// CodeBrowserOff: a browser extension command while «Расширение для
+	// браузера» is off.
+	CodeBrowserOff = "browser-off"
 )
 
 // Client-side codes (hyroutectl finds these out itself).
@@ -111,7 +114,7 @@ func ExitCode(code string) int {
 		return 2
 	case CodeNotRunning:
 		return 3
-	case CodeDenied, CodeOff, CodeReadOnly, CodeOtherUser, CodeImpostor:
+	case CodeDenied, CodeOff, CodeReadOnly, CodeOtherUser, CodeImpostor, CodeBrowserOff:
 		return 4
 	case CodeTimeout, CodeStarting:
 		return 5
@@ -406,3 +409,14 @@ type NetworksSetArgs struct {
 type NetworksApplyArgs struct {
 	Yes bool `json:"yes,omitempty"`
 }
+
+// The browser extension (browser/): hyroutectl is its native messaging
+// host and passes on these commands only.
+var BrowserCommands = []string{"browser-info", "browser-add", "browser-remove"}
+
+// BrowserHost is the native messaging host's name, and BrowserOrigins the
+// extensions it serves: the unpacked extension HyRoute installs (its ID
+// comes from the "key" in browser/manifest.json).
+const BrowserHost = "com.hyroute.browser"
+
+var BrowserOrigins = []string{"chrome-extension://eocfmelapohehdegpedblilfdfgledai/"}

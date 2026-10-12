@@ -44,7 +44,16 @@ type Prefs struct {
 	// (the default), "full" = every command, "off" = no pipe. "read" is
 	// accepted for read-only too (CLIMode).
 	CLI string `json:"cli,omitempty"`
+
+	// browser
+	// Browser: the browser extension may ask about sites and change the
+	// extension's rules (BrowserOn); "" = off. Any other value reads as
+	// off.
+	Browser string `json:"browser,omitempty"`
 }
+
+// BrowserOn is Prefs.Browser for an extension allowed in.
+const BrowserOn = "on"
 
 // CLIMode is the hyroutectl access CLI stands for: "full", "read" or
 // "off". Unset is read-only; a value written by a newer version reads as

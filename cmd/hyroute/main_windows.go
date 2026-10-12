@@ -288,7 +288,8 @@ func main() {
 		}
 	}
 	gui.tray.hidden.Store(startHidden)
-	gui.startCLI() // cli: the control pipe for hyroutectl
+	gui.startCLI()          // cli: the control pipe for hyroutectl
+	go gui.syncBrowserExt() // browser: an installed extension follows this HyRoute
 	err = wails.Run(&options.App{
 		Title:            "HyRoute",
 		WindowStartState: startState,

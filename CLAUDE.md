@@ -23,7 +23,7 @@ docs/GUIDE.md. The users speak Russian: answer in Russian, UI text is Russian.
 
 ## Checks before a push
 
-- `gofmt -l cmd internal build tools frontend/*.go` prints nothing
+- `gofmt -l cmd internal build tools browser frontend/*.go` prints nothing
   (third_party/ is not ours).
 - `go vet ./...` and `GOOS=windows go vet ./...`
 - `go test ./...`; `go test -race` for the packages you touched.

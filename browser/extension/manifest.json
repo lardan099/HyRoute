@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "HyRoute",
+  "version": "1.0.0",
+  "description": "Отправить сайт через VPN, напрямую или в блок прямо из браузера: правила HyRoute.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsuPurzSUZVjnd3k/lnkfOXx6LXSsaRgRDWaojbZIgtWKQ9ZxeUygqV1zhFys3fFQNh1/58Y5QLr5sTBXZHT8+/PH3Hf53++jGe6VsPw3cAYLyq8Wi4d4puuxPaPJ+7RnWlEFCqvQODku1nsmQC9QA7z25uSUU+vo1q+S/7yyH7+Dg3Rh8zgbebBFpkk2qt+2Tmry18BT7lT5f+HKfU5qIFdSpb5g5DjRSMXTPgn/iqfjwewe9eBolk1jinczWa+LrCJ/UHfWrOcnLOShkbxog39jFJ2R/6eH7bXNqUN5f9XWgcJqt2VI/WiaN3eFxDgufa36iShrh4Ddv12g5Nh9gwIDAQAB",
+  "minimum_chrome_version": "110",
+  "permissions": ["nativeMessaging", "webRequest", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": {
+    "default_title": "HyRoute",
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png" }
+  },
+  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+}
