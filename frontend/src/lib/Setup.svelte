@@ -14,6 +14,7 @@
     type AutostartInfo,
     type Prefs,
     type GroupView,
+    type BrowserExtView,
   } from '../api';
   // Setup reads and writes the same settings as the pages, each save built
   // on a fresh copy (its revision), so it never undoes a change made
@@ -225,6 +226,12 @@
   let wantConnect = $state(true);
   let wantKill = $state(false);
   let launchLoaded = false;
+  // browser: offered when hyroutectl.exe and a browser are there; added to
+  // the browser on «Готово».
+  let ext = $state<BrowserExtView | null>(null);
+  let wantBrowser = $state(false);
+  let extNote = $state('');
+  const extBrowsers = $derived(ext?.browsers.filter((b) => b.exe) ?? []);
 
   $effect(() => {
     if (step !== 'launch' || launchLoaded) return;
@@ -237,6 +244,13 @@
         wantConnect = true;
       })
       .catch((e) => (error = errText(e)));
+    api
+      .BrowserExtInfo()
+      .then((v) => {
+        ext = v;
+        wantBrowser = v.installed && v.on;
+      })
+      .catch(() => (ext = null));
   });
 
   $effect(() => {
@@ -251,6 +265,7 @@
       await api.SavePrefs({ ...(await api.Prefs()), autoConnect: wantConnect });
       const cur = await api.Settings();
       if ((cur.killSwitch ?? false) !== wantKill) await api.SaveEngineOptions({ ...optionsOf(cur), killSwitch: wantKill });
+      if (wantBrowser && ext && !(ext.installed && ext.on)) ext = await api.InstallBrowserExt();
       next();
     } catch (e) {
       error = errText(e);
@@ -259,6 +274,16 @@
   }
 
   // ---- done ----
+  async function openBrowser(id: string) {
+    extNote = '';
+    try {
+      await api.OpenBrowserExtensions(id);
+      extNote = 'Путь к папке скопирован.';
+    } catch (e) {
+      extNote = errText(e);
+    }
+  }
+
   async function connect() {
     busy = true;
     error = '';
@@ -515,6 +540,17 @@
             </span></span
           >
         </label>
+        {#if ext?.host && extBrowsers.length}
+          <label class="opt">
+            <input type="checkbox" bind:checked={wantBrowser} />
+            <span><b>Кнопка HyRoute в браузере</b>
+              <span>
+                Для {extBrowsers.map((b) => b.name).join(', ')}: на любом сайте видно, что не загрузилось, и одним нажатием сайт идёт через VPN или
+                напрямую. Добавить кнопку в браузер — на последнем шаге, это пара действий.
+              </span></span
+            >
+          </label>
+        {/if}
       </div>
       {#if prefs.closeToTray ?? true}
         <div class="box">
@@ -536,6 +572,24 @@
         {#if auto}<div><span class="muted">Запуск с Windows</span><b>{wantAutostart && auto.allowed ? 'да' : 'нет'}</b></div>{/if}
       </div>
       <p class="lead">Осталось включить VPN. Потом включать и выключать его можно большой кнопкой на главной странице.</p>
+      {#if wantBrowser && ext?.installed}
+        <div class="box">
+          <Icon name="globe" size={20} />
+          <div>
+            <b>Добавьте кнопку HyRoute в браузер</b>
+            <ol>
+              <li>Нажмите свой браузер: откроется страница расширений и папка с расширением.</li>
+              <li>Включите «Режим разработчика» — переключатель вверху страницы.</li>
+              <li>Перетащите папку <b>browser-extension</b> на страницу и закрепите значок HyRoute (значок пазла → булавка).</li>
+            </ol>
+            <div class="row wrap">
+              {#each extBrowsers as b (b.id)}<button onclick={() => openBrowser(b.id)}>{b.name}</button>{/each}
+            </div>
+            {#if extNote}<p class="small">{hide(extNote)}</p>{/if}
+            <p class="small muted">Можно и потом: «Настройки» → «Расширение для браузера».</p>
+          </div>
+        </div>
+      {/if}
       <div class="box">
         <Icon name="info" size={20} />
         <div>
@@ -543,6 +597,10 @@
           <ul>
             <li>Откройте «Правила» и внизу страницы нажмите «Проверить адрес»: введите сайт, и HyRoute покажет, идёт ли он через VPN и почему.</li>
             <li>Чтобы отправить сайт или программу через VPN, в «Правилах» нажмите «Шаблоны» (YouTube, Discord, ChatGPT и другие) или «Правило».</li>
+            <li>
+              {#if wantBrowser && ext?.installed}Или прямо на сайте: кнопка HyRoute в браузере покажет, что не загрузилось, и отправит это через VPN.
+              {:else}Удобнее всего — кнопкой HyRoute в браузере: «Настройки» → «Расширение для браузера».{/if}
+            </li>
             <li>Настройку можно пройти заново: «Настройки → Пройти настройку заново».</li>
           </ul>
         </div>
@@ -631,7 +689,9 @@
   .box { display: flex; gap: 12px; padding: 14px 16px; border-radius: var(--radius); background: var(--accent-soft); }
   .box > :global(svg) { color: var(--accent); flex: none; margin-top: 1px; }
   .box p { margin-top: 4px; }
-  .box ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+  .box ul, .box ol { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+  .box .row { margin-top: 8px; }
+  .wrap { flex-wrap: wrap; }
 
   .big-select { font-size: 15px; padding: 9px 12px; max-width: 460px; }
 
