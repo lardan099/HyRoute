@@ -177,3 +177,28 @@ func TestBrowserUnicodeNames(t *testing.T) {
 		t.Fatalf("%+v", s)
 	}
 }
+
+// Servers of the same name are told apart by where they come from: in the
+// extension's list and in the rules it makes.
+func TestBrowserSameNames(t *testing.T) {
+	c := browserCtl(t)
+	add, err := c.ImportURIs("hysteria2://p1@a.example:443#NL\nhysteria2://p2@b.example:443#NL\nhysteria2://p3@c.example:443#DE")
+	if err != nil || len(add.Added) != 3 {
+		t.Fatalf("%+v %v", add, err)
+	}
+	info, _ := c.BrowserInfo(BrowserQuery{})
+	var names []string
+	for _, tg := range info.Targets {
+		names = append(names, tg.Name)
+	}
+	if got := strings.Join(names, ","); got != "NL · добавлен вручную,NL · добавлен вручную,DE" {
+		t.Fatal(got)
+	}
+	if c.profileName(add.Added[2].ID) != "DE" {
+		t.Fatal(c.profileName(add.Added[2].ID))
+	}
+	res, err := c.BrowserAdd(BrowserEdit{Sites: []string{".x.example"}, To: "id:" + add.Added[0].ID})
+	if err != nil || res.Rule != "Из браузера: NL · добавлен вручную" {
+		t.Fatalf("%+v %v", res, err)
+	}
+}

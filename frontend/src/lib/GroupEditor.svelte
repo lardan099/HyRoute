@@ -2,7 +2,7 @@
   // A server group: its name, how it picks the server of a new connection
   // and its servers in order.
   import { api, errText, strategyLabel, type Group, type Strategy, type ProfileSummary } from '../api';
-  import { ui, hide } from '../state.svelte';
+  import { ui, hide, serverLabel } from '../state.svelte';
   import Icon from './Icon.svelte';
 
   let { group, onclose, onsaved }: { group: Group; onclose: () => void; onsaved: () => void } = $props();
@@ -120,7 +120,7 @@
       Если столько новых соединений подряд не открылись через сервер, группа минуту обходит его стороной, потом пробует одно соединение.
       {#if errorsOn && fastOpen.length}
         <div class="warn-t">
-          У серверов с быстрым открытием (fastOpen) — {fastOpen.map((p) => `«${hide(p.name)}»`).join(', ')} — ошибки соединений не видны, для них это не
+          У серверов с быстрым открытием (fastOpen) — {fastOpen.map((p) => `«${serverLabel(p)}»`).join(', ')} — ошибки соединений не видны, для них это не
           сработает.
         </div>
       {/if}
@@ -132,7 +132,7 @@
         {@const p = server(id)}
         <div class="member">
           <span class="n">{i + 1}</span>
-          <span class="grow ellipsis">{p ? hide(p.name) : 'удалённый сервер'}</span>
+          <span class="grow ellipsis">{p ? serverLabel(p) : 'удалённый сервер'}</span>
           {#if p?.source}<span class="badge"><Icon name="rss" size={11} />{hide(p.sourceName)}</span>{/if}
           <button class="icon" onclick={() => move(i, -1)} disabled={i === 0} title="Выше"><Icon name="up" size={15} /></button>
           <button class="icon" onclick={() => move(i, 1)} disabled={i === g.members.length - 1} title="Ниже"><Icon name="down" size={15} /></button>

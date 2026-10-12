@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -248,10 +249,27 @@ func (c *Controller) changed() {
 	}
 }
 
+// updateNamesLocked rebuilds the display names (profileName). A server
+// named like another one carries where it comes from («🇳🇱 NL · Сервис»,
+// «… · добавлен вручную»): two subscriptions of one service list the same
+// servers, and the journal, «Проверить адрес», the extension and the
+// statistics must not show them alike. The window does the same
+// (serverLabel).
 func (c *Controller) updateNamesLocked() {
 	m := make(map[string]string, len(c.profiles.List))
+	count := map[string]int{}
+	for _, p := range c.profiles.List {
+		count[strings.ToLower(strings.TrimSpace(p.Name))]++
+	}
 	for _, p := range c.profiles.List {
 		m[p.ID] = p.Name
+		if count[strings.ToLower(strings.TrimSpace(p.Name))] > 1 {
+			src := "добавлен вручную"
+			if p.Source != "" {
+				src = c.sourceNameLocked(p.Source)
+			}
+			m[p.ID] = p.Name + " · " + src
+		}
 	}
 	c.groupNamesLocked(m)
 	c.names.Store(&m)

@@ -139,11 +139,50 @@ export function hide(s: string | undefined | null): string {
 }
 
 // profileName is a server's or a group's name for display, masked in
-// Privacy mode.
+// Privacy mode; a server named like another one carries its subscription
+// (serverLabel).
 export function profileName(id: string): string {
   if (!id) return '';
   if (isGroupId(id)) return hide(ui.groups.find((g) => g.id === id)?.name ?? 'удалённая группа');
-  return hide(ui.profiles.find((p) => p.id === id)?.name ?? 'удалённый сервер');
+  const p = ui.profiles.find((p) => p.id === id);
+  return p ? serverLabel(p) : hide('удалённый сервер');
+}
+
+const nameKey = (n: string) => n.trim().toLowerCase();
+
+// sameName: another server has p's name (two subscriptions of one service
+// often list the same servers).
+export function sameName(p: ProfileSummary): boolean {
+  const k = nameKey(p.name);
+  return ui.profiles.some((o) => o.id !== p.id && nameKey(o.name) === k);
+}
+
+// serverSource names where a server comes from: its subscription, or
+// «добавлен вручную».
+export function serverSource(p: ProfileSummary): string {
+  return p.source ? hide(p.sourceName) : 'добавлен вручную';
+}
+
+// serverSections splits the servers by where they come from, in list
+// order: one untitled section while they all come from one place, else a
+// titled section per subscription and one for those added by hand. Menus
+// and selects show them so; names inside a titled section need no source.
+export function serverSections(): { key: string; title: string; list: ProfileSummary[] }[] {
+  const by = new Map<string, ProfileSummary[]>();
+  for (const p of ui.profiles) {
+    const k = p.source || '';
+    if (!by.has(k)) by.set(k, []);
+    by.get(k)!.push(p);
+  }
+  if (by.size <= 1) return ui.profiles.length ? [{ key: '', title: '', list: ui.profiles }] : [];
+  return [...by].map(([k, list]) => ({ key: k, title: k ? `Подписка «${hide(list[0].sourceName)}»` : 'Добавлены вручную', list }));
+}
+
+// serverLabel is a server's name for lists and labels: with where it comes
+// from when another server has the same name, so «🇳🇱 NL» of two
+// subscriptions never look alike.
+export function serverLabel(p: ProfileSummary): string {
+  return sameName(p) ? `${hide(p.name)} · ${serverSource(p)}` : hide(p.name);
 }
 
 export function mainProfile(): ProfileSummary | undefined {

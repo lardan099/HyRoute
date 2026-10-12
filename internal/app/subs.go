@@ -344,6 +344,7 @@ func (c *Controller) AddSubscription(in SubInput) (SubView, error) {
 		return SubView{}, err
 	}
 	c.subs = subs
+	c.updateNamesLocked() // a renamed subscription names its servers
 	c.mu.Unlock()
 	if _, err := c.applyFetched(sub.ID, pend.res, false, time.Time{}); err != nil {
 		// Nothing imported: take the subscription back out. Once its
@@ -355,6 +356,7 @@ func (c *Controller) AddSubscription(in SubInput) (SubView, error) {
 			subs := slices.DeleteFunc(slices.Clone(c.subs), func(s store.Subscription) bool { return s.ID == sub.ID })
 			if c.saveSubsLocked(subs) == nil {
 				c.subs = subs
+				c.updateNamesLocked() // a renamed subscription names its servers
 			}
 		}
 		c.mu.Unlock()
@@ -415,6 +417,7 @@ func (c *Controller) EditSubscription(in SubInput) error {
 		return err
 	}
 	c.subs = next
+	c.updateNamesLocked() // a renamed subscription names its servers
 	c.mu.Unlock()
 	if in.Token == "" {
 		return nil
@@ -540,6 +543,7 @@ func (c *Controller) recordSubErrorInfo(id string, err error, userInfo string, a
 		c.saveSubsLocked(next)
 		c.restoreHashesAfterLocked(tag, restoreHashes) // backup
 		c.subs = next
+		c.updateNamesLocked() // a renamed subscription names its servers
 	}
 	c.mu.Unlock()
 	c.Log.Warn("subscription update failed, previous profiles kept", "subscription", c.subName(id), "err", err)
@@ -620,6 +624,7 @@ func (c *Controller) applyFetched(id string, res FetchResult, rollback bool, tag
 	c.restoreHashesAfterLocked(tag, restoreHashes) // backup
 	// The status is kept even when it cannot be saved (see recordSubError).
 	c.subs = subs
+	c.updateNamesLocked() // a renamed subscription names its servers
 	c.mu.Unlock()
 	if err == nil {
 		err = snapErr
@@ -688,6 +693,7 @@ func (c *Controller) DeleteSubscription(id string) error {
 	// Gone from subscriptions.json: when its profiles could not be saved
 	// either, they stay as those of a deleted subscription.
 	c.subs = subs
+	c.updateNamesLocked() // a renamed subscription names its servers
 	c.mu.Unlock()
 	c.Store.DeleteSnapshots(id)
 	c.Redactor.SetGroup("sub:" + id)

@@ -173,7 +173,7 @@ func (c *Controller) BrowserInfo(q BrowserQuery) (BrowserInfo, error) {
 	}
 	for _, p := range c.profiles.List {
 		if !p.Missing {
-			info.Targets = append(info.Targets, BrowserTarget{To: "id:" + p.ID, Name: p.Name})
+			info.Targets = append(info.Targets, BrowserTarget{To: "id:" + p.ID, Name: c.profileName(p.ID)})
 		}
 	}
 	if c.groupsBroken == nil {
@@ -314,7 +314,7 @@ func (c *Controller) browserTarget(to string) (rules.Action, string, string, err
 			if err := c.withLock(func() error { return c.connTargetLocked(rules.Rule{Action: rules.Tunnel, Profile: id}) }); err != nil {
 				return 0, "", "", err
 			}
-			return rules.Tunnel, id, t.Name, nil
+			return rules.Tunnel, id, c.profileName(t.ID), nil
 		}
 	}
 	return 0, "", "", sentenceError("Сервер удалён или пропал из подписки: выберите другой")

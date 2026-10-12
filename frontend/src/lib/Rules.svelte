@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, errText, toLists, cleanSettings, cleanFallback, isGroupId, portsText, isEditToken, plural, tokenStale, editGone, newRuleID, type Settings, type Rule, type LintIssue, type RulesetsView } from '../api';
-  import { ui, hide, profileName, mainTarget, mainText } from '../state.svelte';
+  import { ui, hide, profileName, serverLabel, mainTarget, mainText } from '../state.svelte';
   import Icon from './Icon.svelte';
   import TargetOptions from './TargetOptions.svelte';
   import RuleEditor from './RuleEditor.svelte';
@@ -352,7 +352,7 @@
     }
     const p = ui.profiles.find((x) => x.id === r.profile);
     if (!p) return 'Сервер удалён: соединения будут отклоняться. Выберите другой.';
-    if (p.missing) return `Сервер «${hide(p.name)}» пропал из подписки. Выберите замену.`;
+    if (p.missing) return `Сервер «${serverLabel(p)}» пропал из подписки. Выберите замену.`;
     return '';
   }
 

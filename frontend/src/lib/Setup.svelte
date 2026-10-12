@@ -19,7 +19,7 @@
   // Setup reads and writes the same settings as the pages, each save built
   // on a fresh copy (its revision), so it never undoes a change made
   // elsewhere meanwhile.
-  import { ui, hide, mainTarget, mainText, setupStep, setSetupStep, finishSetup } from '../state.svelte';
+  import { ui, hide, serverLabel, mainTarget, mainText, setupStep, setSetupStep, finishSetup } from '../state.svelte';
   import Icon from './Icon.svelte';
   import TargetOptions from './TargetOptions.svelte';
   import RouteWizard from './RouteWizard.svelte';
@@ -117,7 +117,7 @@
       if (/(hysteria2|hy2):\/\//i.test(t)) {
         const r = await api.ImportURIs(t);
         if (r.added.length) {
-          added = `Добавлено: ${r.added.map((p) => hide(p.name)).join(', ')}.`;
+          added = `Добавлено: ${r.added.map((p) => serverLabel(p)).join(', ')}.`;
           link = '';
         }
         if (!r.added.length && r.skipped.length && !r.errors.length) {
@@ -414,7 +414,7 @@
       {#if added}<div class="note ok">{added}</div>{/if}
       {#if ui.profiles.length}
         <p class="muted small">
-          Серверов добавлено: {ui.profiles.length}{ui.profiles.length <= 4 ? ` (${ui.profiles.map((p) => hide(p.name)).join(', ')})` : ''}. Можно
+          Серверов добавлено: {ui.profiles.length}{ui.profiles.length <= 4 ? ` (${ui.profiles.map((p) => serverLabel(p)).join(', ')})` : ''}. Можно
           переходить дальше.
         </p>
       {/if}

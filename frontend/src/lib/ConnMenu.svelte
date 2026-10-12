@@ -122,7 +122,7 @@
   // decides the connection now. It works on a snapshot of the row.
   import { onMount, tick } from 'svelte';
   import { cleanRule, connFacts, isGroupId, type Action, type ConnFacts, type ConnRuleInfo, type ConnScope, type Flow } from '../api';
-  import { mainTarget, mainText, profileName } from '../state.svelte';
+  import { mainTarget, mainText, profileName, serverSections } from '../state.svelte';
   import Icon from './Icon.svelte';
 
   let {
@@ -556,14 +556,17 @@
       () => quick(kind, 'tunnel', ''),
       { inSub: true },
     )}
-    {#if ui.profiles.length}<div class="sep"></div>{/if}
-    {#each ui.profiles as p (p.id)}
-      {@render item(
-        `${curTarget === p.id ? '✓ ' : ''}${hide(p.name)}${p.missing ? ' (нет в подписке)' : ''}`,
-        p.missing ? 'Сервер пропал из подписки' : '',
-        () => quick(kind, 'tunnel', p.id),
-        { inSub: true },
-      )}
+    {#each serverSections() as sec (sec.key)}
+      <div class="sep"></div>
+      {#if sec.title}<div class="lbl">{sec.title}</div>{/if}
+      {#each sec.list as p (p.id)}
+        {@render item(
+          `${curTarget === p.id ? '✓ ' : ''}${sec.title ? hide(p.name) : profileName(p.id)}${p.missing ? ' (нет в подписке)' : ''}`,
+          p.missing ? 'Сервер пропал из подписки' : '',
+          () => quick(kind, 'tunnel', p.id),
+          { inSub: true },
+        )}
+      {/each}
     {/each}
     {#if ui.groups.length}
       <div class="sep"></div>

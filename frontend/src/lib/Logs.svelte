@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { api, errText, fmtTime, type LogEntry } from '../api';
-  import { ui, hide } from '../state.svelte';
+  import { ui, hide, serverLabel } from '../state.svelte';
 
   // engine | hysteria (every server) | hysteria:<profile id>
   let source = $state('engine');
@@ -116,7 +116,7 @@
     <select bind:value={source} title="Чей журнал">
       <option value="engine">HyRoute</option>
       <option value="hysteria">Hysteria — все серверы</option>
-      {#each ui.profiles as p (p.id)}<option value={'hysteria:' + p.id}>Hysteria — {hide(p.name)}</option>{/each}
+      {#each ui.profiles as p (p.id)}<option value={'hysteria:' + p.id}>Hysteria — {serverLabel(p)}</option>{/each}
     </select>
     <select bind:value={level}>
       <option value="debug">Все уровни</option>

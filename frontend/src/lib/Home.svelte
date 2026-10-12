@@ -469,7 +469,7 @@
             <div class="tunnel">
               <span class="dot {tunnelTone(t)}"></span>
               <div class="grow">
-                <div class="ellipsis"><b>{hide(t.name)}</b> <span class="muted small">{tunnelText[t.state] ?? t.state}</span></div>
+                <div class="ellipsis"><b>{ui.profiles.some((p) => p.id === t.id) ? profileName(t.id) : hide(t.name)}</b> <span class="muted small">{tunnelText[t.state] ?? t.state}</span></div>
                 {#if t.message && t.state !== 'connected'}<div class="small bad-text">{hide(t.message)}</div>{/if}
               </div>
               {#if t.rejected}<span class="badge" title="Соединений отклонено, пока сервер был недоступен">отклонено {t.rejected}</span>{/if}
