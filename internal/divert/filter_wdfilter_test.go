@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestFiltersCompileWithWinDivert(t *testing.T) {
 		layer        Layer
 	}{
 		{"main", MainFilter(FilterOptions{RelayPort: 50123, ServerIPs: servers}), LayerNetwork},
-		{"main tcp cgnat", MainFilter(FilterOptions{RelayPort: 50123, ServerIPs: servers, TCPOnly: true, ExcludeCGNAT: true}), LayerNetwork},
+		{"main tcp", MainFilter(FilterOptions{RelayPort: 50123, ServerIPs: servers, TCPOnly: true}), LayerNetwork},
 		{"main no servers", MainFilter(FilterOptions{RelayPort: 50123}), LayerNetwork},
 		{"socket", SocketFilter, LayerSocket},
 		{"dns", DNSFilter, LayerNetwork},
@@ -98,8 +99,7 @@ func TestMainFilterSemantics(t *testing.T) {
 		{"link-local v4", opts, tcp(L4, "169.254.1.1:80"), true, false, "0"},
 		{"multicast v4", opts, udp(L4, "224.0.0.251:5353"), true, false, "0"},
 		{"broadcast", opts, udp(L4, "255.255.255.255:67"), true, false, "0"},
-		{"cgnat off by default", opts, tcp(L4, "100.64.1.1:443"), true, false, "1"},
-		{"cgnat excluded", FilterOptions{RelayPort: relay, ExcludeCGNAT: true}, tcp(L4, "100.64.1.1:443"), true, false, "0"},
+		{"cgnat captured", opts, tcp(L4, "100.64.1.1:443"), true, false, "1"},
 		{"server v4", opts, udp(L4, "203.0.113.10:30000"), true, false, "0"},
 		{"server v4 neighbour", opts, udp(L4, "203.0.113.9:30000"), true, false, "1"},
 		{"server v6", opts, udp(L6, "[2001:db8::10]:30000"), true, false, "0"},
@@ -130,7 +130,19 @@ func TestMainFilterSemantics(t *testing.T) {
 	}
 }
 
-// dns: the DNS capture filter compiles, with maxServerIPs addresses too,
+// MaxServerIPs addresses fit in every mode, and filterTests (the count
+// TestMainFilterDNS checks without WinDivert) is WinDivert's own.
+func TestMainFilterFitsMaxServerIPs(t *testing.T) {
+	bin := wdfilter(t)
+	for _, o := range maxFilters() {
+		f := MainFilter(o)
+		if got, want := run(t, bin, "count", f, "0"), strconv.Itoa(filterTests(f)); got != want {
+			t.Errorf("tcpOnly=%v dns=%v: WinDivert %s tests, filterTests %s", o.TCPOnly, o.DNS, got, want)
+		}
+	}
+}
+
+// dns: the DNS capture filter compiles, with MaxServerIPs addresses too,
 // and captures DNS and fragments to private destinations.
 func TestMainFilterDNSWinDivert(t *testing.T) {
 	bin := wdfilter(t)

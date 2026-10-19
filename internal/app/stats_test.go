@@ -66,6 +66,11 @@ func hooked(c *Controller) *hookFiles {
 func statsCtl(t *testing.T) (*Controller, *[]*fakeSession, string) {
 	t.Helper()
 	c, started := newCtl(t)
+	// The statistics clock stays at noon of today: a test that ran across
+	// midnight would read another day's file than its deltas went into.
+	y, m, d := time.Now().Date()
+	noon := time.Date(y, m, d, 12, 0, 0, 0, time.Local)
+	c.stats.Now = func() time.Time { return noon }
 	res, err := c.ImportURIs(link)
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +98,7 @@ func today(t *testing.T, c *Controller) stats.Report {
 
 func statsDay(t *testing.T, c *Controller) *stats.File {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(c.Store.Dir, "stats", "day-"+time.Now().Format("2006-01-02")+".json"))
+	b, err := os.ReadFile(filepath.Join(c.Store.Dir, "stats", "day-"+c.statsNow().Format("2006-01-02")+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +151,7 @@ func TestStatsSession(t *testing.T) {
 	tun.Set(func(x *flows.Fields) { x.Domain = "www.example.com" })
 	tun.Sent.Add(100)
 	tun.Recv.Add(1000)
-	c.sampleStats(time.Now(), true)
+	c.sampleStats(c.statsNow(), true)
 	rep := today(t, c)
 	if rep.Total.TC != 1 || rep.Total.TU != 100 || rep.Total.TD != 1000 {
 		t.Fatalf("%+v", rep.Total)
@@ -171,7 +176,7 @@ func TestStatsSession(t *testing.T) {
 	go func() { c.RunStats(ctx); close(ran) }()
 	defer func() { cancel(); <-ran }() // its last flush before the TempDir cleanup
 	waitFor(t, "the day file", func() bool {
-		_, err := os.Stat(filepath.Join(c.Store.Dir, "stats", "day-"+time.Now().Format("2006-01-02")+".json"))
+		_, err := os.Stat(filepath.Join(c.Store.Dir, "stats", "day-"+c.statsNow().Format("2006-01-02")+".json"))
 		return err == nil
 	})
 	if d := statsDay(t, c); d.Total.DU != 50 || d.Total.TU != 100 {
@@ -194,9 +199,9 @@ func TestDisconnectDoesNotWaitForStatsIO(t *testing.T) {
 	})
 	rec := openFlow((*started)[0].reg, `C:\a.exe`, "tunnel", de, "relayed")
 	rec.Sent.Add(10)
-	c.sampleStats(time.Now(), false)
+	c.sampleStats(c.statsNow(), false)
 	flushed := make(chan struct{})
-	go func() { c.stats.Flush(time.Now()); close(flushed) }()
+	go func() { c.stats.Flush(c.statsNow()); close(flushed) }()
 	<-entered // the flush holds the disk lock in a write
 	dir := openFlow((*started)[0].reg, `C:\b.exe`, "direct", "", "passed")
 	dir.Sent.Add(7)
@@ -213,7 +218,7 @@ func TestDisconnectDoesNotWaitForStatsIO(t *testing.T) {
 	ran := make(chan struct{})
 	go func() { c.RunStats(ctx); close(ran) }()
 	waitFor(t, "the Disconnect's deltas on disk", func() bool {
-		b, _ := os.ReadFile(filepath.Join(c.Store.Dir, "stats", "day-"+time.Now().Format("2006-01-02")+".json"))
+		b, _ := os.ReadFile(filepath.Join(c.Store.Dir, "stats", "day-"+c.statsNow().Format("2006-01-02")+".json"))
 		return bytes.Contains(b, []byte(`"du":7`))
 	})
 	cancel()
@@ -308,7 +313,7 @@ func TestStatsReconnectUDP(t *testing.T) {
 		rec.Sent.Add(sent)
 	}
 	udp((*started)[0].reg, 100)
-	c.sampleStats(time.Now(), false)
+	c.sampleStats(c.statsNow(), false)
 	if err := c.Reconnect(); err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +376,7 @@ func TestStatsProxies(t *testing.T) {
 	if _, err := dial(stopped, socks5.AddrFromAddrPort(echo.Addr().(*net.TCPAddr).AddrPort())); err == nil {
 		t.Fatal("dial with a cancelled context succeeded")
 	}
-	c.sampleStats(time.Now(), false)
+	c.sampleStats(c.statsNow(), false)
 	rep := today(t, c)
 	a := rep.Apps[0]
 	if len(rep.Apps) != 1 || a.Key != "proxy:AbC" || a.Name != "Биржа" || a.Gone || a.TC != 1 || a.TU != 5 || a.TD != 5 || a.F != 1 {
@@ -431,7 +436,7 @@ func TestStatsBackupUnlocked(t *testing.T) {
 	}
 	rec := openFlow((*started)[0].reg, `C:\a.exe`, "tunnel", de, "relayed")
 	rec.Sent.Add(10)
-	c.sampleStats(time.Now(), false)
+	c.sampleStats(c.statsNow(), false)
 	if _, empty := c.StatsBackupInfo(); empty {
 		t.Fatal("empty with a delta")
 	}
@@ -463,7 +468,7 @@ func TestStatsNames(t *testing.T) {
 	for _, prof := range []string{de, "0123456789ab", "", "grp-000000000009"} {
 		openFlow(reg, `C:\a.exe`, "tunnel", prof, "relayed").Sent.Add(1)
 	}
-	c.sampleStats(time.Now(), false)
+	c.sampleStats(c.statsNow(), false)
 	c.mu.Lock()
 	p := *c.profiles.Find(de)
 	c.mu.Unlock()
@@ -611,7 +616,7 @@ func TestStatsCreateNothing(t *testing.T) {
 	c.Stats("today")
 	c.Stats("30d")
 	c.StatsBackupInfo()
-	c.sampleStats(time.Now(), true)
+	c.sampleStats(c.statsNow(), true)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { c.RunStats(ctx); close(done) }()
@@ -663,7 +668,7 @@ func TestStatsUpgradeDefault(t *testing.T) {
 // The statistics of HyRoute 1.2.0 are imported once and left in place.
 func TestStatsImportsV12(t *testing.T) {
 	c, _ := newCtl(t)
-	d := time.Now().Format("2006-01-02")
+	d := c.statsNow().Format("2006-01-02")
 	old := []byte(`{"version":1,"days":{"` + d + `":{"servers":{"p1":{"sent":10,"recv":20}},"apps":{"chrome.exe":{"sent":10,"recv":20}}}},"hours":{},"names":{"p1":"DE"}}`)
 	path := filepath.Join(c.Store.Dir, "traffic.json")
 	if err := os.WriteFile(path, old, 0o600); err != nil {
@@ -701,9 +706,9 @@ func TestStatsDiag(t *testing.T) {
 	rec := openFlow((*started)[0].reg, `C:\secret-app.exe`, "tunnel", de, "relayed")
 	rec.Set(func(f *flows.Fields) { f.Domain = "private.example.org" })
 	rec.Sent.Add(1)
-	c.sampleStats(time.Now(), false)
+	c.sampleStats(c.statsNow(), false)
 	os.MkdirAll(filepath.Join(c.Store.Dir, "stats"), 0o700)
-	bad := "day-" + time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	bad := "day-" + c.statsNow().AddDate(0, 0, -1).Format("2006-01-02")
 	os.WriteFile(filepath.Join(c.Store.Dir, "stats", bad+".json"), []byte("{"), 0o600)
 	c.Stats("7d")
 	diag := c.Diagnostics(nil, false)

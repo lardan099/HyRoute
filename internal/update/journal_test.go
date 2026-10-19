@@ -202,3 +202,28 @@ func TestApplyJournaledTarget(t *testing.T) {
 		t.Fatalf("to %q", sw.To)
 	}
 }
+
+// A .old an earlier update left behind gives way to this update's own
+// backup, and a recovery puts back the version this update replaced
+// (ApplyJournaled clears such copies before it writes the journal, so a
+// crash before a step cannot make one pass for a step done).
+func TestJournalStaleOldCopy(t *testing.T) {
+	staging := stagingDir(t, map[string]string{MainExe: "v3", UpdaterExe: "upd3"})
+	target := t.TempDir()
+	os.WriteFile(filepath.Join(target, MainExe), []byte("v2"), 0o755)
+	os.WriteFile(filepath.Join(target, UpdaterExe), []byte("upd2"), 0o755)
+	os.WriteFile(filepath.Join(target, MainExe+".old"), []byte("v1"), 0o755) // left by v1 → v2
+	jp := filepath.Join(t.TempDir(), "journal.json")
+	if _, err := ApplyJournaled(staging, target, "", jp, "v2", "v3", false); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, filepath.Join(target, MainExe+".old")) != "v2" {
+		t.Fatal("the stale copy was kept as this update's backup")
+	}
+	if _, err := Recover(jp); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, filepath.Join(target, MainExe)); got != "v2" {
+		t.Fatalf("recovered %q", got)
+	}
+}

@@ -27,7 +27,6 @@ type Query struct {
 	EDNS    bool
 	UDPSize int // from OPT; 0 without EDNS
 	DO, CD  bool
-	Raw     []byte // the query as received (TCP pass-through)
 }
 
 const (
@@ -100,8 +99,7 @@ func parseRest(msg []byte, h dnsmessage.Header, qq dnsmessage.Question) (Query, 
 	if name == "" {
 		return Query{}, false
 	}
-	q := Query{ID: h.ID, Name: name, Wire: qq.Name, Type: qq.Type, Class: qq.Class, RD: h.RecursionDesired, CD: h.CheckingDisabled,
-		Raw: append([]byte(nil), msg...)}
+	q := Query{ID: h.ID, Name: name, Wire: qq.Name, Type: qq.Type, Class: qq.Class, RD: h.RecursionDesired, CD: h.CheckingDisabled}
 	if len(extra) == 1 {
 		if extra[0].Header.Type != dnsmessage.TypeOPT {
 			return Query{}, false
@@ -154,6 +152,11 @@ type ReplyOpts struct {
 	Max    int           // the client's size limit (q.MaxUDP() or 65535 on TCP)
 	Age    time.Duration // how long the answer sat in the resolver cache
 	Tunnel bool          // a tunnel answer: clamp TTLs
+	// NoTC: the client's retry over TCP would not come back to us (an
+	// IPv6 link-local server: TCP to it is not intercepted), so an answer
+	// over the limit keeps as many records of the asked type as fit
+	// instead of TC; when even one does not fit, Reply fails.
+	NoTC bool
 }
 
 var errAnswer = errors.New("dns: bad upstream answer")
@@ -200,7 +203,7 @@ func Reply(q Query, up []byte, o ReplyOpts) (out []byte, truncated bool, err err
 	m.Header.RecursionAvailable = true
 	m.Questions[0].Name = q.Wire
 	age := uint32(max(o.Age, 0) / time.Second)
-	negative := m.Header.RCode == dnsmessage.RCodeNameError || m.Header.RCode == dnsmessage.RCodeSuccess && len(m.Answers) == 0
+	negative := negativeMsg(&m)
 	for _, sec := range [][]dnsmessage.Resource{m.Answers, m.Authorities, m.Additionals} {
 		for i := range sec {
 			r := &sec[i]
@@ -264,12 +267,38 @@ func Reply(q Query, up []byte, o ReplyOpts) (out []byte, truncated bool, err err
 	if len(b) <= limit {
 		return b, false, nil
 	}
+	if o.NoTC {
+		// Drop records of the asked type from the end; the chain to them
+		// (CNAMEs) stays.
+		for n := len(m.Answers) - 1; n >= 0; n-- {
+			if m.Answers[n].Header.Type != q.Type || !hasType(m.Answers[:n], q.Type) {
+				continue
+			}
+			m.Answers = append(m.Answers[:n], m.Answers[n+1:]...)
+			if b, err = m.Pack(); err != nil {
+				return nil, false, errAnswer
+			}
+			if len(b) <= limit {
+				return b, false, nil
+			}
+		}
+		return nil, false, errAnswer
+	}
 	m.Header.Truncated = true
 	m.Answers = nil
 	if b, err = m.Pack(); err != nil {
 		return nil, false, errAnswer
 	}
 	return b, true, nil
+}
+
+func hasType(rs []dnsmessage.Resource, t dnsmessage.Type) bool {
+	for _, r := range rs {
+		if r.Header.Type == t {
+			return true
+		}
+	}
+	return false
 }
 
 func keepOPT(rs []dnsmessage.Resource) []dnsmessage.Resource {
@@ -360,6 +389,26 @@ func Negative(q Query, up []byte, any bool) (neg bool) {
 	return any || q.Type == dnsmessage.TypeA
 }
 
+// negativeMsg: NXDOMAIN, or NOERROR without a record of the type asked
+// (NODATA, RFC 2308), also after a CNAME chain, whose answer then holds
+// only the CNAMEs. A CNAME or ANY question is answered by any record.
+func negativeMsg(m *dnsmessage.Message) bool {
+	switch {
+	case m.Header.RCode == dnsmessage.RCodeNameError:
+		return true
+	case m.Header.RCode != dnsmessage.RCodeSuccess:
+		return false
+	case len(m.Questions) != 1 || m.Questions[0].Type == dnsmessage.TypeCNAME || m.Questions[0].Type == dnsmessage.TypeALL:
+		return len(m.Answers) == 0
+	}
+	for _, r := range m.Answers {
+		if r.Header.Type == m.Questions[0].Type {
+			return false
+		}
+	}
+	return true
+}
+
 // ttlOf is how long an answer may be cached: the smallest TTL of its
 // answer and authority records (not OPT), at most MaxTunnelTTL; for a
 // negative, the SOA's min(TTL, MINIMUM), at most MaxNegativeTTL. 0 = not
@@ -382,7 +431,7 @@ func ttlOf(msg []byte) (ttl time.Duration) {
 	if m.Header.Truncated {
 		return 0
 	}
-	if m.Header.RCode == dnsmessage.RCodeNameError || len(m.Answers) == 0 {
+	if negativeMsg(&m) {
 		for _, r := range m.Authorities {
 			if soa, ok := r.Body.(*dnsmessage.SOAResource); ok {
 				return time.Duration(min(r.Header.TTL, soa.MinTTL, MaxNegativeTTL)) * time.Second

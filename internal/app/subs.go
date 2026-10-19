@@ -6,14 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"github.com/lardan099/hyroute/internal/geodata"
 	"github.com/lardan099/hyroute/internal/hysteria"
+	"github.com/lardan099/hyroute/internal/socks5"
 	"github.com/lardan099/hyroute/internal/store"
 )
 
@@ -38,6 +43,9 @@ type FetchResult struct {
 	UpdateHours int
 	Support     string
 	At          time.Time
+	// ViaVPN: the direct download failed and this one went through the
+	// main server's tunnel.
+	ViaVPN bool
 }
 
 // directTransport is http.DefaultTransport without a proxy: HyRoute's own
@@ -54,6 +62,41 @@ var directTransport = func() *http.Transport {
 	return tr
 }()
 
+// maxSubErrors bounds the parse errors a subscription keeps of its last
+// update.
+const maxSubErrors = 5
+
+// subClient is the client of subscription downloads. A redirect from
+// https to http would send the token in the link and the servers'
+// passwords in the body in clear text: it is refused, as for the rule
+// databases.
+func subClient() *http.Client {
+	return &http.Client{Timeout: 30 * time.Second, Transport: directTransport, CheckRedirect: geodata.NoDowngrade}
+}
+
+// subTunnelClient downloads a subscription through tun (the main
+// server's tunnel), for a panel the network blocks: as subClient, with
+// the same header bound.
+func subTunnelClient(tun interface {
+	Dial(context.Context, socks5.Addr) (net.Conn, error)
+}) *http.Client {
+	return &http.Client{Timeout: 30 * time.Second, CheckRedirect: geodata.NoDowngrade, Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			pn, err := strconv.Atoi(port)
+			if err != nil {
+				return nil, err
+			}
+			return tun.Dial(ctx, socks5.Addr{Host: host, Port: uint16(pn)})
+		},
+		TLSHandshakeTimeout:    20 * time.Second,
+		MaxResponseHeaderBytes: 64 << 10,
+	}}
+}
+
 // httpFetch downloads a subscription. HyRoute's own traffic is never
 // routed, so this goes straight to the subscription server (dns: through
 // directTransport, whose OwnDial registers each host it dials, a redirect's
@@ -69,7 +112,23 @@ func (c *Controller) httpFetch(ctx context.Context, rawURL string) (FetchResult,
 	}
 	req.Header.Set("User-Agent", "HyRoute/"+c.Version)
 	req.Header.Set("Accept", "text/plain, */*")
-	resp, err := (&http.Client{Timeout: 30 * time.Second, Transport: directTransport}).Do(req)
+	resp, err := subClient().Do(req)
+	viaVPN := false
+	if failed := err != nil || resp.StatusCode >= 500; failed && u.Scheme == "https" {
+		// A panel the network blocks: once more through the main server's
+		// tunnel, as the rule databases do (https only: the VPN server
+		// must not see the token).
+		if tun := c.mainEndpoint(); tun != nil {
+			if r2, err2 := subTunnelClient(tun).Do(req.Clone(ctx)); err2 == nil {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				resp, err, viaVPN = r2, nil, true
+			} else if err != nil {
+				err = err2 // both failed: the tunnel's error is as good
+			}
+		}
+	}
 	if err != nil {
 		// The error text contains the URL: never show it.
 		var ue *url.Error
@@ -90,7 +149,7 @@ func (c *Controller) httpFetch(ctx context.Context, rawURL string) (FetchResult,
 		return FetchResult{}, errors.New("ответ подписки больше 5 МБ")
 	}
 	res := panelHeaders(resp.Header)
-	res.Body = body
+	res.Body, res.ViaVPN = body, viaVPN
 	return res, nil
 }
 
@@ -134,10 +193,19 @@ func parseSubscription(body []byte) (Links, error) {
 		return l, errors.New("похоже на конфиг Clash: нужна подписка со списком ссылок hysteria2://")
 	case strings.HasPrefix(strings.ToLower(t), "<!doctype") || strings.HasPrefix(strings.ToLower(t), "<html"):
 		return l, errors.New("сервер вернул веб-страницу, а не подписку: проверьте ссылку")
+	case len(l.Errors) > 0:
+		// Its own links come first: the other protocols are not the issue.
+		msg := fmt.Sprintf("ни одна ссылка Hysteria 2 не разобрана (%d): %s", len(l.Errors), l.Errors[0])
+		if l.IgnoredTotal() > 0 {
+			msg += "; других протоколов: " + ignoredText(l.Ignored)
+		}
+		return l, errors.New(msg)
 	case l.IgnoredTotal() > 0:
 		return l, fmt.Errorf("в подписке нет профилей Hysteria 2, только другие протоколы (%s)", ignoredText(l.Ignored))
-	case len(l.Errors) > 0:
-		return l, fmt.Errorf("ни одна ссылка не разобрана: %s", l.Errors[0])
+	case !strings.ContainsAny(t, "\r\n") && utf8.RuneCountInString(t) <= 200:
+		// A panel's short answer in words ("подписка истекла…") says more
+		// than any guess.
+		return l, fmt.Errorf("сервер подписки ответил текстом, а не ссылками: «%s»", t)
 	}
 	return l, errors.New("в ответе нет ссылок hysteria2:// или hy2://")
 }
@@ -161,6 +229,13 @@ func MaskURL(raw string) string {
 	return u.Scheme + "://" + u.Host + "/…"
 }
 
+// pathWords are path segments of panels and DoH servers that are words,
+// not tokens: the Redactor replaces a secret wherever it appears, and
+// "subscription" masked in every log line made the log unreadable.
+var pathWords = map[string]bool{
+	"subscription": true, "subscriptions": true, "subscribe": true, "download": true, "dns-query": true,
+}
+
 // urlSecrets are the redactor entries for a subscription URL: the URL and
 // every path segment and query value long enough to be a token.
 func urlSecrets(raw string) []string {
@@ -170,7 +245,7 @@ func urlSecrets(raw string) []string {
 		return out
 	}
 	for _, seg := range strings.Split(u.Path, "/") {
-		if len(seg) >= 8 {
+		if len(seg) >= 8 && !pathWords[strings.ToLower(seg)] {
 			out = append(out, seg)
 		}
 	}
@@ -214,9 +289,7 @@ func (c *Controller) Subscriptions() []SubView {
 				}
 			}
 		}
-		if d, ok := intervals[s.Interval]; ok && s.Enabled {
-			v.NextAt = s.LastAttempt.Add(d)
-		}
+		v.NextAt = nextAt(s)
 		out = append(out, v)
 	}
 	return out
@@ -299,6 +372,36 @@ func (c *Controller) PreviewSubscription(rawURL string) (Preview, error) {
 	return pv, nil
 }
 
+// subURLTakenLocked refuses a link another subscription (not except) has:
+// a second copy would duplicate every server, and both would be fetched.
+func (c *Controller) subURLTakenLocked(link, except string) error {
+	for _, s := range c.subs {
+		if s.ID != except && sameSubURL(s.URL, link) {
+			return fmt.Errorf("эта подписка уже добавлена: «%s»", s.Name)
+		}
+	}
+	return nil
+}
+
+// sameSubURL: two spellings of one link (the scheme and host in any case).
+func sameSubURL(a, b string) bool {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	if a == b {
+		return true
+	}
+	ua, err := url.Parse(a)
+	if err != nil {
+		return false
+	}
+	ub, err := url.Parse(b)
+	if err != nil {
+		return false
+	}
+	ua.Scheme, ua.Host = strings.ToLower(ua.Scheme), strings.ToLower(ua.Host)
+	ub.Scheme, ub.Host = strings.ToLower(ub.Scheme), strings.ToLower(ub.Host)
+	return ua.String() == ub.String()
+}
+
 // SubInput creates or edits a subscription. Token is a preview's
 // (PreviewSubscription): the link to add, or on edit the subscription's
 // new link (empty = keep). A link is never taken unchecked.
@@ -321,6 +424,12 @@ func (c *Controller) AddSubscription(in SubInput) (SubView, error) {
 	c.mu.Unlock()
 	if !ok {
 		return SubView{}, errors.New("предпросмотр устарел: нажмите «Проверить» ещё раз")
+	}
+	c.mu.Lock()
+	err := c.subURLTakenLocked(pend.url, "")
+	c.mu.Unlock()
+	if err != nil {
+		return SubView{}, err
 	}
 	sub := store.Subscription{ID: newID(), Name: strings.TrimSpace(in.Name), URL: pend.url, Enabled: in.Enabled, Interval: in.Interval}
 	if sub.Name == "" {
@@ -402,6 +511,10 @@ func (c *Controller) EditSubscription(in SubInput) error {
 		if !ok {
 			c.mu.Unlock()
 			return errors.New("проверка ссылки устарела: смените ссылку ещё раз")
+		}
+		if err := c.subURLTakenLocked(pend.url, in.ID); err != nil {
+			c.mu.Unlock()
+			return err
 		}
 		// The old link stays masked too: its token may still work, and it
 		// stays in use if the save fails.
@@ -610,6 +723,7 @@ func (c *Controller) applyFetched(id string, res FetchResult, rollback bool, tag
 		s.LastError = snapErr.Error()
 	}
 	s.Count, s.Ignored, s.Warnings = len(l.Profiles), l.Ignored, l.Warnings
+	s.Errors, s.ErrorCount = l.Errors[:min(len(l.Errors), maxSubErrors)], len(l.Errors)
 	if res.UserInfo != "" || !rollback {
 		s.UserInfo, s.InfoAt = res.UserInfo, res.At // "" clears, and InfoAt with it
 		if res.UserInfo == "" {
@@ -618,6 +732,7 @@ func (c *Controller) applyFetched(id string, res FetchResult, rollback bool, tag
 	}
 	if !rollback {
 		s.Support = res.Support // subinfo: "" clears (the panel stopped sending it)
+		s.ViaVPN = res.ViaVPN
 	}
 	s.HasPrevious = c.Store.HasPrevious(id)
 	err = c.saveSubsLocked(subs)
@@ -630,7 +745,8 @@ func (c *Controller) applyFetched(id string, res FetchResult, rollback bool, tag
 		err = snapErr
 	}
 	c.Log.Info("subscription updated", "subscription", s.Name, "profiles", len(l.Profiles), "added", st.Added,
-		"updated", st.Updated, "removed", st.Removed, "missingKept", st.MissingKept, "ignored", l.IgnoredTotal())
+		"updated", st.Updated, "removed", st.Removed, "missingKept", st.MissingKept, "ignored", l.IgnoredTotal(),
+		"unreadable", len(l.Errors))
 	c.changed()
 	return st, err
 }
@@ -745,11 +861,35 @@ func (c *Controller) RunScheduler(ctx context.Context) {
 	}
 }
 
+// subRetry: a failed update is tried again sooner, but not more often.
+const subRetry = 15 * time.Minute
+
+// nextAt is when due next holds for s by its interval (zero: never by
+// itself, as for "startup" and "manual").
+func nextAt(s store.Subscription) time.Time {
+	d, ok := intervals[s.Interval]
+	if !s.Enabled || !ok {
+		return time.Time{}
+	}
+	next := s.LastAttempt.Add(d)
+	if s.LastError != "" {
+		// Retried once both 15 minutes since the try and the interval
+		// since the last success are over.
+		retry := s.LastAttempt.Add(subRetry)
+		if u := s.LastUpdate.Add(d); u.After(retry) {
+			retry = u
+		}
+		if retry.Before(next) {
+			next = retry
+		}
+	}
+	return next
+}
+
 // due reports whether s should be updated at now; started is when the
-// scheduler started.
+// scheduler started. nextAt shows the same time.
 func (c *Controller) due(s store.Subscription, now, started time.Time) bool {
-	// Retry failures sooner, but not more than every 15 minutes.
-	const retry = 15 * time.Minute
+	const retry = subRetry
 	if s.Enabled && s.Interval == "startup" {
 		// The update at start failed (at logon the network is often not
 		// up yet): retry until one succeeds.

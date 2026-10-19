@@ -497,7 +497,7 @@ func TestLegacyImportLarge(t *testing.T) {
 		return b.Bytes()
 	}
 	start := time.Now()
-	files, n, err := legacyFiles(t0, big(maxLegacyRows, 0), ModeOn, nil)
+	files, n, err := legacyFiles(t0, big(maxLegacyRows, 0), nil)
 	if took := time.Since(start); took > 3*time.Second {
 		t.Fatalf("%d programs took %v", maxLegacyRows, took)
 	}
@@ -512,7 +512,7 @@ func TestLegacyImportLarge(t *testing.T) {
 		t.Fatalf("others: %+v", o)
 	}
 	for _, b := range [][]byte{big(maxLegacyRows+1, 0), big(1, maxLegacyDays)} {
-		if _, _, err := legacyFiles(t0, b, ModeOn, nil); !errors.Is(err, errLegacyFormat) {
+		if _, _, err := legacyFiles(t0, b, nil); !errors.Is(err, errLegacyFormat) {
 			t.Fatalf("over the bounds: %v", err)
 		}
 	}

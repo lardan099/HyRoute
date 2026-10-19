@@ -130,11 +130,16 @@ func main() {
 }
 
 func waitExit(pid uint32) error {
-	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, pid)
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
 		return nil // already gone
 	}
 	defer windows.CloseHandle(h)
+	// HyRoute started the updater, so it was created before it: a process
+	// created later only took the number of a HyRoute that has exited.
+	if startedAfter(h, windows.CurrentProcess()) {
+		return nil
+	}
 	r, err := windows.WaitForSingleObject(h, windows.INFINITE)
 	if err != nil {
 		return err
@@ -145,6 +150,16 @@ func waitExit(pid uint32) error {
 	// Give Windows a moment to release the image file.
 	time.Sleep(500 * time.Millisecond)
 	return nil
+}
+
+// startedAfter reports whether process a was created after process b (as
+// cmd/hyroute's).
+func startedAfter(a, b windows.Handle) bool {
+	var ca, cb, x, k, u windows.Filetime
+	if windows.GetProcessTimes(a, &ca, &x, &k, &u) != nil || windows.GetProcessTimes(b, &cb, &x, &k, &u) != nil {
+		return false
+	}
+	return ca.Nanoseconds() > cb.Nanoseconds()
 }
 
 func fail(msg string) {

@@ -1,0 +1,423 @@
+// hyroute-server is the HyRoute Server Manager controller: it deploys,
+// imports and maintains Hysteria 2 servers over SSH and serves the web
+// admin. See docs/SERVER_MANAGER_ARCHITECTURE.md.
+package main
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	stdlog "log"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/lardan099/hyroute/internal/srvmgr/alerts"
+	"github.com/lardan099/hyroute/internal/srvmgr/api"
+	"github.com/lardan099/hyroute/internal/srvmgr/apply"
+	"github.com/lardan099/hyroute/internal/srvmgr/auth"
+	"github.com/lardan099/hyroute/internal/srvmgr/backup"
+	"github.com/lardan099/hyroute/internal/srvmgr/batch"
+	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
+	"github.com/lardan099/hyroute/internal/srvmgr/config"
+	"github.com/lardan099/hyroute/internal/srvmgr/connect"
+	"github.com/lardan099/hyroute/internal/srvmgr/datadir"
+	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
+	"github.com/lardan099/hyroute/internal/srvmgr/diag"
+	"github.com/lardan099/hyroute/internal/srvmgr/events"
+	"github.com/lardan099/hyroute/internal/srvmgr/geo"
+	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
+	"github.com/lardan099/hyroute/internal/srvmgr/importer"
+	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
+	"github.com/lardan099/hyroute/internal/srvmgr/logbuf"
+	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/monitor"
+	"github.com/lardan099/hyroute/internal/srvmgr/preflight"
+	"github.com/lardan099/hyroute/internal/srvmgr/reconcile"
+	"github.com/lardan099/hyroute/internal/srvmgr/redact"
+	"github.com/lardan099/hyroute/internal/srvmgr/routing"
+	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
+	"github.com/lardan099/hyroute/internal/srvmgr/servers"
+	"github.com/lardan099/hyroute/internal/srvmgr/service"
+	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
+	"github.com/lardan099/hyroute/internal/srvmgr/tuning"
+	admin "github.com/lardan099/hyroute/web/admin"
+)
+
+// version is stamped at build time (-X main.version=…).
+var version = "dev"
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, os.Args[1:], os.Getenv, os.Stderr, nil); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		fmt.Fprintln(os.Stderr, "hyroute-server:", err)
+		os.Exit(1)
+	}
+}
+
+// run starts the controller and blocks until ctx is done, then shuts down
+// gracefully. ready, if not nil, receives the listening address. A first
+// argument that is not a flag names a maintenance command instead.
+func run(ctx context.Context, args []string, getenv func(string) string, stderr io.Writer, ready chan<- string) error {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return runTool(ctx, args[0], args[1:], toolEnv{getenv: getenv, stdin: os.Stdin, stdout: os.Stdout, stderr: stderr})
+	}
+	cfg, err := config.Load(args, getenv, stderr)
+	if err != nil {
+		return err
+	}
+	red := redact.New()
+	log, httpLog, logs := newLogger(stderr, cfg.LogLevel, red)
+	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
+		return fmt.Errorf("data directory: %w", err)
+	}
+	// Only the controller's user may reach the database and the key.
+	if err := datadir.Dir(cfg.DataDir); err != nil {
+		return fmt.Errorf("data directory: %w", err)
+	}
+	// One controller per data directory: jobs the database calls running
+	// are this process's, or a dead one's to recover.
+	lock, err := datadir.Lock(cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("data directory %s: %w", cfg.DataDir, err)
+	}
+	defer lock.Close()
+	if !secrets.KeyInEnv(getenv) {
+		if err := datadir.File(cfg.MasterKeyFile); err != nil {
+			return fmt.Errorf("master key: %w", err)
+		}
+	}
+	for _, p := range []string{cfg.DBPath(), cfg.DBPath() + "-wal", cfg.DBPath() + "-shm"} {
+		if err := datadir.File(p); err != nil {
+			return fmt.Errorf("database: %w", err)
+		}
+	}
+	db, err := sqlite.Open(ctx, cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("database %s: %w", cfg.DBPath(), err)
+	}
+	defer db.Close()
+	// The key is checked against the database before anything is sealed:
+	// a missing or another key stops the start instead of a new key.
+	keys, src, err := secrets.Open(ctx, getenv, cfg.MasterKeyFile, db)
+	if errors.Is(err, secrets.ErrNoKey) || errors.Is(err, secrets.ErrKeyMismatch) {
+		return fmt.Errorf("база %s: %w", cfg.DBPath(), err)
+	}
+	if err != nil {
+		return fmt.Errorf("master key: %w", err)
+	}
+	if src == secrets.Created {
+		// A key outside the data directory gets its own ACL on Windows.
+		if err := datadir.File(cfg.MasterKeyFile); err != nil {
+			return fmt.Errorf("master key: %w", err)
+		}
+	}
+	switch src {
+	case secrets.Created:
+		log.Warn("created a new master key: back it up, stored credentials cannot be decrypted without it", "file", cfg.MasterKeyFile)
+	case secrets.FromEnv:
+		log.Info("master key from the environment", "version", keys.Current())
+	default:
+		log.Info("master key from file", "file", cfg.MasterKeyFile, "version", keys.Current())
+	}
+
+	authSvc := auth.New(db)
+	tokenFile := filepath.Join(cfg.DataDir, "setup-token")
+	if err := prepareSetup(ctx, authSvc, tokenFile, log); err != nil {
+		return err
+	}
+	// The cleanup writes to the database: it ends before db.Close (defers
+	// run in reverse), also when run returns early (a bad TLS file).
+	sessCtx, stopSessions := context.WithCancel(ctx)
+	sessDone := make(chan struct{})
+	go func() {
+		cleanupSessions(sessCtx, authSvc, log)
+		close(sessDone)
+	}()
+	defer func() { stopSessions(); <-sessDone }()
+	inventory := servers.New(db, keys)
+	// Events (P4-05): what the monitor, the jobs, SSH logins and geo
+	// updates see becomes events with texts cleaned of secrets and
+	// addresses.
+	bus := &events.Bus{Store: db, Redact: red, Log: log}
+	watch := &events.Watcher{Bus: bus, Threshold: cfg.AlertThreshold}
+	conn := connect.New(inventory, db, red)
+	conn.Events = watch
+	engine := jobs.New(db, keys, red, conn, log)
+	engine.Register(preflight.Kind())
+	// One relay for the deploy and the maintenance: it keeps the binary it
+	// downloaded last for both.
+	releases := &hyrelease.Resolver{}
+	deployDeps := deploy.Deps{Store: db, Keys: keys, Resolver: releases, Relay: hyrelease.NewRelay(releases), Nodes: conn.Connect}
+	engine.Register(deploy.Kind(deployDeps))
+	engine.Register(deploy.Maintenance(deployDeps))
+	engine.Register(importer.Kind(importer.Deps{Store: db, Keys: keys}))
+	geoFiles := &geo.Store{Dir: filepath.Join(cfg.DataDir, "geo"), OnUpdate: watch.Geo}
+	geoJobs := geo.New(geo.Deps{DB: db, Keys: keys, Files: geoFiles, Jobs: engine, Nodes: conn.Connect})
+	engine.Register(geoJobs.Kind())
+	engine.Register(service.Kind(service.Deps{Store: db, Keys: keys}))
+	engine.Register(tuning.Kind())
+	applier := apply.New(apply.Deps{Store: db, Keys: keys, Jobs: engine})
+	engine.Register(applier.Kind())
+	linker := cascade.New(cascade.Deps{Store: db, Keys: keys, Jobs: engine})
+	engine.Register(linker.Kind())
+	engine.Register(linker.UnlinkKind())
+	// Bulk operations (P4-07): the jobs of the batches, queued by the
+	// services of the single-server routes.
+	submitter := &deploy.Submitter{Store: db, Keys: keys, Jobs: engine}
+	editor := &apply.Editor{Store: db, Keys: keys}
+	batches := batch.New(db, &batch.Actions{Store: db, Jobs: engine, Deploy: submitter, Geo: geoJobs, Apply: applier, Editor: editor,
+		Routing: &routing.Service{Editor: editor, Applier: applier, Chains: db, Geo: geoFiles.Loader(), Connect: conn.Connect}}, log)
+	engine.OnEnd = func(ctx context.Context, j model.Job) {
+		watch.JobEnded(ctx, j)
+		batches.JobEnded(ctx, j)
+	}
+	jobsCtx, stopJobs := context.WithCancel(context.WithoutCancel(ctx))
+	// Notifications (P4-05b) of the events through the channels set up in
+	// «Настройки»; ready before the jobs' recovery raises any.
+	notifier := &alerts.Notifier{Store: db, Keys: keys, Redact: red, Log: log}
+	notifier.Start(jobsCtx)
+	bus.Subscribe(notifier.Notify)
+	jobsDone := make(chan struct{})
+	go func() {
+		engine.Run(jobsCtx)
+		close(jobsDone)
+	}()
+	defer func() {
+		// Jobs stop after the HTTP server: a stopped job is recovered on
+		// the next start.
+		stopJobs()
+		<-jobsDone
+	}()
+	batchDone := make(chan struct{})
+	go func() {
+		batches.Run(jobsCtx)
+		close(batchDone)
+	}()
+	defer func() { stopJobs(); <-batchDone }()
+	busDone := make(chan struct{})
+	go func() {
+		bus.Run(jobsCtx)
+		close(busDone)
+	}()
+	defer func() { stopJobs(); <-busDone }()
+	attention := &events.Attention{Store: db, Keys: keys, Redact: red, Geo: geoFiles, GeoInterval: cfg.GeoInterval, Monitoring: cfg.MonitorInterval > 0}
+	if cfg.MonitorInterval > 0 {
+		mon := &monitor.Collector{Store: db, Conn: conn, Keys: keys, Log: log, Interval: cfg.MonitorInterval,
+			Links: &cascade.Checker{Store: db, Keys: keys, Events: watch}, Events: watch, Online: monitor.Online}
+		attention.Paused = mon.Paused
+		monDone := make(chan struct{})
+		go func() {
+			mon.Run(jobsCtx)
+			close(monDone)
+		}()
+		defer func() { stopJobs(); <-monDone }()
+	}
+
+	// The newest Hysteria release (P4-07): the overview offers it, and
+	// «Требует внимания» measures the servers against it.
+	var releaseWatch *hyrelease.Watch
+	if cfg.ReleaseInterval > 0 {
+		releaseWatch = &hyrelease.Watch{Find: releases.Latest, Settings: db, Interval: cfg.ReleaseInterval, Log: log}
+		attention.Latest = func() string { return releaseWatch.Latest().Version }
+		releaseDone := make(chan struct{})
+		go func() {
+			releaseWatch.Run(jobsCtx)
+			close(releaseDone)
+		}()
+		defer func() { stopJobs(); <-releaseDone }()
+	}
+
+	if cfg.GeoInterval > 0 {
+		sched := &geo.Scheduler{Files: geoFiles, Jobs: geoJobs, DB: db, Keys: keys, Interval: cfg.GeoInterval, Log: log}
+		geoDone := make(chan struct{})
+		go func() {
+			sched.Run(jobsCtx)
+			close(geoDone)
+		}()
+		defer func() { stopJobs(); <-geoDone }()
+	}
+
+	// The reconciliation (P4-06) runs with -reconcile-interval 0 too: then
+	// only when the admin asks, and for the checks after reverts.
+	recon := &reconcile.Reconciler{Store: db, Conn: conn, Keys: keys, Log: log, Interval: cfg.ReconcileInterval, Events: watch,
+		Jobs: reconcile.Jobs{Apply: applier, Deploy: submitter, Geo: geoJobs, Links: linker}}
+	reconDone := make(chan struct{})
+	go func() {
+		recon.Run(jobsCtx)
+		close(reconDone)
+	}()
+	defer func() { stopJobs(); <-reconDone }()
+
+	pass, err := backup.Passphrase(getenv, config.EnvBackupPassphrase, cfg.BackupPassphraseFile)
+	if err != nil {
+		return err
+	}
+	backups := &backup.Manager{DB: db, Dir: cfg.BackupDir(), Keep: cfg.BackupKeep, Passphrase: pass, Interval: cfg.BackupInterval, Log: log}
+	if cfg.BackupInterval > 0 {
+		backupDone := make(chan struct{})
+		go func() {
+			backups.Run(jobsCtx)
+			close(backupDone)
+		}()
+		defer func() { stopJobs(); <-backupDone }()
+	}
+
+	var certs *certFiles
+	if cfg.TLS() {
+		if certs, err = loadCert(cfg.TLSCert, cfg.TLSKey, log); err != nil {
+			return err
+		}
+	}
+	ln, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		return err
+	}
+	if !cfg.Loopback() && !cfg.TLS() {
+		log.Warn("the admin serves plaintext HTTP beyond this machine (-insecure-http): passwords and sessions cross the network unencrypted", "listen", cfg.Listen)
+	}
+	// Live event streams end when shutdown starts instead of holding it
+	// for its whole timeout; other requests finish within it.
+	streams, endStreams := context.WithCancel(context.Background())
+	defer endStreams()
+	srv := &http.Server{
+		Handler: api.New(api.Deps{
+			Store:        db,
+			Auth:         authSvc,
+			Servers:      inventory,
+			Connect:      conn,
+			Jobs:         engine,
+			Deploy:       submitter,
+			Apply:        applier,
+			Cascade:      linker,
+			Geo:          geoFiles,
+			GeoJobs:      geoJobs,
+			Reconcile:    recon,
+			Keys:         keys,
+			Logs:         logs,
+			Log:          log,
+			Version:      version,
+			TrustProxy:   cfg.TrustProxy,
+			Loopback:     cfg.Loopback(),
+			AllowedHosts: cfg.AllowedHosts,
+			Backups:      backups,
+			KeyCheck: func(ctx context.Context, text string) (secrets.KeyReport, error) {
+				return secrets.CheckKeyText(ctx, text, db)
+			},
+			Diag: &diag.Builder{Store: db, Keys: keys, Logs: logs, Geo: geoFiles, Backups: backups, Version: version,
+				Settings: diag.SettingsOf(cfg, getenv, pass != "", true)},
+			UI:        admin.FS(),
+			Streams:   streams,
+			Attention: attention,
+			Alerts:    notifier,
+			Batches:   batches,
+			Releases:  releaseWatch,
+			OnSetupDone: func() {
+				os.Remove(tokenFile)
+				log.Info("owner created, setup token removed")
+			},
+		}),
+		// No ReadTimeout/WriteTimeout: live logs are long-lived event
+		// streams. Bodies are bounded by size and time in the API instead.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		ErrorLog:          httpLog,
+	}
+	srv.RegisterOnShutdown(endStreams)
+	errc := make(chan error, 1)
+	if certs != nil {
+		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: certs.GetCertificate}
+		go func() { errc <- srv.ServeTLS(ln, "", "") }()
+	} else {
+		go func() { errc <- srv.Serve(ln) }()
+	}
+	log.Info("hyroute-server started", "version", version, "listen", ln.Addr().String(), "tls", cfg.TLS(), "data", cfg.DataDir)
+	if ready != nil {
+		ready <- ln.Addr().String()
+	}
+
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+	}
+	log.Info("shutting down")
+	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(sctx); err != nil {
+		log.Warn("shutdown", "err", err)
+	}
+	return nil
+}
+
+// prepareSetup issues the one-time setup token while there are no users.
+// It goes to a 0600 file (the log names the file, not the token), so only
+// someone with access to the machine can create the first owner. A
+// leftover file is removed once setup is done.
+func prepareSetup(ctx context.Context, a *auth.Service, tokenFile string, log *slog.Logger) error {
+	tok, err := a.PrepareSetup(ctx)
+	if err != nil {
+		return err
+	}
+	if tok == "" {
+		os.Remove(tokenFile)
+		return nil
+	}
+	os.Remove(tokenFile) // a stale file of another owner or mode
+	f, err := os.OpenFile(tokenFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("setup token file: %w", err)
+	}
+	_, err = f.WriteString(tok + "\n")
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return fmt.Errorf("setup token file: %w", err)
+	}
+	log.Warn("no administrator yet: open the admin and create the owner with the setup token from this file", "file", tokenFile)
+	return nil
+}
+
+// cleanupSessions drops long-ended sessions every hour.
+func cleanupSessions(ctx context.Context, a *auth.Service, log *slog.Logger) {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		if err := a.Cleanup(ctx); err != nil && ctx.Err() == nil {
+			log.Warn("session cleanup", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// newLogger writes text logs at level to w and keeps the latest records
+// of the same level in a buffer for the Logs page; every record passes
+// through red first. httpLog is net/http's error log: it writes to w only,
+// since the TLS handshake errors of internet scanners would push the
+// controller's own records out of the buffer.
+func newLogger(w io.Writer, level string, red *redact.Redactor) (log *slog.Logger, httpLog *stdlog.Logger, buf *logbuf.Buffer) {
+	var l slog.Level
+	l.UnmarshalText([]byte(level)) // checked by config.Load
+	buf = logbuf.New(2000, l)
+	text := slog.NewTextHandler(w, &slog.HandlerOptions{Level: l})
+	log = slog.New(red.Handler(slog.NewMultiHandler(text, buf.Handler())))
+	return log, slog.NewLogLogger(red.Handler(text), slog.LevelWarn), buf
+}

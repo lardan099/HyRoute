@@ -1,7 +1,9 @@
 // Display-side masking for Privacy mode. The Go side (logx.Sanitize) uses
 // the same rules for exported logs and diagnostics.
 
-const v4 = /(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![\d.])/g;
+// Word boundaries, as Go's v4re: an address before a full stop is masked
+// too (internal/logx/testdata/sanitize.json holds the shared cases).
+const v4 = /\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b/g;
 // Candidate IPv6: hex groups with colons. Timestamps (12:34:56) have no
 // "::" and fewer than 7 colons, so they are left alone.
 const v6 = /(?<![\w:.])(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(?![\w:])/g;

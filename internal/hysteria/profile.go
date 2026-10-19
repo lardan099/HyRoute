@@ -10,9 +10,10 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lardan099/hyroute/internal/hy2uri"
 )
 
 type Profile struct {
@@ -131,23 +132,33 @@ func (p *Profile) Validate() error {
 			return fmt.Errorf("bad duration %q", d)
 		}
 	}
+	// Hysteria reads a non-inline ECH value as a file (see ECHInline):
+	// only a full path on a drive letter, never a network or device path.
+	if e := p.TLS.ECH; e != "" && !ECHInline(e) && !localDrivePath(e) {
+		return errors.New("ECH: нужен список ECHConfigList в base64 или полный путь к файлу на локальном диске")
+	}
+	// Hysteria refuses to start with a shorter one (0 is its default).
+	for _, d := range []string{p.Hop.Interval, p.Hop.MinInterval, p.Hop.MaxInterval} {
+		if v, _ := time.ParseDuration(d); v != 0 && v < hy2uri.MinHopInterval {
+			return fmt.Errorf("интервал port hopping %s: Hysteria принимает не меньше %s", d, hy2uri.MinHopInterval)
+		}
+	}
 	return nil
+}
+
+// localDrivePath: "X:\..." with no second colon and no forward slashes;
+// UNC (\\host\share), device (\\?\, \\.\) and relative paths fail.
+func localDrivePath(s string) bool {
+	if len(s) < 4 || s != strings.TrimSpace(s) || strings.ContainsAny(s, "/") {
+		return false
+	}
+	c := s[0] | 0x20
+	return c >= 'a' && c <= 'z' && s[1] == ':' && s[2] == '\\' && !strings.Contains(s[2:], ":")
 }
 
 // ValidPin accepts the formats Hysteria normalizes: hex with optional ':'
 // or '-' separators, any case.
-func ValidPin(s string) bool {
-	s = strings.NewReplacer(":", "", "-", "").Replace(strings.TrimSpace(s))
-	if len(s) != 64 {
-		return false
-	}
-	for _, c := range s {
-		if !strings.ContainsRune("0123456789abcdefABCDEF", c) {
-			return false
-		}
-	}
-	return true
-}
+func ValidPin(s string) bool { return hy2uri.ValidPin(s) }
 
 // HostIsIP reports whether Host is an IP literal.
 func (p *Profile) HostIsIP() bool {
@@ -160,46 +171,21 @@ type PortRange struct{ From, To uint16 }
 
 // ParsePorts parses "443", "20000-50000", "443,20000-50000".
 func ParsePorts(s string) ([]PortRange, error) {
-	if s == "" {
-		return nil, errors.New("server port is empty")
+	rs, err := hy2uri.ParsePorts(s)
+	if err != nil {
+		return nil, err
 	}
-	var out []PortRange
-	for _, part := range strings.Split(s, ",") {
-		part = strings.TrimSpace(part)
-		lo, hi, isRange := strings.Cut(part, "-")
-		a, err := parsePort(lo)
-		if err != nil {
-			return nil, err
-		}
-		b := a
-		if isRange {
-			if b, err = parsePort(hi); err != nil {
-				return nil, err
-			}
-			if b < a {
-				return nil, fmt.Errorf("bad port range %q", part)
-			}
-		}
-		out = append(out, PortRange{a, b})
+	out := make([]PortRange, len(rs))
+	for i, r := range rs {
+		out[i] = PortRange(r)
 	}
 	return out, nil
 }
 
-func parsePort(s string) (uint16, error) {
-	n, err := strconv.Atoi(strings.TrimSpace(s))
-	if err != nil || n < 1 || n > 65535 {
-		return 0, fmt.Errorf("bad port %q", s)
-	}
-	return uint16(n), nil
-}
+// NormalizePorts is the port set of a spec in one form, for telling
+// whether two profiles name the same server (see hy2uri.NormalizePorts).
+func NormalizePorts(s string) string { return hy2uri.NormalizePorts(s) }
 
 // ServerString formats host (or an override IP) with the ports spec the way
-// Hysteria's "server" field expects it: every IPv6 literal (IPv4-mapped
-// too) in brackets, the ports without the spaces ParsePorts tolerates
-// (Hysteria rejects "443, 20000-50000").
-func ServerString(host, ports string) string {
-	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
-		host = "[" + host + "]"
-	}
-	return host + ":" + strings.Join(strings.Fields(ports), "")
-}
+// Hysteria's "server" field expects it (see hy2uri.ServerString).
+func ServerString(host, ports string) string { return hy2uri.ServerString(host, ports) }

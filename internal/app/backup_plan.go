@@ -60,7 +60,6 @@ type restorePlan struct {
 	redact      map[string][]string
 	appearance  *BackupAppearance
 	ksChange    int // -1 off, 0 same, +1 on
-	geoChanged  bool
 	rules       rulesWrite
 	counts      struct{ servers, rules int }
 	lines       []BackupMsg
@@ -70,7 +69,6 @@ type restorePlan struct {
 
 // rulesWrite is how the rules step writes (backup_commit.go).
 type rulesWrite struct {
-	changed bool // settings.json's rules part changes
 	// rulesets: the rule profiles to write (nil = keep what is there);
 	// only: rulesets.json alone (an add of profiles), else a pair.
 	rulesets *store.Rulesets
@@ -202,7 +200,10 @@ func validSubURL(raw string) error {
 // equal, and a 10 000-server restore must not compare every pair.
 type srvIndex map[string][]int
 
-func hostKey(p *hysteria.Profile) string { return p.Host + "\x00" + p.Ports }
+// hostKey takes the ports as a set, like connKey: a backup made by
+// HyRoute up to v1.3.0-beta.3 may hold "443,443,20000-30000" for the
+// server a subscription now gives as "443,20000-30000".
+func hostKey(p *hysteria.Profile) string { return p.Host + "\x00" + hysteria.NormalizePorts(p.Ports) }
 
 func indexOf(list []hysteria.Profile) srvIndex {
 	ix := srvIndex{}
@@ -218,11 +219,13 @@ func indexOf(list []hysteria.Profile) srvIndex {
 // (ambiguous when there were several). IDs and names never match alone.
 func matchServer(b hysteria.Profile, pool []hysteria.Profile, ix srvIndex, secretFree bool, skip func(int) bool) (int, bool) {
 	var cand []int
+	b.Ports = hysteria.NormalizePorts(b.Ports)
 	for _, i := range ix[hostKey(&b)] {
 		if skip != nil && skip(i) {
 			continue
 		}
 		x := pool[i]
+		x.Ports = b.Ports // the same set: hostKey
 		if secretFree && hysteria.SameConnectionNoSecrets(b, x) || !secretFree && hysteria.SameConnection(b, x) {
 			cand = append(cand, i)
 		}
@@ -258,6 +261,11 @@ type planCtx struct {
 	groupsReplaced *groups.File
 	// rsmap: rule profile ID in the file → its ID in the result.
 	rsmap map[string]string
+	// serversSum: the line «Серверы: будет …» (index in pl.lines, +1; 0 =
+	// none) with its counts; the totals are filled in once the servers
+	// still referenced are kept (finishServersLine).
+	serversSum                int
+	serversAdd, serversUpdate int
 }
 
 type removedServer struct {
@@ -299,7 +307,9 @@ func planRestore(cur cfgState, p *backup.Payload, ch BackupChoice, env planEnv) 
 	x.planRules()
 	x.planProxies()
 	x.keepReferenced()
+	x.keepReplacedGroups()
 	x.keepGroupMembers()
+	x.finishServersLine()
 	x.finishGroups()
 	x.reportDangling()
 	x.planNetworks()
@@ -363,7 +373,11 @@ func (x *planCtx) selection() string {
 		}
 		for _, f := range x.sectionWrites(def.key) {
 			if broken(f) && !covered[f] {
-				return fmt.Sprintf("%s не загружен: чтобы восстановить его, отметьте «%s» в режиме «Заменить»", f, coverBy[f])
+				by := "«" + coverBy[f] + "»"
+				if f == "profiles.json" && broken("subscriptions.json") {
+					by = "«Серверы» и «Подписки»" // each holds part of the file
+				}
+				return fmt.Sprintf("%s не загружен: чтобы восстановить его, отметьте %s в режиме «Заменить»", f, by)
 			}
 		}
 	}
@@ -445,6 +459,12 @@ func (x *planCtx) markUsed() {
 	for _, p := range x.pl.next.Profiles.List {
 		x.used[p.ID] = true
 	}
+	// A current server «Заменить» drops comes back in step 6 while
+	// something refers to it: a server from the file never takes its ID
+	// (a matched one gets it explicitly).
+	for _, p := range x.cur.Profiles.List {
+		x.used[p.ID] = true
+	}
 }
 
 // importServer checks and cleans a server from the file: name, host,
@@ -453,6 +473,16 @@ func (x *planCtx) importServer(key string, s hysteria.Profile, cur *hysteria.Pro
 	var short bool
 	if s.Name, short = shortName(s.Name); short {
 		x.shortN++
+	}
+	// Before validServer: Validate refuses an ECH path that is not a local
+	// drive path, and that must drop the setting, not the server.
+	if s.TLS.ECH != "" && !hysteria.ECHInline(s.TLS.ECH) {
+		if importedPathErr(s.TLS.ECH, x.env) != "" {
+			s.TLS.ECH = ""
+			x.pl.warn(msg(key).t("Сервер «" + s.Name + "»: настройка ECH не перенесена — укажите её в редакторе сервера"))
+		} else if cur == nil || cur.TLS.ECH != s.TLS.ECH {
+			x.pl.warn(msg(key).t("Сервер «" + s.Name + "» будет читать настройку ECH из файла ").s(s.TLS.ECH).t("."))
+		}
 	}
 	s, err := validServer(s, x.p.Secrets)
 	if err != nil {
@@ -465,14 +495,6 @@ func (x *planCtx) importServer(key string, s hysteria.Profile, cur *hysteria.Pro
 			x.pl.warn(msg(key).t("Сервер «" + s.Name + "»: путь к сертификату не перенесён (" + why + ") — укажите файл в редакторе сервера"))
 		} else if cur == nil || cur.TLS.CA != s.TLS.CA {
 			x.pl.warn(msg(key).t("Сервер «" + s.Name + "» будет проверять сертификат по файлу ").s(s.TLS.CA).t("."))
-		}
-	}
-	if s.TLS.ECH != "" && !hysteria.ECHInline(s.TLS.ECH) {
-		if importedPathErr(s.TLS.ECH, x.env) != "" {
-			s.TLS.ECH = ""
-			x.pl.warn(msg(key).t("Сервер «" + s.Name + "»: настройка ECH не перенесена — укажите её в редакторе сервера"))
-		} else if cur == nil || cur.TLS.ECH != s.TLS.ECH {
-			x.pl.warn(msg(key).t("Сервер «" + s.Name + "» будет читать настройку ECH из файла ").s(s.TLS.ECH).t("."))
 		}
 	}
 	return s, true
@@ -556,13 +578,8 @@ func (x *planCtx) planServers() {
 				removedN++
 			}
 		}
-		manual := 0
-		for _, s := range next.Profiles.List {
-			if s.Source == "" {
-				manual++
-			}
-		}
-		pl.linef("servers", "Серверы: будет %d — добавится %d, обновится %d, удалится %d.", manual, added, updated, removedN)
+		x.serversSum, x.serversAdd, x.serversUpdate = len(pl.lines)+1, added, updated
+		pl.linef("servers", "Серверы: будет %d — добавится %d, обновится %d, удалится %d.", 0, added, updated, removedN)
 	} else {
 		pl.linef("servers", "Серверы: добавится %d, уже есть %d.", added, have)
 	}
@@ -853,7 +870,10 @@ func (x *planCtx) resolve(id, where string) string {
 			return ""
 		}
 		sameName := func(p hysteria.Profile) bool { return strings.EqualFold(strings.TrimSpace(p.Name), name) }
-		sameAddr := func(p hysteria.Profile) bool { return strings.EqualFold(p.Host, d.Host) && p.Ports == d.Ports }
+		ports := hysteria.NormalizePorts(d.Ports) // a set, as in hostKey
+		sameAddr := func(p hysteria.Profile) bool {
+			return strings.EqualFold(p.Host, d.Host) && hysteria.NormalizePorts(p.Ports) == ports
+		}
 		if r := pick(func(p hysteria.Profile) bool { return sameAddr(p) && sameName(p) }, nil); r != "" {
 			x.tmap[id] = r
 			x.pl.line(msg("").t("Сервер «" + d.Name + "» найден среди ваших по имени и адресу."))
@@ -1037,7 +1057,6 @@ func (x *planCtx) planRules() {
 			pl.rules.rulesets = rs
 			pl.counts.rules = len(a.Config.Rules)
 			pl.line(msg("rules").t(fmt.Sprintf("Правила: %s из копии заменят ваши. Включится профиль правил «%s». ", nProfiles(len(rs.List)), a.Name)).t(defaultText(a.Config, x.fileTargetName)))
-			pl.rules.changed = true
 			return
 		}
 		x.cleanRules(&fileCfg, map[string]bool{})
@@ -1048,7 +1067,6 @@ func (x *planCtx) planRules() {
 				a.SetConfig(fileCfg)
 			}
 		}
-		pl.rules.changed = true
 		pl.counts.rules = len(fileCfg.Rules)
 		pl.line(msg("rules").t(fmt.Sprintf("Правила: %s из копии заменят ваши %d. ", nRules(len(fileCfg.Rules)), before)).t(defaultText(fileCfg, x.fileTargetName)))
 		return
@@ -1090,6 +1108,9 @@ func (x *planCtx) planRules() {
 		}
 	}
 	x.cleanRules(&fileCfg, taken)
+	// «Всё остальное» stays yours in add mode: the copy's own default is
+	// not resolved, so its server gives no lines about it.
+	fileCfg.DefaultProfile, fileCfg.DefaultFallback = "", nil
 	x.resolveConfig(&fileCfg, "")
 	next.Settings.Rules = append(slices.Clone(next.Settings.Rules), fileCfg.Rules...)
 	if next.Rulesets != nil {
@@ -1097,7 +1118,6 @@ func (x *planCtx) planRules() {
 			a.SetConfig(next.Settings.Config)
 		}
 	}
-	pl.rules.changed = len(fileCfg.Rules) > 0
 	pl.counts.rules = len(next.Settings.Rules)
 	pl.linef("rules", "Правила: %s добавится после ваших %d. «Всё остальное» не меняется.", nRules(len(fileCfg.Rules)), before)
 }
@@ -1344,6 +1364,27 @@ func (x *planCtx) keepReferenced() {
 	}
 }
 
+// finishServersLine counts «Серверы: будет …» on the result: the servers
+// kept because something refers to them (a subscription's that became
+// manual too) are there, not removed.
+func (x *planCtx) finishServersLine() {
+	if x.serversSum == 0 {
+		return
+	}
+	manual, removed := 0, 0
+	for _, s := range x.pl.next.Profiles.List {
+		if s.Source == "" {
+			manual++
+		}
+	}
+	for _, r := range x.removed {
+		if r.sub == "" {
+			removed++
+		}
+	}
+	x.pl.lines[x.serversSum-1] = msg("servers").t(fmt.Sprintf("Серверы: будет %d — добавится %d, обновится %d, удалится %d.", manual, x.serversAdd, x.serversUpdate, removed)).m
+}
+
 // keepGroupMembers is step 6b: a used group never loses its last member
 // by a restore.
 func (x *planCtx) keepGroupMembers() {
@@ -1372,19 +1413,45 @@ func (x *planCtx) keepGroupMembers() {
 	}
 }
 
-// finishGroups keeps the current groups a group replace would drop while
-// still referenced, then prunes members that are not servers of the result
-// (in memory only when «Группы» is not restored) and reports empty groups.
+// keepReplacedGroups keeps the current groups a group replace would drop
+// while still referenced. Before keepGroupMembers, so that the last members
+// of such a group stay too; one whose name a group of the copy took gets
+// " (2)", as in add mode (two groups of one name do not validate).
+func (x *planCtx) keepReplacedGroups() {
+	if x.groupsReplaced == nil {
+		return
+	}
+	next := &x.pl.next
+	refs := x.resultRefs()
+	names := map[string]bool{}
+	for _, g := range next.Groups.Groups {
+		names[strings.ToLower(g.Name)] = true
+	}
+	for _, g := range x.groupsReplaced.Groups {
+		if next.Groups.Find(g.ID) != nil || len(refs[g.ID]) == 0 {
+			continue
+		}
+		name := g.Name
+		for n := 2; names[strings.ToLower(name)]; n++ {
+			name = fmt.Sprintf("%s (%d)", clipRunes(g.Name, groups.MaxNameRunes-5), n)
+		}
+		names[strings.ToLower(name)] = true
+		line := "Группа «" + g.Name + "» останется: на неё ссылается " + strings.Join(refs[g.ID], ", ") + "."
+		if name != g.Name {
+			line = "Группа «" + g.Name + "» останется под именем «" + name + "» (это имя есть в копии): на неё ссылается " + strings.Join(refs[g.ID], ", ") + "."
+			g.Name = name
+		}
+		next.Groups.Groups = append(next.Groups.Groups, g)
+		x.pl.line(msg("groups").t(line))
+	}
+}
+
+// finishGroups prunes members that are not servers of the result (in
+// memory only when «Группы» is not restored) and reports empty groups.
 func (x *planCtx) finishGroups() {
 	next := &x.pl.next
 	refs := x.resultRefs()
 	if x.groupsReplaced != nil {
-		for _, g := range x.groupsReplaced.Groups {
-			if next.Groups.Find(g.ID) == nil && len(refs[g.ID]) > 0 {
-				next.Groups.Groups = append(next.Groups.Groups, g)
-				x.pl.line(msg("groups").t("Группа «" + g.Name + "» останется: на неё ссылается " + strings.Join(refs[g.ID], ", ") + "."))
-			}
-		}
 		if m := x.d.groups.Main; m != "" && next.Groups.Main == "" {
 			fallback := "основным станет сервер «" + next.targetName(next.Profiles.Active) + "»"
 			x.pl.warn(msg("groups").t("Основной группы «" + x.d.groups.Main + "» нет — " + fallback))
@@ -1519,7 +1586,20 @@ func (x *planCtx) planSettings() {
 		}
 	}
 	if x.chosen("geo") && x.d.geo != nil {
-		g := jsonMap(x.d.geo)
+		gp := *x.d.geo
+		if gp.GeoSource == "custom" && (oldPrefs.GeoSiteURL != gp.GeoSiteURL || oldPrefs.GeoIPURL != gp.GeoIPURL) {
+			// As the DNS server above: your own links are left out of a
+			// copy without a password, and a base from someone else's
+			// address may send sites past the tunnel.
+			if !x.p.Secrets {
+				gp.GeoSource, gp.GeoSiteURL, gp.GeoIPURL = oldPrefs.GeoSource, oldPrefs.GeoSiteURL, oldPrefs.GeoIPURL
+				pl.warn(msg("geo").t("Свои ссылки на базы правил из копии без пароля не переносятся: источник баз остаётся ваш."))
+			} else {
+				pl.warn(msg("geo").t("Базы правил будут скачиваться по ссылкам из копии: ").s(strings.Join(nonEmpty(urlHost(gp.GeoSiteURL), urlHost(gp.GeoIPURL)), ", ")).
+					t(". База решает, какие сайты идут через VPN: восстанавливайте так только свою копию."))
+			}
+		}
+		g := jsonMap(&gp)
 		var np store.Prefs
 		all := jsonMap(next.Prefs)
 		for _, k := range geoKeys {
@@ -1541,7 +1621,6 @@ func (x *planCtx) planSettings() {
 		next.Prefs.CLI = "off"
 		next.Prefs.Browser = ""
 	}
-	pl.geoChanged = oldPrefs.GeoSource != next.Prefs.GeoSource || oldPrefs.GeoSiteURL != next.Prefs.GeoSiteURL || oldPrefs.GeoIPURL != next.Prefs.GeoIPURL
 	switch {
 	case !oldSt.KillSwitchOn() && next.Settings.KillSwitchOn():
 		pl.ksChange = 1
@@ -1693,6 +1772,14 @@ func (x *planCtx) finalCheck() {
 		pl.err = fmt.Sprintf("Серверов станет больше %d: выберите «Заменить» или меньше разделов", importLimits.serversTotal)
 		return
 	}
+	ids := map[string]bool{}
+	for _, s := range next.Profiles.List {
+		if ids[s.ID] {
+			pl.err = "Внутренняя ошибка восстановления: два сервера с одним ID (" + s.ID + "). Ничего не изменено."
+			return
+		}
+		ids[s.ID] = true
+	}
 	if len(next.Subs) > importLimits.subs {
 		pl.err = fmt.Sprintf("Подписок станет больше %d: выберите «Заменить» или меньше разделов", importLimits.subs)
 		return
@@ -1801,7 +1888,6 @@ func (x *planCtx) decideWrites() {
 			want[f] = true // a covered broken file is always replaced
 		}
 	}
-	pl.rules.changed = pl.rules.changed && !sameRules(cur.Settings.Config, next.Settings.Config)
 	if want["rulesets.json"] && !pl.rules.only {
 		want["settings.json"] = true // a pair
 	}
@@ -2085,6 +2171,25 @@ func (x *planCtx) planDNS() {
 	}
 	pl := x.pl
 	a, b := x.cur.DNS, *x.d.dns
+	// A server of your own is an address the export of a copy without a
+	// password leaves out: such a copy carrying one was made elsewhere, and
+	// it would send the names to whoever wrote it. Yours stays. With a
+	// password the address is shown and warned about.
+	for _, u := range []struct {
+		cur, in *dnspolicy.Upstream
+		what    string
+	}{{&a.Tunnel, &b.Tunnel, "DNS-сервер для VPN"}, {&a.Direct, &b.Direct, "Сервер для прямых DNS-запросов"}} {
+		if u.in.Preset != dnspolicy.Custom || u.cur.Preset == dnspolicy.Custom && u.cur.URL == u.in.URL {
+			continue
+		}
+		if !x.p.Secrets {
+			*u.in = *u.cur
+			pl.warn(msg("dns").t(u.what + " из копии без пароля не переносится (такая копия своего сервера не хранит): остаётся ваш."))
+			continue
+		}
+		pl.warn(msg("dns").t(u.what + " станет сервером из копии: ").s(urlHost(u.in.URL)).
+			t(". Он будет видеть имена сайтов и сможет подменять ответы: восстанавливайте так только свою копию."))
+	}
 	pl.next.DNS = b
 	// Both: until the install, the current servers may still be logged.
 	pl.redact["dns"] = append(dnsSecrets(a), dnsSecrets(b)...)
@@ -2148,4 +2253,24 @@ func (x *planCtx) planStats() {
 		t += " (" + x.env.statsDetail + ")"
 	}
 	x.pl.line(msg("stats").t(t + "."))
+}
+
+// urlHost is the host of a link for a plan line ("" for none): its path
+// may hold a key.
+func urlHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
+}
+
+func nonEmpty(ss ...string) []string {
+	var out []string
+	for _, s := range ss {
+		if s != "" && !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }

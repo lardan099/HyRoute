@@ -469,3 +469,15 @@ func TestPortlessRuleJSON(t *testing.T) {
 		t.Fatalf("empty: %s", b)
 	}
 }
+
+// A user's regexp ignores case, like geosite's: names arrive in lower
+// case, so "regexp:YouTube" would match nothing otherwise.
+func TestUserRegexpIgnoresCase(t *testing.T) {
+	s, err := Compile(Config{DefaultAction: Direct, Rules: []Rule{{Name: "yt", Domains: []string{"regexp:YouTube"}, Action: Block}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.EvaluateDomain(sub(nil, 6), "www.youtube.com", SrcSNI).Rule; got != "yt" {
+		t.Fatalf("got %q", got)
+	}
+}

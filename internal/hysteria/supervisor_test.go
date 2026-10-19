@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -54,6 +55,10 @@ func fakeHysteria(mode string) {
 		mode = "ok"
 	}
 	switch mode {
+	case "bindfail":
+		// Something refuses the bind every time (not a race for the port).
+		fmt.Fprintf(os.Stderr, `{"level":"fatal","time":1726480000000,"msg":"failed to load client config","error":"invalid config: listen: listen tcp4 %s: bind: An attempt was made to access a socket in a way forbidden by its access permissions."}`+"\n", c.SOCKS5.Listen)
+		os.Exit(1)
 	case "auth":
 		fmt.Fprintf(os.Stderr, `{"level":"fatal","time":1726480000000,"msg":"failed to initialize client","error":"authentication error, HTTP status code: 404 (auth=%s)"}`+"\n", c.Auth)
 		os.Exit(1)
@@ -608,5 +613,95 @@ func TestSupervisorPinsNextAddressAfterTimeout(t *testing.T) {
 	}
 	if st := waitState(t, ch, Connected); st.PinnedIP != netip.MustParseAddr("198.51.100.20") {
 		t.Fatalf("%+v", st)
+	}
+}
+
+// With a pinned IP an answer without it (a DNS pool handing out a subset)
+// neither restarts Hysteria nor drops the pinned IP from the exclusion.
+func TestSupervisorPinnedSurvivesSubsetAnswer(t *testing.T) {
+	p := Profile{Host: "hy.example", Ports: "443", Auth: "x", PinServerIP: true}
+	s, ch, _ := newSupervisor(t, "ok", p)
+	s.ReResolveEvery = 20 * time.Millisecond
+	var mu sync.Mutex
+	var sets [][]netip.Addr
+	n := 0
+	pinned := netip.MustParseAddr("198.51.100.1")
+	s.Resolve = func(ctx context.Context, host string) ([]netip.Addr, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		n++
+		if n == 1 {
+			return []netip.Addr{pinned}, nil
+		}
+		return []netip.Addr{netip.AddrFrom4([4]byte{198, 51, 100, byte(1 + n%2 + 1)})}, nil // .2 and .3 in turn
+	}
+	s.SetServerIPs = func(ips []netip.Addr) error {
+		mu.Lock()
+		sets = append(sets, slices.Clone(ips))
+		mu.Unlock()
+		return nil
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+	waitState(t, ch, Connected)
+	time.Sleep(200 * time.Millisecond) // several ticks without the pinned IP
+	mu.Lock()
+	defer mu.Unlock()
+	for _, set := range sets {
+		if !slices.Contains(set, pinned) {
+			t.Fatalf("pinned IP left the exclusion: %v", sets)
+		}
+	}
+	if st := s.Status(); st.State != Connected || st.Restarts != 0 || st.PinnedIP != pinned {
+		t.Fatalf("%+v", st)
+	}
+}
+
+// A bind that fails every time is retried quickly only a few times, then
+// with the normal backoff and a message that says what goes on.
+func TestSupervisorBindKeepsFailing(t *testing.T) {
+	p := Profile{Host: "198.51.100.1", Ports: "443", Auth: "x"}
+	s, ch, _ := newSupervisor(t, "bindfail", p)
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+	for i := 1; ; i++ {
+		st := waitState(t, ch, Failed)
+		if st.Kind != ErrPortBusy {
+			t.Fatalf("%+v", st)
+		}
+		if i <= busyRetries {
+			if st.RetryIn > time.Second {
+				t.Fatalf("retry %d: %v", i, st.RetryIn)
+			}
+			continue
+		}
+		if st.RetryIn < backoffMin || !strings.Contains(st.Message, "повторяется") {
+			t.Fatalf("after %d quick retries: %+v", busyRetries, st)
+		}
+		return
+	}
+}
+
+// Configs a run left behind go at the next start; a fresh one (another
+// session of the same user may be starting Hysteria) and other files stay.
+func TestCleanRunDir(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"hy-old.yaml", "hy-new.yaml", "other.yaml"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("auth: x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-2 * time.Minute)
+	os.Chtimes(filepath.Join(dir, "hy-old.yaml"), old, old)
+	os.Chtimes(filepath.Join(dir, "other.yaml"), old, old)
+	CleanRunDir(dir, time.Minute)
+	for n, want := range map[string]bool{"hy-old.yaml": false, "hy-new.yaml": true, "other.yaml": true} {
+		if _, err := os.Stat(filepath.Join(dir, n)); (err == nil) != want {
+			t.Errorf("%s: exists %v", n, err == nil)
+		}
 	}
 }

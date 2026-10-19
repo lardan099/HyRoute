@@ -50,7 +50,11 @@ type Status struct {
 // Supervisor runs hysteria.exe in SOCKS5 mode, restarts it with backoff and
 // exposes the SOCKS5 inbound as a relay.Tunnel.
 type Supervisor struct {
-	Exe     string
+	Exe string
+	// ExePath, when set, is read at every start of Hysteria instead of
+	// Exe: a core update moves hysteria.exe, and the version a session
+	// began with may be pruned by the next one ("" = Exe).
+	ExePath func() string
 	RunDir  string
 	Profile Profile
 	// Redactor gets the current secrets (group RedactGroup); every log line
@@ -239,8 +243,16 @@ func (s *Supervisor) SOCKS() socks5.Client {
 	return s.socks
 }
 
-func (s *Supervisor) setStatus(f func(*Status)) {
+func (s *Supervisor) setStatus(f func(*Status)) { s.setStatusWhile(nil, f) }
+
+// setStatusWhile applies f only while live() holds (nil: always), tested
+// under the lock with the write.
+func (s *Supervisor) setStatusWhile(live func() bool, f func(*Status)) {
 	s.mu.Lock()
+	if live != nil && !live() {
+		s.mu.Unlock()
+		return
+	}
 	f(&s.status)
 	st := s.status
 	// Under the lock: an update from the run's wait loop (new server IPs)
@@ -256,6 +268,10 @@ const (
 	backoffMin  = time.Second
 	backoffMax  = 60 * time.Second
 	stableAfter = 30 * time.Second
+	// busyRetries: quick retries after ErrPortBusy in a row; a bind that
+	// keeps failing (a policy or security software refusing it) is no
+	// race, and each retry is a full connection to the server.
+	busyRetries = 3
 )
 
 func (s *Supervisor) loop(ctx context.Context) {
@@ -266,6 +282,7 @@ func (s *Supervisor) loop(ctx context.Context) {
 		s.mu.Unlock()
 	}()
 	backoff := backoffMin
+	busy := 0 // ErrPortBusy in a row
 	for restarts := 0; ; restarts++ {
 		s.setStatus(func(st *Status) {
 			st.State, st.Kind, st.Message, st.Restarts, st.RetryIn = Connecting, ErrNone, "", restarts, 0
@@ -278,14 +295,21 @@ func (s *Supervisor) loop(ctx context.Context) {
 			backoff = backoffMin
 		}
 		delay := backoff
-		switch kind {
-		case ErrAuth, ErrConfig:
+		if kind == ErrPortBusy {
+			busy++
+		} else {
+			busy = 0
+		}
+		switch {
+		case kind == ErrAuth || kind == ErrConfig:
 			delay = backoffMax
-		case ErrPortBusy:
+		case kind == ErrPortBusy && busy <= busyRetries:
 			// A local race, not the server's fault: retry at once and do
 			// not grow the backoff.
 			delay = 200 * time.Millisecond
 			backoff /= 2
+		case kind == ErrPortBusy:
+			msg = "Hysteria не может открыть локальный порт SOCKS5, и это повторяется: возможно, его не даёт открыть защитная программа"
 		}
 		s.setStatus(func(st *Status) {
 			st.State, st.Kind, st.Message, st.RetryIn = Failed, kind, msg, delay
@@ -418,10 +442,16 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 		"HYSTERIA_LOG_LEVEL=info",
 		"HYSTERIA_DISABLE_UPDATE_CHECK=1",
 	)
-	proc, err := startProcess(s.Exe, []string{"client", "-c", cfgPath}, env, pw)
+	exe := s.Exe
+	if s.ExePath != nil {
+		if p := s.ExePath(); p != "" {
+			exe = p
+		}
+	}
+	proc, err := startProcess(exe, []string{"client", "-c", cfgPath}, env, pw)
 	if err != nil {
 		pw.Close()
-		return 0, ErrOther, "Не удалось запустить " + s.Exe + ": " + err.Error()
+		return 0, ErrOther, "Не удалось запустить " + exe + ": " + err.Error()
 	}
 
 	var (
@@ -435,11 +465,10 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 	)
 	runCtx, stopProbes := context.WithCancel(ctx)
 	defer stopProbes()
+	// The run's end cancels runCtx under s.mu: a probe or a log line that
+	// reports connected after it must not make the dead process available.
 	setConnected := func(udp bool) {
-		if runCtx.Err() != nil {
-			return
-		}
-		s.setStatus(func(st *Status) {
+		s.setStatusWhile(func() bool { return runCtx.Err() == nil }, func(st *Status) {
 			st.State, st.Kind, st.Message, st.UDPEnabled = Connected, ErrNone, "", udp
 			if !udp {
 				st.Message = "Сервер запретил UDP: UDP-трафик с маршрутом Tunnel будет отклоняться"
@@ -569,20 +598,25 @@ wait:
 				}
 				continue
 			}
-			// Filter first, then restart: keep the pinned IP excluded
-			// until the old process is gone.
+			// The pinned IP stays excluded while this process uses it. An
+			// answer without it (a DNS pool that hands out a subset, short
+			// TTLs) is no reason to cut every connection: a server that is
+			// really gone Hysteria reports itself (Lost, then a restart),
+			// and the next start pins an address of the new set.
 			if s.SetServerIPs != nil {
 				s.SetServerIPs(union)
 			}
 			ips = newIPs
-			if !slices.Contains(newIPs, pinned) {
-				restartReason = "IP сервера изменился, переподключение"
-				proc.Kill()
+			if !slices.Contains(ips, pinned) {
+				ips = append(slices.Clone(ips), pinned)
+				slices.SortFunc(ips, netip.Addr.Compare)
 			}
 		}
 	}
-	s.available.Store(false)
+	s.mu.Lock()
 	stopProbes()
+	s.available.Store(false)
+	s.mu.Unlock()
 	probes.Wait()
 	<-readDone
 
@@ -703,4 +737,17 @@ func configName() string {
 	var b [12]byte
 	rand.Read(b[:])
 	return fmt.Sprintf("hy-%x.yaml", b)
+}
+
+// CleanRunDir removes the configs a run that ended mid-start left in dir
+// (killed, crashed, the power gone while Hysteria connected): they hold
+// the servers' passwords in clear text. Only files older than minAge go,
+// and one a running Hysteria holds open cannot be removed.
+func CleanRunDir(dir string, minAge time.Duration) {
+	names, _ := filepath.Glob(filepath.Join(dir, "hy-*.yaml"))
+	for _, n := range names {
+		if fi, err := os.Lstat(n); err == nil && fi.Mode().IsRegular() && time.Since(fi.ModTime()) >= minAge {
+			os.Remove(n)
+		}
+	}
 }

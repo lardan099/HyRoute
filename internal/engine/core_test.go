@@ -258,6 +258,16 @@ func TestTCPRejectBlockAndIPv6(t *testing.T) {
 		t.Fatal("reject not recorded")
 	}
 	h.none(t)
+	// IPv6 to the tunnel while it is down: blocked, not refused.
+	h.own(6, L6, R6, 100)
+	h.sendTCP(L6, R6, packet.FlagSYN, "")
+	if i := h.next(t); i.pkt.TCPFlags()&packet.FlagRST == 0 || !i.pkt.IPv6 {
+		t.Fatal("IPv6 tunnel flow must be reset")
+	}
+	if v := lastRecord(t, h.c); h.c.Rejected.Load() != 1 || v.Outcome != "rst: IPv6 blocked for tunnel" || v.Route != "block" {
+		t.Fatalf("rejected %d, %+v", h.c.Rejected.Load(), v)
+	}
+	h.c.Maintain(time.Now().Add(rejectMemory + time.Second)) // the reset is remembered
 	h.tun.up.Store(true)
 	// IPv6 to the tunnel: RST.
 	h.own(6, L6, R6, 100)
@@ -281,7 +291,7 @@ func TestTCPRejectBlockAndIPv6(t *testing.T) {
 	if i := h.next(t); i.pkt.TCPFlags()&packet.FlagRST == 0 {
 		t.Fatal("retried SYN must be reset")
 	}
-	if len(h.c.Flows.Closed()) != n || h.c.SYNRetries.Load() != 1 || h.c.Blocked.Load() != 2 {
+	if len(h.c.Flows.Closed()) != n || h.c.SYNRetries.Load() != 1 || h.c.Blocked.Load() != 3 {
 		t.Fatalf("retry recorded: closed %d->%d retries %d blocked %d",
 			n, len(h.c.Flows.Closed()), h.c.SYNRetries.Load(), h.c.Blocked.Load())
 	}
@@ -603,6 +613,29 @@ func TestDNSSniffTCP(t *testing.T) {
 	h.c.HandleDNS(packet.BuildUDP(resolver, client, dnsResponse(t, "in.test.", "198.51.100.41")), true)
 	if h.c.DNS.Len() != 1 {
 		t.Fatal("outbound packet from port 53 cached")
+	}
+}
+
+// A TCP DNS answer that comes back through the relay (the tunnel) reaches
+// the cache: the sniff does not see what the main handle injects.
+func TestDNSTCPAnswerThroughTunnel(t *testing.T) {
+	h := newHarness(t, appRules, Options{})
+	client, resolver := netip.MustParseAddrPort("192.168.1.5:40054"), netip.MustParseAddrPort("8.8.8.8:53")
+	framed := func(m []byte) []byte { return append(binary.BigEndian.AppendUint16(nil, uint16(len(m))), m...) }
+	h.own(6, client.String(), resolver.String(), 100) // curl: tunnel
+	h.sendTCP(client.String(), resolver.String(), packet.FlagSYN, "")
+	if i := h.next(t); i.pkt.DstPort() != relayPort {
+		t.Fatal("not reflected")
+	}
+	h.c.HandleDNS(packet.BuildTCP(client, resolver, packet.FlagACK|packet.FlagPSH, 1, 1, framed(dnsQuery(t, "tun.test."))), true)
+	reflected := netip.AddrPortFrom(resolver.Addr(), client.Port())
+	relay := netip.AddrPortFrom(client.Addr(), relayPort)
+	h.c.HandlePacket(packet.BuildTCP(relay, reflected, packet.FlagACK|packet.FlagPSH, 1, 1, framed(dnsResponse(t, "tun.test.", "198.51.100.42"))), outAddr())
+	if i := h.next(t); i.pkt.Src() != resolver || i.pkt.Dst() != client {
+		t.Fatalf("answer %v -> %v", i.pkt.Src(), i.pkt.Dst())
+	}
+	if got := h.c.DNS.Names(netip.MustParseAddr("198.51.100.42")); len(got) != 1 || got[0] != "tun.test" {
+		t.Fatal(got)
 	}
 }
 
@@ -928,5 +961,62 @@ func TestFallback(t *testing.T) {
 	e := &nat.Entry{Flow: nat.FlowKey{Src: netip.MustParseAddrPort("192.168.1.5:41004"), Dst: netip.MustParseAddrPort(R)}}
 	if r := h.c.RelayDecide(e, "a.test", rules.SrcSNI); r.Profile != "nl" {
 		t.Fatalf("relay decision %+v", r)
+	}
+}
+
+// A Direct connection that never got past the handshake (its SYNs were
+// dropped or refused: the answer is inbound and unseen) ends a minute
+// after its last SYN; one that got further lives on until FIN or idle.
+func TestTCPDirectSYNOnlyExpires(t *testing.T) {
+	h := newHarness(t, appRules, Options{})
+	h.c.DNS.AddResponse(dnsResponse(t, "example.org.", "93.184.216.34"))
+	const up = "192.168.1.5:40001"
+	h.own(6, L, R, 200)
+	h.own(6, up, R, 200)
+	h.sendTCP(L, R, packet.FlagSYN, "")
+	h.next(t)
+	h.sendTCP(L, R, packet.FlagSYN, "") // a retransmission
+	h.next(t)
+	h.sendTCP(up, R, packet.FlagSYN, "")
+	h.next(t)
+	h.sendTCP(up, R, packet.FlagACK, "")
+	h.next(t)
+	h.c.Maintain(time.Now().Add(synOnlyTTL + time.Second))
+	h.c.mu.Lock()
+	_, dead := h.c.tcp[nat.FlowKey{Src: netip.MustParseAddrPort(L), Dst: netip.MustParseAddrPort(R)}]
+	_, live := h.c.tcp[nat.FlowKey{Src: netip.MustParseAddrPort(up), Dst: netip.MustParseAddrPort(R)}]
+	h.c.mu.Unlock()
+	if dead || !live {
+		t.Fatalf("SYN-only kept %v, established kept %v", dead, live)
+	}
+	if n := len(h.c.Flows.Active(time.Now())); n != 1 {
+		t.Fatalf("%d active records", n)
+	}
+}
+
+// A flow that needs its domain but collides with a live reflect key
+// (R's IP, local port) is decided by the DNS cache, as the relay does
+// without SNI: a cached tunnel site is refused, not sent direct.
+func TestReflectCollisionUsesDNSCache(t *testing.T) {
+	set, err := rules.Compile(appRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.ExactWeb = true
+	h := newHarness(t, appRules, Options{})
+	h.c.Rules.Swap(set)
+	h.c.DNS.AddResponse(dnsResponse(t, "www.youtube.com.", netip.MustParseAddrPort(R).Addr().String()))
+	const other = "10.0.0.9:40000"
+	h.own(6, L, R, 200)
+	h.own(6, other, R, 200)
+	h.sendTCP(L, R, packet.FlagSYN, "")
+	if i := h.next(t); i.pkt.DstPort() != relayPort {
+		t.Fatal("first flow not reflected for sniffing")
+	}
+	h.sendTCP(other, R, packet.FlagSYN, "")
+	i := h.next(t)
+	v := lastRecord(t, h.c)
+	if i.pkt.TCPFlags()&packet.FlagRST == 0 || v.Route != "tunnel" || v.Outcome != "rst: reflect key collision" || h.c.KeyCollisions.Load() != 1 {
+		t.Fatalf("flags %x: %+v", i.pkt.TCPFlags(), v)
 	}
 }

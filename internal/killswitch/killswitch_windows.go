@@ -423,11 +423,17 @@ func (k *Switch) Arm(relay uint16) error {
 }
 
 // replaceLocked replaces the exceptions with fresh ones: the programs, the
-// DNS servers and the relay's port of the last Arm.
+// DNS servers and the relay's port of the last Arm. Before this process's
+// first Arm the port is unknown (0): a relay filter a crashed run left
+// then stays, to keep the tails of that run's relay sockets in, until an
+// Arm brings the new port.
 func (k *Switch) replaceLocked(s *wf.Session) error {
 	e := exceptions{apps: k.apps(), svc: serviceHost(), dns: dnsServers(), self: appID(k.Self), relay: k.relay}
 	for i := range layers {
 		for _, kind := range refreshedKinds {
+			if kind == kindRelay && k.relay == 0 {
+				continue
+			}
 			if err := s.DeleteRule(ruleID(i, kind)); err != nil && !errors.Is(err, errFilterNotFound) {
 				return fmt.Errorf("kill switch: %w", err)
 			}

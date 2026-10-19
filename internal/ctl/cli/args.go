@@ -465,6 +465,8 @@ func (inv *Invocation) timeoutDefault() time.Duration {
 		if a, ok := inv.Args.(ctl.NameArgs); ok && a.Name != "" {
 			return 120 * time.Second
 		}
+		// Each subscription of several (HyRoute reports every one done,
+		// and the limit starts again).
 		return 10 * time.Minute
 	case "logs":
 		if inv.Follow {

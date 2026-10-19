@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/lardan099/hyroute/internal/rules"
+	"golang.org/x/net/publicsuffix"
 )
 
 // Info is a snapshot of the machine's DNS setup (dns): which addresses
@@ -45,19 +46,32 @@ func (i *Info) Local(name string) bool {
 // 15 and 119), so a public suffix among them ("com", "ru", "co.uk",
 // "com.ru", "github.io"; rules.Registrable refuses them) is not trusted: it
 // would make a whole namespace local, and its names would bypass every DNS
-// policy. The single-label names a home network really uses (lan, home,
-// local, …) are local names of dnspolicy anyway. The registry's names only
-// an administrator sets, and they are kept. Residual: a network can still
-// name a registrable domain (say "example.com"), and its names then go to
-// the network's server like any local name.
+// policy. A single label is trusted when it is no delegated top-level
+// domain: offices name their networks "corp", "intra" or "loc" (a label
+// only the public suffix list's default rule covers), while "com" or
+// "ru" stay refused. The registry's names only an administrator sets, and
+// they are kept. Residual: a network can still name a registrable domain
+// (say "example.com"), and its names then go to the network's server like
+// any local name.
 func LocalSuffixes(adapter, registry []string) []string {
 	var trusted []string
 	for _, a := range adapter {
-		if _, ok := rules.Registrable(strings.Trim(strings.TrimSpace(a), ". ")); ok {
+		n := strings.Trim(strings.TrimSpace(a), ". ")
+		if _, ok := rules.Registrable(n); ok || privateLabel(n) {
 			trusted = append(trusted, a)
 		}
 	}
 	return ParseNames(append(trusted, registry...))
+}
+
+// privateLabel: one label that is no top-level domain ICANN delegated.
+func privateLabel(n string) bool {
+	n = rules.NormalizeDomain(n)
+	if n == "" || strings.Contains(n, ".") || !validName(n) {
+		return false
+	}
+	_, icann := publicsuffix.PublicSuffix(n)
+	return !icann
 }
 
 // maxNames bounds the local namespaces kept.

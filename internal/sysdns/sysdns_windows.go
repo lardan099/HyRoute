@@ -7,6 +7,7 @@ package sysdns
 
 import (
 	"errors"
+	"io"
 	"net/netip"
 	"strings"
 	"unsafe"
@@ -141,7 +142,9 @@ func localNames() ([]string, error) {
 		}
 		rules, err := k.ReadSubKeyNames(256)
 		k.Close()
-		note(err)
+		if !errors.Is(err, io.EOF) { // io.EOF: fewer than 256, all read
+			note(err)
+		}
 		for _, r := range rules {
 			rk, err := registry.OpenKey(registry.LOCAL_MACHINE, path+`\`+r, registry.QUERY_VALUE)
 			if err != nil {

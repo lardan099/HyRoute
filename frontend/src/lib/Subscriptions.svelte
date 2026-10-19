@@ -366,12 +366,19 @@
           <button class="danger" onclick={() => remove(s)}>Удалить</button>
         </div>
         <div class="meta small">
-          <span>Обновлено: {fmtDateTime(s.lastUpdate)}</span>
+          <span>Обновлено: {fmtDateTime(s.lastUpdate)}{#if s.viaVPN} <span class="muted" title="Сервер подписки не ответил напрямую (возможно, его блокирует сеть), и HyRoute скачал её через основной сервер">через VPN</span>{/if}</span>
           <span>Профилей: {s.profiles}{s.missing ? ` (нет в подписке: ${s.missing})` : ''}</span>
           {#if total(s.ignored)}<span class="muted">пропущено других протоколов: {total(s.ignored)}</span>{/if}
           {#if s.enabled && s.nextAt && !s.nextAt.startsWith('0001')}<span class="muted">следующее: {fmtDateTime(s.nextAt)}</span>{/if}
         </div>
         {#if s.lastError}<div class="note error small">Последняя ошибка ({fmtDateTime(s.lastAttempt)}): {hide(s.lastError)}. Профили не изменены.</div>{/if}
+        {#if s.errorCount}
+          <div class="note warn small">
+            При последнем обновлении не разобрано {s.errorCount} {plural(s.errorCount, 'ссылка', 'ссылки', 'ссылок')}: их серверов нет в списке.
+            {#each s.errors ?? [] as e}<div>{hide(e)}</div>{/each}
+          </div>
+        {/if}
+        {#each (s.warnings ?? []).slice(0, 8) as w}<div class="note warn small">{hide(w)}</div>{/each}
       </div>
     {/each}
   </section>

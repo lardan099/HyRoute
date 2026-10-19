@@ -2,7 +2,7 @@
   // «Настройки» → «Командная строка»: hyroutectl.exe's access and where it is.
   import { onMount } from 'svelte';
   import { api, errText, onEvent, type CLIInfo, type CLIMode } from '../api';
-  import { ui, hide, settle } from '../state.svelte';
+  import { ui, hide, settle, hideUserPath } from '../state.svelte';
   import Icon from './Icon.svelte';
 
   let info = $state<CLIInfo | null>(null);
@@ -49,10 +49,7 @@
 
   // Paths and the account name may carry the user's name: masked in
   // Privacy mode (the SID too).
-  function hidePath(p: string): string {
-    if (!ui.privacy) return p;
-    return hide(p.replace(/([\\/]Users[\\/])[^\\/]+/i, '$1***'));
-  }
+  const hidePath = hideUserPath;
   function hideUser(u: string): string {
     return ui.privacy ? '***' : u;
   }

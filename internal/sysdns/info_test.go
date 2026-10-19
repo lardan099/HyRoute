@@ -41,8 +41,8 @@ func TestInfoLocal(t *testing.T) {
 // DHCP) must not make a whole namespace local; the administrator's names
 // are kept.
 func TestLocalSuffixes(t *testing.T) {
-	got := LocalSuffixes([]string{"com", " RU. ", "lan", "co.uk", "COM.RU.", "github.io", "corp.example", ".home.lan"}, []string{"corp", "nrpt.example"})
-	want := []string{"corp.example", "home.lan", "corp", "nrpt.example"}
+	got := LocalSuffixes([]string{"com", " RU. ", "lan", "co.uk", "COM.RU.", "github.io", "office", "Intra", "corp.example", ".home.lan"}, []string{"corp", "nrpt.example"})
+	want := []string{"lan", "intra", "corp.example", "home.lan", "corp", "nrpt.example"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("%q", got)
 	}
@@ -50,7 +50,10 @@ func TestLocalSuffixes(t *testing.T) {
 	if i.Local("example.com") || i.Local("yandex.ru") || i.Local("bbc.co.uk") || i.Local("shop.com.ru") || i.Local("u.github.io") {
 		t.Fatal("a DHCP suffix made a top-level domain local")
 	}
-	if !i.Local("wiki.corp.example") || !i.Local("x.corp") {
+	if i.Local("x.office") {
+		t.Fatal("a delegated top-level domain made local")
+	}
+	if !i.Local("wiki.corp.example") || !i.Local("x.corp") || !i.Local("fileserver.intra") {
 		t.Fatal("trusted suffixes lost")
 	}
 }

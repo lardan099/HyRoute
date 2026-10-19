@@ -260,6 +260,7 @@ func (s *Session) Stats() Stats {
 		FragDropped: e.FragDropped.Load(),
 		Malformed:   e.Malformed.Load(),
 		Panics:      e.Panics.Load(),
+		PendingFull: e.PendingFull.Load(),
 		DNSPairs:    e.DNS.Len(),
 		NATEntries:  e.NAT.Len(),
 		RelayPort:   int(r.Port()),

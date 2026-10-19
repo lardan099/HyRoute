@@ -1,0 +1,425 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"mime"
+	"net"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/lardan099/hyroute/internal/hyconfig"
+	"github.com/lardan099/hyroute/internal/srvmgr/auth"
+	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/store"
+)
+
+// cookieName holds the session token.
+const cookieName = "hyroute_session"
+
+type ctxKey int
+
+const principalKey ctxKey = 1
+
+func principal(r *http.Request) auth.Principal {
+	p, _ := r.Context().Value(principalKey).(auth.Principal)
+	return p
+}
+
+var (
+	errUnauthorized = &Error{Status: http.StatusUnauthorized, Code: "unauthorized", Message: "Войдите заново: сессия закончилась или не найдена."}
+	errForbidden    = &Error{Status: http.StatusForbidden, Code: "forbidden", Message: "Для этого действия не хватает прав."}
+	errCSRF         = &Error{Status: http.StatusForbidden, Code: "csrf", Message: "Запрос отклонён защитой от подделки. Обновите страницу и повторите."}
+	errBadJSON      = &Error{Status: http.StatusBadRequest, Code: "bad_request", Message: "Некорректный запрос."}
+)
+
+// busyRetry is the Retry-After of auth.ErrBusy: a password check takes a
+// fraction of a second, so a slot frees up soon.
+const busyRetry = 2
+
+// mapError maps service errors (auth, field validation, not found) to API
+// errors; anything else stays an internal error.
+func mapError(err error) error {
+	var rl *auth.RateLimitedError
+	var inv *model.FieldError
+	switch {
+	case errors.As(err, &rl):
+		secs := int(rl.Wait.Round(time.Second) / time.Second)
+		return &Error{Status: http.StatusTooManyRequests, Code: "rate_limited", Message: "Слишком много неудачных попыток. Повторите через " + strconv.Itoa(max(secs, 1)) + " с.", Details: "retry-after=" + strconv.Itoa(max(secs, 1))}
+	case errors.Is(err, auth.ErrBusy):
+		return &Error{Status: http.StatusServiceUnavailable, Code: "auth_busy", Message: "Сервер сейчас проверяет слишком много паролей сразу. Повторите через несколько секунд.", Details: "retry-after=" + strconv.Itoa(busyRetry)}
+	case errors.Is(err, hyconfig.ErrTooLarge):
+		return &Error{Status: http.StatusRequestEntityTooLarge, Code: "config_too_large", Message: err.Error()}
+	case errors.As(err, &inv):
+		return &Error{Status: http.StatusBadRequest, Code: "invalid", Message: inv.Msg, Details: inv.Field}
+	case errors.Is(err, auth.ErrBadCredentials):
+		return &Error{Status: http.StatusUnauthorized, Code: "bad_credentials", Message: "Неверное имя пользователя или пароль."}
+	case errors.Is(err, auth.ErrUnauthenticated):
+		return errUnauthorized
+	case errors.Is(err, auth.ErrForbidden):
+		return errForbidden
+	case errors.Is(err, auth.ErrSetupDone):
+		return &Error{Status: http.StatusConflict, Code: "setup_done", Message: "Администратор уже создан. Войдите под своим именем."}
+	case errors.Is(err, auth.ErrBadSetupToken):
+		return &Error{Status: http.StatusForbidden, Code: "bad_setup_token", Message: "Неверный код первого запуска. Он лежит в файле setup-token в каталоге данных hyroute-server."}
+	case errors.Is(err, auth.ErrLastOwner):
+		return &Error{Status: http.StatusConflict, Code: "last_owner", Message: "Это последний владелец панели, который может войти: его нельзя понизить, заблокировать или удалить. Сначала передайте роль владельца другому пользователю."}
+	case errors.Is(err, auth.ErrSelf):
+		return &Error{Status: http.StatusConflict, Code: "self", Message: "Себя нельзя заблокировать или удалить, а свой пароль меняется с вводом текущего (блок «Учётная запись»)."}
+	case errors.Is(err, auth.ErrBlocked):
+		return &Error{Status: http.StatusConflict, Code: "user_blocked", Message: "Пользователь заблокирован: сначала разблокируйте его."}
+	case errors.Is(err, store.ErrNotFound):
+		return errNotFound
+	case errors.Is(err, store.ErrBusy):
+		return &Error{Status: http.StatusConflict, Code: "server_busy", Message: "На сервере выполняется задание: пока оно не закончится, сервер нельзя удалить, а его адрес, пользователя и данные для входа — изменить (откату задания нужно подключение)."}
+	case errors.Is(err, store.ErrInChain):
+		return &Error{Status: http.StatusConflict, Code: "chain_member", Message: "Сервер входит в каскад: сначала удалите каскад (страница «Каскады»)."}
+	}
+	return remoteError(err)
+}
+
+// readJSON decodes a JSON body; only application/json is accepted, which
+// also keeps plain HTML forms of other sites from posting here.
+func readJSON(r *http.Request, v any) error {
+	mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if mt != "application/json" {
+		return &Error{Status: http.StatusUnsupportedMediaType, Code: "bad_content_type", Message: "Ожидается JSON."}
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		var big *http.MaxBytesError
+		if errors.As(err, &big) {
+			return &Error{Status: http.StatusRequestEntityTooLarge, Code: "too_large", Message: "Запрос слишком большой: больше " + sizeText(big.Limit) + "."}
+		}
+		e := *errBadJSON
+		e.Details = err.Error()
+		return &e
+	}
+	return nil
+}
+
+// sizeText is a body limit for messages: 6 МБ, 256 КиБ.
+func sizeText(n int64) string {
+	if n%(1<<20) == 0 {
+		return strconv.FormatInt(n>>20, 10) + " МБ"
+	}
+	return strconv.FormatInt(n>>10, 10) + " КиБ"
+}
+
+// crossSite reports a request sent by another site: browsers mark them
+// with Sec-Fetch-Site, and Origin (when present) must be the host the
+// browser talked to: Host, or from a trusted proxy that rewrites Host
+// (Apache without ProxyPreserveHost) X-Forwarded-Host. A browser cannot
+// add that header to a request of another site.
+func (s *server) crossSite(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "", "same-origin", "none":
+	default:
+		return true
+	}
+	o := r.Header.Get("Origin")
+	if o == "" {
+		return false
+	}
+	host := o
+	if _, rest, ok := strings.Cut(o, "://"); ok {
+		host = rest
+	}
+	if strings.EqualFold(host, r.Host) {
+		return false
+	}
+	if s.fromProxy(r) {
+		for _, v := range r.Header.Values("X-Forwarded-Host") {
+			for _, h := range strings.Split(v, ",") {
+				if strings.EqualFold(host, strings.TrimSpace(h)) {
+					return false
+				}
+			}
+		}
+	}
+	s.warnOrigin(r, host)
+	return true
+}
+
+// warnOrigin logs, at most once a minute, a write refused because Origin
+// is not the host: behind a proxy that rewrites Host (nginx by default)
+// every write is refused so, and the client only sees «csrf».
+func (s *server) warnOrigin(r *http.Request, origin string) {
+	now := time.Now().Unix()
+	last := s.originWarned.Load()
+	if now-last < 60 || !s.originWarned.CompareAndSwap(last, now) {
+		return
+	}
+	s.Log.Warn("write refused: Origin is not the host of the request; a reverse proxy must pass the Host header on (nginx: proxy_set_header Host $host)", "origin", origin, "host", r.Host)
+}
+
+func mutating(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	}
+	return true
+}
+
+// clientIP is the address of the client; X-Forwarded-For counts only from
+// a trusted reverse proxy on this machine.
+func (s *server) clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if s.fromProxy(r) {
+		if ip := lastForwarded(r.Header.Values("X-Forwarded-For")); ip != "" {
+			return ip
+		}
+	}
+	return host
+}
+
+// lastForwarded is the last address of X-Forwarded-For, the one our proxy
+// appended: the proxy adds it to the last line (Caddy, nginx) or as a new
+// line (HAProxy), and everything before it came from the client. A port
+// (ip:port, [v6]:port) is dropped; "" when it is not an address.
+func lastForwarded(lines []string) string {
+	parts := strings.Split(strings.Join(lines, ","), ",")
+	v := strings.TrimSpace(parts[len(parts)-1])
+	if h, _, err := net.SplitHostPort(v); err == nil {
+		v = h
+	}
+	v = strings.TrimSuffix(strings.TrimPrefix(v, "["), "]")
+	if net.ParseIP(v) == nil {
+		return ""
+	}
+	return v
+}
+
+func isLoopback(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// fromProxy: the request came through a trusted reverse proxy on this
+// machine, so its X-Forwarded-* headers count.
+func (s *server) fromProxy(r *http.Request) bool {
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return s.TrustProxy && isLoopback(host)
+}
+
+// secureRequest: the browser talks HTTPS to us or to our reverse proxy.
+func (s *server) secureRequest(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return s.fromProxy(r) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func (s *server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string, maxAge time.Duration) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(maxAge / time.Second),
+		HttpOnly: true,
+		Secure:   s.secureRequest(r),
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+func (s *server) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.secureRequest(r), SameSite: http.SameSiteStrictMode})
+}
+
+func (s *server) meta(r *http.Request) auth.Meta {
+	return auth.Meta{IP: s.clientIP(r), UserAgent: r.UserAgent()}
+}
+
+type userJSON struct {
+	ID        int64      `json:"id"`
+	Username  string     `json:"username"`
+	Role      model.Role `json:"role"`
+	Disabled  bool       `json:"disabled"`
+	CreatedAt time.Time  `json:"createdAt"`
+	// LastLoginAt: null when no login is known.
+	LastLoginAt *time.Time `json:"lastLoginAt"`
+	// Scope is the servers the user reaches (all for owners and admins);
+	// left out of the list of users for callers who do not manage them.
+	Scope *model.Scope `json:"scope,omitempty"`
+}
+
+func toUserJSON(u model.User) userJSON {
+	sc := u.Reach()
+	out := userJSON{ID: u.ID, Username: u.Username, Role: u.Role, Disabled: u.Disabled, CreatedAt: u.CreatedAt, Scope: &sc}
+	if !u.LastLoginAt.IsZero() {
+		out.LastLoginAt = &u.LastLoginAt
+	}
+	return out
+}
+
+// sessionJSON is the logged-in user with what they may do: the
+// permissions of their role (server-bound ones hold on the servers of
+// user.scope).
+type sessionJSON struct {
+	User        userJSON           `json:"user"`
+	Permissions []model.Permission `json:"permissions"`
+	CSRFToken   string             `json:"csrfToken"`
+}
+
+func toSessionJSON(u model.User, csrf string) sessionJSON {
+	return sessionJSON{User: toUserJSON(u), Permissions: u.Role.Permissions(), CSRFToken: csrf}
+}
+
+func (s *server) getSetup(w http.ResponseWriter, r *http.Request) {
+	need, err := s.Auth.SetupNeeded(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"needed": need})
+}
+
+func (s *server) postSetup(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token, Username, Password string
+	}
+	if err := readJSON(r, &req); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	is, err := s.Auth.Setup(r.Context(), req.Token, req.Username, req.Password, s.meta(r))
+	if err != nil {
+		setRetryAfter(w, err)
+		s.fail(w, r, mapError(err))
+		return
+	}
+	if s.OnSetupDone != nil {
+		s.OnSetupDone()
+	}
+	s.setSessionCookie(w, r, is.Token, s.Auth.MaxAge)
+	writeJSON(w, http.StatusCreated, toSessionJSON(is.User, is.CSRF))
+}
+
+func (s *server) postSession(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Username, Password string }
+	if err := readJSON(r, &req); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	is, err := s.Auth.Login(r.Context(), req.Username, req.Password, s.meta(r))
+	if err != nil {
+		setRetryAfter(w, err)
+		s.fail(w, r, mapError(err))
+		return
+	}
+	s.setSessionCookie(w, r, is.Token, s.Auth.MaxAge)
+	writeJSON(w, http.StatusOK, toSessionJSON(is.User, is.CSRF))
+}
+
+// setRetryAfter tells the client when to retry a refused login or setup.
+func setRetryAfter(w http.ResponseWriter, err error) {
+	var rl *auth.RateLimitedError
+	switch {
+	case errors.As(err, &rl):
+		// Rounded up: retrying a moment early would be refused again.
+		w.Header().Set("Retry-After", strconv.Itoa(max(int((rl.Wait+time.Second-1)/time.Second), 1)))
+	case errors.Is(err, auth.ErrBusy):
+		w.Header().Set("Retry-After", strconv.Itoa(busyRetry))
+	}
+}
+
+func (s *server) getSession(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	writeJSON(w, http.StatusOK, toSessionJSON(p.User, auth.CSRFToken(p.Token)))
+}
+
+func (s *server) deleteSession(w http.ResponseWriter, r *http.Request) {
+	if err := s.Auth.Logout(r.Context(), principal(r)); err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	s.clearSessionCookie(w, r)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type sessionInfoJSON struct {
+	ID         int64     `json:"id"`
+	UserID     int64     `json:"userId"`
+	Current    bool      `json:"current"`
+	CreatedAt  time.Time `json:"createdAt"`
+	LastSeenAt time.Time `json:"lastSeenAt"`
+	ExpiresAt  time.Time `json:"expiresAt"`
+	IP         string    `json:"ip"`
+	UserAgent  string    `json:"userAgent"`
+}
+
+func (s *server) listSessions(w http.ResponseWriter, r *http.Request) {
+	p := principal(r)
+	ss, err := s.Auth.Sessions(r.Context(), p, r.URL.Query().Get("all") == "1")
+	if err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	out := make([]sessionInfoJSON, 0, len(ss))
+	for _, x := range ss {
+		out = append(out, sessionInfoJSON{ID: x.ID, UserID: x.UserID, Current: x.ID == p.Session.ID, CreatedAt: x.CreatedAt, LastSeenAt: x.LastSeenAt, ExpiresAt: x.ExpiresAt, IP: x.IP, UserAgent: x.UserAgent})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *server) revokeSession(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, errNotFound)
+		return
+	}
+	if err := s.Auth.RevokeSession(r.Context(), principal(r), id); err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
+	us, err := s.Auth.Users(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	// The scopes are for those who manage users: the tags of other users'
+	// scopes may name servers the caller does not see.
+	manage := principal(r).User.Role.CanManageUsers()
+	out := make([]userJSON, 0, len(us))
+	for _, u := range us {
+		j := toUserJSON(u)
+		if !manage {
+			j.Scope = nil
+		}
+		out = append(out, j)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *server) createUser(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username, Password string
+		Role               model.Role
+		// Scope: all servers when left out.
+		Scope *model.Scope
+	}
+	if err := readJSON(r, &req); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	scope := model.ScopeAll
+	if req.Scope != nil {
+		scope = *req.Scope
+	}
+	u, err := s.Auth.CreateUser(r.Context(), principal(r), req.Username, req.Password, req.Role, scope)
+	if err != nil {
+		s.fail(w, r, mapError(err))
+		return
+	}
+	writeJSON(w, http.StatusCreated, toUserJSON(u))
+}

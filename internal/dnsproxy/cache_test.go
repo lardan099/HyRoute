@@ -2,9 +2,11 @@ package dnsproxy
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -52,6 +54,15 @@ func TestCache(t *testing.T) {
 	if _, _, ok := c.get(k2, t0); ok {
 		t.Fatal("uncacheable answer stored")
 	}
+	// Too big: not stored.
+	big := answer(t, q, dnsmessage.RCodeSuccess, append(bigRRs(20), rr{"a.example.", dnsmessage.TypeA, 60, "1.2.3.4"}), nil, 0, false)
+	if len(big) <= cacheMaxMsg {
+		t.Fatalf("test answer of %d bytes", len(big))
+	}
+	c.put(k2, big, t0)
+	if _, _, ok := c.get(k2, t0); ok {
+		t.Fatal("an answer over cacheMaxMsg stored")
+	}
 	// Capacity.
 	c.clear()
 	ans := answer(t, q, dnsmessage.RCodeSuccess, []rr{{"a.example.", dnsmessage.TypeA, 60, "1.2.3.4"}}, nil, 0, false)
@@ -74,19 +85,19 @@ func TestCache(t *testing.T) {
 	}
 }
 
-func TestFlight(t *testing.T) {
+func TestFlight(t *testing.T) { synctest.Test(t, testFlight) }
+
+func testFlight(t *testing.T) {
 	var f flight
 	var calls atomic.Int32
 	release := make(chan struct{})
 	k := flightKey{cacheKey: cacheKey{name: "a.example"}}
 	var wg sync.WaitGroup
 	got := make([][]byte, 50)
-	started := make(chan struct{}, 50)
 	for i := range got {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			started <- struct{}{}
 			got[i], _ = f.do(k, func() ([]byte, error) {
 				calls.Add(1)
 				<-release
@@ -94,10 +105,9 @@ func TestFlight(t *testing.T) {
 			})
 		}()
 	}
-	for range got {
-		<-started
-	}
-	time.Sleep(200 * time.Millisecond) // let them all join the call
+	// Every goroutine blocked: one in the call, on release, the others
+	// joined it, on its done (a sleep only made that likely).
+	synctest.Wait()
 	close(release)
 	wg.Wait()
 	if n := calls.Load(); n != 1 {
@@ -112,4 +122,13 @@ func TestFlight(t *testing.T) {
 	if string(got[1]) != "answer" {
 		t.Fatal("callers share one slice")
 	}
+}
+
+// bigRRs is n TXT records of 250 bytes.
+func bigRRs(n int) []rr {
+	out := make([]rr, n)
+	for i := range out {
+		out[i] = rr{"a.example.", dnsmessage.TypeTXT, 60, strings.Repeat("x", 250)}
+	}
+	return out
 }

@@ -72,10 +72,6 @@ func hostName(h string) string {
 	return rules.NormalizeDomain(h)
 }
 
-// Intercept reports that the engine must capture DNS: every option needs
-// the queries (browser DoH blocking answers the canary).
-func (p *Policy) Intercept() bool { return p != nil }
-
 // Requester is who sent a query.
 type Requester struct {
 	Proc   *procinfo.Info // nil: unknown owner (after waiting), or the Windows DNS client

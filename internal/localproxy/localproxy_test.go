@@ -10,8 +10,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -401,6 +403,26 @@ func TestHTTP10NotChunked(t *testing.T) {
 	head, body, _ := strings.Cut(string(raw), "\r\n\r\n")
 	if body != "part1part2" || strings.Contains(strings.ToLower(head), "transfer-encoding") {
 		t.Fatalf("%q", raw)
+	}
+}
+
+// A request without a User-Agent goes on without one, not with Go's.
+func TestHTTPKeepsNoUserAgent(t *testing.T) {
+	o := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, has := r.Header["User-Agent"]
+		fmt.Fprintf(w, "%v %q", has, r.UserAgent())
+	}))
+	t.Cleanup(o.Close)
+	var dials atomic.Int32
+	addr := start(t, &Server{Dial: dialer(&dials)})
+	c, br := client(t, addr)
+	for req, want := range map[string]string{
+		"GET %s/ HTTP/1.1\r\nHost: x\r\n\r\n":                      `false ""`,
+		"GET %s/ HTTP/1.1\r\nHost: x\r\nUser-Agent: app/1\r\n\r\n": `true "app/1"`,
+	} {
+		if resp, b := send(t, c, br, fmt.Sprintf(req, o.URL)); resp.StatusCode != http.StatusOK || b != want {
+			t.Fatalf("%d %s, want %s", resp.StatusCode, b, want)
+		}
 	}
 }
 
@@ -871,5 +893,44 @@ func TestAcceptErrorRetried(t *testing.T) {
 	}
 	if n := len(reported); n != 1 {
 		t.Fatalf("accept error reported %d times", n)
+	}
+}
+
+// An address that failed the login authFree times in a row waits: its new
+// connections close at once, the right password included, and every
+// failure is reported (once per limitReport).
+func TestLoginFailuresWait(t *testing.T) {
+	var seen []string
+	var reports []int64
+	var mu sync.Mutex
+	s := &Server{Username: "u", Password: "p", Dial: direct(&seen), OnAuthFail: func(from netip.Addr, n int64) {
+		mu.Lock()
+		reports = append(reports, n)
+		mu.Unlock()
+		if !from.IsLoopback() {
+			t.Errorf("from %v", from)
+		}
+	}}
+	addr := start(t, s)
+	dst := socks5.Addr{Host: "localhost", Port: 9}
+	for i := range authFree {
+		bad := socks5.Client{Server: addr, Username: "u", Password: fmt.Sprintf("wrong%d", i)}
+		if c, err := bad.Connect(context.Background(), dst); err == nil {
+			c.Close()
+			t.Fatal("wrong password accepted")
+		}
+	}
+	good := socks5.Client{Server: addr, Username: "u", Password: "p"}
+	if c, err := good.Connect(context.Background(), dst); err == nil {
+		c.Close()
+		t.Fatal("a waiting address got through")
+	}
+	if n := s.AuthFailures.Load(); n != authFree {
+		t.Fatalf("%d failures", n)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reports) != 1 || reports[0] != 1 {
+		t.Fatalf("reports %v", reports)
 	}
 }

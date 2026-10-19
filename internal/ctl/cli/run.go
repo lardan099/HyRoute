@@ -322,6 +322,11 @@ func (c *client) exchange(ctx context.Context, onEvent func(json.RawMessage) err
 		if err != nil {
 			return nil, readFail(err)
 		}
+		if !fr.Final && limit > 0 {
+			// A step done (a logs page, one subscription of several):
+			// the time limit is for each step, not the whole command.
+			conn.SetDeadline(time.Now().Add(limit))
+		}
 		if len(fr.Event) > 0 && !fr.Final {
 			if err := onEvent(fr.Event); err != nil {
 				return nil, fail(ctl.CodeFailed, "%v", err)

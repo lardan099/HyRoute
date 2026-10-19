@@ -1,5 +1,5 @@
 // Package stats keeps the traffic statistics of «Статистика»: per day, by
-// program, site, server and group. It turns flow records (flows.Registry)
+// program, server and group (never by site). It turns flow records (flows.Registry)
 // into per-day deltas: every record is observed when it closes (the
 // registry's OnClose) and every few seconds by a sampler (Registry.Ticks),
 // which adds only the bytes moved since the last observation. Nothing is
@@ -282,8 +282,8 @@ func (c *Collector) recovered(where string) {
 // sample at Disconnect/EndSession/Shutdown). A flow whose counters and
 // field revision did not change is skipped; a known flow whose revision
 // did not change gives a counters-only observation (no View); a new ID or
-// a changed revision gives a full one (View + flowOf, the site key
-// computed here, outside c.mu). In mode off no View is built. Observations
+// a changed revision gives a full one (View + flowOf, the server and
+// group names looked up here, outside c.mu). In mode off no View is built. Observations
 // are applied under c.mu in chunks of at most 256 per hold.
 func (s *Source) Sample(now time.Time, reg *flows.Registry) {
 	if reg == nil {
@@ -329,8 +329,8 @@ func (s *Source) Sample(now time.Time, reg *flows.Registry) {
 		}
 		o := obs{id: t.ID, full: true, f: f, settled: true, sent: v.Sent, recv: v.Recv}
 		if !known || !l.settled {
-			// Not counted yet: the site key and the names are needed
-			// (computed once).
+			// Not counted yet: the server and group names are needed
+			// (looked up once).
 			s.c.prepare(&o)
 		}
 		s.obs = append(s.obs, o)
@@ -350,8 +350,8 @@ func (s *Source) Sample(now time.Time, reg *flows.Registry) {
 }
 
 // Closed is the registry's OnClose hook: it applies the final View of one
-// record. The site key is computed outside c.mu and only for an ID not
-// seen yet. Mode off: only forgets the flow.
+// record. The server and group names are looked up outside c.mu and only
+// for an ID not seen yet. Mode off: only forgets the flow.
 func (s *Source) Closed(v flows.View) {
 	defer s.c.recovered("close")
 	now := s.c.now()

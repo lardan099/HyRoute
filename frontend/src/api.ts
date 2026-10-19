@@ -154,6 +154,7 @@ export interface RulesTextResult {
   warnings: { line: number; text: string }[];
   summary: string;
   skipped?: number; // appended rules the list had already
+  enabled?: number; // appended rules whose copy was off and is on now
   repeats?: number[]; // lines that repeat an earlier line and can go («Убрать повторы»)
 }
 
@@ -272,6 +273,7 @@ export interface ProxyView extends ProxyInput {
   udpTotal: number;
   udpDropped: number;
   udpError?: string; // LAN: the UDP port did not open (retrying) or has no firewall rule; TCP works
+  authFailures: number; // wrong logins or passwords since the proxy opened
   udpBlocked?: 'server' | 'group'; // the target cannot carry UDP right now
 }
 
@@ -477,6 +479,9 @@ export interface Subscription {
   count: number;
   ignored: Record<string, number> | null;
   warnings: string[] | null;
+  errors?: string[]; // first messages of the links the last update could not read
+  errorCount?: number;
+  viaVPN?: boolean; // the last update came through the VPN: the panel did not answer directly
   userInfo: string;
   hasPrevious: boolean;
   profiles: number;

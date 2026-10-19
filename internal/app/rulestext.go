@@ -65,6 +65,8 @@ type RulesTextResult struct {
 	// Skipped: appended rules left out because the list has them already
 	// (rules.Duplicate), set by ApplyRulesText.
 	Skipped int `json:"skipped,omitempty"`
+	// Enabled: appended rules whose copy in the list was off and is on now.
+	Enabled int `json:"enabled,omitempty"`
 	// Repeats: lines (rules text only) whose rule repeats an earlier line
 	// and can go without changing what the rules do («Убрать повторы»).
 	Repeats []int `json:"repeats,omitempty"`
@@ -123,6 +125,10 @@ func parseRulesText(text string, ts []target) RulesTextResult {
 			}
 			sectionText = line
 			items, quoted := splitQuoted(inner)
+			if msg := unpairedQuote(items, quoted); msg != "" {
+				fail(n, "%s", msg)
+				continue
+			}
 			if msg := splitPath(items, quoted); msg != "" {
 				fail(n, "%s", msg)
 				continue
@@ -207,6 +213,10 @@ func parseRulesText(text string, ts []target) RulesTextResult {
 		items, quoted := splitQuoted(lhs)
 		if strings.TrimSpace(lhs) == "*" && len(r.Ports) > 0 {
 			items, quoted = nil, nil // a rule with ports only
+		}
+		if msg := unpairedQuote(items, quoted); msg != "" {
+			fail(n, "%s", msg)
+			continue
 		}
 		if msg := splitPath(items, quoted); msg != "" {
 			fail(n, "%s", msg)
@@ -448,6 +458,18 @@ func splitPath(items []string, quoted []bool) string {
 			if b, ok := rel(j); ok && strings.ContainsAny(b, `\/`) {
 				return msg(j)
 			}
+		}
+	}
+	return ""
+}
+
+// unpairedQuote finds an item with a quote that has no pair: the item
+// was cut at spaces with the quote in it ("C:\Program), and a program of
+// that name never runs.
+func unpairedQuote(items []string, quoted []bool) string {
+	for i, it := range items {
+		if !quoted[i] && strings.Contains(it, `"`) {
+			return fmt.Sprintf("«%s» — кавычка без пары: путь с пробелами пишется в кавычках целиком: \"C:\\Program Files\\…\\app.exe\"", it)
 		}
 	}
 	return ""

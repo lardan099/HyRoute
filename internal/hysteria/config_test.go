@@ -86,9 +86,21 @@ func TestConfigRejectsInvalid(t *testing.T) {
 		{Host: "h", Ports: "x"},
 		{Host: "h", Ports: "443", Obfs: Obfs{Type: "salamander"}},
 		{Host: "h", Ports: "443", Hop: Hop{Interval: "soon"}},
+		// Hysteria refuses hop intervals under 5s; an overflowed one is
+		// negative.
+		{Host: "h", Ports: "443,20000-30000", Hop: Hop{Interval: "4s"}},
+		{Host: "h", Ports: "443,20000-30000", Hop: Hop{Interval: "-2562047h47m16.854775808s"}},
+		{Host: "h", Ports: "443,20000-30000", Hop: Hop{MinInterval: "1s", MaxInterval: "60s"}},
+		{Host: "h", Ports: "443,20000-30000", Hop: Hop{MinInterval: "10s", MaxInterval: "4999ms"}},
 	} {
 		if _, err := BuildConfig(&p, runOpts); err == nil {
 			t.Fatalf("%+v should fail", p)
+		}
+	}
+	for _, h := range []Hop{{Interval: "5s"}, {Interval: "0s"}, {MinInterval: "5s", MaxInterval: "2h"}} {
+		p := Profile{Host: "h", Ports: "443,20000-30000", Hop: h}
+		if _, err := BuildConfig(&p, runOpts); err != nil {
+			t.Errorf("%+v: %v", h, err)
 		}
 	}
 }

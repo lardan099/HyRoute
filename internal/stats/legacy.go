@@ -27,12 +27,8 @@ import (
 // a repeated import adds only what is still missing, also into a day file
 // this version wrote meanwhile.
 //
-// 1.2.0 promised to keep no sites: an upgraded user (no mode.json yet, and
-// the data folder held files of an earlier version: traffic.json, or the
-// servers, rules, preferences or proxies; 1.2.0 wrote traffic.json only
-// after VPN traffic and «Очистить» deleted it) starts with «Без сайтов», a
-// new one with «Всё». The default goes into mode.json with the first write
-// into the folder, so a later start does not decide again.
+// 1.2.0 promised to keep no sites, and statistics never keep them now:
+// the import takes programs, servers and groups, in any mode.
 
 // Legacy is where the 1.2.0 statistics come from (internal/store).
 type Legacy interface {
@@ -118,7 +114,7 @@ const (
 // becomes that proxy's program row when proxy finds it (nil: never). The
 // rows of a day are summed in maps and trimmed to the day caps before a
 // month takes them: linear in the size of the file.
-func legacyFiles(now time.Time, b []byte, mode Mode, proxy func(string) (string, string, bool)) (files map[string]*File, days int, err error) {
+func legacyFiles(now time.Time, b []byte, proxy func(string) (string, string, bool)) (files map[string]*File, days int, err error) {
 	var lf legacyFile
 	if err := json.Unmarshal(b, &lf); err != nil {
 		return nil, 0, errLegacyFormat
@@ -242,8 +238,7 @@ func shortName(s string) string {
 // of the same name unless that one already holds its import (a newer
 // version's file is left alone). Returns how many days traffic.json held.
 func (c *Collector) importLegacy(now time.Time, b []byte) (int, error) {
-	mode := c.Mode()
-	files, days, err := legacyFiles(now, b, mode, c.LegacyProxy)
+	files, days, err := legacyFiles(now, b, c.LegacyProxy)
 	if err != nil {
 		return 0, err
 	}

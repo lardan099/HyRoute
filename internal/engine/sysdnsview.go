@@ -18,8 +18,13 @@ type SysDNSView struct {
 	cur     atomic.Pointer[sysdns.Info]
 	running atomic.Bool
 	last    atomic.Int64 // unix nanos of the last refresh start
-	now     func() time.Time
-	log     *slog.Logger
+	// starts numbers the refreshes as they start; finished is the highest
+	// number of one that finished (stored a snapshot or failed). A clock
+	// would not do: two reads within its resolution look alike.
+	starts   atomic.Uint64
+	finished atomic.Uint64
+	now      func() time.Time
+	log      *slog.Logger
 	// done is called after each background refresh (tests).
 	done func()
 }
@@ -60,8 +65,9 @@ func (v *SysDNSView) Kick() {
 		return
 	}
 	v.last.Store(v.now().UnixNano())
+	id := v.starts.Add(1)
 	go func() {
-		v.refresh()
+		v.refresh(id)
 		// Before done: a Kick right after it may start the next refresh.
 		v.running.Store(false)
 		if v.done != nil {
@@ -77,11 +83,54 @@ func (v *SysDNSView) Refresh() {
 		return
 	}
 	v.last.Store(v.now().UnixNano())
-	v.refresh()
+	v.refresh(v.starts.Add(1))
+}
+
+// Mark is the moment of a miss, for Fresh: the refreshes started so far.
+func (v *SysDNSView) Mark() uint64 {
+	if v == nil {
+		return 0
+	}
+	return v.starts.Load()
+}
+
+// Fresh waits up to d (off the packet loop) for a snapshot read after
+// mark, starting one when none runs: kickGap does not apply, it is for
+// a private DNS server the last snapshot lacks (a network change). It
+// reports whether one arrived.
+func (v *SysDNSView) Fresh(mark uint64, d time.Duration) bool {
+	if v == nil || v.snap == nil {
+		return false
+	}
+	deadline := time.Now().Add(d)
+	for {
+		if v.finished.Load() > mark {
+			return true
+		}
+		if v.running.CompareAndSwap(false, true) {
+			v.last.Store(v.now().UnixNano())
+			id := v.starts.Add(1)
+			go func() {
+				v.refresh(id)
+				v.running.Store(false)
+				if v.done != nil {
+					v.done()
+				}
+			}()
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // refresh stores a new snapshot; a failure keeps the old one.
-func (v *SysDNSView) refresh() {
+func (v *SysDNSView) refresh(id uint64) {
+	defer func() {
+		for f := v.finished.Load(); f < id && !v.finished.CompareAndSwap(f, id); f = v.finished.Load() {
+		}
+	}()
 	info, err := v.snap()
 	if err != nil && info.All == nil {
 		v.log.Debug("DNS servers of the adapters not read; the last list stays", "err", err)

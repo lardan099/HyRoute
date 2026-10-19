@@ -302,3 +302,21 @@ func TestParentChain(t *testing.T) {
 		t.Fatal("no parents")
 	}
 }
+
+// A waiting flow keeps its first pendingMaxPackets datagrams; the rest are
+// dropped and counted.
+func TestPendingFlowDropsPastLimitCounted(t *testing.T) {
+	h := newHarness(t, rules.Config{DefaultAction: rules.Direct}, Options{})
+	const dst = "93.184.216.34:3479"
+	for i := range pendingMaxPackets + 2 {
+		h.sendUDP(L, dst, []byte{byte('a' + i)}) // no owner yet: parked
+	}
+	if n := h.c.PendingFull.Load(); n != 2 {
+		t.Fatalf("PendingFull %d, want 2", n)
+	}
+	h.own(17, L, dst, 200)
+	for range pendingMaxPackets {
+		h.next(t)
+	}
+	h.none(t)
+}

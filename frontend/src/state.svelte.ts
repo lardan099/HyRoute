@@ -303,7 +303,10 @@ const netRuleQuote = /([Пп]равил[а-я]* сет(?:и|ей) «)([^»]*)»/
 // ==== backup ====
 
 // trackUnsaved counts an editor in ui.unsaved while dirty() holds: a
-// restore re-mounts the page, and asks first.
+// restore re-mounts the page, and asks first. The counter is changed
+// untracked: an effect that reads what it writes runs itself again, up to
+// Svelte's depth limit, and a teardown of another editor in between then
+// leaves the count off.
 export function trackUnsaved(dirty: () => boolean) {
   $effect(() => {
     if (!dirty()) return;
@@ -355,6 +358,13 @@ export function hideFile(name: string): string {
 
 export function hidePath(path: string): string {
   return ui.privacy ? '***' : path;
+}
+
+// hideUserPath shows a path with the user's name masked in Privacy mode
+// (C:\Users\***\…), the rest as hide() leaves it.
+export function hideUserPath(p: string): string {
+  if (!ui.privacy) return p;
+  return hide(p.replace(/([\\/]Users[\\/])[^\\/]+/i, '$1***'));
 }
 
 // hidePaths masks the paths Go writes in «…» inside a message, then hide().

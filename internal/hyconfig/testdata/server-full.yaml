@@ -1,0 +1,135 @@
+# Every documented server field (Hysteria app v2.12.3). Fake values only.
+listen: :20000-50000
+realm:
+  stunServers:
+    - stun.example.com:3478
+  stunTimeout: 5s
+  punchTimeout: 5s
+  heartbeatInterval: 30s
+  insecure: false
+  ipMode: dual
+  portMapping:
+    enabled: true
+    timeout: 10s
+    lifetime: 10m
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+  sniGuard: strict
+  clientCA: /etc/hysteria/client-ca.crt
+ech:
+  keyPath: /etc/hysteria/ech.pem
+obfs:
+  type: salamander
+  salamander:
+    password: fake-obfs-password
+  gecko:
+    password: fake-obfs-password
+    minPacketSize: 512
+    maxPacketSize: 1200
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+  maxIdleTimeout: 30s
+  maxIncomingStreams: 1024
+  disablePathMTUDiscovery: true
+  disableStatelessReset: true
+mimic:
+  enabled: true
+  interface: eth0
+  xdpMode: skb
+  path: /usr/bin/mimic
+  extraArgs: ["-v"]
+bandwidth:
+  up: 1 gbps
+  down: 500 mbps
+  disableLossCompensation: true
+ignoreClientBandwidth: true
+congestion:
+  type: bbr
+  bbrProfile: conservative
+speedTest: true
+disableUDP: true
+udpIdleTimeout: 60s
+auth:
+  type: userpass
+  password: fake-auth-password
+  userpass:
+    user1: fake-pass-1
+    user2: fake-pass-2
+  http:
+    url: https://auth.example.com/auth
+    insecure: true
+  command: /usr/local/bin/fake-auth
+resolver:
+  type: https
+  tcp:
+    addr: 192.0.2.53:53
+    timeout: 4s
+  udp:
+    addr: 192.0.2.53:53
+    timeout: 4s
+  tls:
+    addr: 192.0.2.53:853
+    timeout: 10s
+    sni: dns.example.com
+    insecure: true
+  https:
+    addr: 192.0.2.53:443
+    timeout: 10s
+    sni: dns.example.com
+    insecure: true
+sniff:
+  enable: true
+  timeout: 2s
+  rewriteDomain: true
+  tcpPorts: 80,443,8000-9000
+  udpPorts: all
+acl:
+  inline:
+    - reject(suffix:example.net)
+    - reject(all, udp/443)
+  geoip: geoip.dat
+  geosite: geosite.dat
+  geoUpdateInterval: 168h
+outbounds:
+  - name: direct-out
+    type: direct
+    direct:
+      mode: "46"
+      bindIPv4: 192.0.2.10
+      bindIPv6: 2001:db8::10
+      fastOpen: true
+  - name: socks-out
+    type: socks5
+    socks5:
+      addr: proxy.example.com:1080
+      username: fake-user
+      password: fake-socks-password
+  - name: http-out
+    type: http
+    http:
+      url: http://proxy.example.com:8081
+      insecure: true
+trafficStats:
+  listen: 127.0.0.1:9999
+  secret: fake-stats-secret
+masquerade:
+  type: proxy
+  file:
+    dir: /var/www/masq
+  proxy:
+    url: https://www.example.com
+    rewriteHost: true
+    xForwarded: true
+    insecure: true
+  string:
+    content: hello
+    headers:
+      content-type: text/plain
+    statusCode: 200
+  listenHTTP: :80
+  listenHTTPS: :443
+  forceHTTPS: true

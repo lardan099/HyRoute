@@ -378,7 +378,10 @@ func (g *GUI) SaveLog(kind string, sanitized bool) (string, error) {
 	if err != nil || path == "" {
 		return "", err
 	}
-	return path, os.WriteFile(path, []byte(g.ctl.ExportLog(kind, sanitized)), 0o600)
+	// As ExportBackup: HyRoute is elevated, and the folder and the name
+	// are the user's; WriteUserFile checks what the user may write there
+	// and never follows a link in the file's place.
+	return path, store.WriteUserFile(path, []byte(g.ctl.ExportLog(kind, sanitized)))
 }
 
 // Sanitize applies Privacy mode to text the UI copies.

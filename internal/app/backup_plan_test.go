@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/lardan099/hyroute/internal/backup"
 	"github.com/lardan099/hyroute/internal/dnspolicy"
@@ -132,6 +133,30 @@ func TestPlanLegacyRulesOnlyTargets(t *testing.T) {
 	tx = texts(plan(cur, b.p, map[string]string{"rules": "replace"}))
 	if !strings.Contains(tx, "Правило «b»: сервера из копии нет") || strings.Contains(tx, "удалён") {
 		t.Fatal(tx)
+	}
+}
+
+// A backup made by HyRoute up to v1.3.0-beta.3 may hold a server's ports
+// in the old spelling (merge_test.go: oldPortLinks): it is still the
+// server the subscription now gives with the new one.
+func TestPlanOldPortSpecs(t *testing.T) {
+	for _, c := range oldPortLinks {
+		p, _, err := hysteria.ParseURI(c.link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.ID = "aaaaaaaa0001"
+		s := p
+		s.ID, s.Name, s.Ports, s.Auth = "0000000000ff", "copy", c.saved, ""
+		for _, mode := range []string{"replace", "add"} {
+			pl := plan(baseState(p), payload(false).put("servers", bkServers{List: []hysteria.Profile{s}}).p, map[string]string{"servers": mode})
+			if pl.err != "" {
+				t.Fatal(pl.err)
+			}
+			if l := pl.next.Profiles.List; len(l) != 1 || l[0].ID != p.ID || l[0].Auth != p.Auth {
+				t.Errorf("%s, %s: %+v", c.saved, mode, l)
+			}
+		}
 	}
 }
 
@@ -463,6 +488,47 @@ func TestPlanMsgParts(t *testing.T) {
 	}
 }
 
+// «Серверы: будет …» counts a server kept because a rule uses it: it is
+// in the result, not removed.
+func TestPlanServersLineCountsKept(t *testing.T) {
+	old := srv("aaaaaaaa0001", "Old", "old.example")
+	cur := baseState(old)
+	cur.Settings.Rules = []rules.Rule{{Name: "R", Apps: []rules.AppMatch{{Pattern: "r.exe"}}, Action: rules.Tunnel, Profile: old.ID}}
+	pl := plan(cur, payload(true).put("servers", bkServers{List: []hysteria.Profile{srv("bbbbbbbb0001", "New", "new.example")}}).p, map[string]string{"servers": "replace"})
+	tx := texts(pl)
+	if !strings.Contains(tx, "Серверы: будет 2 — добавится 1, обновится 0, удалится 0.") || !strings.Contains(tx, "«Old» останется") {
+		t.Fatalf("%s", tx)
+	}
+}
+
+// A group name of 64 four-byte characters is 256 bytes: its target is
+// clipped to what the restore reads (255), at a character's start.
+func TestTargetsClipGroupName(t *testing.T) {
+	st := baseState()
+	st.Groups.Groups = []groups.Group{{ID: "grp-00000000000a", Name: strings.Repeat("😀", 64)}}
+	tg := targetsOf(st, []string{"grp-00000000000a"})["grp-00000000000a"]
+	if len(tg.Name) > 255 || !utf8.ValidString(tg.Name) || !tg.Group {
+		t.Fatalf("%d bytes %q", len(tg.Name), tg.Name)
+	}
+}
+
+// «Правила: Добавить» keeps your «Всё остальное»: the copy's default
+// server, missing here, gives no line or warning.
+func TestPlanRulesAddIgnoresCopyDefault(t *testing.T) {
+	cur := baseState(srv("aaaaaaaa0001", "DE", "de.example"))
+	b := payload(false).put("rules", bkRules{Config: rules.Config{DefaultAction: rules.Tunnel, DefaultProfile: "444444444444", Rules: []rules.Rule{
+		{Name: "a", Apps: []rules.AppMatch{{Pattern: "a.exe"}}, Action: rules.Block},
+	}}})
+	b.p.Targets = map[string]backup.Target{"444444444444": {Name: "Gone", Host: "gone.example", Ports: "443"}}
+	pl := plan(cur, b.p, map[string]string{"rules": "add"})
+	if tx := texts(pl); strings.Contains(tx, "Gone") || strings.Contains(tx, "отклонять") {
+		t.Fatalf("%s", tx)
+	}
+	if pl.next.Settings.DefaultProfile != cur.Settings.DefaultProfile || len(pl.next.Settings.Rules) != 1 {
+		t.Fatalf("%+v", pl.next.Settings.Config)
+	}
+}
+
 func TestPlanRulesAndSettings(t *testing.T) {
 	cur := baseState()
 	cur.Settings.Rules = []rules.Rule{{ID: "r1", Name: "mine", Apps: []rules.AppMatch{{Pattern: "a.exe"}}, Action: rules.Block}}
@@ -563,6 +629,13 @@ func TestPlanBrokenCoverage(t *testing.T) {
 	}
 	pl = plan(cur, payload(false).put("servers", bkServers{List: []hysteria.Profile{}}).p, map[string]string{"servers": "add"})
 	if !strings.Contains(pl.err, "profiles.json не загружен") {
+		t.Fatal(pl.err)
+	}
+	// Both files broken: the servers alone do not bring profiles.json
+	// back, and the refusal names both sections.
+	cur.Broken["subscriptions.json"] = fmt.Errorf("x")
+	pl = plan(cur, payload(false).put("servers", bkServers{List: []hysteria.Profile{}}).put("subscriptions", []bkSub{}).p, map[string]string{"servers": "replace"})
+	if !strings.Contains(pl.err, "отметьте «Серверы» и «Подписки»") {
 		t.Fatal(pl.err)
 	}
 	cur = baseState()
@@ -849,5 +922,83 @@ func TestPlanPrefsKeepCLI(t *testing.T) {
 	pl = plan(cur, payload(false).put("settings", bkSettings{Prefs: prefs}).p, map[string]string{"settings": "replace"})
 	if pl.err != "" || pl.next.Prefs.CLI != "off" {
 		t.Fatalf("%s %+v", pl.err, pl.next.Prefs)
+	}
+}
+
+// «Серверы: Заменить» with a copy made before the main server's port
+// changed: the copy's version gets its own ID, and the current server,
+// still named by a rule, stays under its ID (two profiles with one ID
+// broke the UI and the tunnel).
+func TestPlanReplaceKeepsIDsUnique(t *testing.T) {
+	cur := srv("aaaaaaaa0001", "NL", "nl.example")
+	cur.Ports = "444"
+	st := baseState(cur)
+	st.Settings.Rules = []rules.Rule{{Name: "r", Action: rules.Tunnel, Profile: "aaaaaaaa0001", Domains: []string{"example.com"}}}
+	old := srv("aaaaaaaa0001", "NL", "nl.example")
+	pl := plan(st, payload(true).put("servers", bkServers{Main: "aaaaaaaa0001", List: []hysteria.Profile{old}}).p, map[string]string{"servers": "replace"})
+	if pl.err != "" {
+		t.Fatal(pl.err)
+	}
+	ports := map[string]string{}
+	for _, p := range pl.next.Profiles.List {
+		if _, dup := ports[p.ID]; dup {
+			t.Fatalf("duplicate ID %s: %+v", p.ID, pl.next.Profiles.List)
+		}
+		ports[p.ID] = p.Ports
+	}
+	main := pl.next.Profiles.Active
+	if len(ports) != 2 || ports["aaaaaaaa0001"] != "444" || main == "aaaaaaaa0001" || ports[main] != "443" {
+		t.Fatalf("main %q: %+v", main, pl.next.Profiles.List)
+	}
+}
+
+// A copy without a password carries no DNS server or base links of one's
+// own (the export leaves them out): one that does keeps yours, with a
+// warning. With a password they are taken, and the plan names the host.
+func TestPlanCopyWithoutPasswordKeepsOwnServers(t *testing.T) {
+	cur := baseState()
+	file := dnspolicy.Config{ByRules: true, Tunnel: dnspolicy.Upstream{Preset: dnspolicy.Custom, URL: "https://dns.other.example/dns-query"}}
+	pl := plan(cur, payload(false).put("dns", file).p, map[string]string{"dns": "replace"})
+	if pl.err != "" || pl.next.DNS.Tunnel != cur.DNS.Tunnel || !pl.next.DNS.ByRules || !strings.Contains(texts(pl), "не переносится") {
+		t.Fatalf("%s %+v %s", pl.err, pl.next.DNS, texts(pl))
+	}
+	pl = plan(cur, payload(true).put("dns", file).p, map[string]string{"dns": "replace"})
+	if pl.err != "" || pl.next.DNS != file || !strings.Contains(texts(pl), "dns.other.example") {
+		t.Fatalf("%s %+v %s", pl.err, pl.next.DNS, texts(pl))
+	}
+	g := bkGeo{GeoSource: "custom", GeoSiteURL: "https://geo.other.example/geosite.dat", GeoIPURL: "https://geo.other.example/geoip.dat"}
+	pl = plan(cur, payload(false).put("geo", g).p, map[string]string{"geo": "replace"})
+	if pl.err != "" || pl.next.Prefs.GeoSource == "custom" || !strings.Contains(texts(pl), "не переносятся") {
+		t.Fatalf("%s %+v %s", pl.err, pl.next.Prefs, texts(pl))
+	}
+	pl = plan(cur, payload(true).put("geo", g).p, map[string]string{"geo": "replace"})
+	if pl.err != "" || pl.next.Prefs.GeoSiteURL != g.GeoSiteURL || !strings.Contains(texts(pl), "geo.other.example") {
+		t.Fatalf("%s %+v %s", pl.err, pl.next.Prefs, texts(pl))
+	}
+}
+
+// «Серверы» and «Группы серверов: Заменить» with a current group a rule
+// still names: the group stays with its last members (not emptied), and
+// under " (2)" when a group of the copy has its name.
+func TestPlanReplacedGroupKeepsMembersAndName(t *testing.T) {
+	m1, m2 := srv("aaaaaaaa0001", "M1", "m1.example"), srv("aaaaaaaa0002", "M2", "m2.example")
+	cur := baseState(m1, m2)
+	cur.Groups.Groups = []groups.Group{{ID: "grp-000000000001", Name: "Авто", Strategy: groups.Failover, Members: []string{m1.ID, m2.ID}}}
+	cur.Settings.Rules = []rules.Rule{{Name: "g", Apps: []rules.AppMatch{{Pattern: "g.exe"}}, Action: rules.Tunnel, Profile: "grp-000000000001"}}
+	x := srv("aaaaaaaa0009", "X", "x.example")
+	file := groups.File{Version: 1, Groups: []groups.Group{{ID: "grp-000000000009", Name: "авто", Strategy: groups.Failover, Members: []string{x.ID}}}}
+	p := payload(true).put("servers", bkServers{Main: x.ID, List: []hysteria.Profile{x}}).put("groups", file).p
+	pl := plan(cur, p, map[string]string{"servers": "replace", "groups": "replace"})
+	if pl.err != "" {
+		t.Fatal(pl.err)
+	}
+	for _, id := range []string{m1.ID, m2.ID} {
+		if pl.next.Profiles.Find(id) == nil {
+			t.Fatalf("%s removed: %s", id, texts(pl))
+		}
+	}
+	g := pl.next.Groups.Find("grp-000000000001")
+	if g == nil || g.Name != "Авто (2)" || len(g.Members) != 2 {
+		t.Fatalf("%+v\n%s", g, texts(pl))
 	}
 }

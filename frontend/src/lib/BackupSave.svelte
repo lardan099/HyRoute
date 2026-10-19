@@ -69,11 +69,19 @@
       busy = false;
     }
   }
+  // A press that started in a field and ended on the backdrop is not a
+  // click on the backdrop.
+  let downOnBackdrop = false;
 </script>
 
 <svelte:window onkeydown={(e) => e.key === 'Escape' && !e.defaultPrevented && !busy && onclose('')} />
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && !busy && onclose('')}>
+<div
+  class="backdrop"
+  role="presentation"
+  onmousedown={(e) => (downOnBackdrop = e.target === e.currentTarget)}
+  onclick={(e) => downOnBackdrop && e.target === e.currentTarget && !busy && onclose('')}
+>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="bk-save-title">
     <div class="row">
       <h2 class="grow" id="bk-save-title">Сохранить резервную копию</h2>

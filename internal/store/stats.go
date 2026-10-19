@@ -205,7 +205,14 @@ func (f *StatsFiles) SweepTemp(before time.Time) (int, error) {
 	if err != nil || !ok {
 		return 0, err
 	}
-	ents, err := os.ReadDir(f.dir())
+	return sweepTempIn(f.dir(), before)
+}
+
+// sweepTempIn removes the writeAtomic leftovers (".tmp-*", a file or a
+// link, older than before) of a run that was killed between creating and
+// renaming one.
+func sweepTempIn(dir string, before time.Time) (int, error) {
+	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return 0, err
 	}
@@ -214,7 +221,7 @@ func (f *StatsFiles) SweepTemp(before time.Time) (int, error) {
 		if !strings.HasPrefix(e.Name(), ".tmp-") {
 			continue
 		}
-		p := filepath.Join(f.dir(), e.Name())
+		p := filepath.Join(dir, e.Name())
 		fi, err := os.Lstat(p)
 		if err != nil || fi.IsDir() || !fi.Mode().IsRegular() && fi.Mode()&fs.ModeSymlink == 0 || !fi.ModTime().Before(before) {
 			continue
@@ -224,6 +231,18 @@ func (f *StatsFiles) SweepTemp(before time.Time) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// SweepTemp removes the writeAtomic leftovers older than before in the
+// data folder and subs\ (StatsFiles.SweepTemp does stats\, geo its own).
+func (s *Store) SweepTemp(before time.Time) int {
+	n := 0
+	for _, dir := range []string{s.Dir, filepath.Join(s.Dir, "subs")} {
+		if k, err := sweepTempIn(dir, before); err == nil {
+			n += k
+		}
+	}
+	return n
 }
 
 // earlierFiles are the files whose presence before the statistics' mode

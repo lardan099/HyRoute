@@ -43,7 +43,23 @@ jobs:
         with:
           go-version: '1.27.x'
           check-latest: true
+      - name: gofmt
+        # On Linux: a Windows checkout may turn the line ends into CRLF.
+        run: |
+          files=$(gofmt -l cmd internal build tools frontend/*.go web/admin/*.go)
+          test -z "$files" || { echo "$files"; echo "::error::gofmt -l lists these files: run gofmt -w on them"; exit 1; }
+      # The Linux build (hyroute-server) has code of its own: vet and the
+      # vulnerability check also for GOOS=linux.
+      - run: go vet ./...
+      - name: Known vulnerabilities (govulncheck)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+      - name: WinDivert's filter compiler (tools/wdfilter)
+        run: ./tools/wdfilter/build.sh
       - run: go test -race ./...
+        env:
+          # The filter tests run through WinDivert's own compiler: a main
+          # filter over 256 tests makes «Подключить» fail.
+          HYROUTE_WDFILTER: ${{ github.workspace }}/tools/wdfilter/wdfilter
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
@@ -53,7 +69,20 @@ jobs:
           npm ci
           npx svelte-check --threshold warning
           npm run build
+      - name: UI Privacy mode masks as logx.Sanitize
+        working-directory: frontend
+        run: node --experimental-strip-types scripts/privacy-check.mjs
       - name: frontend/dist matches the sources
         run: |
           git status --porcelain frontend/dist
           test -z "$(git status --porcelain frontend/dist)" || { echo "::error::frontend/dist is stale: run npm run build in frontend and commit it"; exit 1; }
+      - name: Server manager admin type check and build
+        working-directory: web/admin
+        run: |
+          npm ci
+          npx svelte-check --threshold warning
+          npm run build
+      - name: web/admin/dist matches the sources
+        run: |
+          git status --porcelain web/admin/dist
+          test -z "$(git status --porcelain web/admin/dist)" || { echo "::error::web/admin/dist is stale: run npm run build in web/admin and commit it"; exit 1; }

@@ -46,9 +46,11 @@ type UDPAssoc struct {
 }
 
 // UDPAssociate opens an association. Hysteria binds the association to the
-// first sender address, so one UDPAssoc must be used from one local socket.
+// first sender address, so one UDPAssoc must be used from one local socket,
+// and one no other program can bind too (ListenUDP): it would get answers
+// meant for this association and send through it.
 func (c *Client) UDPAssociate(ctx context.Context) (*UDPAssoc, error) {
-	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	pc, err := ListenUDP("udp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}

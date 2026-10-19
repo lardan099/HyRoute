@@ -396,19 +396,29 @@ func (c *Controller) GeoCategories(kind, query string, limit int) []string {
 // the same lock order: that save compiled its rules with the old
 // databases and would otherwise publish them last.
 func (c *Controller) recompileRules() {
+	// Every writer of the settings holds saveMu, so they stay as read
+	// while the compile runs without c.mu: after DB.Forget it decodes
+	// each category again (ru-blocked-all: over a million names).
 	c.saveMu.Lock()
 	defer c.saveMu.Unlock()
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.settings == nil {
+	st := c.settings
+	c.mu.Unlock()
+	if st == nil {
 		return
 	}
-	set, err := rules.Compile(c.settings.Config)
+	runCompileHook()
+	set, err := rules.Compile(st.Config)
 	if err != nil {
 		c.Log.Warn("rules: recompile failed", "err", err)
 		return
 	}
-	set.ExactWeb = c.settings.ExactWeb()
+	set.ExactWeb = st.ExactWeb()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.settings != st {
+		return
+	}
 	c.set = set
 	c.applyRoutingLocked()
 }
@@ -442,10 +452,10 @@ func (c *Controller) geoDue() (geodata.Source, bool) {
 		// prefs.json did not load: the source in memory is the default,
 		// not the user's. Only a database a rule needs and none is there
 		// is downloaded; the user's are not replaced.
-		if !site || st.Site != nil {
+		if !site || st.Site != nil && !c.geo.db.Missing(geodata.Site) {
 			src.Site = ""
 		}
-		if !ip || st.IP != nil {
+		if !ip || st.IP != nil && !c.geo.db.Missing(geodata.IP) {
 			src.IP = ""
 		}
 		return src, (src.Site != "" || src.IP != "") && geoLinksErr(src) == nil
@@ -465,7 +475,8 @@ func (c *Controller) geoDue() (geodata.Source, bool) {
 	for _, k := range []geodata.Kind{geodata.Site, geodata.IP} {
 		// Not downloaded, or from another source or old custom links (a
 		// file the user rolled back to is kept for this source).
-		if u := src.URL(k); u != "" && !st.From(k, u) && !st.Held(k, u) {
+		// Or the file is gone (geo.json alone does not show it).
+		if u := src.URL(k); u != "" && (!st.From(k, u) && !st.Held(k, u) || c.geo.db.Missing(k)) {
 			return src, true // a rule waits for data: even with auto-update off
 		}
 	}

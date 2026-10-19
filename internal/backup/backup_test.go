@@ -225,7 +225,12 @@ func TestLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pf.Open("password1"); !errors.Is(err, ErrTooLarge) {
+	if _, err := pf.Open("password1"); !errors.Is(err, ErrPayloadOpen) {
+		t.Fatal(err)
+	}
+	// Encode refuses what Open would, though gzip makes the file small.
+	big := json.RawMessage(`"` + strings.Repeat("a", MaxPayload) + `"`)
+	if _, err := Encode(&Payload{App: "1.3.0", Secrets: true, Sections: map[string]json.RawMessage{"rules": big}}, "password1"); !errors.Is(err, ErrPayloadBig) {
 		t.Fatal(err)
 	}
 }

@@ -169,6 +169,9 @@ type Client struct {
 	Password string
 	// HandshakeTimeout bounds greeting+auth+request (default 10s).
 	HandshakeTimeout time.Duration
+	// Dial opens the connection to the proxy (nil: TCP to Server), e.g.
+	// through an SSH tunnel.
+	Dial func(ctx context.Context) (net.Conn, error)
 }
 
 func (c *Client) timeout() time.Duration {
@@ -185,8 +188,14 @@ func (c *Client) Connect(ctx context.Context, dst Addr) (net.Conn, error) {
 }
 
 func (c *Client) request(ctx context.Context, cmd byte, dst Addr) (net.Conn, Addr, error) {
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", c.Server)
+	var conn net.Conn
+	var err error
+	if c.Dial != nil {
+		conn, err = c.Dial(ctx)
+	} else {
+		var d net.Dialer
+		conn, err = d.DialContext(ctx, "tcp", c.Server)
+	}
 	if err != nil {
 		return nil, Addr{}, err
 	}

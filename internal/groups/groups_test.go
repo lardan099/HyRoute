@@ -148,7 +148,7 @@ func TestParseAcceptsEmptyAndDangling(t *testing.T) {
 func TestValidateProbe(t *testing.T) {
 	for _, ok := range []Probe{
 		{}, {URL: DefaultProbeURL}, {URL: "https://www.gstatic.com/generate_204"}, {URL: "http://example.com:8080/a/b?c=d"},
-		{URL: "http://203.0.113.9/x"}, {IntervalSec: 30}, {IntervalSec: 600},
+		{URL: "http://203.0.113.9/x"}, {IntervalSec: 30}, {IntervalSec: 600}, {URL: "https://example.com:65535/"},
 	} {
 		if err := ValidateProbe(ok); err != nil {
 			t.Errorf("%+v: %v", ok, err)
@@ -159,6 +159,7 @@ func TestValidateProbe(t *testing.T) {
 		{URL: "http://127.0.0.1/"}, {URL: "http://10.1.2.3/"}, {URL: "http://[::1]/"}, {URL: "http://169.254.1.1/"},
 		{URL: "http://localhost/"}, {URL: "http://LOCALHOST./"}, {URL: "http://0.0.0.0/"}, {URL: "http://192.168.1.1/"},
 		{URL: "http://example.com/" + strings.Repeat("a", 494)}, {IntervalSec: 29}, {IntervalSec: 601},
+		{URL: "https://example.com:0/"}, {URL: "http://example.com:70000/"},
 	} {
 		if err := ValidateProbe(bad); err == nil {
 			t.Errorf("%+v accepted", bad)

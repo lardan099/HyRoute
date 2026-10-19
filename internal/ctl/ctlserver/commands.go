@@ -400,6 +400,7 @@ func cmdRulesImport(r *request, a any) (any, *ctl.Error) {
 	}
 	api.Log().Info("command line: rules import", "rules", len(res.Rules), "replace", args.Replace)
 	v.Saved, v.Summary, v.Rules, v.Warnings = true, res.Summary, len(res.Rules), lines(res.Warnings)
+	v.Skipped, v.Enabled = res.Skipped, res.Enabled
 	return v, nil
 }
 
@@ -460,6 +461,9 @@ func cmdSubsUpdate(r *request, a any) (any, *ctl.Error) {
 			v.Error = err.Error()
 		}
 		out = append(out, v)
+		if i < len(ids)-1 {
+			r.beat() // one subscription done: the client's time starts again
+		}
 	}
 	return out, nil
 }

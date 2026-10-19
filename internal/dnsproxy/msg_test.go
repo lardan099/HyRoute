@@ -221,6 +221,20 @@ func TestReply(t *testing.T) {
 			t.Fatalf("negative %v: ttl %d min %d", rc, m.Authorities[0].Header.TTL, s.MinTTL)
 		}
 	}
+	// NODATA after a CNAME chain is a negative too: its SOA is clamped,
+	// and the cache keeps it for the SOA's minute, not the CNAME's TTL.
+	q6 := mustQuery(t, query(t, "www.example.com.", dnsmessage.TypeAAAA, 0, false))
+	up = answer(t, q6, dnsmessage.RCodeSuccess, []rr{{"www.example.com.", dnsmessage.TypeCNAME, 3600, "cdn.example.net."}}, soa, 3600, false)
+	out, _, err = Reply(q6, up, ReplyOpts{Max: 512, Tunnel: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := unpack(t, out); m.Authorities[0].Header.TTL != 60 || m.Authorities[0].Body.(*dnsmessage.SOAResource).MinTTL != 60 {
+		t.Fatalf("NODATA after CNAME: %+v", m.Authorities[0])
+	}
+	if ttl := ttlOf(up); ttl != MaxNegativeTTL*time.Second {
+		t.Fatalf("ttlOf %v", ttl)
+	}
 	// EDNS client: our size, no options.
 	qe := mustQuery(t, query(t, "www.example.com.", dnsmessage.TypeA, 4096, true))
 	out, _, _ = Reply(qe, answer(t, qe, dnsmessage.RCodeSuccess, []rr{{"www.example.com.", dnsmessage.TypeA, 60, "1.2.3.4"}}, nil, 0, true), ReplyOpts{Max: 4096})
@@ -241,6 +255,19 @@ func TestReply(t *testing.T) {
 	out, trunc, _ = Reply(qe, big, ReplyOpts{Max: 512})
 	if m := unpack(t, out); !trunc || !m.Header.Truncated || len(m.Answers) != 0 || len(m.Questions) != 1 || len(m.Additionals) != 1 {
 		t.Fatalf("truncated: %v %+v", trunc, m)
+	}
+	// NoTC (the retry over TCP would not come back): as many addresses as
+	// fit, no TC; a CNAME on the way stays.
+	chain := append([]rr{{"www.example.com.", dnsmessage.TypeCNAME, 60, "cdn.example.net."}}, many...)
+	for i := range chain[1:] {
+		chain[1+i].name = "cdn.example.net."
+	}
+	out, trunc, err = Reply(qe, answer(t, qe, dnsmessage.RCodeSuccess, chain, soa, 60, false), ReplyOpts{Max: 512, NoTC: true})
+	if m := unpack(t, out); err != nil || trunc || m.Header.Truncated || len(out) > 512 || len(m.Answers) < 2 || len(m.Answers) > 30 || m.Answers[0].Header.Type != dnsmessage.TypeCNAME {
+		t.Fatalf("no TC: %v %v %d answers", err, trunc, len(m.Answers))
+	}
+	if _, _, err := Reply(qe, big, ReplyOpts{Max: 40, NoTC: true}); err == nil {
+		t.Fatal("NoTC: nothing fits, yet an answer")
 	}
 	// Mismatches are errors.
 	other := mustQuery(t, query(t, "other.example.", dnsmessage.TypeA, 0, false))

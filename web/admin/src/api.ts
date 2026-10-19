@@ -1,0 +1,1432 @@
+// Client of the controller API (/api/v1). Every failure is an ApiError with
+// the structured error of the server: message for people, details for the
+// technical cause. Writes carry the CSRF token of the session.
+
+import { t } from './i18n';
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    public code: string,
+    message: string,
+    public details = '',
+    public data: Record<string, string> = {},
+  ) {
+    super(message);
+  }
+}
+
+let csrfToken = '';
+let onUnauthorized: () => void = () => {};
+
+export function setCSRF(token: string) {
+  csrfToken = token;
+}
+
+// whenUnauthorized is called when a request finds the session gone.
+export function whenUnauthorized(fn: () => void) {
+  onUnauthorized = fn;
+}
+
+export function asApiError(e: unknown): ApiError {
+  return e instanceof ApiError ? e : new ApiError(0, 'unknown', t('error.unknown'), String(e));
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (method !== 'GET' && csrfToken) headers['X-CSRF-Token'] = csrfToken;
+  let res: Response;
+  try {
+    res = await fetch('/api/v1' + path, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: 'same-origin',
+    });
+  } catch (e) {
+    throw new ApiError(0, 'network', t('error.network'), String(e));
+  }
+  if (res.status === 204) return undefined as T;
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const err = data?.error;
+    const e = new ApiError(res.status, err?.code ?? 'unknown', err?.message ?? t('error.unknown'), err?.details ?? '', err?.data ?? {});
+    // Login, the session check and logout handle their own 401; any other
+    // one (/sessions/{id} too) is the end of this session.
+    if (e.code === 'unauthorized' && path !== '/session') onUnauthorized();
+    throw e;
+  }
+  return data as T;
+}
+
+// requestText is a GET whose answer is text (a file to save).
+async function requestText(path: string): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetch('/api/v1' + path, { credentials: 'same-origin' });
+  } catch (e) {
+    throw new ApiError(0, 'network', t('error.network'), String(e));
+  }
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null))?.error;
+    throw new ApiError(res.status, err?.code ?? 'unknown', err?.message ?? t('error.unknown'), err?.details ?? '', err?.data ?? {});
+  }
+  return res.text();
+}
+
+export interface Health {
+  status: string;
+  version: string;
+  schemaVersion: number;
+}
+
+export type Role = 'owner' | 'admin' | 'operator' | 'clients' | 'readonly';
+
+// Permission is one thing a user may do; a role is a fixed set of them.
+// Those held on servers reach the servers of the user's scope only.
+export type Permission =
+  | 'view'
+  | 'service'
+  | 'config'
+  | 'deploy'
+  | 'clients.reveal'
+  | 'clients.manage'
+  | 'credentials'
+  | 'chains'
+  | 'presets'
+  | 'users'
+  | 'settings';
+
+// Scope: all servers, or those with one of the tags.
+export interface Scope {
+  all?: boolean;
+  tags?: string[];
+}
+
+export interface User {
+  id: number;
+  username: string;
+  role: Role;
+  disabled: boolean;
+  createdAt: string;
+  // lastLoginAt: null when no login is known.
+  lastLoginAt: string | null;
+  // scope: the servers the user reaches; only for those who manage users
+  // (and one's own).
+  scope?: Scope;
+}
+
+// RoleInfo is a built-in role with what it may do.
+export interface RoleInfo {
+  role: Role;
+  permissions: Permission[];
+  // unscoped: the role always reaches every server.
+  unscoped: boolean;
+}
+
+// AuditEntry is a line of the audit log: who did what to which object.
+export interface AuditEntry {
+  id: number;
+  time: string;
+  userId: number;
+  // user: the name of userId ('' for none or a deleted user).
+  user: string;
+  action: string;
+  // target: 'server/3', 'chain/2', 'user/4', 'preset/1' or a typed name.
+  target: string;
+  // object: the name of the target while it exists.
+  object: string;
+  details: string;
+}
+
+export interface AuditFilter {
+  user?: number;
+  // action: one or several, comma-separated.
+  action?: string;
+  // target: 'server/3', or 'server/' for every server.
+  target?: string;
+  // from, to: ISO times, to exclusive.
+  from?: string;
+  to?: string;
+  before?: number;
+  limit?: number;
+}
+
+export interface SessionState {
+  user: User;
+  // permissions: the role's; those held on servers reach user.scope.
+  permissions: Permission[];
+  csrfToken: string;
+}
+
+export interface SessionInfo {
+  id: number;
+  userId: number;
+  current: boolean;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  ip: string;
+  userAgent: string;
+}
+
+export interface BackupInfo {
+  name: string;
+  size: number;
+  at: string;
+  encrypted: boolean;
+}
+
+export interface Backups {
+  // interval: the schedule in seconds (0: by hand only).
+  interval: number;
+  keep: number;
+  encrypted: boolean;
+  dir: string;
+  last: { at: string; name?: string; error?: string };
+  items: BackupInfo[];
+}
+
+export interface KeyCheck {
+  ok: boolean;
+  versions: { version: number; status: 'ok' | 'wrong' | 'missing' }[];
+  unused: number[];
+}
+
+// DiagFiles lists the files of the diagnostic bundle before its download.
+export interface DiagFiles {
+  name: string;
+  jobs: number;
+  // controllerLog: the bundle has the panel's log buffer.
+  controllerLog: boolean;
+  size: number;
+  files: { name: string; about: string; size: number }[];
+}
+
+// Events and the summary «Требует внимания» (P4-05). Texts name servers
+// and cascades, never addresses.
+export type Severity = 'critical' | 'warning' | 'info';
+export type EventKind = 'server' | 'link' | 'job' | 'attention' | 'host_key' | 'ssh_auth' | 'disk' | 'geo' | 'network' | 'drift';
+export type Subject = 'server' | 'chain' | 'job' | 'controller';
+
+export interface EventInfo {
+  id: number;
+  kind: EventKind;
+  severity: Severity;
+  subject: Subject;
+  subjectId: number;
+  text: string;
+  count: number;
+  openedAt: string;
+  lastAt: string;
+  closedAt: string | null;
+  closeText: string;
+}
+
+export interface AttentionItem {
+  kind: string;
+  severity: Severity;
+  subject: Subject;
+  subjectId?: number;
+  // name: the server's or cascade's ('' for the controller).
+  name: string;
+  text: string;
+  since?: string;
+}
+
+export interface Attention {
+  items: AttentionItem[];
+  // network: the controller has no network (null: it has).
+  network: EventInfo | null;
+  monitoring: boolean;
+}
+
+// Notification channels (P4-05b). Secrets are never sent back: hasSecret
+// says one is stored.
+export type ChannelKind = 'telegram' | 'webhook' | 'smtp';
+
+export interface QuietHours {
+  from: string;
+  to: string;
+  zone: string;
+}
+
+export interface AlertChannel {
+  id: number;
+  name: string;
+  kind: ChannelKind;
+  enabled: boolean;
+  settings: Record<string, unknown>;
+  // events: the kinds sent ([]: every kind).
+  events: EventKind[];
+  quiet: QuietHours;
+  hasSecret: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChannelInput {
+  name: string;
+  kind?: ChannelKind;
+  enabled: boolean;
+  settings: Record<string, unknown>;
+  events: EventKind[];
+  quiet: QuietHours;
+  // secret: a new one (undefined keeps the stored one); clearSecret
+  // removes it.
+  secret?: string;
+  clearSecret?: boolean;
+}
+
+export type AuthType = 'password' | 'key';
+export type ServerRole = 'standalone' | 'entry' | 'relay' | 'exit';
+export type ServerState = 'new' | 'deploying' | 'healthy' | 'degraded' | 'offline' | 'needs_attention';
+
+export interface Server {
+  id: number;
+  name: string;
+  tags: string[];
+  country: string;
+  location: string;
+  host: string;
+  sshPort: number;
+  sshUser: string;
+  authType: AuthType;
+  role: ServerRole;
+  notes: string;
+  state: ServerState;
+  createdAt: string;
+  updatedAt: string;
+  hasPassword: boolean;
+  hasKey: boolean;
+  hasKeyPassphrase: boolean;
+  hostKey: HostKey | null;
+  // hopInterval of the client links, seconds (0: the client's default).
+  hopInterval: number;
+  // chains are the cascades the server is a node of.
+  chains: { id: number; name: string; state: LinkState }[];
+  // perms: what the caller may do on this server.
+  perms: Permission[];
+}
+
+// PortsInput changes the ports of a server (an apply job) and the hop
+// interval of its client links (saved at once).
+export interface PortsInput {
+  base: number;
+  ports: string[];
+  // host: '' every address (IPv4 and IPv6), '0.0.0.0' IPv4 only, or an
+  // address of the server.
+  host: string;
+  hopInterval: number;
+}
+
+export interface HostKey {
+  type: string;
+  fingerprint: string;
+  trustedAt: string;
+}
+
+export interface Probe {
+  user: string;
+  root: boolean;
+  sudo: boolean;
+  hostname: string;
+  kernel: string;
+  arch: string;
+}
+
+export interface CheckResult {
+  ok: boolean;
+  probe: Probe;
+  warning?: { code: string; message: string };
+}
+
+export type JobState =
+  | 'queued'
+  | 'connecting'
+  | 'preflight'
+  | 'downloading'
+  | 'installing'
+  | 'configuring'
+  | 'firewall'
+  | 'starting'
+  | 'verifying'
+  | 'rolling_back'
+  | 'recovering'
+  | 'completed'
+  | 'failed';
+
+export type StepState = 'pending' | 'running' | 'done' | 'skipped' | 'failed' | 'rolled_back';
+
+export interface Job {
+  id: number;
+  kind: string;
+  serverId: number;
+  // The other servers the job changes (a cascade link: entry and exit).
+  servers: number[];
+  state: JobState;
+  currentStep: string;
+  params: Record<string, unknown>;
+  data: Record<string, string>;
+  attempt: number;
+  errorMessage: string;
+  errorDetails: string;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface JobStep {
+  idx: number;
+  name: string;
+  phase: JobState;
+  state: StepState;
+  attempt: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string;
+}
+
+export interface JobDetail extends Job {
+  steps: JobStep[];
+  // mayRetry: the caller's role may retry the job.
+  mayRetry: boolean;
+}
+
+export interface JobLog {
+  seq: number;
+  time: string;
+  level: string;
+  step: string;
+  message: string;
+}
+
+export interface PreflightCheck {
+  id: string;
+  level: 'ok' | 'warn' | 'fail';
+  title: string;
+  details?: string;
+}
+
+export interface PreflightReport {
+  user: string;
+  root: boolean;
+  os: string;
+  kernel: string;
+  arch: string;
+  hysteriaArch: string;
+  cpus: number;
+  memoryMiB: number;
+  diskFreeMiB: number;
+  firewall: string;
+  github: boolean;
+  hysteria: { installed: boolean; version?: string; unit?: string; active?: boolean };
+  checks: PreflightCheck[];
+  blocked: boolean;
+}
+
+export type TLSMode = 'self-signed' | 'acme';
+export type DeploySource = 'auto' | 'direct' | 'relay' | 'node';
+
+// The Hysteria version HyRoute deploys unless asked otherwise (its hashes
+// are pinned in hyrelease).
+export const defaultHysteria = 'v2.12.3';
+
+export type MaintainOp = 'upgrade' | 'reinstall';
+
+export interface MaintainParams {
+  op: MaintainOp;
+  version?: string;
+  source?: DeploySource;
+  // via: the server that provides the binary (source 'node').
+  via?: number;
+}
+
+export type ACMEChallenge = 'http' | 'tls' | 'dns';
+export type MasqType = '' | 'proxy' | 'file' | 'string';
+export type OutboundType = '' | 'direct' | 'socks5' | 'http';
+
+// DeployParams are the choices of a deploy (deploy.Params); passwords and
+// the certificate are made by the controller (a redeploy keeps them). A
+// missing advanced value leaves Hysteria's default.
+export interface DeployParams {
+  version?: string;
+  port?: number;
+  hopPorts?: string;
+  tls: TLSMode;
+  domain?: string;
+  email?: string;
+  challenge?: ACMEChallenge;
+  dnsProvider?: string;
+  sni?: string;
+  obfs?: boolean;
+  // masquerade: the site of the proxy masquerade.
+  masquerade?: string;
+  masq?: { type?: MasqType; dir?: string; text?: string; status?: number; tcp?: boolean };
+  // auth: '' keeps the current config's (a new server: a password).
+  auth?: '' | 'password' | 'userpass';
+  users?: string[];
+  bandwidth?: { upMbps?: number; downMbps?: number; ignoreClient?: boolean };
+  quic?: { streamWindowMB?: number; connWindowMB?: number; idleTimeout?: number; maxStreams?: number; disableMTUDiscovery?: boolean };
+  udp?: { disable?: boolean; idleTimeout?: number };
+  sniff?: { enable?: boolean; timeout?: number; rewriteDomain?: boolean; tcpPorts?: string; udpPorts?: string };
+  outbound?: { type?: OutboundType; mode?: string; bindIPv4?: string; bindIPv6?: string; bindDevice?: string; addr?: string; user?: string };
+  // preset: sections of a preset laid over the config (not ports, obfs);
+  // name: the preset's in a job's params (Submit reads it again by id).
+  preset?: { id: number; sections: PresetSection[]; name?: string };
+  source?: DeploySource;
+  via?: number;
+  keepFirewall?: boolean;
+  replace?: boolean;
+  // overwrite: replace a current config no deploy made (edited, rolled
+  // back, imported); without it the controller answers 409 config_changed.
+  overwrite?: boolean;
+}
+
+// DeploySecrets are what only the admin knows (deploy.Input): sealed with
+// the job, never in its params. An empty value keeps the current one.
+export interface DeploySecrets {
+  dns?: Record<string, string>;
+  outPassword?: string;
+}
+
+// dnsProviders are the DNS providers Hysteria issues certificates with and
+// the keys of their settings (deploy.DNSProviders).
+export const dnsProviders: Record<string, { key: string; required: boolean }[]> = {
+  cloudflare: [{ key: 'cloudflare_api_token', required: true }],
+  duckdns: [
+    { key: 'duckdns_api_token', required: true },
+    { key: 'duckdns_override_domain', required: false },
+  ],
+  gandi: [{ key: 'gandi_api_token', required: true }],
+  godaddy: [{ key: 'godaddy_api_token', required: true }],
+  namecheap: [
+    { key: 'namecheap_api_user', required: true },
+    { key: 'namecheap_api_key', required: true },
+    { key: 'namecheap_api_endpoint', required: false },
+    { key: 'namecheap_client_ip', required: false },
+  ],
+  njalla: [{ key: 'njalla_api_token', required: true }],
+  porkbun: [
+    { key: 'porkbun_api_key', required: true },
+    { key: 'porkbun_api_secret_key', required: true },
+  ],
+  vultr: [{ key: 'vultr_api_token', required: true }],
+};
+
+export type ConfigSource = 'deploy' | 'import' | 'edit' | 'rollback' | 'rotate' | 'cascade' | 'geo' | 'external';
+
+// Rotation: what gets new values (users: of userpass auth; none: all).
+export interface Rotation {
+  auth: boolean;
+  users?: string[];
+  obfs: boolean;
+  cert: boolean;
+}
+
+// ServerConfig is the current config revision of a server: its summary,
+// never the config itself.
+export interface ServerConfig {
+  revision: number;
+  sha256: string;
+  source: ConfigSource;
+  fromRevision?: number;
+  jobId: number;
+  createdAt: string;
+  meta: ConfigMeta;
+  // installed: the Hysteria version of the server's installation (an
+  // upgrade changes it, not the revision's meta).
+  installed?: string;
+  // keepFirewall: the deploy was told to leave the firewall alone.
+  keepFirewall?: boolean;
+}
+
+// ConfigRevision is a revision in the config history (no config text).
+export interface ConfigRevision {
+  revision: number;
+  source: ConfigSource;
+  fromRevision?: number;
+  meta: ConfigMeta;
+  jobId?: number;
+  by?: string;
+  createdAt: string;
+  current: boolean;
+}
+
+// ConfigComparison is what changes from one revision to another, secrets
+// only as paths.
+export interface ConfigComparison {
+  from: number;
+  to: number;
+  diff: DiffLine[];
+  secrets: string[];
+}
+
+// ConfigMeta is the non-secret summary of a revision.
+export interface ConfigMeta {
+  version?: string;
+  listen?: string;
+  ports?: string;
+  tls?: string;
+  pinSHA256?: string;
+  sni?: string;
+  obfs?: string;
+  auth?: string;
+}
+
+export interface ImportFinding {
+  id: string;
+  level: 'warn' | 'info';
+  title: string;
+  details?: string;
+}
+
+// ImportReport is what an import found on a server (no secrets).
+export interface ImportReport {
+  unit: string;
+  unitPath: string;
+  binary: string;
+  version: string;
+  config: string;
+  user: string;
+  active: boolean;
+  enabled: boolean;
+  others?: string[];
+  meta: ServerConfig['meta'];
+  unknown?: string[];
+  // findings: null in the reports of earlier builds without findings.
+  findings: ImportFinding[] | null;
+}
+
+export interface ServiceStatus {
+  unit: string;
+  state: string;
+  subState: string;
+  active: boolean;
+  enabled: boolean;
+  pid?: number;
+  restarts: number;
+  uptimeSec: number;
+  memoryMiB: number;
+  version: string;
+  // managed: HyRoute installed it (a reinstall is possible).
+  managed: boolean;
+  ports: number[];
+  system: {
+    uptimeSec: number;
+    load: [number, number, number];
+    cpus: number;
+    memTotalMiB: number;
+    memAvailMiB: number;
+    diskFreeMiB: number;
+    checkedAt: string;
+  };
+}
+
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+// JournalEntry is a record of the Hysteria journal, redacted.
+export interface JournalEntry {
+  time: string;
+  level: LogLevel;
+  message: string;
+}
+
+export interface LogEntry {
+  time: string;
+  level: LogLevel;
+  message: string;
+  attrs?: string;
+  serverId?: number;
+  jobId?: number;
+  kind?: string;
+  step?: string;
+}
+
+export type ServiceAction = 'start' | 'stop' | 'restart';
+
+// Hidden stands for a secret the editor does not show; keeping it keeps
+// the current value.
+export const HIDDEN = '[REDACTED]';
+
+// MetricPoint is one monitoring point: MiB, percent, bytes per second.
+export interface MetricPoint {
+  t: string;
+  cpu: number | null;
+  memUsed: number;
+  memTotal: number;
+  diskUsed: number;
+  diskTotal: number;
+  load1: number;
+  rx: number | null;
+  tx: number | null;
+}
+
+export type MetricPeriod = '1h' | '6h' | '24h' | '48h' | '7d' | '30d';
+
+export interface MetricSeries {
+  period: MetricPeriod;
+  step: number; // 0: samples; else seconds per average
+  from: string;
+  to: string;
+  points: MetricPoint[];
+}
+
+export interface HealthCheck {
+  at: string;
+  status: ServerState;
+  reason?: string;
+  sshMs: number;
+  service?: string;
+  listening: boolean | null;
+  udp: 'ok' | 'no_answer' | 'error' | 'skipped';
+  udpMs?: number;
+  egress?: string;
+}
+
+export type TrafficPeriod = '24h' | '7d' | '30d' | '90d';
+
+// Traffic of a server's Hysteria users: tx is the client's upload, rx its
+// download.
+export interface ServerTraffic {
+  period: TrafficPeriod;
+  from: string;
+  to: string;
+  enabled: boolean;
+  hours: { t: string; tx: number; rx: number }[];
+  users: { user: string; tx: number; rx: number }[];
+}
+
+export interface TrafficOnline {
+  at: string;
+  users: { user: string; connections: number }[];
+}
+
+export interface TrafficStream {
+  state: string;
+  user: string;
+  connection: number;
+  stream: number;
+  addr: string;
+  hookedAddr: string;
+  tx: number;
+  rx: number;
+  since: string;
+  lastActive: string;
+}
+
+export interface TrafficStreams {
+  at: string;
+  total: number;
+  streams: TrafficStream[];
+}
+
+export interface ServerHealth {
+  latest: HealthCheck | null;
+  changes: HealthCheck[];
+}
+
+export interface LatestMetric extends MetricPoint {
+  serverId: number;
+}
+
+// ConfigFields are the main settings of a server config.
+export interface ConfigFields {
+  listen: string;
+  tls: '' | 'file' | 'acme';
+  cert: string;
+  key: string;
+  sniGuard: string;
+  acmeDomains: string[];
+  acmeEmail: string;
+  authType: string;
+  authPassword: string;
+  obfs: string;
+  obfsPassword: string;
+  masquerade: string;
+  masqueradeUrl: string;
+  rewriteHost: boolean;
+  bandwidthUp: string;
+  bandwidthDown: string;
+  ignoreClientBandwidth: boolean;
+  speedTest: boolean;
+  disableUDP: boolean;
+  udpIdleTimeout: string;
+  trafficStats: boolean;
+}
+
+export interface ConfigView {
+  revision: number;
+  sha256: string;
+  yaml: string;
+  fields: ConfigFields;
+}
+
+export interface DiffLine {
+  op: ' ' | '-' | '+';
+  text: string;
+}
+
+export interface ConfigProblem {
+  field: string;
+  message: string;
+  warning?: boolean;
+}
+
+export interface ConfigCheck {
+  yaml: string;
+  fields: ConfigFields;
+  problems: ConfigProblem[];
+  diff: DiffLine[];
+  secrets: string[];
+  ok: boolean;
+}
+
+export type PresetSection = 'ports' | 'obfs' | 'masquerade' | 'speed' | 'quic' | 'udp' | 'resolver' | 'sniff' | 'acl' | 'outbounds';
+
+// AclRule is one routing rule (acl.Rule): outbound(address[, proto/port[,
+// hijack]]). text is the line as read: the controller writes it back while
+// the fields say the same; a line Hysteria cannot read has only text.
+export interface AclRule {
+  outbound: string;
+  address: string;
+  proto?: string;
+  port?: string;
+  hijack?: string;
+  comment?: string;
+  group?: string;
+  off?: boolean;
+  text?: string;
+  before?: string[];
+}
+
+export interface AclDocument {
+  rules: AclRule[] | null;
+  tail?: string[];
+}
+
+// AclProblem: rule is the index in the rules (-1: the ACL as a whole); fix
+// are rules to add at the top.
+export interface AclProblem {
+  rule: number;
+  line?: number;
+  level: 'error' | 'warn';
+  code: string;
+  message: string;
+  detail?: string;
+  other?: number;
+  fix?: AclRule[];
+}
+
+// RoutingOutbound: a password the editor got as HIDDEN and sends back so
+// keeps the current one; from is the current name (rules follow a rename).
+export interface RoutingOutbound {
+  name: string;
+  from?: string;
+  type: string; // direct, socks5, http
+  direct?: { mode?: string; bindIPv4?: string; bindIPv6?: string; bindDevice?: string; fastOpen?: boolean };
+  socks5?: { addr: string; username?: string; password?: string };
+  http?: { url: string; password?: string; insecure?: boolean };
+  locked?: boolean;
+}
+
+export interface RoutingResolver {
+  type: 'system' | 'udp' | 'tcp' | 'tls' | 'https' | string;
+  addr?: string;
+  timeout?: string;
+  sni?: string;
+  insecure?: boolean;
+}
+
+// ChainRef names a cascade; hidden: one not wholly in the user's scope,
+// without its id and name (P4-04).
+export interface ChainRef {
+  id?: number;
+  name: string;
+  hidden?: boolean;
+}
+
+export interface RoutingView {
+  revision: number;
+  acl: AclDocument;
+  file?: string;
+  outbounds: RoutingOutbound[];
+  resolver: RoutingResolver;
+  cascade?: ChainRef;
+  problems: AclProblem[];
+}
+
+export interface AclRequest {
+  host: string;
+  ips?: string[];
+  proto?: string;
+  port: number;
+}
+
+export interface AclVerdict {
+  rule: number;
+  outbound: string;
+  hijack?: string;
+  builtin?: boolean;
+  reason: string;
+  unknown?: number[];
+}
+
+// RouteHop is what one server of a cascade does with a request; verdict
+// null: its rules were not read (error says why).
+export interface RouteHop {
+  serverId: number;
+  name: string;
+  role: ServerRole;
+  verdict?: AclVerdict;
+  error?: string;
+  next: boolean;
+}
+
+// RouteTrace is where a request goes along a cascade, server by server.
+export interface RouteTrace {
+  hops: RouteHop[];
+  rejected: boolean;
+  summary: string;
+}
+
+// RoutingCheck is the rule a request matches on a server and, when that
+// sends it into the server's cascade, the way on from there.
+export interface RoutingCheck extends AclVerdict {
+  chain?: RouteTrace;
+}
+
+export interface RoutingInput {
+  base: number;
+  acl: AclDocument;
+  keepFile?: boolean;
+  outbounds: RoutingOutbound[];
+  resolver: RoutingResolver;
+  requests?: AclRequest[];
+}
+
+export interface RoutingPreview extends ConfigCheck {
+  acl: AclDocument;
+  rules: AclProblem[];
+  changes: { request: AclRequest; before: AclVerdict; after: AclVerdict }[];
+  ok: boolean;
+  same: boolean;
+}
+
+export interface RoutingFile {
+  path: string;
+  acl: AclDocument;
+  problems: AclProblem[];
+}
+
+// RoutingTemplate is a set of rules (and outbounds without passwords) to
+// put at the top, at the end or instead of a server's rules.
+export interface RoutingTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  acl: AclDocument;
+  outbounds?: RoutingOutbound[];
+  resolver?: RoutingResolver;
+  builtin?: boolean;
+}
+
+// CatalogService is a service of the rule builder's catalog: its geosite
+// categories, geoip codes and domains.
+export interface CatalogService {
+  id: string;
+  name: string;
+  sites?: string[];
+  ips?: string[];
+  domains?: string[];
+  sample: string;
+}
+
+// ServicesState is the builder's group of a draft read back: choices are
+// service ID → outbound; edited: building it again would change it
+// (changes say what differs).
+export interface ServicesState {
+  found: boolean;
+  version?: number;
+  choices: Record<string, string>;
+  edited?: boolean;
+  changes?: string[];
+}
+
+// ServicesView is the «По сервисам» tab: the services whose categories
+// the controller's geo databases have, by section.
+export interface ServicesView {
+  version: number;
+  sections: { id: string; name: string; services: CatalogService[] }[];
+  hidden: CatalogService[];
+  noGeo?: boolean;
+  ownGeo?: boolean;
+  cascade?: ChainRef;
+  state: ServicesState;
+}
+
+// ChainTemplate is a cascade without servers and secrets: the link's
+// settings and, optionally, the entry's rules and resolver.
+export interface ChainTemplate {
+  format: string;
+  version: number;
+  id?: string;
+  name: string;
+  description?: string;
+  builtin?: boolean;
+  link: LinkParams;
+  entry?: { acl: AclDocument; outbounds?: RoutingOutbound[]; resolver?: RoutingResolver };
+}
+
+export interface GeoInfo {
+  release: string;
+  files: { name: string; sha256: string; size: number; url: string }[];
+  at: string;
+  checkedAt: string;
+}
+
+export interface ServerGeo {
+  release: string;
+  at?: string;
+  latest: boolean;
+  paths: boolean;
+  rules: boolean;
+}
+
+// ==== reconciliation (P4-06) ====
+
+export type DriftKind = 'config' | 'unit' | 'binary' | 'geo' | 'link';
+
+// DriftThing is a thing the reconciliation compares; a link with its
+// cascade (hops: how many links the cascade has; neither idx nor hops for
+// a hidden cascade).
+export interface DriftThing {
+  key: string;
+  kind: DriftKind;
+  chain?: ChainRef;
+  idx?: number;
+  hops?: number;
+}
+
+// DriftFile is a file that differs: SHA-256 recorded and found ('' — none).
+export interface DriftFile {
+  path: string;
+  want: string;
+  got: string;
+}
+
+export interface DriftItem extends DriftThing {
+  files: DriftFile[];
+  revision?: number;
+  // units: the files the unit is built from now (unit file, drop-ins).
+  units?: string[];
+  title: string;
+  summary: string;
+  since: string;
+  // job: the latest revert job.
+  job: { id: number; state: JobState; errorMessage?: string } | null;
+  canRevert: boolean;
+  revertNote?: string;
+  // diff, secrets: the config's masked diff (roles that may write).
+  diff?: DiffLine[];
+  secrets?: string[];
+  diffNote?: string;
+}
+
+export interface Drift {
+  // interval of the rounds, seconds (0: off).
+  interval: number;
+  at: string | null;
+  error?: string;
+  checked: DriftThing[];
+  skipped: DriftThing[];
+  items: DriftItem[];
+}
+
+// presetSections in config order; deploySections are those a deploy takes
+// (the form sets the ports and the obfuscation).
+export const presetSections: PresetSection[] = ['ports', 'obfs', 'masquerade', 'speed', 'quic', 'udp', 'resolver', 'sniff', 'acl', 'outbounds'];
+export const deploySections: PresetSection[] = ['masquerade', 'speed', 'quic', 'udp', 'resolver', 'sniff', 'acl', 'outbounds'];
+
+// ==== cascades (Phase 3; N nodes: P4-08) ====
+
+export type LinkState = 'new' | 'linking' | 'active' | 'stale' | 'unlinking' | 'failed';
+
+// LinkParams are a link's settings (no secrets).
+export interface LinkParams {
+  localPort?: number;
+  up?: string;
+  down?: string;
+  noUdp?: boolean;
+  checkTarget?: string;
+}
+
+// LinkCheck is one check of a link from its entry.
+export interface LinkCheck {
+  at: string;
+  status: ServerState;
+  reason: string;
+  service: string;
+  handshakeMs: number;
+  tcpMs: number;
+}
+
+export interface ChainNode {
+  serverId: number;
+  name: string;
+  role: ServerRole;
+}
+
+export interface ChainLink {
+  idx: number;
+  from: number;
+  to: number;
+  state: LinkState;
+  params: LinkParams;
+  updatedAt: string;
+  check: LinkCheck | null;
+}
+
+// UnreachableNode is a server «Удалить каскад» could not reach, with what
+// the link leaves there when the cascade is deleted without it.
+export interface UnreachableNode {
+  serverId: number;
+  name: string;
+  role: ServerRole;
+  left: string[];
+}
+
+// Chain is a cascade: servers in order, entry first, and the links.
+export interface Chain {
+  id: number;
+  name: string;
+  notes: string;
+  state: LinkState;
+  health: ServerState | '';
+  // latencyMs: the sum of the hops' latest handshakes (0: not known).
+  latencyMs: number;
+  egress: string;
+  nodes: ChainNode[];
+  links: ChainLink[];
+  // unreachable: only in the answers about one cascade.
+  unreachable?: UnreachableNode[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Preset is a part of a server config without secrets and addresses.
+export interface Preset {
+  id: number;
+  name: string;
+  sections: PresetSection[];
+  notes: string[];
+  config: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PresetCheck extends ConfigCheck {
+  newObfs: boolean;
+}
+
+export interface PresetApply {
+  base: number;
+  preset: number;
+  sections: PresetSection[];
+}
+
+// TuningSetting is a kernel parameter HyRoute offers to set.
+export interface TuningSetting {
+  key: string;
+  group: 'udp' | 'tcp';
+  current: string;
+  want: string;
+  done: boolean;
+  supported: boolean;
+  why?: string;
+  inFile: boolean;
+}
+
+// TuningState is the kernel's settings for Hysteria and, beside them, the
+// congestion settings of Hysteria's config (not the kernel's).
+export interface TuningState {
+  kernel: string;
+  available: string[];
+  bbr: boolean;
+  file: string;
+  settings: TuningSetting[];
+  quic: { type: string; profile: string };
+  brutal: { up: string; down: string; ignoreClient: boolean };
+}
+
+export interface ConfigInput {
+  revision: number;
+  yaml: string;
+  fields?: ConfigFields;
+}
+
+export interface ClientSummary {
+  name: string;
+  host: string;
+  ports: string;
+  sni?: string;
+  insecure: boolean;
+  pinSHA256?: string;
+  obfs?: string;
+  auth: string;
+  // users: the clients; links: the users of cascade links into the
+  // server (the entry logs in with them; no client link, no rotation).
+  users?: string[];
+  links?: string[];
+  warnings: string[];
+}
+
+// ClientChange is a queued change of the client users; password is the
+// generated one, shown once.
+export interface ClientChange {
+  job: Job;
+  user: string;
+  password?: string;
+}
+
+export interface ClientProfile extends ClientSummary {
+  user?: string;
+  uri: string;
+  compat: string;
+  config: string;
+  qr: string[];
+  qrCompat: string[];
+}
+
+export const journalURL = (serverId: number, lines = 200) => `/api/v1/servers/${serverId}/journal?follow=1&lines=${lines}`;
+
+export const jobEventsURL = (id: number) => `/api/v1/jobs/${id}/events`;
+
+// A batch (P4-07) is one action over many servers as ordinary jobs: the
+// canary first, then `parallel` at a time; the first failure skips what
+// has not started.
+export type BatchAction = 'maintain' | 'geo' | 'preset' | 'routing' | 'tuning' | 'rotate';
+export const batchActions: BatchAction[] = ['maintain', 'geo', 'preset', 'routing', 'tuning', 'rotate'];
+// batchPerm is what an action needs on every server of its batch.
+export const batchPerm = (a: BatchAction): Permission => (a === 'maintain' ? 'deploy' : 'config');
+export type BatchState = 'running' | 'stopping' | 'completed' | 'failed' | 'stopped';
+export type BatchItemState = 'pending' | 'starting' | 'running' | 'completed' | 'unchanged' | 'failed' | 'skipped';
+
+export interface BatchItem {
+  idx: number;
+  serverId: number;
+  state: BatchItemState;
+  jobId?: number;
+  canary?: boolean;
+  message?: string;
+  at: string | null;
+  // job: the item's job as it is now (one batch only).
+  job?: { state: JobState; currentStep: string; errorMessage?: string };
+}
+
+export interface Batch {
+  id: number;
+  action: BatchAction;
+  params: Record<string, unknown>;
+  parallel: number;
+  state: BatchState;
+  // stop: why no more jobs start.
+  stop?: 'user' | 'failed' | 'denied';
+  stoppedBy?: string;
+  retryOf?: number;
+  retriedBy?: number;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+  items: BatchItem[];
+  mayStop: boolean;
+  mayRetry: boolean;
+}
+
+// BatchInput: the servers in order (the first is the canary), how many
+// run at once, and the params of the action beside them.
+export interface BatchInput {
+  servers: number[];
+  parallel?: number;
+  [param: string]: unknown;
+}
+
+// HysteriaRelease is the release notice: the newest release the
+// controller found and the servers in scope with an older Hysteria.
+export interface HysteriaRelease {
+  check: boolean;
+  latest: string;
+  checkedAt: string | null;
+  target: string;
+  outdated: { id: number; name: string; version: string }[];
+}
+
+// ServerInput: credentials left undefined keep the stored ones on update.
+// The role is not entered: it follows the server's place in cascades.
+export interface ServerInput {
+  name: string;
+  tags: string[];
+  country: string;
+  location: string;
+  host: string;
+  sshPort: number;
+  sshUser: string;
+  authType: AuthType;
+  notes: string;
+  password?: string;
+  key?: string;
+  keyPassphrase?: string;
+}
+
+export const api = {
+  health: () => request<Health>('GET', '/health'),
+  setupNeeded: () => request<{ needed: boolean }>('GET', '/setup'),
+  setup: (token: string, username: string, password: string) => request<SessionState>('POST', '/setup', { token, username, password }),
+  login: (username: string, password: string) => request<SessionState>('POST', '/session', { username, password }),
+  session: () => request<SessionState>('GET', '/session'),
+  logout: () => request<void>('DELETE', '/session'),
+  sessions: (all = false) => request<SessionInfo[]>('GET', '/sessions' + (all ? '?all=1' : '')),
+  revokeSession: (id: number) => request<void>('DELETE', `/sessions/${id}`),
+  users: () => request<User[]>('GET', '/users'),
+  roles: () => request<RoleInfo[]>('GET', '/roles'),
+  createUser: (username: string, password: string, role: Role, scope: Scope) => request<User>('POST', '/users', { username, password, role, scope }),
+  backups: () => request<Backups>('GET', '/backups'),
+  createBackup: () => request<BackupInfo>('POST', '/backups'),
+  checkMasterKey: (key: string) => request<KeyCheck>('POST', '/master-key/check', { key }),
+  // changePassword: one's own; every session ends, this one is replaced.
+  changePassword: (current: string, password: string) => request<SessionState>('POST', '/session/password', { current, password }),
+  updateUser: (id: number, change: { role?: Role; scope?: Scope; disabled?: boolean }) => request<User>('PATCH', `/users/${id}`, change),
+  deleteUser: (id: number) => request<void>('DELETE', `/users/${id}`),
+  // resetPassword: the typed password, or without one a generated one,
+  // returned once.
+  resetPassword: (id: number, password?: string) =>
+    request<{ password: string } | undefined>('POST', `/users/${id}/password`, password ? { password } : { generate: true }),
+  transferOwner: (id: number) => request<User>('POST', `/users/${id}/owner`),
+  audit: (f: AuditFilter) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(f)) if (v !== undefined && v !== '' && v !== 0) q.set(k, String(v));
+    const qs = q.toString();
+    return request<{ entries: AuditEntry[]; next: number }>('GET', '/audit' + (qs ? '?' + qs : ''));
+  },
+  diag: (jobs: number) => request<DiagFiles>('GET', `/diag?jobs=${jobs}`),
+  attention: () => request<Attention>('GET', '/attention'),
+  events: (limit = 20, open = false) => request<EventInfo[]>('GET', `/events?limit=${limit}${open ? '&open=1' : ''}`),
+  alertChannels: () => request<AlertChannel[]>('GET', '/alerts/channels'),
+  createAlertChannel: (c: ChannelInput) => request<AlertChannel>('POST', '/alerts/channels', c),
+  updateAlertChannel: (id: number, c: ChannelInput) => request<AlertChannel>('PATCH', `/alerts/channels/${id}`, c),
+  deleteAlertChannel: (id: number) => request<void>('DELETE', `/alerts/channels/${id}`),
+  testAlertChannel: (id: number) => request<{ ok: boolean }>('POST', `/alerts/channels/${id}/test`),
+  servers: () => request<Server[]>('GET', '/servers'),
+  server: (id: number) => request<Server>('GET', `/servers/${id}`),
+  createServer: (s: ServerInput) => request<Server>('POST', '/servers', s),
+  updateServer: (id: number, s: ServerInput) => request<Server>('PATCH', `/servers/${id}`, s),
+  deleteServer: (id: number) => request<void>('DELETE', `/servers/${id}`),
+  checkServer: (id: number) => request<CheckResult>('POST', `/servers/${id}/check`),
+  trustHostKey: (id: number, fingerprint: string, replace: boolean) => request<HostKey>('POST', `/servers/${id}/host-key`, { fingerprint, replace }),
+  // jobs lists jobs, newest first (limit 0: the controller's default).
+  jobs: (serverId = 0, limit = 0) => {
+    const q = new URLSearchParams();
+    if (serverId) q.set('server', String(serverId));
+    if (limit) q.set('limit', String(limit));
+    const qs = q.toString();
+    return request<Job[]>('GET', '/jobs' + (qs ? '?' + qs : ''));
+  },
+  job: (id: number) => request<JobDetail>('GET', `/jobs/${id}`),
+  retryJob: (id: number) => request<Job>('POST', `/jobs/${id}/retry`),
+  startDeploy: (serverId: number, p: DeployParams, secrets?: DeploySecrets) =>
+    request<Job>('POST', `/servers/${serverId}/deploy`, secrets ? { ...p, secrets } : p),
+  startImport: (serverId: number) => request<Job>('POST', `/servers/${serverId}/import`),
+  startMaintain: (serverId: number, p: MaintainParams) => request<Job>('POST', `/servers/${serverId}/maintain`, p),
+  serviceStatus: (serverId: number) => request<ServiceStatus>('GET', `/servers/${serverId}/status`),
+  serviceAction: (serverId: number, action: ServiceAction) => request<Job>('POST', `/servers/${serverId}/service/${action}`),
+  journal: (serverId: number, lines = 500) => request<JournalEntry[]>('GET', `/servers/${serverId}/journal?lines=${lines}`),
+  logs: (p: { source: 'controller' | 'jobs'; server?: number; level?: string; q?: string; limit?: number }) => {
+    const q = new URLSearchParams({ source: p.source });
+    if (p.server) q.set('server', String(p.server));
+    if (p.level) q.set('level', p.level);
+    if (p.q) q.set('q', p.q);
+    if (p.limit) q.set('limit', String(p.limit));
+    return request<LogEntry[]>('GET', '/logs?' + q.toString());
+  },
+  configEdit: (serverId: number) => request<ConfigView>('GET', `/servers/${serverId}/config/edit`),
+  renderConfig: (serverId: number, input: ConfigInput) => request<ConfigCheck>('POST', `/servers/${serverId}/config/render`, input),
+  applyConfig: (serverId: number, input: ConfigInput) => request<Job>('POST', `/servers/${serverId}/config/apply`, input),
+  serverMetrics: (serverId: number, period: MetricPeriod) => request<MetricSeries>('GET', `/servers/${serverId}/metrics?period=${period}`),
+  serverHealth: (serverId: number) => request<ServerHealth>('GET', `/servers/${serverId}/health`),
+  serverTraffic: (serverId: number, period: TrafficPeriod) => request<ServerTraffic>('GET', `/servers/${serverId}/traffic?period=${period}`),
+  trafficOnline: (serverId: number) => request<TrafficOnline>('GET', `/servers/${serverId}/traffic/online`),
+  trafficStreams: (serverId: number) => request<TrafficStreams>('GET', `/servers/${serverId}/traffic/streams`),
+  latestMetrics: () => request<LatestMetric[]>('GET', '/metrics/latest'),
+  configRevisions: (serverId: number) => request<ConfigRevision[]>('GET', `/servers/${serverId}/config/revisions`),
+  configRevision: (serverId: number, rev: number) => request<ConfigView>('GET', `/servers/${serverId}/config/revisions/${rev}`),
+  compareConfigs: (serverId: number, from: number, to: number) =>
+    request<ConfigComparison>('GET', `/servers/${serverId}/config/compare?from=${from}&to=${to}`),
+  rollbackConfig: (serverId: number, base: number, revision: number) =>
+    request<Job>('POST', `/servers/${serverId}/config/rollback`, { base, revision }),
+  rotateConfig: (serverId: number, base: number, r: Rotation) => request<Job>('POST', `/servers/${serverId}/config/rotate`, { base, ...r }),
+  setPorts: (serverId: number, p: PortsInput) => request<{ job: Job | null }>('POST', `/servers/${serverId}/ports`, p),
+  tuning: (serverId: number) => request<TuningState>('GET', `/servers/${serverId}/tuning`),
+  startTuning: (serverId: number, keys: string[]) => request<Job>('POST', `/servers/${serverId}/tuning`, { keys }),
+  presets: () => request<Preset[]>('GET', '/presets'),
+  createPreset: (name: string, from: { serverId?: number; from?: number }) => request<Preset>('POST', '/presets', { name, ...from }),
+  renamePreset: (id: number, name: string) => request<Preset>('PATCH', `/presets/${id}`, { name }),
+  deletePreset: (id: number) => request<void>('DELETE', `/presets/${id}`),
+  exportPreset: (id: number) => request<unknown>('GET', `/presets/${id}/export`),
+  importPreset: (data: string) => request<Preset>('POST', '/presets/import', { data }),
+  chains: () => request<Chain[]>('GET', '/chains'),
+  chain: (id: number) => request<Chain>('GET', `/chains/${id}`),
+  createChain: (input: { name: string; notes: string; nodes: number[]; link: LinkParams }) => request<Chain>('POST', '/chains', input),
+  updateChain: (id: number, name: string, notes: string) => request<Chain>('PATCH', `/chains/${id}`, { name, notes }),
+  deleteChain: (id: number) => request<void>('DELETE', `/chains/${id}`),
+  linkChain: (id: number) => request<Job>('POST', `/chains/${id}/link`),
+  unlinkChain: (id: number, del: boolean) => request<Job>('POST', `/chains/${id}/unlink`, { delete: del }),
+  forceDeleteChain: (id: number) => request<Job>('POST', `/chains/${id}/unlink`, { delete: true, force: true }),
+  checkChain: (id: number) => request<Chain>('POST', `/chains/${id}/check`),
+  routeChain: (id: number, req: AclRequest) => request<RouteTrace>('POST', `/chains/${id}/route`, req),
+  chainChecks: (id: number, idx = 0, limit = 100) => request<LinkCheck[]>('GET', `/chains/${id}/checks?idx=${idx}&limit=${limit}`),
+  routing: (serverId: number) => request<RoutingView>('GET', `/servers/${serverId}/routing`),
+  routingPreview: (serverId: number, input: RoutingInput) => request<RoutingPreview>('POST', `/servers/${serverId}/routing/preview`, input),
+  routingApply: (serverId: number, input: RoutingInput) => request<Job>('POST', `/servers/${serverId}/routing/apply`, input),
+  routingCheck: (serverId: number, input: { acl: AclDocument; outbounds: string[]; request: AclRequest }) =>
+    request<RoutingCheck>('POST', `/servers/${serverId}/routing/check`, input),
+  routingServices: (serverId: number, acl: AclDocument) => request<ServicesView>('POST', `/servers/${serverId}/routing/services`, { acl }),
+  routingServicesBuild: (serverId: number, input: { acl: AclDocument; outbounds: string[]; choices: Record<string, string>; overwrite?: boolean }) =>
+    request<{ acl: AclDocument; state: ServicesState }>('POST', `/servers/${serverId}/routing/services/build`, input),
+  chainTemplates: () => request<ChainTemplate[]>('GET', '/chain-templates'),
+  importChainTemplate: (data: string) => request<ChainTemplate>('POST', '/chain-templates/import', { data }),
+  chainTemplate: (id: number) => request<ChainTemplate>('GET', `/chains/${id}/template`),
+  routingTemplates: () => request<RoutingTemplate[]>('GET', '/routing/templates'),
+  routingImport: (data: string) => request<{ acl: AclDocument; outbounds?: RoutingOutbound[]; resolver?: RoutingResolver }>('POST', '/routing/import', { data }),
+  routingExport: (serverId: number, format: 'json' | 'text') => requestText(`/servers/${serverId}/routing/export?format=${format}`),
+  routingFile: (serverId: number) => request<RoutingFile>('GET', `/servers/${serverId}/routing/file`),
+  geoInfo: () => request<GeoInfo>('GET', '/geo'),
+  geoUpdate: () => request<{ info: GeoInfo; changed: boolean }>('POST', '/geo/update'),
+  geoCategories: (kind: 'geoip' | 'geosite', q: string) =>
+    request<{ names: string[] }>('GET', `/geo/categories?kind=${kind}&q=${encodeURIComponent(q)}`),
+  serverGeo: (serverId: number) => request<ServerGeo>('GET', `/servers/${serverId}/geo`),
+  installGeo: (serverId: number, source: DeploySource, via?: number) => request<Job>('POST', `/servers/${serverId}/geo`, { source, via: via ?? 0 }),
+  drift: (serverId: number) => request<Drift>('GET', `/servers/${serverId}/reconcile`),
+  checkDrift: (serverId: number) => request<Drift>('POST', `/servers/${serverId}/reconcile/check`),
+  acceptDrift: (serverId: number, key: string) => request<Drift>('POST', `/servers/${serverId}/reconcile/accept`, { key }),
+  revertDrift: (serverId: number, key: string) => request<Job>('POST', `/servers/${serverId}/reconcile/revert`, { key }),
+  presetPreview: (serverId: number, p: PresetApply) => request<PresetCheck>('POST', `/servers/${serverId}/preset/preview`, p),
+  presetApply: (serverId: number, p: PresetApply) => request<Job>('POST', `/servers/${serverId}/preset/apply`, p),
+  clientSummary: (serverId: number) => request<ClientSummary>('GET', `/servers/${serverId}/client`),
+  clientProfile: (serverId: number, user = '') =>
+    request<ClientProfile>('POST', `/servers/${serverId}/client/reveal`, { user }),
+  // The client manager: add a user, remove one, or give one a new
+  // password; base is the revision the list was read from.
+  addClient: (serverId: number, base: number, user: string) => request<ClientChange>('POST', `/servers/${serverId}/clients`, { base, user }),
+  removeClient: (serverId: number, base: number, user: string) => request<ClientChange>('POST', `/servers/${serverId}/clients/remove`, { base, user }),
+  clientPassword: (serverId: number, base: number, user: string) => request<ClientChange>('POST', `/servers/${serverId}/clients/password`, { base, user }),
+  serverConfig: (serverId: number) => request<ServerConfig>('GET', `/servers/${serverId}/config`),
+  startPreflight: (serverId: number, udpPort = 443) => request<Job>('POST', `/servers/${serverId}/preflight`, { udpPort }),
+  batches: (before = 0) => request<Batch[]>('GET', '/batches' + (before ? `?before=${before}` : '')),
+  batch: (id: number) => request<Batch>('GET', `/batches/${id}`),
+  createBatch: (action: BatchAction, input: BatchInput) => request<Batch>('POST', `/batches/${action}`, input),
+  stopBatch: (id: number) => request<Batch>('POST', `/batches/${id}/stop`),
+  retryBatch: (id: number) => request<Batch>('POST', `/batches/${id}/retry`),
+  hysteriaRelease: () => request<HysteriaRelease>('GET', '/hysteria/release'),
+};

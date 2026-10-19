@@ -214,6 +214,16 @@ func TestApplyRulesText(t *testing.T) {
 	if st := c.Settings(); len(st.Rules) != 5 || st.DefaultAction != rules.Direct {
 		t.Fatalf("%+v", st)
 	}
+	// A copy that is off is switched on, not skipped.
+	if _, _, err := c.ApplyRulesText("e.com -> блок | выкл", false, EditGuard{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, res, err = c.ApplyRulesText("e.com -> блок", false, EditGuard{}); err != nil || res.Enabled != 1 || res.Skipped != 0 {
+		t.Fatalf("off copy: %+v %v", res, err)
+	}
+	if st := c.Settings(); len(st.Rules) != 6 || !st.Rules[5].On() {
+		t.Fatalf("%+v", st.Rules)
+	}
 }
 
 func TestRulesTextTypedItems(t *testing.T) {
@@ -751,5 +761,23 @@ func TestRulesTextRepeats(t *testing.T) {
 	}
 	if res := parseRulesText("a.com -> напрямую\nb.com -> напрямую", nil); len(res.Repeats) != 0 {
 		t.Fatalf("%v", res.Repeats)
+	}
+}
+
+// A quote without its pair is an error of the line, not a program with a
+// quote in its name that never matches.
+func TestRulesTextUnpairedQuote(t *testing.T) {
+	for _, text := range []string{
+		`"C:\Program Files\App\app.exe -> vpn`,
+		`"chrome.exe -> vpn`,
+		"[\"C:\\Program Files\\App\\app.exe]\nexample.com -> vpn",
+	} {
+		res := parseRulesText(text, serverTargets(textProfiles))
+		if len(res.Errors) == 0 || !strings.Contains(res.Errors[0].Text, "кавычка без пары") {
+			t.Errorf("%q: %+v", text, res.Errors)
+		}
+	}
+	if res := parseRulesText(`"C:\Program Files\App\app.exe" -> vpn`, serverTargets(textProfiles)); len(res.Errors) != 0 {
+		t.Fatalf("%+v", res.Errors)
 	}
 }

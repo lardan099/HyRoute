@@ -1,13 +1,11 @@
-// Package settings loads the routing settings file (rules plus engine
-// options) and watches it for changes. Rule changes apply to new flows
-// only; Hysteria is not restarted.
+// Package settings parses the routing settings file (rules plus engine
+// options), read once at start (store.LoadSettings). Rule changes apply to
+// new flows only; Hysteria is not restarted.
 package settings
 
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
-	"os"
 	"time"
 
 	"github.com/lardan099/hyroute/internal/rules"
@@ -105,48 +103,4 @@ func Parse(b []byte) (*Settings, *rules.Set, error) {
 	}
 	set.ExactWeb = s.ExactWeb()
 	return &s, set, nil
-}
-
-// Load reads and parses a file.
-func Load(path string) (*Settings, *rules.Set, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	return Parse(b)
-}
-
-// Watch polls path and calls onChange with every valid new version, and
-// onError when an edited file does not parse (the previous rules stay).
-func Watch(path string, every time.Duration, stop <-chan struct{}, onChange func(*Settings, *rules.Set), onError func(error)) {
-	var last time.Time
-	if fi, err := os.Stat(path); err == nil {
-		last = fi.ModTime()
-	}
-	t := time.NewTicker(every)
-	defer t.Stop()
-	for {
-		select {
-		case <-stop:
-			return
-		case <-t.C:
-		}
-		fi, err := os.Stat(path)
-		if err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				onError(err)
-			}
-			continue
-		}
-		if !fi.ModTime().After(last) {
-			continue
-		}
-		last = fi.ModTime()
-		s, set, err := Load(path)
-		if err != nil {
-			onError(err)
-			continue
-		}
-		onChange(s, set)
-	}
 }

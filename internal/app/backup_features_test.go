@@ -337,3 +337,23 @@ func TestBackupLegacyProxyUDP(t *testing.T) {
 		t.Fatalf("%+v", px)
 	}
 }
+
+// With rulesets.json not loaded only the active rules go into a copy:
+// «Правила» says the other rule profiles stay out.
+func TestBackupContentsBrokenRulesets(t *testing.T) {
+	c, _ := newCtl(t)
+	must(t, os.WriteFile(filepath.Join(c.Store.Dir, "rulesets.json"), []byte("{"), 0o600))
+	c, _ = newCtlAt2(t, c.Store)
+	found := false
+	for _, s := range c.BackupContents(false) {
+		if s.Key == "rules" {
+			found = true
+			if !strings.Contains(s.Detail, "rulesets.json не загружен") {
+				t.Fatalf("%+v", s)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no «Правила» section")
+	}
+}

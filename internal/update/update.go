@@ -243,6 +243,7 @@ func (sw *Swap) put(src, dst, name string) error {
 		sw.Added = append(sw.Added, name)
 	}
 	if err := os.Rename(tmp, dst); err != nil {
+		os.Remove(tmp) // Undo puts the .old back; nothing else removes the .new
 		return err
 	}
 	return nil

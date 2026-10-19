@@ -219,8 +219,9 @@
       <h2>Проверка задержки</h2>
       <div class="form">
         <label for="gp-url">Адрес</label>
-        {#if ui.privacy && probeURL}
-          <input id="gp-url" value={hide(probeURL)} disabled title="Скрыто: включено «Скрыть данные»" />
+        {#if ui.privacy}
+          <!-- Not keyed on probeURL: typing would swap the field under the cursor. -->
+          <input id="gp-url" value={hide(probeURL)} readonly placeholder={info.defaultProbeURL} />
         {:else}
           <input id="gp-url" bind:value={probeURL} placeholder={info.defaultProbeURL} disabled={locked} />
         {/if}
@@ -229,10 +230,11 @@
           {#each intervals as it (it.v)}<option value={it.v}>{it.l}</option>{/each}
         </select>
       </div>
+      {#if ui.privacy}<p class="muted small">Адрес скрыт: выключите «Скрыть данные», чтобы изменить.</p>{/if}
       <p class="muted small">
         Запрос идёт через каждый сервер используемых групп. Нужен адрес, который отвечает быстро и без содержимого, например …/generate_204.
       </p>
-      <div class="row"><button onclick={saveProbe} disabled={locked || probeSaving || (ui.privacy && !!probeURL)}>Сохранить</button></div>
+      <div class="row"><button onclick={saveProbe} disabled={locked || probeSaving || ui.privacy}>Сохранить</button></div>
     </section>
   {/if}
 </div>

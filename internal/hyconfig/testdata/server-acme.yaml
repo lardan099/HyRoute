@@ -1,0 +1,31 @@
+# ACME variant with the DNS challenge and the pre-type legacy fields.
+listen: 0.0.0.0:443
+acme:
+  domains:
+    - vpn.example.com
+    - "*.example.org"
+  email: admin@example.com
+  ca: zerossl
+  listenHost: 0.0.0.0
+  dir: /var/lib/hysteria/acme
+  type: dns
+  http:
+    altPort: 8888
+  tls:
+    altPort: 44333
+  dns:
+    name: cloudflare
+    config:
+      cloudflare_api_token: fake-dns-token
+  disableHTTP: true
+  disableTLSALPN: false
+  altHTTPPort: 8080
+  altTLSALPNPort: 8443
+auth:
+  type: password
+  password: fake-auth-password
+masquerade:
+  type: string
+  string:
+    content: not here
+    statusCode: 404

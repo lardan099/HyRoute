@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1100,9 +1101,16 @@ func TestDropDoH(t *testing.T) {
 	if i := r.next(t); i.addr.Outbound() || i.pkt.TCPFlags()&packet.FlagRST == 0 {
 		t.Fatal("tracked DoH flow not reset")
 	}
-	// The UDP flow is blocked now.
+	// The UDP flow is blocked now: closed, and its next datagram decided
+	// again.
 	r.sendUDP("192.168.1.5:46001", "8.8.8.8:443", []byte("quic"))
 	r.none(t)
+	if v := lastRecord(t, r.c); v.Dst != "8.8.8.8:443" || v.Route != "block" || v.Rule != dnspolicy.RuleBrowserDoH {
+		t.Fatalf("%+v", v)
+	}
+	if !slices.ContainsFunc(r.c.Flows.Closed(), func(v flows.View) bool { return v.Dst == "8.8.8.8:443" && v.Route == "direct" }) {
+		t.Fatal("the direct UDP flow not closed")
+	}
 	// Others go on.
 	r.sendTCP("192.168.1.5:46002", "93.184.216.34:443", packet.FlagACK, "data")
 	if i := r.next(t); !i.addr.Outbound() {
@@ -1178,11 +1186,17 @@ func TestDNSTargetRules(t *testing.T) {
 	r := newDNSRig(t, tunnelAll, byRules, Options{})
 	for dst, want := range map[string]dnsDest{
 		"192.168.1.1:53": dnsMain, "8.8.8.8:53": dnsMain, "10.8.0.1:53": dnsSecondary, "8.8.4.4:53": dnsSecondary,
-		"100.100.100.100:53": dnsSecondary, "1.2.3.4:53": dnsMain, "10.9.9.9:53": dnsNone, "100.64.1.1:53": dnsNone,
-		"127.0.0.1:53": dnsNone, "0.0.0.0:53": dnsNone, "8.8.8.8:443": dnsNone, "[fe80::1]:53": dnsNone,
+		"100.100.100.100:53": dnsSecondary, "1.2.3.4:53": dnsMain, "10.9.9.9:53": dnsUnknown, "100.64.1.1:53": dnsUnknown,
+		"127.0.0.1:53": dnsNone, "0.0.0.0:53": dnsNone, "8.8.8.8:443": dnsNone, "[fe80::1]:53": dnsUnknown,
 	} {
 		if got := r.c.dnsTarget(netip.MustParseAddrPort(dst), false); got != want {
 			t.Errorf("%s: %d, want %d", dst, got, want)
+		}
+		// Over TCP an address the snapshot lacks is not intercepted.
+		if want == dnsUnknown {
+			if got := r.c.dnsTarget(netip.MustParseAddrPort(dst), true); got != dnsNone {
+				t.Errorf("%s over TCP: %d", dst, got)
+			}
 		}
 	}
 	if !r.c.dnsHold(netip.MustParseAddr("192.168.1.1")) || r.c.dnsHold(netip.MustParseAddr("192.168.1.7")) {
@@ -1319,4 +1333,31 @@ func TestServeDNSCancel(t *testing.T) {
 	}
 	cl.Close()
 	<-done
+}
+
+// After a network change the new network's DNS server is a private
+// address the last snapshot lacks: the query waits off the loop for a
+// fresh snapshot and is intercepted, not passed on to that server. One a
+// fresh snapshot lacks too passes, and later ones do not wait again.
+func TestDNSNewPrivateServerWaitsForSnapshot(t *testing.T) {
+	r := newDNSRig(t, tunnelAll, byRules, Options{})
+	srv := netip.MustParseAddr("192.168.0.1")
+	primary, all := map[netip.Addr]bool{srv: true}, map[netip.Addr]bool{srv: true}
+	for a := range r.info.All {
+		all[a] = true
+	}
+	r.info.Primary, r.info.All = primary, all // the network changed; no refresh yet
+	before := r.snaps.Load()
+	r.ask("192.168.1.5:9003", "192.168.0.1:53", dnscach, polQuery(t, "ads.example.", dnsmessage.TypeA, 0))
+	if m := r.answer(t, "192.168.1.5:9003", "192.168.0.1:53"); m.Header.RCode != dnsmessage.RCodeNameError {
+		t.Fatal("new network's DNS server not intercepted")
+	}
+	if r.snaps.Load() == before {
+		t.Fatal("no fresh snapshot")
+	}
+	r.ask("192.168.1.5:9004", "10.9.9.9:53", dnscach, polQuery(t, "ads.example.", dnsmessage.TypeA, 0))
+	r.passed(t, "10.9.9.9:53")
+	if r.c.dnsTarget(netip.MustParseAddrPort("10.9.9.9:53"), false) != dnsNone {
+		t.Fatal("an address a fresh snapshot lacked is waited for again")
+	}
 }

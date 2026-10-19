@@ -25,17 +25,24 @@ const (
 // LookupTCPOwner finds the owner PID of a TCP connection in the system
 // tables (GetExtendedTcpTable, TCP_TABLE_OWNER_PID_ALL). It is the fallback
 // when no SOCKET event arrived in time; SYN_SENT connections are listed.
+// An IPv4 connection of a dual-stack socket (AF_INET6, IPV6_V6ONLY off:
+// Java, .NET DualMode) is listed only in the IPv6 table, as ::ffff:a.b.c.d.
 func LookupTCPOwner(local, remote netip.AddrPort) (uint32, bool) {
 	local, remote = norm(local), norm(remote)
-	af := uint32(windows.AF_INET)
-	if local.Addr().Is6() {
-		af = windows.AF_INET6
+	afs := []uint32{windows.AF_INET6}
+	if local.Addr().Is4() {
+		afs = []uint32{windows.AF_INET, windows.AF_INET6}
 	}
-	buf, err := tcpTable(af)
-	if err != nil {
-		return 0, false
+	for _, af := range afs {
+		buf, err := tcpTable(af)
+		if err != nil {
+			continue
+		}
+		if pid, ok := ownerOf(parseTCPRows(buf, af == windows.AF_INET6), local, remote); ok {
+			return pid, true
+		}
 	}
-	return ownerOf(parseTCPRows(buf, af == windows.AF_INET6), local, remote)
+	return 0, false
 }
 
 // ReadTCPTable reads the TCP tables of both address families, listening

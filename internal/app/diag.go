@@ -51,6 +51,9 @@ func (c *Controller) Diagnostics(system []string, privacy bool) string {
 		if s.FragDropped+s.Malformed+s.Panics > 0 {
 			w("   отброшено: IP-фрагментов %d, нераспознанных пакетов %d, пакетов с ошибкой обработки %d", s.FragDropped, s.Malformed, s.Panics)
 		}
+		if s.PendingFull > 0 {
+			w("   очередь ожидания владельца переполнялась: %d раз (пакет решён без владельца или отброшен)", s.PendingFull)
+		}
 		if l := fragDiagLine(s); l != "" { // bigudp
 			w("%s", l)
 		}

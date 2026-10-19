@@ -13,7 +13,9 @@ import (
 // 2a01:xxxx::xxxx), domain names keep only the top-level domain
 // (***.com: visited sites and SNI are as telling as addresses), the given
 // host names become "***" and URLs keep only their scheme. Private, loopback and link-local addresses stay: they
-// identify nothing. The frontend (privacy.ts) applies the same rules.
+// identify nothing. A path's user name is masked (C:\Users\***\…, as the
+// frontend's hideUserPath). The frontend (privacy.ts) applies the same
+// rules.
 func Sanitize(s string, hosts []string) string {
 	for _, h := range hosts {
 		if len(h) >= 4 {
@@ -23,6 +25,7 @@ func Sanitize(s string, hosts []string) string {
 		}
 	}
 	s = urlre.ReplaceAllString(s, "$1***/…")
+	s = usersre.ReplaceAllString(s, "${1}***")
 	// Domains before IPs: a masked IP (85.xxx.xxx.249) looks like a name.
 	s = MaskDomains(s)
 	s = v4re.ReplaceAllStringFunc(s, func(m string) string {
@@ -141,6 +144,8 @@ var (
 	v4re  = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
 	v6re  = regexp.MustCompile(`[0-9A-Fa-f:]*:[0-9A-Fa-f:]*:[0-9A-Fa-f:]*`)
 	urlre = regexp.MustCompile(`\b(https?://)[^\s"'<>]+`)
+	// usersre: the folder name after \Users\ (or /Users/) of a path.
+	usersre = regexp.MustCompile(`(?i)([\\/]Users[\\/])[^\\/\s"'«»<>]+`)
 )
 
 func public(a netip.Addr) bool {

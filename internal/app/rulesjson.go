@@ -178,22 +178,46 @@ func (c *Controller) ApplyRulesTextAs(text, format string, replace bool, g EditG
 			for _, r := range cfg.Rules {
 				used[r.ID] = true
 			}
-			skipped := 0
+			// One the list has already (or an earlier line added) is not
+			// added a second time; a copy that is off is switched on, as a
+			// rule from a connection does. The keys are built once: a
+			// Duplicate per line compiled the whole list again.
+			keys := map[string]int{}
+			for i, r := range cfg.Rules {
+				if k := rules.RepeatKey(r); k != "" {
+					if _, ok := keys[k]; !ok {
+						keys[k] = i
+					}
+				}
+			}
+			skipped, enabled := 0, 0
 			for _, r := range res.Rules {
-				// One the list has already (or an earlier line added) is
-				// not added a second time.
-				if rules.Duplicate(*cfg, r, -1) >= 0 {
-					skipped++
+				k := rules.RepeatKey(r)
+				if i, ok := keys[k]; ok && k != "" {
+					if !cfg.Rules[i].On() && r.On() {
+						cfg.Rules[i].Enabled = nil
+						enabled++
+					} else {
+						skipped++
+					}
 					continue
 				}
 				if r.ID != "" && used[r.ID] {
 					r.ID = newID() // taken by a current rule
+				}
+				used[r.ID] = true
+				if k != "" {
+					keys[k] = len(cfg.Rules)
 				}
 				cfg.Rules = append(cfg.Rules, r)
 			}
 			if skipped > 0 {
 				res.Skipped = skipped
 				res.Summary += fmt.Sprintf(", из них уже были в списке и не добавлены: %d", skipped)
+			}
+			if enabled > 0 {
+				res.Enabled = enabled
+				res.Summary += fmt.Sprintf(", уже были, но выключены, и включены: %d", enabled)
 			}
 			if skipped == len(res.Rules) && !res.HasDefault {
 				return false, nil // nothing new

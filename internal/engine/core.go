@@ -103,6 +103,9 @@ type Stats struct {
 	// UntrackedReset: connections the engine held no state for (opened
 	// before start) that the rules send through the tunnel or block, reset.
 	UntrackedReset atomic.Int64
+	// KeyCollisions: flows that needed the domain but could not be
+	// reflected, their (remote, local port) taken by a live entry.
+	KeyCollisions atomic.Int64
 	// bigudp
 	// FragReassembled: UDP datagrams reassembled from fragments and routed
 	// whole. FragIncomplete: datagrams whose fragments were dropped
@@ -189,10 +192,16 @@ type tcpFlow struct {
 	last   time.Time
 	finAt  time.Time
 	hasFIN bool
+	// est: the application sent more than SYNs, so the handshake got an
+	// answer. A flow of SYNs only (dropped, refused: its SYN-ACK or RST is
+	// inbound and not seen) never gets a FIN or FLOW_DELETED.
+	est bool
 }
 
 type udpFlow struct {
-	rec     *flows.Record
+	rec *flows.Record
+	// route is set before the flow is in c.udp and never after: the
+	// packet loop reads it without c.mu.
 	route   rules.Action
 	profile string
 	last    time.Time
@@ -242,6 +251,9 @@ const (
 	// connection forgotten early is decided again).
 	untrackedTTL = 2 * time.Hour
 	untrackedMax = 16384
+	// synOnlyTTL: how long after its last SYN a Direct connection that
+	// never got past the handshake is kept (Windows gives up after ~21 s).
+	synOnlyTTL = time.Minute
 	// snapshotAge: how long one read of the OS TCP table serves untracked
 	// connections.
 	snapshotAge = time.Second
@@ -392,6 +404,12 @@ func (c *Core) tcpOut(p *packet.Packet, addr *divert.Address) {
 		}
 		c.NAT.TouchPacket(ent, p, false, nil, now)
 		nat.ReflectFromRelay(p, ent)
+		if ent.Flow.Dst.Port() == 53 && len(p.Payload()) > 0 {
+			// A TCP DNS answer through the tunnel: the sniff never sees
+			// what the main handle injects. It is cached only when it
+			// answers a query the sniff saw, as in HandleDNS.
+			c.DNS.AddAnswer(true, p.Dst(), p.Src(), p.Payload())
+		}
 		c.injectInbound(p, addr)
 		return
 	}
@@ -420,6 +438,9 @@ func (c *Core) tcpOut(p *packet.Packet, addr *divert.Address) {
 	}
 	if tf != nil {
 		tf.last = now
+		if !p.IsSYN() {
+			tf.est = true
+		}
 		if flags&(packet.FlagFIN|packet.FlagRST) != 0 && !tf.hasFIN {
 			tf.hasFIN, tf.finAt = true, now
 		}
@@ -703,19 +724,30 @@ func (c *Core) newFlow(p *packet.Packet, addr *divert.Address, proto uint8, key 
 		// The flow is parked: this packet waits for its first one's
 		// decision even if the owner is known by now (deciding it here
 		// would open a second record and overwrite the flow's state).
-		if len(pf.pkts) < pendingMaxPackets {
-			if c.pendBytes+size <= pendingMaxBytes {
-				pf.pkts = append(pf.pkts, pendingPkt{append([]byte(nil), p.Buf...), *addr, orig})
-				pf.bytes += size
-				c.pendBytes += size
-			} else {
-				c.PendingFull.Add(1)
-			}
+		if len(pf.pkts) < pendingMaxPackets && c.pendBytes+size <= pendingMaxBytes {
+			pf.pkts = append(pf.pkts, pendingPkt{append([]byte(nil), p.Buf...), *addr, orig})
+			pf.bytes += size
+			c.pendBytes += size
+		} else {
+			c.PendingFull.Add(1) // dropped: the flow's or the queue's room is used up
 		}
 		c.mu.Unlock()
 		return
 	}
 	pid, ok := c.Conns.Lookup(attrib.Key5{Proto: proto, Local: key.Src, Remote: key.Dst})
+	if ok && proto == packet.ProtoUDP {
+		// DNS goroutines route datagrams too (udpRoute): one of the same
+		// key that comes while this one is decided waits as for a parked
+		// flow, instead of deciding again and opening a second record
+		// that nothing would close.
+		pf := &pendingFlow{}
+		c.pending[pk] = pf
+		c.mu.Unlock()
+		defer c.dropParked(pk, pf) // after a panic too
+		c.decide(p, addr, proto, key, pid, true, "packet")
+		c.unpark(pk, pf, 0)
+		return
+	}
 	if ok {
 		c.mu.Unlock()
 		c.decide(p, addr, proto, key, pid, true, "packet")
@@ -750,16 +782,9 @@ func (c *Core) newFlow(p *packet.Packet, addr *divert.Address, proto uint8, key 
 	c.mu.Unlock()
 	go func() {
 		defer func() { <-c.sem }()
-		defer func() {
-			// Also after a panic: a flow left parked would swallow its
-			// packets for good.
-			c.mu.Lock()
-			if c.pending[pk] == pf {
-				delete(c.pending, pk)
-				c.pendBytes -= pf.bytes
-			}
-			c.mu.Unlock()
-		}()
+		// Also after a panic: a flow left parked would swallow its packets
+		// for good.
+		defer c.dropParked(pk, pf)
 		// A panic while deciding costs the parked packets, not the process
 		// (the packet loop is guarded the same way).
 		defer c.guard("pending")
@@ -773,24 +798,41 @@ func (c *Core) newFlow(p *packet.Packet, addr *divert.Address, proto uint8, key 
 			}
 			c.decide(&fp, &first.addr, proto, key, pid, ok, stage)
 		}
-		// Tables are populated now: replay the rest through the normal path.
-		c.mu.Lock()
-		rest := pf.pkts[1:]
-		if c.pending[pk] == pf {
-			delete(c.pending, pk)
-			c.pendBytes -= pf.bytes
-		}
-		c.mu.Unlock()
-		for i := range rest {
-			if rest[i].orig != nil {
-				// A reassembled datagram is not fragment-shaped:
-				// HandlePacket would lose its originals.
-				c.replayWhole(&rest[i])
-				continue
-			}
-			c.HandlePacket(rest[i].raw, &rest[i].addr)
-		}
+		c.unpark(pk, pf, 1)
 	}()
+}
+
+// dropParked ends the parked flow pf, if it still is.
+func (c *Core) dropParked(pk pendKey, pf *pendingFlow) {
+	c.mu.Lock()
+	c.dropParkedLocked(pk, pf)
+	c.mu.Unlock()
+}
+
+func (c *Core) dropParkedLocked(pk pendKey, pf *pendingFlow) {
+	if c.pending[pk] == pf {
+		delete(c.pending, pk)
+		c.pendBytes -= pf.bytes
+	}
+}
+
+// unpark ends the parked flow pf once its decision is in and replays the
+// packets that waited, from pf.pkts[from], through the normal path (the
+// tables are populated now).
+func (c *Core) unpark(pk pendKey, pf *pendingFlow, from int) {
+	c.mu.Lock()
+	rest := pf.pkts[from:]
+	c.dropParkedLocked(pk, pf)
+	c.mu.Unlock()
+	for i := range rest {
+		if rest[i].orig != nil {
+			// A reassembled datagram is not fragment-shaped:
+			// HandlePacket would lose its originals.
+			c.replayWhole(&rest[i])
+			continue
+		}
+		c.HandlePacket(rest[i].raw, &rest[i].addr)
+	}
 }
 
 func (c *Core) waitOwner(proto uint8, key nat.FlowKey) (uint32, bool, string) {
@@ -965,8 +1007,21 @@ func (c *Core) applyTCP(p *packet.Packet, addr *divert.Address, key nat.FlowKey,
 			c.injectInbound(p, addr)
 			return false
 		}
-		// Cannot reflect this flow: decide without the domain.
-		res = set.EvaluateNoDomain(sub)
+		// Cannot reflect this flow: decide by the DNS cache, as the relay
+		// does without SNI, else without the domain.
+		if r := set.EvaluateSites(sub, c.DNS.Sites(key.Dst.Addr())); !r.NeedsDomain {
+			res = r
+		} else {
+			res = set.EvaluateNoDomain(sub)
+		}
+		if n := c.KeyCollisions.Add(1); n <= 20 || n%100 == 0 {
+			var name string
+			if proc != nil {
+				name = proc.Name
+			}
+			c.Log.Info("reflect key in use: connection decided without the sniffed domain",
+				"process", name, "dst", key.Dst, "route", res.Action.String(), "rule", res.Rule, "count", n)
+		}
 		res, pk = c.pick(res, false, c.hint(res, proc, "", key.Dst.Addr()))
 		rec.Set(func(f *flows.Fields) {
 			f.Rule = res.Rule + " (reflect collision)"
@@ -989,17 +1044,19 @@ func (c *Core) applyTCP(p *packet.Packet, addr *divert.Address, key nat.FlowKey,
 		c.rejectSYN(p, addr, key, now)
 		return true
 	case rules.Tunnel:
+		// IPv6 first, as in applyUDP: it is blocked whether the tunnel is
+		// up or not, and a tunnel that is down must not count it refused.
 		switch t := c.tunnel(res.Profile); {
+		case p.IPv6 && c.Opt.BlockIPv6Tunnel:
+			c.Blocked.Add(1)
+			c.finish(rec, rules.Block, "rst: IPv6 blocked for tunnel")
+			c.rejectSYN(p, addr, key, now)
+			return true
 		case t == nil || !t.Available():
 			c.abandon(pk) // the member went down since the pick
 			noteRejected(t)
 			c.Rejected.Add(1)
 			c.finish(rec, rules.Tunnel, "rst: tunnel unavailable")
-			c.rejectSYN(p, addr, key, now)
-			return true
-		case p.IPv6 && c.Opt.BlockIPv6Tunnel:
-			c.Blocked.Add(1)
-			c.finish(rec, rules.Block, "rst: IPv6 blocked for tunnel")
 			c.rejectSYN(p, addr, key, now)
 			return true
 		default:
@@ -1381,7 +1438,9 @@ func (c *Core) Maintain(now time.Time) {
 	var idleSess []*udpSession
 	c.mu.Lock()
 	for k, tf := range c.tcp {
-		if (tf.hasFIN && now.Sub(tf.finAt) > time.Minute) || now.Sub(tf.last) > 2*time.Hour {
+		// A flow of SYNs only never came up: no FIN or FLOW_DELETED will
+		// end it.
+		if (tf.hasFIN && now.Sub(tf.finAt) > time.Minute) || (!tf.est && now.Sub(tf.last) > synOnlyTTL) || now.Sub(tf.last) > 2*time.Hour {
 			closed = append(closed, tf.rec)
 			delete(c.tcp, k)
 			// Every flow here is Direct: its later segments (a remote that

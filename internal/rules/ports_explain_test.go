@@ -168,6 +168,11 @@ func TestExplainQUICNameless(t *testing.T) {
 		{"site below app", []Rule{chrome, yt}, Query{App: "chrome.exe", Domain: "youtube.com", Proto: 17, Port: 443, QUICNameless: true}, false, "chrome", ""},
 		{"network unknown ip", []Rule{network, yt}, Query{Domain: "youtube.com", Proto: 17, Port: 443, QUICNameless: true}, true, "", "блокируется"},
 		{"other port", []Rule{yt}, Query{Domain: "youtube.com", Proto: 17, Port: 444, QUICNameless: true}, false, "по умолчанию", ""},
+		// Exact web detection off, QUIC blocked: names from the cache are
+		// used, and without one the flow is dropped as well.
+		{"exact off, no name", []Rule{yt}, Query{IP: ip, Proto: 17, Port: 443, BlockQUIC: true}, true, "", "блокируется"},
+		{"exact off, cached name", []Rule{yt}, Query{Names: []string{"youtube.com"}, IP: ip, Proto: 17, Port: 443, BlockQUIC: true}, false, "yt", ""},
+		{"exact off, no name, app", []Rule{chrome}, Query{App: "chrome.exe", IP: ip, Proto: 17, Port: 443, BlockQUIC: true}, false, "chrome", ""},
 	} {
 		cfg := Config{DefaultAction: Direct, Rules: c.rules}
 		ex := Explain(cfg, "main", c.q)

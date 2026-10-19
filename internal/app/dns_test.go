@@ -169,7 +169,12 @@ func TestSaveDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.waitFlushes(t, 3)
-	// Rate limit: requests in a burst give one flush.
+	// Rate limit: requests in a burst give one flush. Right after a flush,
+	// so the first waits out the gap and the rest join it: with the gap
+	// over, it may run before the second, which then gets one of its own.
+	d.dnsFlush.mu.Lock()
+	d.dnsFlush.last = time.Now()
+	d.dnsFlush.mu.Unlock()
 	for range 5 {
 		d.flushDNSAsync("test")
 	}

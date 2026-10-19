@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -120,6 +121,10 @@ func TestParseSubscriptionErrors(t *testing.T) {
 		`{"outbounds":[]}`:           "JSON",
 		"proxies:\n  - name: x":      "Clash",
 		"vless://a@b:1\nvmess://abc": "только другие протоколы",
+		// Its own links' errors come first, and a short answer in words is
+		// quoted; a web address in it is no protocol.
+		"vless://a@b:1\nhy2://pw@h.example:443/?obfs=salamander": "ни одна ссылка Hysteria 2 не разобрана (1)",
+		"Подписка истекла, продлите: https://t.me/example_bot":   "ответил текстом",
 	} {
 		if _, err := parseSubscription([]byte(body)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: %v", body, err)
@@ -271,6 +276,40 @@ func TestSchedulerRetriesStartupUpdate(t *testing.T) {
 // «Сменить ссылку»: the new link is checked first and its checked body
 // applied, with no second download; a link that did not check out (no
 // token, or a stale one) never replaces the working one.
+// A link that is already a subscription is not added again, nor given to
+// another subscription: every server would be there twice.
+func TestSubscriptionLinkOnce(t *testing.T) {
+	c, _ := newCtl(t)
+	body := "hy2://a@one.example:443#ONE\n"
+	v := addSub(t, c, &body)
+	again := strings.Replace(subURL, "panel.example", "PANEL.example", 1)
+	pv, err := c.PreviewSubscription(again)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AddSubscription(SubInput{Token: pv.Token, Enabled: true, Interval: "manual"}); err == nil || !strings.Contains(err.Error(), "уже добавлена") {
+		t.Fatal(err)
+	}
+	// Another subscription may not take the link either; its own is fine.
+	const other = "https://other.example/sub/OTHERTOKEN789"
+	pv, err = c.PreviewSubscription(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := c.AddSubscription(SubInput{Token: pv.Token, Enabled: true, Interval: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pv, _ = c.PreviewSubscription(subURL)
+	if err := c.EditSubscription(SubInput{ID: w.ID, Token: pv.Token, Enabled: true, Interval: "manual"}); err == nil {
+		t.Fatal("another subscription's link taken")
+	}
+	pv, _ = c.PreviewSubscription(subURL)
+	if err := c.EditSubscription(SubInput{ID: v.ID, Token: pv.Token, Enabled: true, Interval: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEditSubscriptionChangesURLByPreview(t *testing.T) {
 	c, _ := newCtl(t)
 	body := "hy2://a@old.example:443#OLD\n"
@@ -675,6 +714,46 @@ func TestSubscriptionDueAfterClockWasAhead(t *testing.T) {
 	s.LastAttempt, s.LastUpdate, s.LastError = now.Add(time.Minute), now.Add(time.Minute), ""
 	if c.due(s, now, now) {
 		t.Fatal("updated again right after a try")
+	}
+}
+
+// The words of a link's path are not secrets: the Redactor would mask
+// them in every log line. Its token is.
+func TestURLSecretsSkipWords(t *testing.T) {
+	got := urlSecrets("https://panel.example/subscription/Abc123TokenXyz/download?key=k3y-v4lue-99")
+	for _, w := range []string{"subscription", "download"} {
+		if slices.Contains(got, w) {
+			t.Fatalf("%q in %q", w, got)
+		}
+	}
+	for _, w := range []string{"Abc123TokenXyz", "k3y-v4lue-99"} {
+		if !slices.Contains(got, w) {
+			t.Fatalf("%q not in %q", w, got)
+		}
+	}
+	if slices.Contains(urlSecrets("https://doh.example/dns-query"), "dns-query") {
+		t.Fatal("dns-query is a secret")
+	}
+}
+
+// The shown next update is when due first holds, after a failure too.
+func TestSubscriptionNextAtIsDue(t *testing.T) {
+	c, _ := newCtl(t)
+	t0 := time.Now().Truncate(time.Second)
+	for _, s := range []store.Subscription{
+		{Enabled: true, Interval: "24h", LastUpdate: t0.Add(-2 * time.Hour), LastAttempt: t0.Add(-2 * time.Hour)},
+		// The update after the interval failed: retried in 15 minutes.
+		{Enabled: true, Interval: "24h", LastUpdate: t0.Add(-30 * time.Hour), LastAttempt: t0, LastError: "timeout"},
+		// A manual update failed before its time: retried once it is due.
+		{Enabled: true, Interval: "24h", LastUpdate: t0.Add(-2 * time.Hour), LastAttempt: t0, LastError: "timeout"},
+	} {
+		next := nextAt(s)
+		if next.IsZero() || c.due(s, next.Add(-time.Second), t0) || !c.due(s, next, t0) {
+			t.Fatalf("%+v: next %v", s, next.Sub(t0))
+		}
+	}
+	if !nextAt(store.Subscription{Enabled: true, Interval: "manual"}).IsZero() {
+		t.Fatal("a manual subscription has a next update")
 	}
 }
 

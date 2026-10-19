@@ -162,8 +162,3 @@ func IsLocalName(name string) bool {
 	}
 	return routerNames[name]
 }
-
-// IsServiceName reports a fixed name Windows itself needs (exact).
-func IsServiceName(name string) bool {
-	return slices.Contains(serviceNames, rules.NormalizeDomain(name))
-}

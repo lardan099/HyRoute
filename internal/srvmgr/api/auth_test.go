@@ -1,0 +1,461 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/lardan099/hyroute/internal/srvmgr/apply"
+	"github.com/lardan099/hyroute/internal/srvmgr/auth"
+	"github.com/lardan099/hyroute/internal/srvmgr/batch"
+	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
+	"github.com/lardan099/hyroute/internal/srvmgr/connect"
+	"github.com/lardan099/hyroute/internal/srvmgr/deploy"
+	"github.com/lardan099/hyroute/internal/srvmgr/geo"
+	"github.com/lardan099/hyroute/internal/srvmgr/hyrelease"
+	"github.com/lardan099/hyroute/internal/srvmgr/importer"
+	"github.com/lardan099/hyroute/internal/srvmgr/jobs"
+	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/reconcile"
+	"github.com/lardan099/hyroute/internal/srvmgr/redact"
+	"github.com/lardan099/hyroute/internal/srvmgr/routing"
+	"github.com/lardan099/hyroute/internal/srvmgr/secrets"
+	"github.com/lardan099/hyroute/internal/srvmgr/servers"
+	"github.com/lardan099/hyroute/internal/srvmgr/service"
+	"github.com/lardan099/hyroute/internal/srvmgr/store/sqlite"
+	"github.com/lardan099/hyroute/internal/srvmgr/tuning"
+)
+
+const pass = "correct horse battery"
+
+type testEnv struct {
+	t       *testing.T
+	h       http.Handler
+	db      *sqlite.DB
+	auth    *auth.Service
+	servers *servers.Service
+	connect *connect.Connector
+	jobs    *jobs.Engine
+	keys    *secrets.Keyring
+	apply   *apply.Applier
+	geo     *geo.Store
+	// reconcile connects over e.connect; a test may give it another
+	// connector.
+	reconcile *reconcile.Reconciler
+	clock     time.Time
+	// batches run bulk operations (not started: runBatches);
+	// releases is the release notice, looked up by a lookup of the test.
+	batches  *batch.Runner
+	releases *hyrelease.Watch
+}
+
+func newEnv(t *testing.T) *testEnv {
+	db := openDB(t)
+	e := &testEnv{t: t, db: db, clock: time.Unix(1_700_000_000, 0)}
+	e.auth = auth.New(db)
+	e.auth.Params = auth.Params{Memory: 64, Time: 1, Threads: 1, KeyLen: 32, SaltLen: 16}
+	e.auth.Now = func() time.Time { return e.clock }
+	keys, err := secrets.NewKeyring(map[uint32][]byte{1: bytes.Repeat([]byte{9}, 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.servers = servers.New(db, keys)
+	e.connect = connect.New(e.servers, db, redact.New())
+	e.connect.Timeout = 5 * time.Second
+	e.jobs = jobs.New(db, keys, redact.New(), e.connect, nil)
+	e.jobs.Poll = 20 * time.Millisecond
+	dd := deploy.Deps{Store: db, Keys: keys, Resolver: &hyrelease.Resolver{}}
+	e.jobs.Register(deploy.Kind(dd))
+	e.jobs.Register(deploy.Maintenance(dd))
+	e.jobs.Register(importer.Kind(importer.Deps{Store: db, Keys: keys}))
+	e.jobs.Register(service.Kind(service.Deps{Store: db, Keys: keys}))
+	e.jobs.Register(tuning.Kind())
+	e.apply = apply.New(apply.Deps{Store: db, Keys: keys, Jobs: e.jobs})
+	e.jobs.Register(e.apply.Kind())
+	linker := cascade.New(cascade.Deps{Store: db, Keys: keys, Jobs: e.jobs})
+	e.jobs.Register(linker.Kind())
+	e.jobs.Register(linker.UnlinkKind())
+	e.keys = keys
+	// Releases on a closed loopback port: an update fails at once.
+	e.geo = &geo.Store{Dir: filepath.Join(t.TempDir(), "geo"), Base: "http://127.0.0.1:1/releases"}
+	geoJobs := geo.New(geo.Deps{DB: db, Keys: keys, Files: e.geo, Jobs: e.jobs})
+	e.jobs.Register(geoJobs.Kind())
+	submitter := &deploy.Submitter{Store: db, Keys: keys, Jobs: e.jobs}
+	e.reconcile = &reconcile.Reconciler{Store: db, Conn: e.connect, Keys: keys, Interval: time.Hour,
+		Jobs: reconcile.Jobs{Apply: e.apply, Deploy: submitter, Geo: geoJobs, Links: linker}}
+	ed := &apply.Editor{Store: db, Keys: keys}
+	e.batches = batch.New(db, &batch.Actions{Store: db, Jobs: e.jobs, Deploy: submitter, Geo: geoJobs, Apply: e.apply, Editor: ed,
+		Routing: &routing.Service{Editor: ed, Applier: e.apply, Chains: db}}, nil)
+	e.batches.Poll = 20 * time.Millisecond
+	e.releases = &hyrelease.Watch{Find: func(context.Context) (string, error) { return "", errors.New("no lookups in tests") }}
+	e.h = New(Deps{Store: db, Auth: e.auth, Servers: e.servers, Connect: e.connect, Jobs: e.jobs,
+		Deploy: submitter, Apply: e.apply, Cascade: linker, Geo: e.geo, GeoJobs: geoJobs, Keys: keys, Reconcile: e.reconcile, Batches: e.batches, Releases: e.releases})
+	return e
+}
+
+// client is a browser: it keeps the session cookie and the CSRF token.
+type client struct {
+	e      *testEnv
+	cookie *http.Cookie
+	csrf   string
+	ip     string
+}
+
+func (e *testEnv) client() *client { return &client{e: e, ip: "127.0.0.1"} }
+
+func (c *client) do(method, path string, body any, hdr map[string]string) *httptest.ResponseRecorder {
+	var buf bytes.Buffer
+	if body != nil {
+		json.NewEncoder(&buf).Encode(body)
+	}
+	r := httptest.NewRequest(method, path, &buf)
+	r.RemoteAddr = c.ip + ":50000"
+	if body != nil {
+		r.Header.Set("Content-Type", "application/json")
+	}
+	if c.cookie != nil {
+		r.AddCookie(c.cookie)
+	}
+	if c.csrf != "" {
+		r.Header.Set("X-CSRF-Token", c.csrf)
+	}
+	for k, v := range hdr {
+		r.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	c.e.h.ServeHTTP(rec, r)
+	for _, ck := range rec.Result().Cookies() {
+		if ck.Name == cookieName {
+			if ck.MaxAge < 0 {
+				c.cookie = nil
+			} else {
+				c.cookie = ck
+			}
+		}
+	}
+	var sj sessionJSON
+	if json.Unmarshal(rec.Body.Bytes(), &sj) == nil && sj.CSRFToken != "" {
+		c.csrf = sj.CSRFToken
+	}
+	return rec
+}
+
+func (e *testEnv) setupOwner() *client {
+	e.t.Helper()
+	tok, err := e.auth.PrepareSetup(context.Background())
+	if err != nil || tok == "" {
+		e.t.Fatal(tok, err)
+	}
+	c := e.client()
+	rec := c.do("POST", "/api/v1/setup", map[string]string{"token": tok, "username": "owner", "password": pass}, nil)
+	if rec.Code != http.StatusCreated || c.cookie == nil || c.csrf == "" {
+		e.t.Fatalf("setup: %d %s", rec.Code, rec.Body)
+	}
+	return c
+}
+
+func (e *testEnv) login(user string) *client {
+	e.t.Helper()
+	c := e.client()
+	rec := c.do("POST", "/api/v1/session", map[string]string{"username": user, "password": pass}, nil)
+	if rec.Code != 200 {
+		e.t.Fatalf("login %s: %d %s", user, rec.Code, rec.Body)
+	}
+	return c
+}
+
+func code(t *testing.T, rec *httptest.ResponseRecorder, status int, errCode string) {
+	t.Helper()
+	if rec.Code != status {
+		t.Fatalf("status %d, want %d: %s", rec.Code, status, rec.Body)
+	}
+	if errCode != "" && decodeError(t, rec).Code != errCode {
+		t.Fatalf("code %q, want %q", decodeError(t, rec).Code, errCode)
+	}
+}
+
+func TestSetupFlow(t *testing.T) {
+	e := newEnv(t)
+	c := e.client()
+	rec := c.do("GET", "/api/v1/setup", nil, nil)
+	if !strings.Contains(rec.Body.String(), `"needed":true`) {
+		t.Fatalf("%s", rec.Body)
+	}
+	owner := e.setupOwner()
+	if !owner.cookie.HttpOnly || owner.cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("cookie flags: %+v", owner.cookie)
+	}
+	if owner.cookie.Secure {
+		t.Fatal("Secure cookie over plain HTTP on loopback would not come back")
+	}
+	rec = c.do("GET", "/api/v1/setup", nil, nil)
+	if !strings.Contains(rec.Body.String(), `"needed":false`) {
+		t.Fatalf("%s", rec.Body)
+	}
+	// First run cannot be repeated, whatever token is sent.
+	rec = e.client().do("POST", "/api/v1/setup", map[string]string{"token": "anything", "username": "evil", "password": pass}, nil)
+	code(t, rec, http.StatusConflict, "setup_done")
+	if n, _ := e.db.CountUsers(context.Background()); n != 1 {
+		t.Fatalf("%d users", n)
+	}
+	// The session works.
+	rec = owner.do("GET", "/api/v1/session", nil, nil)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"role":"owner"`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestSetupNeedsToken(t *testing.T) {
+	e := newEnv(t)
+	e.auth.PrepareSetup(context.Background())
+	rec := e.client().do("POST", "/api/v1/setup", map[string]string{"token": "guess", "username": "owner", "password": pass}, nil)
+	code(t, rec, http.StatusForbidden, "bad_setup_token")
+	rec = e.client().do("POST", "/api/v1/setup", map[string]string{"username": "owner"}, map[string]string{"Content-Type": "text/plain"})
+	code(t, rec, http.StatusUnsupportedMediaType, "bad_content_type")
+}
+
+func TestLoginErrorsAndRateLimit(t *testing.T) {
+	e := newEnv(t)
+	e.setupOwner()
+	c := e.client()
+	rec := c.do("POST", "/api/v1/session", map[string]string{"username": "owner", "password": "wrong password"}, nil)
+	code(t, rec, http.StatusUnauthorized, "bad_credentials")
+	if c.cookie != nil {
+		t.Fatal("cookie set on a failed login")
+	}
+	for i := 0; i < 5; i++ {
+		c.do("POST", "/api/v1/session", map[string]string{"username": "owner", "password": "wrong password"}, nil)
+	}
+	rec = c.do("POST", "/api/v1/session", map[string]string{"username": "owner", "password": pass}, nil)
+	code(t, rec, http.StatusTooManyRequests, "rate_limited")
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("no Retry-After")
+	}
+	// The failures of one address do not lock the owner out elsewhere.
+	other := e.client()
+	other.ip = "127.0.0.2"
+	if rec := other.do("POST", "/api/v1/session", map[string]string{"username": "owner", "password": pass}, nil); rec.Code != http.StatusOK {
+		t.Fatalf("owner from another address: %d %s", rec.Code, rec.Body)
+	}
+	e.clock = e.clock.Add(10 * time.Minute)
+	e.login("owner")
+}
+
+// With every hashing slot taken a login gets 503 with Retry-After; a rate
+// limit rounds Retry-After up.
+func TestAuthRetryAfter(t *testing.T) {
+	rec := httptest.NewRecorder()
+	setRetryAfter(rec, auth.ErrBusy)
+	writeError(rec, mapError(auth.ErrBusy))
+	code(t, rec, http.StatusServiceUnavailable, "auth_busy")
+	if got := rec.Header().Get("Retry-After"); got != strconv.Itoa(busyRetry) {
+		t.Fatalf("Retry-After %q", got)
+	}
+	rec = httptest.NewRecorder()
+	setRetryAfter(rec, &auth.RateLimitedError{Wait: 1500 * time.Millisecond})
+	if got := rec.Header().Get("Retry-After"); got != "2" {
+		t.Fatalf("Retry-After %q", got)
+	}
+}
+
+func TestSessionRequired(t *testing.T) {
+	e := newEnv(t)
+	e.setupOwner()
+	c := e.client()
+	for _, p := range []string{"/api/v1/session", "/api/v1/sessions", "/api/v1/users"} {
+		code(t, c.do("GET", p, nil, nil), http.StatusUnauthorized, "unauthorized")
+	}
+	c.cookie = &http.Cookie{Name: cookieName, Value: "forged"}
+	code(t, c.do("GET", "/api/v1/session", nil, nil), http.StatusUnauthorized, "unauthorized")
+	// Health, setup status and login need no session.
+	if rec := c.do("GET", "/api/v1/health", nil, nil); rec.Code != 200 {
+		t.Fatalf("health %d", rec.Code)
+	}
+}
+
+func TestExpiredAndRevokedSessions(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	e.clock = e.clock.Add(e.auth.IdleTimeout + time.Minute)
+	code(t, owner.do("GET", "/api/v1/session", nil, nil), http.StatusUnauthorized, "unauthorized")
+	if owner.cookie != nil {
+		t.Fatal("dead session cookie not cleared")
+	}
+
+	a := e.login("owner")
+	b := e.login("owner")
+	var list []sessionInfoJSON
+	json.Unmarshal(a.do("GET", "/api/v1/sessions", nil, nil).Body.Bytes(), &list)
+	if len(list) != 2 {
+		t.Fatalf("%d sessions", len(list))
+	}
+	var other int64
+	for _, s := range list {
+		if !s.Current {
+			other = s.ID
+		}
+	}
+	if rec := a.do("DELETE", "/api/v1/sessions/"+strconv.FormatInt(other, 10), nil, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("revoke: %d %s", rec.Code, rec.Body)
+	}
+	code(t, b.do("GET", "/api/v1/session", nil, nil), http.StatusUnauthorized, "unauthorized")
+	// Logout: the old cookie, sent again, is refused.
+	old := *a.cookie
+	if rec := a.do("DELETE", "/api/v1/session", nil, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("logout: %d", rec.Code)
+	}
+	if a.cookie != nil {
+		t.Fatal("logout did not clear the cookie")
+	}
+	a.cookie = &old
+	code(t, a.do("GET", "/api/v1/session", nil, nil), http.StatusUnauthorized, "unauthorized")
+}
+
+func TestCSRF(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	body := map[string]string{"username": "viewer", "password": pass, "role": "readonly"}
+	saved := owner.csrf
+	owner.csrf = ""
+	code(t, owner.do("POST", "/api/v1/users", body, nil), http.StatusForbidden, "csrf")
+	owner.csrf = "wrong"
+	code(t, owner.do("POST", "/api/v1/users", body, nil), http.StatusForbidden, "csrf")
+	owner.csrf = saved
+	code(t, owner.do("POST", "/api/v1/users", body, map[string]string{"Origin": "https://evil.example"}), http.StatusForbidden, "csrf")
+	code(t, owner.do("POST", "/api/v1/users", body, map[string]string{"Sec-Fetch-Site": "cross-site"}), http.StatusForbidden, "csrf")
+	// Cross-site login attempts are refused too (login CSRF).
+	code(t, e.client().do("POST", "/api/v1/session", map[string]string{"username": "owner", "password": pass}, map[string]string{"Sec-Fetch-Site": "cross-site"}), http.StatusForbidden, "csrf")
+	rec := owner.do("POST", "/api/v1/users", body, map[string]string{"Origin": "http://example.com", "Sec-Fetch-Site": "same-origin"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("same-origin create: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestReadOnlyCannotWrite(t *testing.T) {
+	e := newEnv(t)
+	owner := e.setupOwner()
+	rec := owner.do("POST", "/api/v1/users", map[string]string{"username": "viewer", "password": pass, "role": "readonly"}, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	ro := e.login("viewer")
+	if rec := ro.do("GET", "/api/v1/users", nil, nil); rec.Code != 200 {
+		t.Fatalf("read-only cannot read: %d", rec.Code)
+	}
+	code(t, ro.do("POST", "/api/v1/users", map[string]string{"username": "x", "password": pass, "role": "readonly"}, nil), http.StatusForbidden, "forbidden")
+	code(t, ro.do("GET", "/api/v1/sessions?all=1", nil, nil), http.StatusForbidden, "forbidden")
+	// But a read-only user can log out.
+	if rec := ro.do("DELETE", "/api/v1/session", nil, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("read-only logout: %d %s", rec.Code, rec.Body)
+	}
+	// An operator is not an admin: no user management.
+	var u model.User
+	u.Username, u.Role, u.Scope = "op", model.RoleOperator, model.ScopeAll
+	u.PasswordHash, _ = auth.HashPassword(pass, e.auth.Params)
+	e.db.CreateUser(context.Background(), &u)
+	op := e.login("op")
+	code(t, op.do("POST", "/api/v1/users", map[string]string{"username": "y", "password": pass, "role": "readonly"}, nil), http.StatusForbidden, "forbidden")
+}
+
+func TestSecureCookieBehindProxy(t *testing.T) {
+	e := newEnv(t)
+	e.h = New(Deps{Store: e.db, Auth: e.auth, Servers: e.servers, TrustProxy: true})
+	c := e.setupOwner()
+	if c.cookie.Secure {
+		t.Fatal("plain HTTP without a proxy header got a Secure cookie")
+	}
+	c2 := e.client()
+	c2.do("POST", "/api/v1/session", map[string]string{"username": "owner", "password": pass}, map[string]string{"X-Forwarded-Proto": "https"})
+	if c2.cookie == nil || !c2.cookie.Secure {
+		t.Fatalf("HTTPS proxy: cookie %+v", c2.cookie)
+	}
+	// The header is ignored from a non-loopback peer.
+	c3 := e.client()
+	c3.ip = "203.0.113.5"
+	c3.do("POST", "/api/v1/session", map[string]string{"username": "owner", "password": pass}, map[string]string{"X-Forwarded-Proto": "https"})
+	if c3.cookie == nil || c3.cookie.Secure {
+		t.Fatalf("untrusted peer: cookie %+v", c3.cookie)
+	}
+}
+
+func TestClientIPBehindProxy(t *testing.T) {
+	s := &server{Deps: Deps{TrustProxy: true}}
+	for _, c := range []struct {
+		peer  string
+		lines []string
+		want  string
+	}{
+		{"127.0.0.1:50000", nil, "127.0.0.1"},
+		{"127.0.0.1:50000", []string{"203.0.113.7"}, "203.0.113.7"},
+		// Caddy and nginx extend the line that came, HAProxy adds its own.
+		{"127.0.0.1:50000", []string{"198.51.100.1, 203.0.113.7"}, "203.0.113.7"},
+		{"127.0.0.1:50000", []string{"198.51.100.1", "203.0.113.7"}, "203.0.113.7"},
+		{"[::1]:50000", []string{"198.51.100.1, 198.51.100.2", "2001:db8::7"}, "2001:db8::7"},
+		// Ports are dropped.
+		{"127.0.0.1:50000", []string{"203.0.113.7:4711"}, "203.0.113.7"},
+		{"127.0.0.1:50000", []string{"[2001:db8::7]:4711"}, "2001:db8::7"},
+		{"127.0.0.1:50000", []string{"[2001:db8::7]"}, "2001:db8::7"},
+		// Not an address: the proxy's own.
+		{"127.0.0.1:50000", []string{"203.0.113.7", "unknown"}, "127.0.0.1"},
+		// Only a proxy on this machine is believed.
+		{"198.51.100.9:50000", []string{"203.0.113.7"}, "198.51.100.9"},
+	} {
+		r := httptest.NewRequest("POST", "/api/v1/session", nil)
+		r.RemoteAddr = c.peer
+		for _, l := range c.lines {
+			r.Header.Add("X-Forwarded-For", l)
+		}
+		if got := s.clientIP(r); got != c.want {
+			t.Errorf("%s %q: %q, want %q", c.peer, c.lines, got, c.want)
+		}
+	}
+	s.TrustProxy = false
+	r := httptest.NewRequest("POST", "/api/v1/session", nil)
+	r.RemoteAddr = "127.0.0.1:50000"
+	r.Header.Set("X-Forwarded-For", "203.0.113.7")
+	if got := s.clientIP(r); got != "127.0.0.1" {
+		t.Errorf("without -trust-proxy: %q", got)
+	}
+}
+
+// A proxy that rewrites Host: Origin is checked against X-Forwarded-Host
+// from a trusted proxy, and a refused write is logged with what to fix.
+func TestOriginBehindProxy(t *testing.T) {
+	e := newEnv(t)
+	e.setupOwner()
+	var logs bytes.Buffer
+	login := func(trust bool, peer string, hdr map[string]string) *httptest.ResponseRecorder {
+		h := New(Deps{Store: e.db, Auth: e.auth, Servers: e.servers, TrustProxy: trust, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+		b, _ := json.Marshal(map[string]string{"username": "owner", "password": pass})
+		r := httptest.NewRequest("POST", "http://127.0.0.1:8480/api/v1/session", bytes.NewReader(b))
+		r.RemoteAddr = net.JoinHostPort(peer, "50000")
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Origin", "https://panel.example.com")
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
+		for k, v := range hdr {
+			r.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+	code(t, login(true, "127.0.0.1", nil), http.StatusForbidden, "csrf")
+	if !strings.Contains(logs.String(), "proxy_set_header Host") || !strings.Contains(logs.String(), "panel.example.com") {
+		t.Fatalf("no warning: %s", logs.String())
+	}
+	code(t, login(true, "127.0.0.1", map[string]string{"X-Forwarded-Host": "panel.example.com"}), http.StatusOK, "")
+	code(t, login(true, "::1", map[string]string{"X-Forwarded-Host": "proxy.internal, panel.example.com"}), http.StatusOK, "")
+	// Only a trusted proxy on this machine is believed.
+	code(t, login(true, "203.0.113.5", map[string]string{"X-Forwarded-Host": "panel.example.com"}), http.StatusForbidden, "csrf")
+	code(t, login(false, "127.0.0.1", map[string]string{"X-Forwarded-Host": "panel.example.com"}), http.StatusForbidden, "csrf")
+}

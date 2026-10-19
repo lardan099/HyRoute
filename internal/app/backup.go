@@ -534,7 +534,12 @@ func (c *Controller) previewOf(ob *openBackup, p *backup.Payload) BackupPreview 
 				break // their broken files are covered by the plan's own checks
 			}
 			if err := st.Broken[f]; err != nil && (f != "rulesets.json" || d.rulesets != nil) {
-				s.Broken = fmt.Sprintf("Сейчас %s не загружен (%v). «Заменить» заменит его, а копия старого файла останется рядом как %s.broken-%s.", f, err, f, time.Now().Format("20060102-150405"))
+				// The copy is named when the restore runs (store.KeepBroken).
+				s.Broken = fmt.Sprintf("Сейчас %s не загружен (%v). «Заменить» заменит его, а копия старого файла останется рядом как %s.broken-<дата-время>.", f, err, f)
+				if def.key == "subscriptions" && f == "profiles.json" {
+					// planSelection: profiles.json comes back only with the servers.
+					s.Broken = fmt.Sprintf("Сейчас %s не загружен (%v). Его восстанавливает «Серверы» в режиме «Заменить» (вместе с «Подписками»); копия старого файла останется рядом как %s.broken-<дата-время>.", f, err, f)
+				}
 				s.Modes = []string{"replace"}
 			}
 		}
@@ -889,10 +894,11 @@ func (c *Controller) RestoreUndoInfo() BackupUndoInfo {
 	}
 	c.mu.Unlock()
 	info.Available, info.Created, info.FileName, info.Sections = true, m.Created, m.File, sectionTitles(m.Sections)
+	// Every file of the record goes back whole, so a change to any of them
+	// is lost, whichever section it belongs to: rulesets.json rides along
+	// with settings.json, and prefs.json or profiles.json hold more than
+	// one section.
 	for _, def := range backupSections {
-		if !slices.Contains(m.Sections, def.key) {
-			continue
-		}
 		for _, f := range def.files {
 			if changed[f] {
 				info.ChangedSince = append(info.ChangedSince, def.title)

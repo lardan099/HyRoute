@@ -16,6 +16,9 @@
   trackUnsaved(() => editing !== null && JSON.stringify(editing) !== editingFrom); // backup
   let saving = $state(false);
   let showPass = $state(false);
+  // A press that started in a field and ended on the backdrop is not a
+  // click on the backdrop.
+  let downOnBackdrop = false;
 
   async function load() {
     try {
@@ -101,6 +104,12 @@
     const auth = p.username ? `${encodeURIComponent(p.username)}:${encodeURIComponent(p.password)}@` : '';
     return `${scheme}://${auth}${addr}`;
   }
+  // shownURL is url() for a tooltip: hide() leaves socks5:// and private
+  // addresses alone, so the login and password are masked here.
+  function shownURL(p: ProxyView, scheme: string, addr: string): string {
+    if (!ui.privacy) return url(p, scheme, addr);
+    return hide(`${scheme}://${p.username ? '***@' : ''}${addr}`);
+  }
 
   async function copy(text: string) {
     try {
@@ -164,7 +173,7 @@
           <div class="name"><b>{p.name}</b> <span class="dot {tone(p)}"></span> <span class="muted small">{stateText[p.state]}</span></div>
           <div class="muted small">
             через {via(p)}
-            {#if p.username}· с паролем{:else}· без пароля{/if}
+            {#if p.username && p.password}· с паролем{:else}· без пароля{/if}
             {#if p.udpOn}· UDP{/if}
             {#if p.lan}· доступен из локальной сети{/if}
           </div>
@@ -184,8 +193,8 @@
           <div class="addr">
             <code class="grow">{hide(a)}</code>
             {#if i > 0}<span class="faint small">из сети</span>{/if}
-            <button class="mini" onclick={() => copy(url(p, 'socks5', a))} title={hide(url(p, 'socks5', a))}>socks5://</button>
-            <button class="mini" onclick={() => copy(url(p, 'http', a))} title={hide(url(p, 'http', a))}>http://</button>
+            <button class="mini" onclick={() => copy(url(p, 'socks5', a))} title={shownURL(p, 'socks5', a)}>socks5://</button>
+            <button class="mini" onclick={() => copy(url(p, 'http', a))} title={shownURL(p, 'http', a)}>http://</button>
             <button class="mini" onclick={() => copy(a)} title="Адрес и порт"><Icon name="copy" size={13} /></button>
           </div>
         {/each}
@@ -198,6 +207,9 @@
               title="Больше предела Hysteria (около 4 КБ, меньше для длинных доменных имён), от чужого адреса или другой программы, разбитые на части (FRAG) или когда сервер недоступен. Подробности — в журнале HyRoute."
             >
               · отброшено UDP-пакетов {p.udpDropped}</span
+            >{/if}{#if p.authFailures > 0}
+            <span title="Адрес, с которого 5 раз подряд ввели неверный логин или пароль, какое-то время не может подключиться. Подробности — в журнале HyRoute.">
+              · неверных входов {p.authFailures}</span
             >{/if}
         </div>
       {/if}
@@ -206,7 +218,12 @@
 </div>
 
 {#if editing}
-  <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && (editing = null)}>
+  <div
+    class="backdrop"
+    role="presentation"
+    onmousedown={(e) => (downOnBackdrop = e.target === e.currentTarget)}
+    onclick={(e) => downOnBackdrop && e.target === e.currentTarget && (editing = null)}
+  >
     <div class="dialog ed">
       <div class="row">
         <h2 class="grow">{editing.id ? 'Прокси' : 'Новый прокси'}</h2>

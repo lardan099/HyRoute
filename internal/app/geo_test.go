@@ -44,6 +44,15 @@ func TestGeoDue(t *testing.T) {
 	v2, _ := geodata.FindSource("v2fly")
 	rf, _ := geodata.FindSource("runetfreedom")
 	file := func(url string) *geodata.FileState { return &geodata.FileState{SHA256: "ab", URL: url} }
+	// The files geo.json describes are there (geoDue checks the disk too).
+	if err := os.MkdirAll(c.geo.db.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"geosite.dat", "geoip.dat"} {
+		if err := os.WriteFile(filepath.Join(c.geo.db.Dir, f), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	due := func(want bool, site, ip string) {
 		t.Helper()
 		src, ok := c.geoDue()
@@ -97,6 +106,12 @@ func TestGeoDue(t *testing.T) {
 	due(true, site, "")
 	geoWriteState(t, c, geodata.State{Source: "custom", Site: file(site), Checked: time.Now()})
 	due(false, "", "")
+	// A file gone from disk is downloaded again, whatever geo.json says
+	// and with auto-update off.
+	if err := os.Remove(filepath.Join(c.geo.db.Dir, "geosite.dat")); err != nil {
+		t.Fatal(err)
+	}
+	due(true, site, "")
 }
 
 func TestGeoPopularFollowsFiles(t *testing.T) {

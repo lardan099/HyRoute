@@ -19,7 +19,7 @@
   // Setup reads and writes the same settings as the pages, each save built
   // on a fresh copy (its revision), so it never undoes a change made
   // elsewhere meanwhile.
-  import { ui, hide, serverLabel, mainTarget, mainText, setupStep, setSetupStep, finishSetup } from '../state.svelte';
+  import { ui, hide, settle, hideUserPath, serverLabel, mainTarget, mainText, setupStep, setSetupStep, finishSetup } from '../state.svelte';
   import Icon from './Icon.svelte';
   import TargetOptions from './TargetOptions.svelte';
   import RouteWizard from './RouteWizard.svelte';
@@ -94,6 +94,10 @@
   // ---- server ----
   let link = $state('');
   let added = $state('');
+  // What the import or the subscription warned about (a link over http://,
+  // links that did not parse): shown with the result, as «Серверы» and
+  // «Подписки» do.
+  let warnings = $state<string[]>([]);
 
   async function paste() {
     error = '';
@@ -111,11 +115,13 @@
     const t = link.trim();
     error = '';
     added = '';
+    warnings = [];
     if (!t) return;
     busy = true;
     try {
       if (/(hysteria2|hy2):\/\//i.test(t)) {
         const r = await api.ImportURIs(t);
+        warnings = r.warnings ?? [];
         if (r.added.length) {
           added = `Добавлено: ${r.added.map((p) => serverLabel(p)).join(', ')}.`;
           link = '';
@@ -133,6 +139,7 @@
             : 'По этой ссылке не нашлось ни одного сервера. Проверьте, что скопировали её целиком, или попросите новую.';
         } else {
           const s = await api.AddSubscription({ token: pv.token, name: pv.title || 'Моя подписка', enabled: true, interval: '24h' });
+          warnings = [...(pv.warnings ?? []), ...(pv.errors ?? []).slice(0, 5)];
           added = `Подписка «${hide(s.name)}» добавлена: ${s.profiles} ${plural(s.profiles, 'сервер', 'сервера', 'серверов')}. HyRoute будет обновлять её сам раз в сутки.`;
           link = '';
         }
@@ -253,8 +260,12 @@
       .catch(() => (ext = null));
   });
 
+  // Read once, as launchLoaded: «Назад» and the step again keep the choice.
+  let killLoaded = false;
   $effect(() => {
-    if (settings && step === 'launch') wantKill = settings.killSwitch ?? false;
+    if (!settings || step !== 'launch' || killLoaded) return;
+    killLoaded = true;
+    wantKill = settings.killSwitch ?? false;
   });
 
   async function applyLaunch() {
@@ -365,13 +376,13 @@
       <h1>Установим HyRoute как обычную программу</h1>
       {#if sys && inTarget}
         <p class="lead">
-          HyRoute уже лежит в {sys.programDir}, но права этой папки разрешают менять файлы программам без прав администратора. Откройте свойства
+          HyRoute уже лежит в {hideUserPath(sys.programDir)}, но права этой папки разрешают менять файлы программам без прав администратора. Откройте свойства
           папки, вкладку «Безопасность», и оставьте запись и изменение только администраторам. Или пропустите этот шаг: HyRoute будет работать,
           но не сможет запускаться вместе с Windows.
         </p>
       {:else if sys}
         <p class="lead">
-          Сейчас HyRoute запущен из папки <span class="path">{sys.programDir}</span> — скорее всего, из «Загрузок» или с рабочего стола.
+          Сейчас HyRoute запущен из папки <span class="path">{hideUserPath(sys.programDir)}</span> — скорее всего, из «Загрузок» или с рабочего стола.
         </p>
         <p>
           HyRoute работает с правами администратора, поэтому ему нужно лежать в защищённой папке Program Files: туда без вашего разрешения не
@@ -412,6 +423,7 @@
         <button class="primary" onclick={addLink} disabled={busy || !link.trim()}>{busy ? 'Добавляю…' : 'Добавить'}</button>
       </div>
       {#if added}<div class="note ok">{added}</div>{/if}
+      {#each warnings as w, i (i)}<div class="note warn small">{hide(w)}</div>{/each}
       {#if ui.profiles.length}
         <p class="muted small">
           Серверов добавлено: {ui.profiles.length}{ui.profiles.length <= 4 ? ` (${ui.profiles.map((p) => serverLabel(p)).join(', ')})` : ''}. Можно
@@ -425,7 +437,7 @@
           У вас {ui.profiles.length} {plural(ui.profiles.length, 'сервер', 'сервера', 'серверов')}. Выберите основной: через него пойдёт трафик VPN.
           Обычно лучше всего работает ближайший к вам. Поменять его можно в любой момент на главной.
         </p>
-        <select class="big-select" value={main?.id ?? ''} onchange={(e) => pickMain((e.currentTarget as HTMLSelectElement).value)} disabled={checking}>
+        <select class="big-select" value={main?.id ?? ''} onchange={(e) => settle(e, (el) => pickMain(el.value), () => mainTarget()?.id ?? '')} disabled={checking}>
           {#if main?.unloaded}<option value={main.id} disabled>основная группа не загружена</option>{/if}
           <TargetOptions current={main?.unloaded ? '' : main?.id} />
         </select>

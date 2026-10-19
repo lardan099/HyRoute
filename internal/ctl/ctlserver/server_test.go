@@ -49,6 +49,7 @@ type fakeAPI struct {
 	blockStat chan struct{}
 	netOn     bool // «Действовать по сети»
 	browserOn bool // «Расширение для браузера»
+	moreSubs  bool // Subscriptions: a second one, enabled too
 }
 
 func newFake() *fakeAPI {
@@ -153,6 +154,11 @@ func (f *fakeAPI) ApplyRulesTextAs(content, format string, replace bool) (app.Sa
 func (f *fakeAPI) Subscriptions() []app.SubView {
 	v := app.SubView{URLMasked: "https://panel.example/…", Profiles: 3}
 	v.ID, v.Name, v.Enabled, v.URL = "s1", "Панель", true, secretSub
+	if f.moreSubs {
+		w := v
+		w.ID, w.Name = "s2", "Вторая"
+		return []app.SubView{v, w}
+	}
 	return []app.SubView{v}
 }
 func (f *fakeAPI) ResolveSubscription(q string) (string, error) {
@@ -335,6 +341,18 @@ func doReq(t *testing.T, l *pipeListener, cmd string, args any, private bool) (c
 			return f, evs
 		}
 		evs = append(evs, f.Event)
+	}
+}
+
+// Updating several subscriptions, HyRoute reports each one done with an
+// empty frame, which gives the client its time again.
+func TestSubsUpdateBeats(t *testing.T) {
+	f := newFake()
+	f.moreSubs = true
+	_, l := serve(t, f, true)
+	fr, evs := doReq(t, l, "subs-update", ctl.NameArgs{}, false)
+	if !fr.OK || len(evs) != 1 || len(evs[0]) != 0 || !strings.Contains(string(fr.Result), `"name":"Вторая"`) {
+		t.Fatalf("%+v %q %s", fr.Error, evs, fr.Result)
 	}
 }
 

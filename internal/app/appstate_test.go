@@ -56,6 +56,9 @@ func TestUnloadedPrefsKeepUserChoices(t *testing.T) {
 	v2, _ := geodata.FindSource("v2fly")
 	geoRules(t, c, "geoip:ru")
 	geoWriteState(t, c, geodata.State{Source: "v2fly", IP: &geodata.FileState{SHA256: "ab", URL: v2.IP}, Checked: time.Now()})
+	if err := os.WriteFile(filepath.Join(c.geo.db.Dir, "geoip.dat"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err) // the file geo.json describes (geoDue checks the disk too)
+	}
 	if _, due := c.geoDue(); due {
 		t.Fatal("up to date")
 	}

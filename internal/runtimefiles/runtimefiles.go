@@ -228,7 +228,8 @@ func HTTPGetter(ctx context.Context, client *http.Client, userAgent string) Gett
 	}
 }
 
-// Verify checks the staged copies (before each use by a new session).
+// Verify checks the staged copies: HyRoute's session starter calls it
+// before each session.
 func Verify(dir string, files []File) error {
 	for _, f := range files {
 		p := filepath.Join(dir, f.Name)

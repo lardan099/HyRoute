@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"slices"
 	"sort"
 	"strings"
@@ -41,12 +42,14 @@ type ProxyView struct {
 
 	// socks-udp. Active and Total count TCP connections only: every UDP
 	// session holds a control connection, which the server counts too.
-	UDPEffective bool   `json:"udpOn"`                // the switch's effective value (LocalProxy.UDPOn)
-	UDPServed    bool   `json:"udpServed"`            // UDP ASSOCIATE served now (listening, UDP on, socket open)
-	UDPActive    int64  `json:"udpActive"`            // open UDP sessions
-	UDPTotal     int64  `json:"udpTotal"`             // UDP sessions served
-	UDPDropped   int64  `json:"udpDropped"`           // datagrams dropped
-	UDPError     string `json:"udpError,omitempty"`   // LAN: the shared UDP port did not open (retrying)
+	UDPEffective bool   `json:"udpOn"`              // the switch's effective value (LocalProxy.UDPOn)
+	UDPServed    bool   `json:"udpServed"`          // UDP ASSOCIATE served now (listening, UDP on, socket open)
+	UDPActive    int64  `json:"udpActive"`          // open UDP sessions
+	UDPTotal     int64  `json:"udpTotal"`           // UDP sessions served
+	UDPDropped   int64  `json:"udpDropped"`         // datagrams dropped
+	UDPError     string `json:"udpError,omitempty"` // LAN: the shared UDP port did not open (retrying)
+	// AuthFailures: wrong logins or passwords since the proxy opened.
+	AuthFailures int64  `json:"authFailures"`
 	UDPBlocked   string `json:"udpBlocked,omitempty"` // "server" | "group": the target cannot carry UDP now
 }
 
@@ -151,7 +154,7 @@ func validateProxy(p store.LocalProxy, others []store.LocalProxy) error {
 		return errors.New("логин и пароль — не длиннее 255 символов")
 	}
 	if p.LAN && p.Username == "" {
-		return errors.New("для доступа из локальной сети задайте логин и пароль: иначе прокси сможет пользоваться любое устройство в сети")
+		return errLANNoLogin
 	}
 	if p.Enabled {
 		if err := lanPortErr(p); err != nil {
@@ -159,6 +162,51 @@ func validateProxy(p store.LocalProxy, others []store.LocalProxy) error {
 		}
 	}
 	return nil
+}
+
+var errLANNoLogin = errors.New("для доступа из локальной сети задайте логин и пароль: иначе прокси сможет пользоваться любое устройство в сети")
+
+// lanStartErr is why a proxy does not start: a LAN port in the relay's
+// range, or a LAN proxy without a login and a password (validateProxy
+// refuses to save one, but proxies.json may be edited by hand).
+func lanStartErr(p store.LocalProxy) error {
+	if err := lanPortErr(p); err != nil {
+		return err
+	}
+	if p.LAN && (p.Username == "" || p.Password == "") {
+		return errLANNoLogin
+	}
+	return nil
+}
+
+// turnsOff: p is a stored proxy with only Enabled set to false. It is
+// saved even when the file holds what validateProxy refuses: turning such
+// a proxy off must work.
+func turnsOff(list []store.LocalProxy, p store.LocalProxy) bool {
+	i := proxyIndex(list, p.ID)
+	if i < 0 || p.Enabled {
+		return false
+	}
+	q := list[i]
+	normalizeProxy(&q)
+	q.Enabled = false
+	return q == p
+}
+
+// normalizeProxy is what SaveProxy does to a proxy before the checks.
+func normalizeProxy(p *store.LocalProxy) {
+	p.Name = strings.TrimSpace(p.Name)
+	p.Username = strings.TrimSpace(p.Username)
+	switch {
+	case !p.LAN:
+		p.NormalizeUDP()
+	case p.UDP == "":
+		// A LAN proxy's value is written even when it is the default
+		// (off): a LAN proxy saved by this version must not look like
+		// v1.2.0's to KeepV12ProxyUDP at the next start, which would turn
+		// its UDP back on.
+		p.UDP = "off"
+	}
 }
 
 // lanPortErr keeps LAN proxies out of the relay's port range: the relay's
@@ -191,24 +239,13 @@ type ProxyInput struct {
 func (c *Controller) SaveProxy(in ProxyInput) (ProxyView, error) {
 	p := in.LocalProxy
 	p.Password = in.Password
-	p.Name = strings.TrimSpace(p.Name)
-	p.Username = strings.TrimSpace(p.Username)
-	switch {
-	case !p.LAN:
-		p.NormalizeUDP()
-	case p.UDP == "":
-		// A LAN proxy's value is written even when it is the default
-		// (off): a LAN proxy saved by this version must not look like
-		// v1.2.0's to KeepV12ProxyUDP at the next start, which would turn
-		// its UDP back on.
-		p.UDP = "off"
-	}
+	normalizeProxy(&p)
 	c.mu.Lock()
 	if p.Profile != "" && !c.targetExistsLocked(p.Profile) {
 		c.mu.Unlock()
 		return ProxyView{}, errors.New("сервер не найден")
 	}
-	if err := validateProxy(p, c.proxies); err != nil {
+	if err := validateProxy(p, c.proxies); err != nil && !turnsOff(c.proxies, p) {
 		c.mu.Unlock()
 		return ProxyView{}, err
 	}
@@ -332,7 +369,7 @@ func (c *Controller) syncProxies() {
 	sort.Strings(ids)
 	var fw proxyPorts
 	for _, id := range ids {
-		if p := want[id]; p.LAN && lanPortErr(p) == nil {
+		if p := want[id]; p.LAN && lanStartErr(p) == nil {
 			fw.tcp = append(fw.tcp, p.Port)
 			if p.UDPOn() {
 				fw.udp = append(fw.udp, p.Port)
@@ -356,7 +393,7 @@ func (c *Controller) syncProxies() {
 	c.reopenUDPRuledLocked()
 	for _, id := range ids {
 		p := want[id]
-		if err := lanPortErr(p); err != nil { // saved before the check existed
+		if err := lanStartErr(p); err != nil { // saved before the check existed, or edited by hand
 			c.proxyRuns[id] = &proxyRun{cfg: p, err: err.Error()}
 			c.Log.Error("local proxy not started", "name", p.Name, "port", p.Port, "err", err)
 			continue
@@ -376,6 +413,9 @@ func (c *Controller) syncProxies() {
 		}
 		srv.OnAcceptError = func(err error) {
 			c.Log.Error("local proxy accept failed", "name", p.Name, "port", p.Port, "err", err)
+		}
+		srv.OnAuthFail = func(from netip.Addr, n int64) {
+			c.Log.Warn("local proxy: wrong login or password; an address waits after 5 in a row", "name", p.Name, "port", p.Port, "from", from, "count", n)
 		}
 		r := &proxyRun{cfg: p, udpErr: udpErr}
 		if err := srv.Listen(fmt.Sprintf("%s:%d", host, p.Port)); err != nil {
@@ -565,6 +605,7 @@ func proxyUDPView(v *ProxyView, srv *localproxy.Server) {
 	v.Total = max(0, srv.Total.Load()-srv.UDPCtlTotal.Load())
 	v.UDPServed = srv.UDP()
 	v.UDPActive, v.UDPTotal, v.UDPDropped = udpActive, udpTotal, srv.UDPDropped.Load()
+	v.AuthFailures = srv.AuthFailures.Load()
 	if err := srv.UDPError(); err != nil {
 		v.UDPError = fmt.Sprintf("UDP-порт %d не открылся: %v. TCP работает, UDP через этот прокси — нет (порт занят другой программой?). HyRoute пробует снова каждые 30 секунд.", v.Port, err)
 	}
@@ -666,7 +707,9 @@ func (c *Controller) proxyUDPDialer(p store.LocalProxy) localproxy.UDPDialer {
 			ep.NoteRejected()
 			c.proxyUDPFailed(p, member, group, failover, "dropped: tunnel unavailable")
 			if ep.Available() {
-				c.warnProxyUDP(p, "local proxy: server does not allow UDP", "server", ep.Profile.Name)
+				// The name from c.names: Sync rewrites ep.Profile under the
+				// tunnel manager's lock, which is not held here.
+				c.warnProxyUDP(p, "local proxy: server does not allow UDP", "server", c.profileName(member))
 				return nil, socks5.ReplyError(2)
 			}
 			return nil, socks5.ReplyError(1)

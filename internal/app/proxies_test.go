@@ -168,6 +168,42 @@ func TestLANProxyRelayPorts(t *testing.T) {
 	}
 }
 
+// A LAN proxy without a login and a password (proxies.json edited by
+// hand) does not start, and its switch can still turn it off.
+func TestLANProxyWithoutLoginNotStarted(t *testing.T) {
+	c, _ := newCtl(t)
+	p := store.LocalProxy{ID: "hand", Name: "x", Enabled: true, Port: freePort(t), LAN: true, UDP: "off", Username: "u"}
+	if err := c.Store.SaveProxies([]store.LocalProxy{p}); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = newCtlAt(t, c.Store)
+	var fw [][]int
+	c.ProxyFirewall = func(p, _ []int) error { fw = append(fw, p); return nil }
+	if err := c.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	defer c.Disconnect()
+	v := c.Proxies()[0]
+	if v.State != "error" || v.Error != errLANNoLogin.Error() {
+		t.Fatalf("%+v", v)
+	}
+	for _, ports := range fw {
+		if len(ports) != 0 {
+			t.Fatalf("firewall: %v", fw)
+		}
+	}
+	// The switch sends what the card shows.
+	in := ProxyInput{LocalProxy: v.LocalProxy, Password: v.Password}
+	in.Enabled = false
+	if _, err := c.SaveProxy(in); err != nil {
+		t.Fatal(err)
+	}
+	in.Enabled = true
+	if _, err := c.SaveProxy(in); err == nil {
+		t.Fatal("a LAN proxy without a password turned on")
+	}
+}
+
 // The LAN rule is set again on every Connect after LAN ports were open:
 // "Remove firewall rule" may have deleted it while disconnected. A LAN
 // proxy deleted while disconnected takes its port out of the rule.
