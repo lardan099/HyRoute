@@ -16,3 +16,6 @@
 /tools/wdfilter/wdfilter
 /dist/
 /web/admin/node_modules/
+# The release workflow's notes and files for its publish job: package.ps1
+# refuses a dirty tree, so they must not show as untracked.
+/out/
