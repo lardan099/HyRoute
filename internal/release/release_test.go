@@ -99,12 +99,15 @@ func TestDownloadSlowButSteady(t *testing.T) {
 	if (&Client{}).http().Timeout != 0 {
 		t.Fatal("the default client limits the whole download")
 	}
+	// The stall timer also covers the connection and the first byte: on a
+	// loaded Windows runner they took longer than 500 ms once. Ten gaps of
+	// a byte fit in it now, and the download still takes 2.5 times as long.
 	old := stallTimeout
-	stallTimeout = 500 * time.Millisecond
+	stallTimeout = time.Second
 	t.Cleanup(func() { stallTimeout = old })
-	body := []byte(strings.Repeat("x", 15))
+	body := []byte(strings.Repeat("x", 25))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// A byte every 100 ms, 1.5 s in all: three times stallTimeout.
+		// A byte every 100 ms, 2.5 s in all.
 		for _, b := range body {
 			w.Write([]byte{b})
 			w.(http.Flusher).Flush()
