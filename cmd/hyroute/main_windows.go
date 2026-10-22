@@ -21,14 +21,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	wailswin "github.com/wailsapp/wails/v2/pkg/options/windows"
 	"golang.org/x/sys/windows"
 
 	buildfiles "github.com/lardan099/hyroute/build"
-	"github.com/lardan099/hyroute/frontend"
 	"github.com/lardan099/hyroute/internal/app"
 	"github.com/lardan099/hyroute/internal/autostart"
 	"github.com/lardan099/hyroute/internal/core"
@@ -66,7 +61,16 @@ func main() {
 	reconnect := flag.Bool("reconnect", false, "set by hyroute-updater (then report healthy) and after a move to Program Files: connect again")
 	atLogon := flag.Bool("autostart", false, "set by the sign-in task: start minimized")
 	ksCheck := flag.Bool("killswitch-check", false, "set by the kill switch sign-in task: start only to show a kill switch block left from before")
+	winPipes := flag.String("window", "", "set by HyRoute: be its window process (the pipes it made)")
+	winState := flag.String("window-state", "normal", "set by HyRoute: the window process starts normal or minimised")
+	winGeom := flag.String("window-geom", "", "set by HyRoute: where the last window was")
 	flag.Parse()
+
+	// The window process (window_windows.go): nothing below is its part.
+	if *winPipes != "" {
+		runWindow(*winPipes, *winState, *winGeom)
+		return
+	}
 
 	if !windows.GetCurrentProcessToken().IsElevated() {
 		messageBox("HyRoute", "HyRoute нужны права администратора (драйвер WinDivert). Запустите программу от имени администратора.")
@@ -130,9 +134,10 @@ func main() {
 		fatalBox(err)
 	}
 	// WebView2 never runs elevated with HyRoute: its data folder is one the
-	// user signed in to the desktop can write to (webviewDataDir).
-	webviewDir, err := webviewDataDir()
-	if err != nil {
+	// user signed in to the desktop can write to (webviewDataDir, worked
+	// out by the window process; here only checked, so that a start that
+	// cannot open the window says so at once).
+	if _, err := webviewDataDir(); err != nil {
 		fatalBox(err)
 	}
 	dropOldWebviewDir()
@@ -230,7 +235,11 @@ func main() {
 	ctl.Updater = &app.Updater{Repo: updateRepo, Dir: core.DefaultDir("updates"), Core: coreMgr, Client: coreMgr.Client}
 	cleanUpdates(ctl.Updater.Dir)
 
-	gui := &GUI{ctl: ctl, dataDir: dataDir, dllDir: dir, runtimeDir: runtimeDir, core: coreMgr, updateEvent: *updEvent}
+	life, endLife := context.WithCancel(context.Background())
+	defer endLife()
+	gui := &GUI{ctl: ctl, dataDir: dataDir, dllDir: dir, runtimeDir: runtimeDir, core: coreMgr, updateEvent: *updEvent,
+		life: life, quitCh: make(chan struct{})}
+	gui.win = &winHost{g: gui, exe: exe}
 	gui.cli = cs
 	// Set before any goroutine below can report a change.
 	ctl.CoreVersion = func() string { return coreMgr.Info().Version }
@@ -290,59 +299,37 @@ func main() {
 	if nm.Config.Enabled && nm.LoadError == "" {
 		blocked = false
 	}
-	startState, startHidden := options.Normal, false
+	// The window is a process of its own (window_windows.go), started when
+	// it opens and gone when it closes: in the tray WebView2 holds no
+	// memory. Started at sign-in HyRoute opens no window (or a minimized
+	// one, without «Кнопка × сворачивает в трей»).
+	startState, startHidden := "normal", false
 	if *atLogon && !blocked {
 		if ctl.Prefs().CloseToTrayOn() {
 			startHidden = true
 		} else {
-			startState = options.Minimised
+			startState = "minimised"
 		}
 	}
-	gui.tray.hidden.Store(startHidden)
+	if startHidden {
+		// No window this run unless asked for: an update's health check
+		// does not wait for one (the updater never starts HyRoute so).
+		gui.uiUp.Store(true)
+	}
 	gui.startCLI()          // cli: the control pipe for hyroutectl
 	go gui.syncBrowserExt() // browser: an installed extension follows this HyRoute
-	err = wails.Run(&options.App{
-		Title:            "HyRoute",
-		WindowStartState: startState,
-		StartHidden:      startHidden,
-		Width:            1180,
-		Height:           760,
-		MinWidth:         900,
-		MinHeight:        560,
-		BackgroundColour: &options.RGBA{R: 24, G: 26, B: 31, A: 255},
-		AssetServer:      &assetserver.Options{Assets: frontend.Dist},
-		OnStartup: func(ctx context.Context) {
-			gui.startup(ctx)
-			// The window exists: a second start now shows it.
-			inst.serve(gui.showWindow)
-			gate.markUI()
-		},
-		OnDomReady: gui.domReady,
-		OnShutdown: func(ctx context.Context) {
-			inst.leaving()
-			gui.stopCLI()
-			gui.shutdown(ctx)
-		},
-		OnBeforeClose: func(ctx context.Context) bool {
-			if gui.beforeClose(ctx) {
-				return true // hidden, still running
-			}
-			inst.leaving()
-			return false
-		},
-		Bind: []interface{}{gui},
-		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId:               "hyroute-7f3c1a52-single-instance",
-			OnSecondInstanceLaunch: gui.secondInstance,
-		},
-		Windows: &wailswin.Options{
-			Theme:               wailswin.SystemDefault,
-			WebviewUserDataPath: webviewDir,
-		},
-	})
-	if err != nil {
-		fatalBox(err)
+	gui.startTray()
+	// A second start shows the window (opening it if it is closed).
+	inst.serve(gui.showWindow)
+	gate.markUI()
+	if !startHidden {
+		gui.win.open(startState)
 	}
+	<-gui.quitCh
+	inst.leaving()
+	gui.stopCLI()
+	endLife()
+	gui.shutdown()
 }
 
 // webviewDataDir is where WebView2 keeps the window's data (cache, the

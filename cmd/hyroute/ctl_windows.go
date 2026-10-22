@@ -393,11 +393,8 @@ func (b ctlBackend) BrowserRemove(e app.BrowserEdit) (app.BrowserResult, error) 
 	return b.g.ctl.BrowserRemove(e)
 }
 
-// ShowWindow brings the window up; an error until it exists.
+// ShowWindow brings the window up, opening it if it is closed.
 func (b ctlBackend) ShowWindow() error {
-	if b.g.context() == nil {
-		return errors.New("window not ready")
-	}
 	b.g.showWindow()
 	return nil
 }

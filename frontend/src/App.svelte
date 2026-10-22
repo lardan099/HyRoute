@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, onEvent, errText, type Updates } from './api';
+  import { api, onEvent, errText, reportUnsaved, type Updates } from './api';
   import { ui, hide, setPrivacy, applyTheme, noteSettingsRev, setExpert, setupDone, setupStep } from './state.svelte';
   import { pruneSubAcks, subAlerts } from './state.svelte'; // subinfo
   import { startRestore } from './state.svelte'; // backup
@@ -148,6 +148,9 @@
       offSettings();
     };
   });
+
+  // Closing the window asks about unsaved edits (the window process).
+  $effect(() => reportUnsaved(ui.unsaved));
 
   const st = $derived(ui.status);
   const online = $derived(st != null && st.state !== 'disconnected' && !(st.state === 'error' && !st.stats));

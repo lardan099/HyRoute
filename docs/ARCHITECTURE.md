@@ -59,7 +59,8 @@ HyRoute — клиент Hysteria 2 для Windows, который решает,
 
 | Процесс | Права | Что делает |
 |---|---|---|
-| `HyRoute.exe` | администратор | окно (Wails + WebView2), трей, движок WinDivert, relay, kill switch, контроллер |
+| `HyRoute.exe` | администратор | трей, движок WinDivert, relay, kill switch, контроллер |
+| `HyRoute.exe --window` | как у HyRoute | окно (Wails + WebView2): живёт, пока окно открыто; вызовы страницы передаёт основному процессу ([app](architecture/app.md)) |
 | `hysteria.exe` | как у HyRoute | по одному на используемый сервер, в Job Object с `KILL_ON_JOB_CLOSE` |
 | `hyroute-updater.exe` | администратор | заменяет файлы при обновлении и откатывает их, если новая версия не запустилась |
 | `hyroutectl.exe` | пользователь | командная строка, говорит с HyRoute через именованный канал |

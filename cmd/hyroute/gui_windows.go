@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,7 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/sys/windows"
 
@@ -31,11 +31,13 @@ import (
 	"github.com/lardan099/hyroute/internal/rules"
 	"github.com/lardan099/hyroute/internal/settings"
 	"github.com/lardan099/hyroute/internal/store"
+	"github.com/lardan099/hyroute/internal/uirpc"
 	"github.com/lardan099/hyroute/internal/update"
 )
 
-// GUI is bound to the frontend: every exported method is callable from JS
-// as window.go.main.GUI.<Method>.
+// GUI serves the window: every exported method is callable from the page,
+// which runs in the window process (window_windows.go) and reaches them
+// through Bridge.Call, as Wails bound them before.
 type GUI struct {
 	ctl     *app.Controller
 	dataDir string
@@ -43,45 +45,42 @@ type GUI struct {
 	// runtimeDir holds the verified hysteria.exe and WinDivert copies that
 	// actually run (administrators-only folder).
 	runtimeDir string
-	ctx        atomic.Pointer[context.Context]
+	// life ends when HyRoute exits (long calls of the page stop).
+	life context.Context
+	win  *winHost
+
+	dispatchOnce sync.Once
+	dispatchFn   uirpc.Handler
 
 	core        *core.Manager
 	updateEvent string // signal when up (after an update)
 	notice      string // shown once at startup
 	// After an update the new version is "healthy" when the window is up
-	// and, with --reconnect, the filters are in place again.
+	// (window.ready) and, with --reconnect, the filters are in place again.
 	uiUp, connUp atomic.Bool
 
 	tray     trayState
 	quitting atomic.Bool // a real exit: the close button no longer hides
-	web      webviewState
+	quitOnce sync.Once
+	quitCh   chan struct{} // closed by quit: main ends HyRoute
 
 	cli *cliState // cli: the control pipe (ctl_windows.go)
 }
 
-func (g *GUI) startup(ctx context.Context) {
-	g.ctx.Store(&ctx)
-	g.startTray()
+// dispatch runs a method of GUI for the page (uirpc.Dispatch).
+func (g *GUI) dispatch(method string, args []json.RawMessage) (any, error) {
+	g.dispatchOnce.Do(func() { g.dispatchFn = uirpc.Dispatch(g) })
+	return g.dispatchFn(method, args)
 }
 
-// shutdown: the window closed. Windows closes it the same way for "End
-// task" in Task Manager as for the close button, so an exit is never taken
-// as the user's Disconnect: with the kill switch on the internet stays
-// closed until HyRoute connects again or the user opens it.
-func (g *GUI) shutdown(context.Context) {
-	g.web.down.Store(true)
+// shutdown: HyRoute exits. An exit is never taken as the user's
+// Disconnect: with the kill switch on the internet stays closed until
+// HyRoute connects again or the user opens it.
+func (g *GUI) shutdown() {
+	g.win.close()
 	g.ctl.StopNetModes() // netmodes: no network rule acts during the exit
 	g.ctl.Shutdown()
 	g.quitTray()
-}
-
-// domReady: the window works. After an update this tells hyroute-updater
-// that the new version is healthy (otherwise it rolls back).
-func (g *GUI) domReady(context.Context) {
-	g.uiUp.Store(true)
-	g.signalHealthy()
-	g.syncWindow() // started hidden to the tray: the page pauses at once
-	g.watchWindow()
 }
 
 // reconnectAfterUpdate restores the connection the old version had; the
@@ -139,19 +138,8 @@ func (g *GUI) StartupNotice() string {
 	return n
 }
 
-func (g *GUI) context() context.Context {
-	if p := g.ctx.Load(); p != nil {
-		return *p
-	}
-	return nil
-}
-
-func (g *GUI) secondInstance(options.SecondInstanceData) { g.showWindow() }
-
 func (g *GUI) emitStatus() {
-	if ctx := g.context(); ctx != nil {
-		runtime.EventsEmit(ctx, "status")
-	}
+	g.win.notify("status")
 	go g.updateTray()
 	if !g.connUp.Load() {
 		go g.noteConnected()
@@ -160,9 +148,7 @@ func (g *GUI) emitStatus() {
 
 // emitSettings tells the pages that the settings changed (revision rev).
 func (g *GUI) emitSettings(rev uint64) {
-	if ctx := g.context(); ctx != nil {
-		runtime.EventsEmit(ctx, "settings", rev)
-	}
+	g.win.notify("settings", rev)
 }
 
 // ---- status and connection ----
@@ -244,7 +230,7 @@ func (g *GUI) ImportURIs(text string) (app.ImportResult, error) { return g.ctl.I
 
 // ImportClipboard imports links from the clipboard.
 func (g *GUI) ImportClipboard() (app.ImportResult, error) {
-	text, err := runtime.ClipboardGetText(g.context())
+	text, err := g.win.clipboardGet()
 	if err != nil {
 		return app.ImportResult{}, err
 	}
@@ -254,7 +240,7 @@ func (g *GUI) ImportClipboard() (app.ImportResult, error) {
 // ClipboardText reads the clipboard for the setup's «Вставить из буфера»,
 // which takes a server link or a subscription link alike.
 func (g *GUI) ClipboardText() (string, error) {
-	return runtime.ClipboardGetText(g.context())
+	return g.win.clipboardGet()
 }
 
 func (g *GUI) SaveProfile(p hysteria.Profile) (app.ProfileSummary, error) {
@@ -270,7 +256,7 @@ func (g *GUI) CopyURI(id string) error {
 	if err != nil {
 		return err
 	}
-	return runtime.ClipboardSetText(g.context(), uri)
+	return g.win.clipboardSet(uri)
 }
 
 // ---- subscriptions ----
@@ -291,7 +277,7 @@ func (g *GUI) DeleteSubscription(id string) error { return g.ctl.DeleteSubscript
 
 // CopyText puts text on the clipboard (navigator.clipboard is not
 // reliable in the WebView).
-func (g *GUI) CopyText(text string) error { return runtime.ClipboardSetText(g.context(), text) }
+func (g *GUI) CopyText(text string) error { return g.win.clipboardSet(text) }
 
 // ---- rules and settings ----
 
@@ -355,7 +341,7 @@ func (g *GUI) RunningApps(query string, all bool, limit int) []procinfo.Running 
 }
 
 func (g *GUI) BrowseExe() (string, error) {
-	return runtime.OpenFileDialog(g.context(), runtime.OpenDialogOptions{
+	return g.win.openFile(runtime.OpenDialogOptions{
 		Title:   "Выберите программу",
 		Filters: []runtime.FileFilter{{DisplayName: "Программы (*.exe)", Pattern: "*.exe"}},
 	})
@@ -375,7 +361,7 @@ func (g *GUI) SaveLog(kind string, sanitized bool) (string, error) {
 		suffix = "-sanitized"
 	}
 	name := fmt.Sprintf("hyroute-%s%s-%s.log", strings.ReplaceAll(kind, ":", "-"), suffix, time.Now().Format("20060102-150405"))
-	path, err := runtime.SaveFileDialog(g.context(), runtime.SaveDialogOptions{
+	path, err := g.win.saveFile(runtime.SaveDialogOptions{
 		DefaultFilename: name,
 		Filters:         []runtime.FileFilter{{DisplayName: "Лог (*.log)", Pattern: "*.log"}},
 	})
@@ -428,7 +414,7 @@ func (g *GUI) Diagnostics(privacy bool) string {
 }
 
 func (g *GUI) CopyDiagnostics(privacy bool) error {
-	return runtime.ClipboardSetText(g.context(), g.Diagnostics(privacy))
+	return g.win.clipboardSet(g.Diagnostics(privacy))
 }
 
 func (g *GUI) systemLines() []string {
@@ -468,7 +454,7 @@ func (g *GUI) CheckUpdates() app.UpdatesState { return g.ctl.CheckUpdates() }
 // Rule databases (geosite/geoip).
 func (g *GUI) GeoInfo() app.GeoInfo { return g.ctl.GeoInfo() }
 func (g *GUI) UpdateGeo(force bool) (geodata.Result, error) {
-	return g.ctl.UpdateGeo(g.context(), force)
+	return g.ctl.UpdateGeo(g.life, force)
 }
 func (g *GUI) RollbackGeo() error { return g.ctl.RollbackGeo() }
 func (g *GUI) SetGeoPrefs(source, siteURL, ipURL string, auto bool, hours int) error {

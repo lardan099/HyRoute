@@ -1,8 +1,7 @@
-// Polling that stops while the window is out of sight: hidden to the tray
-// or minimized. HyRoute says so with the "window" event; WebView2 itself
-// does (document.hidden) only for a window hidden to the tray. A page that
-// polled on all day kept msedgewebview2.exe busy: «Соединения» redrew its
-// table every second in the tray.
+// Polling that stops while the window is minimized: the window process
+// says so with the "window" event (document.hidden stays false for a
+// minimized WebView2). A closed window is a process that has ended, so
+// nothing polls in the tray at all.
 
 let hostShown = true;
 const resumers = new Set<() => void>();

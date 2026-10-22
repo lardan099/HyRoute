@@ -30,7 +30,7 @@ type API interface {
 	ConnectOrResume() (already bool, err error)
 	Reconnect() error
 	Disconnect()
-	ShowWindow() error // an error before the window exists
+	ShowWindow() error // opens the window if it is closed
 	Profiles() []app.ProfileSummary
 	ResolveTarget(text string) (string, error) // "" = main
 	TargetName(id string) string

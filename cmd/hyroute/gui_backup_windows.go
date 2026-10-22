@@ -44,7 +44,7 @@ func (g *GUI) ExportBackup(o app.BackupExportOptions) (BackupSaved, error) {
 	if err != nil {
 		return BackupSaved{}, err
 	}
-	path, err := runtime.SaveFileDialog(g.context(), runtime.SaveDialogOptions{
+	path, err := g.win.saveFile(runtime.SaveDialogOptions{
 		Title:           "Сохранить резервную копию HyRoute",
 		DefaultFilename: "HyRoute-" + time.Now().Format("2006-01-02") + backup.Ext,
 		Filters:         backupFilters,
@@ -69,7 +69,7 @@ func (g *GUI) ExportBackup(o app.BackupExportOptions) (BackupSaved, error) {
 // OpenBackup asks for a file and opens it (HyRoute 1.2.0's .hyroute files
 // too); a cancelled dialog is Token "".
 func (g *GUI) OpenBackup() (app.BackupOpened, error) {
-	path, err := runtime.OpenFileDialog(g.context(), runtime.OpenDialogOptions{
+	path, err := g.win.openFile(runtime.OpenDialogOptions{
 		Title: "Выберите резервную копию HyRoute",
 		Filters: []runtime.FileFilter{
 			{DisplayName: "Резервная копия HyRoute (*.hyroute-backup, *.hyroute)", Pattern: "*" + backup.Ext + ";*" + backup.LegacyExt},

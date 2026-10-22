@@ -1,4 +1,6 @@
-// Thin wrapper over the Wails bindings (window.go.main.GUI.*) and events.
+// Thin wrapper over the calls to HyRoute and its events. The window is a
+// process of its own: its one binding, window.go.main.Bridge.Call, runs a
+// method of GUI in HyRoute (cmd/hyroute/window_windows.go).
 
 export type Action = 'direct' | 'tunnel' | 'block';
 
@@ -669,12 +671,21 @@ const w = window as any;
 export const api: GUI = new Proxy({} as GUI, {
   get(_t, method: string) {
     return (...args: unknown[]) => {
+      const bridge = w.go?.main?.Bridge;
+      if (bridge?.Call) return bridge.Call(method, args.map((a) => (a === undefined ? null : a)));
+      // Development and the screenshot scripts bind GUI itself.
       const fn = w.go?.main?.GUI?.[method];
       if (!fn) return Promise.reject(new Error('Нет связи с HyRoute (запущено вне приложения)'));
       return fn(...args);
     };
   },
 });
+
+// reportUnsaved tells the window how many edits are unsaved: closing it
+// asks about them first.
+export function reportUnsaved(n: number) {
+  w.go?.main?.Bridge?.SetUnsaved?.(n)?.catch?.(() => {});
+}
 
 export function onEvent(name: string, cb: (...data: unknown[]) => void): () => void {
   const off = w.runtime?.EventsOn?.(name, cb);

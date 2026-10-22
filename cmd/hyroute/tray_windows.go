@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	goruntime "runtime"
 	"sync"
 	"sync/atomic"
@@ -9,7 +8,6 @@ import (
 	"unsafe"
 
 	"fyne.io/systray"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/sys/windows"
 
 	"github.com/lardan099/hyroute/internal/app"
@@ -26,8 +24,6 @@ type trayState struct {
 	// missing: the icon did not come up, so the window stays in the
 	// taskbar instead of hiding (set under mu, read without it).
 	missing atomic.Bool
-	// hidden: the window is hidden (started in the tray or closed to it).
-	hidden atomic.Bool
 	// restart: systray.Run returns because watchTray starts it over.
 	restart atomic.Bool
 	// gen numbers the runs of systray (set under mu, see startTray).
@@ -199,9 +195,9 @@ func allowTaskbarCreated() {
 	}
 }
 
-// checkTray: the icon did not come up (Explorer refused it). A window
-// hidden to the tray could not be opened again: it is shown minimized,
-// and the close button minimizes it until the icon comes up.
+// checkTray: the icon did not come up (Explorer refused it). HyRoute
+// without its window could not be opened again: the window opens
+// minimized, and the close button minimizes it until the icon comes up.
 func (g *GUI) checkTray() {
 	g.tray.mu.Lock()
 	ready := g.tray.ready
@@ -213,10 +209,8 @@ func (g *GUI) checkTray() {
 		return
 	}
 	g.ctl.Log.Warn("the tray icon did not appear: HyRoute stays in the taskbar")
-	if ctx := g.context(); ctx != nil && g.tray.hidden.Swap(false) {
-		runtime.WindowShow(ctx)
-		runtime.WindowMinimise(ctx)
-		g.syncWindow()
+	if !g.win.isOpen() {
+		g.win.open("minimised")
 	}
 }
 
@@ -453,39 +447,34 @@ func (g *GUI) trayIconPaths() (on, off string) {
 	return g.tray.iconOn, g.tray.iconOff
 }
 
-// showWindow brings the window up as it was: Wails restores it only if it
-// is minimized (WindowUnminimise would also take a maximized one back to
-// its normal size).
-func (g *GUI) showWindow() {
-	if ctx := g.context(); ctx != nil {
-		g.tray.hidden.Store(false)
-		g.syncWindow() // WebView2 draws again before the window shows
-		runtime.WindowShow(ctx)
-	}
-}
+// showWindow brings the window up as it was, or opens it (the window
+// process starts) when it is closed.
+func (g *GUI) showWindow() { g.win.open("normal") }
 
 // quit exits for real (tray "Выход", updates, moving to Program Files):
-// the close button only hides the window when it goes to the tray.
+// the close button only closes the window when HyRoute stays in the tray.
 func (g *GUI) quit() {
 	g.quitting.Store(true)
-	if ctx := g.context(); ctx != nil {
-		runtime.Quit(ctx)
-	}
+	g.quitOnce.Do(func() {
+		if g.quitCh != nil {
+			close(g.quitCh)
+		}
+	})
 }
 
-// beforeClose: the close button hides the window to the tray (setting
-// «Кнопка × сворачивает в трей», on by default), or minimizes it when the
-// tray icon did not come up.
-func (g *GUI) beforeClose(ctx context.Context) bool {
-	if g.quitting.Load() || !g.ctl.Prefs().CloseToTrayOn() {
-		return false
+// closeAction: what the close button does now. The window closes and
+// HyRoute stays in the tray (setting «Кнопка × сворачивает в трей», on by
+// default); with the setting off HyRoute exits; while the tray icon is not
+// up the window is only minimized, or it could not be opened again.
+func (g *GUI) closeAction() string {
+	switch {
+	case g.quitting.Load():
+		return "close"
+	case !g.ctl.Prefs().CloseToTrayOn():
+		go g.quit()
+		return "close"
+	case g.tray.missing.Load():
+		return "minimise"
 	}
-	if g.tray.missing.Load() {
-		runtime.WindowMinimise(ctx)
-		return true
-	}
-	g.tray.hidden.Store(true)
-	runtime.WindowHide(ctx)
-	g.syncWindow()
-	return true
+	return "close"
 }
