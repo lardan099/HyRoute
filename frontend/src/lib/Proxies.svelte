@@ -7,6 +7,7 @@
   import { trackUnsaved } from '../state.svelte'; // backup
   import Icon from './Icon.svelte';
   import TargetOptions from './TargetOptions.svelte';
+  import { every } from '../poll';
 
   let list = $state<ProxyView[]>([]);
   let error = $state('');
@@ -30,8 +31,8 @@
 
   onMount(() => {
     load();
-    const t = setInterval(load, 2000);
-    return () => clearInterval(t);
+    const stop = every(load, 2000);
+    return () => stop();
   });
 
   const online = $derived(ui.status != null && ui.status.state !== 'disconnected' && !(ui.status.state === 'error' && !ui.status.stats));

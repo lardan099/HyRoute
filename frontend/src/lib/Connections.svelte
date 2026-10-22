@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { api, errText, fmtBytes, fmtDuration, fmtTime, actionLabel, strategyLabel, cleanRule, dnsRuleLabel, type Flow, type Rule, type ConnFacts } from '../api';
   import { ui, hide, profileName, mainTarget } from '../state.svelte';
   import Icon from './Icon.svelte';
@@ -7,6 +7,7 @@
   import RuleEditor from './RuleEditor.svelte';
   import Explain from './Explain.svelte';
   import { ruleTitle } from '../ruletitle';
+  import { every } from '../poll';
 
   let { go }: { go: (id: string) => void } = $props();
   // svelte-ignore state_referenced_locally
@@ -86,8 +87,7 @@
 
   onMount(() => {
     load();
-    const t = setInterval(load, 1000);
-    return () => clearInterval(t);
+    return every(load, 1000);
   });
 
   const rows = $derived.by(() => {
@@ -110,10 +110,30 @@
       .slice(0, 1500);
   });
 
-  // The row that holds the table's tab stop.
+  // Only the rows in view (and some around them) are drawn: 1500 rows
+  // redrawn every second kept the window at most of a processor core. The
+  // rows are one line each, so their height is one number; spacers above
+  // and below keep the scroll bar the size of the whole table.
+  const BUFFER = 15;
+  let scrollTop = $state(0);
+  let viewH = $state(600);
+  let rowH = $state(27);
+  let tableEl = $state<HTMLElement>();
+  const first = $derived(Math.max(0, Math.min(Math.floor(scrollTop / rowH) - BUFFER, rows.length - 1)));
+  const last = $derived(Math.min(rows.length, Math.ceil((scrollTop + viewH) / rowH) + BUFFER));
+  const drawn = $derived(rows.slice(first, last));
+  $effect(() => {
+    void drawn;
+    const r = tbody?.querySelector<HTMLElement>('tr[data-i]');
+    if (r && r.offsetHeight > 0 && Math.abs(r.offsetHeight - rowH) > 0.5) rowH = r.offsetHeight;
+  });
+
+  // The row that holds the table's tab stop; the first drawn row while it
+  // is scrolled away.
   const tabRow = $derived.by(() => {
     const i = selected ? rows.findIndex((x) => x.id === selected!.id) : -1;
-    return i >= 0 ? i : Math.min(focusIndex, Math.max(rows.length - 1, 0));
+    const want = i >= 0 ? i : Math.min(focusIndex, Math.max(rows.length - 1, 0));
+    return want >= first && want < last ? want : first;
   });
 
   // keyMenuAt: when the keyboard opened the menu. WebView2 also fires a
@@ -145,21 +165,28 @@
     openMenu(f, { x: r.left + 8, y: r.bottom }, el);
   }
 
-  function rowEls(): HTMLElement[] {
-    return [...(tbody?.querySelectorAll<HTMLElement>('tr') ?? [])];
+  function rowEl(i: number): HTMLElement | null {
+    return tbody?.querySelector<HTMLElement>(`tr[data-i="${i}"]`) ?? null;
   }
 
-  function focusRow(i: number) {
-    const list = rowEls();
-    if (!list.length) return;
-    focusIndex = Math.max(0, Math.min(i, list.length - 1));
-    list[focusIndex].focus();
+  // focusRow scrolls a row that is not drawn into view first.
+  async function focusRow(i: number) {
+    if (!rows.length) return;
+    focusIndex = Math.max(0, Math.min(i, rows.length - 1));
+    if (!rowEl(focusIndex) && tableEl) {
+      tableEl.scrollTop = Math.max(0, focusIndex * rowH - viewH / 2);
+      scrollTop = tableEl.scrollTop;
+      await tick();
+    }
+    const el = rowEl(focusIndex);
+    el?.focus();
+    el?.scrollIntoView({ block: 'nearest' });
   }
 
   function rowKey(e: KeyboardEvent) {
-    const list = rowEls();
-    const at = list.indexOf(document.activeElement as HTMLElement);
-    if (at < 0) return;
+    const at = Number((document.activeElement as HTMLElement | null)?.dataset.i ?? -1);
+    if (at < 0 || !rows[at]) return;
+    const el = rowEl(at)!;
     switch (e.key) {
       case 'ArrowDown':
         focusRow(at + 1);
@@ -171,7 +198,7 @@
         focusRow(0);
         break;
       case 'End':
-        focusRow(list.length - 1);
+        focusRow(rows.length - 1);
         break;
       case 'PageDown':
         focusRow(at + 10);
@@ -185,12 +212,12 @@
         break;
       case 'ContextMenu':
         keyMenuAt = performance.now();
-        openAtRow(rows[at], list[at]);
+        openAtRow(rows[at], el);
         break;
       case 'F10':
         if (!e.shiftKey) return;
         keyMenuAt = performance.now();
-        openAtRow(rows[at], list[at]);
+        openAtRow(rows[at], el);
         break;
       default:
         return;
@@ -208,9 +235,9 @@
   $effect(() => {
     void rows;
     if (!hadFocus || !tbody || tbody.contains(document.activeElement)) return;
-    const list = rowEls();
-    if (list.length) list[Math.min(focusIndex, list.length - 1)].focus();
-    else tbody.closest<HTMLElement>('.table')?.focus();
+    const el = rows.length ? rowEl(Math.min(focusIndex, rows.length - 1)) : null;
+    if (el) el.focus();
+    else tableEl?.focus();
   });
 
   async function saveDraft(r: Rule) {
@@ -268,7 +295,7 @@
   </div>
   {#if error}<div class="note error">{error}</div>{/if}
 
-  <div class="table panel" data-selectall tabindex="-1">
+  <div class="table panel" data-selectall tabindex="-1" bind:this={tableEl} bind:clientHeight={viewH} onscroll={(e) => (scrollTop = (e.currentTarget as HTMLElement).scrollTop)}>
     <table>
       <thead>
         <tr>
@@ -277,8 +304,11 @@
         </tr>
       </thead>
       <tbody bind:this={tbody}>
-        {#each rows as f, i (f.id)}
+        {#if first > 0}<tr class="spacer" aria-hidden="true" style:height="{first * rowH}px"><td colspan="11"></td></tr>{/if}
+        {#each drawn as f, k (f.id)}
+          {@const i = first + k}
           <tr
+            data-i={i}
             class:closed={f.closed}
             class:sel={selected?.id === f.id}
             tabindex={i === tabRow ? 0 : -1}
@@ -317,6 +347,7 @@
             </td>
           </tr>
         {/each}
+        {#if last < rows.length}<tr class="spacer" aria-hidden="true" style:height="{(rows.length - last) * rowH}px"><td colspan="11"></td></tr>{/if}
       </tbody>
     </table>
     {#if rows.length === 0}<p class="muted empty">Соединений нет. Они появляются после подключения.</p>{/if}
@@ -407,6 +438,7 @@
     text-overflow: ellipsis;
   }
   tr { cursor: default; outline: none; }
+  tr.spacer td { padding: 0; border: none; }
   tr.closed td { opacity: 0.6; }
   tr.sel td { background: var(--panel-2); }
   tr:focus-visible td { background: var(--accent-soft); }

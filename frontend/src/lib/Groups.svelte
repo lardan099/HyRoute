@@ -6,6 +6,7 @@
   import { ui, hide, profileName } from '../state.svelte';
   import Icon from './Icon.svelte';
   import GroupEditor from './GroupEditor.svelte';
+  import { every } from '../poll';
 
   let { onchange }: { onchange: () => void } = $props();
 
@@ -37,8 +38,8 @@
 
   onMount(() => {
     load();
-    const t = setInterval(load, 2000);
-    return () => clearInterval(t);
+    const stop = every(load, 2000);
+    return () => stop();
   });
 
   const online = $derived(ui.status != null && ui.status.state !== 'disconnected' && !(ui.status.state === 'error' && !ui.status.stats));

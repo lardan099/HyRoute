@@ -54,6 +54,7 @@ type GUI struct {
 
 	tray     trayState
 	quitting atomic.Bool // a real exit: the close button no longer hides
+	web      webviewState
 
 	cli *cliState // cli: the control pipe (ctl_windows.go)
 }
@@ -68,6 +69,7 @@ func (g *GUI) startup(ctx context.Context) {
 // as the user's Disconnect: with the kill switch on the internet stays
 // closed until HyRoute connects again or the user opens it.
 func (g *GUI) shutdown(context.Context) {
+	g.web.down.Store(true)
 	g.ctl.StopNetModes() // netmodes: no network rule acts during the exit
 	g.ctl.Shutdown()
 	g.quitTray()
@@ -78,6 +80,8 @@ func (g *GUI) shutdown(context.Context) {
 func (g *GUI) domReady(context.Context) {
 	g.uiUp.Store(true)
 	g.signalHealthy()
+	g.syncWindow() // started hidden to the tray: the page pauses at once
+	g.watchWindow()
 }
 
 // reconnectAfterUpdate restores the connection the old version had; the

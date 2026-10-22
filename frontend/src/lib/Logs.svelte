@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { api, errText, fmtTime, type LogEntry } from '../api';
   import { ui, hide, serverLabel } from '../state.svelte';
+  import { every } from '../poll';
 
   // engine | hysteria (every server) | hysteria:<profile id>
   let source = $state('engine');
@@ -56,8 +57,7 @@
   }
 
   onMount(() => {
-    const t = setInterval(poll, 1000);
-    return () => clearInterval(t);
+    return every(poll, 1000);
   });
 
   const shown = $derived.by(() => {
@@ -65,6 +65,11 @@
     const min = rank[level] ?? 0;
     return lines.filter((l) => (rank[l.level] ?? 1) >= min && (!q || l.msg.toLowerCase().includes(q)));
   });
+
+  // The window draws the last lines only: 10 000 lines are some 70 000
+  // elements. The filter, the search, «Копировать» and the file take all.
+  const DRAWN = 1000;
+  const drawn = $derived(shown.length > DRAWN ? shown.slice(shown.length - DRAWN) : shown);
 
   function lineText(l: LogEntry): string {
     return `${fmtTime(l.time)} ${l.level.toUpperCase().padEnd(5)} ${hide(l.msg)}`;
@@ -142,7 +147,10 @@
   {#if info}<div class="note ok">{info}</div>{/if}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div class="log panel mono" bind:this={box} tabindex="0" role="log" onkeydown={onKey} data-selectall>
-    {#each shown as l (l.seq)}
+    {#if drawn.length < shown.length}
+      <p class="muted more">Показаны последние {DRAWN} строк из {shown.length}. Поиск, «Копировать» и «Сохранить в файл» берут все.</p>
+    {/if}
+    {#each drawn as l (l.seq)}
       <div class="line lvl-{l.level}"><span class="t">{fmtTime(l.time)}{' '}</span><span class="l">{l.level.toUpperCase().padEnd(5)}{' '}</span>{hide(l.msg)}</div>
     {/each}
     {#if shown.length === 0}<p class="muted">Пусто.{source !== 'engine' ? ' Журнал Hysteria появляется, когда сервер запущен.' : ''}</p>{/if}
@@ -156,6 +164,7 @@
   .wrap > .row input { max-width: 420px; }
   .log { flex: 1; min-height: 0; overflow: auto; user-select: text; padding: 8px 10px; }
   .log:focus { outline: none; }
+  .more { margin: 0 0 6px; }
   .choose { display: flex; gap: 8px; align-items: center; margin: 0; }
   .choose span { flex: 1; }
   .line { white-space: pre-wrap; word-break: break-all; padding: 1px 0; }

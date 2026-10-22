@@ -4,6 +4,7 @@
   import { ui, hide, setPrivacy, applyTheme, noteSettingsRev, setExpert, setupDone, setupStep } from './state.svelte';
   import { pruneSubAcks, subAlerts } from './state.svelte'; // subinfo
   import { startRestore } from './state.svelte'; // backup
+  import { every, setWindowShown } from './poll';
   import Icon from './lib/Icon.svelte';
   import Home from './lib/Home.svelte';
   import Rules from './lib/Rules.svelte';
@@ -128,19 +129,22 @@
     refreshProfiles();
     refreshUpdates();
     api.StartupNotice().then((n) => (notice = n)).catch(() => {});
-    const t = setInterval(refresh, 1000);
-    const tu = setInterval(refreshUpdates, 3000);
+    const stop = every(refresh, 1000);
+    const stopUpdates = every(refreshUpdates, 3000);
     const off = onEvent('status', () => {
       refresh();
       refreshProfiles();
     });
+    // In the tray or minimized: the pages stop polling (poll.ts).
+    const offWindow = onEvent('window', (on) => setWindowShown(on !== false));
     // The settings changed (payload: the new revision): pages holding a
     // copy of the rules reload.
     const offSettings = onEvent('settings', (r) => noteSettingsRev(r));
     return () => {
-      clearInterval(t);
-      clearInterval(tu);
+      stop();
+      stopUpdates();
       off();
+      offWindow();
       offSettings();
     };
   });

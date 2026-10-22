@@ -13,6 +13,7 @@
   import { hideNet, netText } from '../state.svelte'; // netmodes
 
   let { go, onsetup }: { go: (page: string) => void; onsetup: () => void } = $props();
+  import { every } from '../poll';
 
   let settings = $state<Settings | null>(null);
   let busy = $state(false);
@@ -232,13 +233,12 @@
   // The latencies change without a status event: refreshed while shown.
   $effect(() => {
     if (!main?.group || !online) return;
-    const t = setInterval(() => {
+    return every(() => {
       api
         .Groups()
         .then((g) => (ui.groups = g.groups))
         .catch(() => {});
     }, 5000);
-    return () => clearInterval(t);
   });
   let probing = $state(false);
   let probeView = $state<GroupView | null>(null);

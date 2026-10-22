@@ -6,6 +6,7 @@
   import { ackSubAlert, subAlerts } from '../state.svelte'; // subinfo
   import type { SubAlert } from '../api';
   import SubInfoBar from './SubInfoBar.svelte';
+  import { every } from '../poll';
 
   let { onchange }: { onchange: () => void } = $props();
 
@@ -44,7 +45,7 @@
 
   onMount(() => {
     load();
-    const t = setInterval(load, 5000);
+    const stop = every(load, 5000);
     // cli: an update from hyroutectl shows at once (not while this page
     // runs one of its own).
     let soon: ReturnType<typeof setTimeout> | undefined;
@@ -53,7 +54,7 @@
       soon = setTimeout(() => busy === '' && load(), 300);
     });
     return () => {
-      clearInterval(t);
+      stop();
       clearTimeout(soon);
       off();
     };

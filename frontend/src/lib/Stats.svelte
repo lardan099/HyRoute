@@ -6,6 +6,7 @@
   import { api, errText, fmtBytes, plural, statConns, statVPN, type StatCounters, type StatRow, type StatsMode, type StatsReport } from '../api';
   import { ui, hide, profileName, settle } from '../state.svelte';
   import Help from './Help.svelte';
+  import { every } from '../poll';
 
   type Tab = 'apps' | 'servers' | 'groups';
   type SortKey = 'label' | 'vpn' | 'du' | 'conns' | 'f' | 'tu' | 'td' | 'fo' | 'drops';
@@ -103,8 +104,7 @@
 
   $effect(() => {
     if (!live) return;
-    const t = setInterval(tick, 5000);
-    return () => clearInterval(t);
+    return every(tick, 5000);
   });
 
   // ---- texts ----

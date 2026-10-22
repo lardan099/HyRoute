@@ -216,6 +216,7 @@ func (g *GUI) checkTray() {
 	if ctx := g.context(); ctx != nil && g.tray.hidden.Swap(false) {
 		runtime.WindowShow(ctx)
 		runtime.WindowMinimise(ctx)
+		g.syncWindow()
 	}
 }
 
@@ -458,6 +459,7 @@ func (g *GUI) trayIconPaths() (on, off string) {
 func (g *GUI) showWindow() {
 	if ctx := g.context(); ctx != nil {
 		g.tray.hidden.Store(false)
+		g.syncWindow() // WebView2 draws again before the window shows
 		runtime.WindowShow(ctx)
 	}
 }
@@ -484,5 +486,6 @@ func (g *GUI) beforeClose(ctx context.Context) bool {
 	}
 	g.tray.hidden.Store(true)
 	runtime.WindowHide(ctx)
+	g.syncWindow()
 	return true
 }
