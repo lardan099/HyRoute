@@ -103,7 +103,7 @@ func (h *winHost) startLocked(state string) error {
 	toWinR.Close()
 	fromWinW.Close()
 	peer := uirpc.New(fromWinR, toWinW)
-	peer.OnCall = h.answer
+	h.attach(peer)
 	h.peer, h.pid = peer, uint32(cmd.Process.Pid)
 	h.g.ctl.Log.Debug("window opened", "pid", h.pid)
 	go func() {
@@ -177,6 +177,18 @@ func (h *winHost) close() {
 	}
 }
 
+// attach sets peer's handlers: the window's calls, and its events
+// (window.ready, window.geometry, window.kept), which are served alike
+// with no one waiting for an answer. An event is never a GUI method.
+func (h *winHost) attach(peer *uirpc.Peer) {
+	peer.OnCall = h.answer
+	peer.OnEvent = func(name string, args []json.RawMessage) {
+		if strings.HasPrefix(name, "window.") {
+			h.answer(name, args)
+		}
+	}
+}
+
 // answer serves the window's calls: the page's calls of GUI methods, and
 // the window's own («window.» …).
 func (h *winHost) answer(method string, args []json.RawMessage) (any, error) {
@@ -189,7 +201,18 @@ func (h *winHost) answer(method string, args []json.RawMessage) (any, error) {
 		h.g.signalHealthy()
 		return nil, nil
 	case "window.beforeClose":
-		return h.g.closeAction(), nil
+		// The page's unsaved edits, already asked about: in the journal,
+		// as the answer to «why did it close without asking».
+		var n int
+		if len(args) > 0 {
+			json.Unmarshal(args[0], &n)
+		}
+		what := h.g.closeAction()
+		h.g.ctl.Log.Info("window: the close button", "unsaved", n, "then", what)
+		return what, nil
+	case "window.kept":
+		h.g.ctl.Log.Info("window: kept open for unsaved edits")
+		return nil, nil
 	case "window.geometry":
 		var s string
 		if len(args) > 0 && json.Unmarshal(args[0], &s) == nil {

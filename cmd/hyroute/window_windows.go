@@ -235,13 +235,15 @@ func (b *Bridge) beforeClose(ctx context.Context) bool {
 	if b.closing.Load() {
 		return false
 	}
-	if n := b.unsaved.Load(); n > 0 && !confirmBox("HyRoute", "Есть несохранённые изменения. Закрыть окно и потерять их?") {
+	n := b.unsaved.Load()
+	if n > 0 && !confirmBox("HyRoute", "Есть несохранённые изменения. Закрыть окно и потерять их?") {
+		b.peer.Notify("window.kept", n)
 		return true
 	}
 	what := "close"
 	c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if r, err := b.peer.Call(c, "window.beforeClose"); err == nil {
+	if r, err := b.peer.Call(c, "window.beforeClose", n); err == nil {
 		json.Unmarshal(r, &what)
 	}
 	if what == "minimise" {

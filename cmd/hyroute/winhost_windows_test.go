@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"io"
 	"testing"
+	"time"
+
+	"github.com/lardan099/hyroute/internal/uirpc"
 )
 
 func TestWindowGeom(t *testing.T) {
@@ -76,5 +81,51 @@ func TestNoWindow(t *testing.T) {
 	nilHost.notify("status")
 	if nilHost.isOpen() {
 		t.Fatal("nil host open")
+	}
+}
+
+// What the window process sends reaches the main one: window.ready (an
+// update's health check waits for it) and the place of the window come as
+// events, the close button as a call; the page's calls run GUI methods.
+func TestWindowMessages(t *testing.T) {
+	g, _ := trayGUI(t)
+	h := &winHost{g: g}
+	g.win = h
+	ar, bw := io.Pipe()
+	br, aw := io.Pipe()
+	t.Cleanup(func() { aw.Close(); bw.Close() })
+	main, win := uirpc.New(ar, aw), uirpc.New(br, bw)
+	h.attach(main)
+	go main.Run()
+	go win.Run()
+
+	win.Notify("window.ready")
+	win.Notify("window.geometry", "10,20,1180,760,false")
+	win.Notify("Disconnect") // an event is never a GUI method
+	geom := func() string {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.geom
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !g.uiUp.Load() || geom() == "" {
+		if time.Now().After(deadline) {
+			t.Fatalf("ready %v, geom %q", g.uiUp.Load(), geom())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if geom() != "10,20,1180,760,false" {
+		t.Fatal(geom())
+	}
+	r, err := win.Call(context.Background(), "window.beforeClose", 2)
+	if err != nil || string(r) != `"close"` {
+		t.Fatalf("%s %v", r, err)
+	}
+	r, err = win.Call(context.Background(), "Prefs")
+	if err != nil || len(r) < 2 || r[0] != '{' {
+		t.Fatalf("%s %v", r, err)
+	}
+	if _, err := win.Call(context.Background(), "window.nothing"); err == nil {
+		t.Fatal("unknown window call answered")
 	}
 }
