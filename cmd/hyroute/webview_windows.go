@@ -11,7 +11,6 @@ import (
 	"unsafe"
 
 	"github.com/wailsapp/go-webview2/pkg/edge"
-	"github.com/wailsapp/go-webview2/pkg/webview2"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -23,10 +22,15 @@ import (
 //   - the page: the "window" event (true: in sight) pauses its polling while
 //     the window is hidden or minimized (frontend/src/poll.ts);
 //   - WebView2, for a window hidden to the tray: IsVisible off (Chromium
-//     treats the page as hidden: no drawing, throttled timers) and the
-//     memory target «low» (it trims its caches). A minimized window keeps
+//     treats the page as hidden: no drawing, throttled timers). A minimized
+//     window keeps
 //     IsVisible: HyRoute sees a restore only up to a second later, and a
 //     WebView2 still invisible then shows an empty window.
+//
+// Not the memory target «low» (ICoreWebView2_19): go-webview2's webview2
+// package panics in its init under Go 1.27 (NewCallback of a method with
+// arguments wider than uintptr), and its vtables of the later interfaces
+// leave out the inherited methods, so the call would hit another method.
 //
 // Wails v2 does not give out its WebView2: it is reached through the
 // unexported fields of its Windows frontend (Wails is pinned in go.mod).
@@ -125,23 +129,6 @@ func setWebviewShown(c *edge.Chromium, on bool) {
 	} else {
 		c.Hide()
 	}
-	level := webview2.COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL(webview2.COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL)
-	if !on {
-		level = webview2.COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
-	}
-	// MemoryUsageTargetLevel is ICoreWebView2_19 (WebView2 Runtime 114 and
-	// later); an older runtime only gets IsVisible.
-	w3 := c.GetICoreWebView2_3()
-	if w3 == nil {
-		return
-	}
-	defer w3.Release()
-	w19 := (*webview2.ICoreWebView2)(unsafe.Pointer(w3)).GetICoreWebView2_19()
-	if w19 == nil {
-		return
-	}
-	defer w19.Vtbl.Release.Call(uintptr(unsafe.Pointer(w19)))
-	w19.PutMemoryUsageTargetLevel(level)
 }
 
 // watchWindow follows minimize and restore once the page is up.
