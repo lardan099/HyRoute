@@ -125,6 +125,7 @@ export const ru = {
   'auth.mismatch': 'Пароли не совпадают.',
   'auth.setupSubmit': 'Создать и войти',
   'auth.loginSubmit': 'Войти',
+  'auth.forgot': 'Имя и пароль — те, что задали при первом запуске панели. Забыли? На компьютере с панелью выполните «hyroute-server reset-password имя»: команда покажет новый пароль, а с неверным именем — список пользователей. В Windows hyroute-server.exe лежит в папке HyRoute.',
 
   'role.owner': 'владелец',
   'role.admin': 'администратор',

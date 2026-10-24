@@ -56,6 +56,7 @@
       {#if mismatch}<div class="note warn">{t('auth.mismatch')}</div>{/if}
     {/if}
     {#if error}<div class="note error" role="alert">{error.message}</div>{/if}
+    {#if mode === 'login'}<p class="muted small">{t('auth.forgot')}</p>{/if}
     <button class="primary" type="submit" disabled={busy || mismatch}>
       {mode === 'setup' ? t('auth.setupSubmit') : t('auth.loginSubmit')}
     </button>
