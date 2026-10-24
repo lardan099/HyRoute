@@ -33,7 +33,7 @@ func (g *GUI) OpenServerPanel() error {
 	defer cancel()
 	if !panelUp(ctx) {
 		if _, err := os.Stat(exe); err != nil {
-			return errors.New("в папке HyRoute нет hyroute-server.exe: панель входит в архив HyRoute начиная с версии 1.3.7")
+			return errors.New("в папке HyRoute нет hyroute-server.exe: панель входит в архив HyRoute начиная с версии 1.3.8")
 		}
 		if err := checkPanelExe(exe, panelSHA256); err != nil {
 			return err
