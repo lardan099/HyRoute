@@ -60,8 +60,9 @@ jobs:
       - name: Known vulnerabilities (govulncheck)
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - name: Build
-        # -Frontend: the UI in the release is built from the sources here,
-        # not taken from the committed frontend/dist.
+        # -Frontend: both UIs in the release (HyRoute's and the admin of the
+        # hyroute-server.exe it carries) are built from the sources here,
+        # not taken from the committed dist folders.
         run: .\scripts\build.ps1 -Frontend
       - name: Test
         run: go test ./...

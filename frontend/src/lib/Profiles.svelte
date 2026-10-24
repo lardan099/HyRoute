@@ -137,6 +137,22 @@
     });
   }
 
+  // HyRoute Server, the panel for one's own Hysteria servers: started on
+  // this computer and opened in the browser.
+  let panelBusy = $state(false);
+  let panelError = $state('');
+  async function openPanel() {
+    panelBusy = true;
+    panelError = '';
+    try {
+      await api.OpenServerPanel();
+    } catch (e) {
+      panelError = errText(e);
+    } finally {
+      panelBusy = false;
+    }
+  }
+
   function remove(p: ProfileSummary) {
     if (confirm(`Удалить сервер «${hide(p.name)}»?`)) run(() => api.DeleteProfile(p.id));
   }
@@ -269,6 +285,19 @@
       </div>
     {/each}
   </div>
+
+  <section class="card own">
+    <Icon name="server" size={22} />
+    <div class="grow">
+      <b>Свой сервер Hysteria</b>
+      <p class="muted small">
+        Панель HyRoute Server сама ставит Hysteria на ваш VPS по SSH, настраивает её и выдаёт ссылки для HyRoute. Она работает на этом компьютере и
+        открывается в браузере; остановить — закрыть её окно на панели задач.
+      </p>
+      {#if panelError}<div class="note error">{panelError}</div>{/if}
+    </div>
+    <button onclick={openPanel} disabled={panelBusy}>{panelBusy ? 'Запуск…' : 'Открыть панель'}</button>
+  </section>
   {/if}
 </div>
 
@@ -309,6 +338,10 @@
   .state { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }
   .acts { display: flex; }
   .empty { display: flex; gap: 16px; align-items: center; color: var(--muted); }
+  .own { display: flex; gap: 14px; align-items: center; color: var(--muted); }
+  .own b { color: var(--text); }
+  .own p { margin: 4px 0 0; }
+  .own .note { margin-top: 8px; }
   .empty b { color: var(--text); }
   .empty p { margin: 4px 0 0; }
 </style>

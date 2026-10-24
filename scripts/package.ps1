@@ -1,5 +1,6 @@
 # Packs a release: dist\HyRoute-<ver>-windows-amd64.zip (flat: HyRoute.exe,
-# hyroute-updater.exe, hyroutectl.exe, hysteria.exe, WinDivert.dll, WinDivert64.sys,
+# hyroute-updater.exe, hyroutectl.exe, hyroute-server.exe, hysteria.exe,
+# WinDivert.dll, WinDivert64.sys,
 # manifest.json with every file's SHA256, LICENSE.txt, THIRD-PARTY-NOTICES.txt)
 # and dist\SHA256SUMS.
 # Run after scripts\build.ps1 on a v* tag.
@@ -20,16 +21,16 @@ try {
         $ver = (git describe --tags --exact-match --match 'v[0-9]*' 2>$null)
     }
     if (-not $ver) { throw 'HEAD is not a v* tag: tag the release first (git tag v0.5.0)' }
-    # frontend/dist is rebuilt from the sources by build.ps1 -Frontend in
-    # the release workflow; any other change means the tag is not what
-    # gets packed.
-    if (git status --porcelain -- . ':!frontend/dist' 2>$null) { throw 'working tree is dirty' }
+    # frontend/dist and web/admin/dist are rebuilt from the sources by
+    # build.ps1 -Frontend in the release workflow; any other change means
+    # the tag is not what gets packed.
+    if (git status --porcelain -- . ':!frontend/dist' ':!web/admin/dist' 2>$null) { throw 'working tree is dirty' }
     $name = "HyRoute-$($ver.TrimStart('v'))-windows-amd64"
     $dist = Join-Path $root 'dist'
     $stage = Join-Path $dist $name
     Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $stage | Out-Null
-    $files = 'HyRoute.exe', 'hyroute-updater.exe', 'hyroutectl.exe', 'hysteria.exe', 'WinDivert.dll', 'WinDivert64.sys'
+    $files = 'HyRoute.exe', 'hyroute-updater.exe', 'hyroutectl.exe', 'hyroute-server.exe', 'hysteria.exe', 'WinDivert.dll', 'WinDivert64.sys'
     $manifest = [ordered]@{ version = $ver; files = [ordered]@{} }
     foreach ($f in $files) {
         $src = Join-Path 'bin' $f

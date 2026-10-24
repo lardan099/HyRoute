@@ -9,6 +9,16 @@ export const session = $state<{ status: 'loading' | 'setup' | 'login' | 'ready' 
   permissions: [],
 });
 
+// HyRoute opens the panel it started with the setup code in the fragment
+// (#setup=…), which the browser never sends: taken once at load and wiped
+// from the address bar and the history entry.
+export const setupFromURL = ((): string => {
+  if (!location.hash.startsWith('#setup=')) return '';
+  const m = /^#setup=([A-Za-z0-9_-]{16,128})$/.exec(location.hash);
+  history.replaceState(history.state, '', location.pathname + location.search);
+  return m ? m[1] : '';
+})();
+
 export function signedIn(s: SessionState) {
   setCSRF(s.csrfToken);
   session.user = s.user;

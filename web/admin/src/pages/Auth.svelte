@@ -2,11 +2,11 @@
   // First-run setup (owner with the setup token) or login.
   import { api, asApiError, type ApiError } from '../api';
   import { t } from '../i18n';
-  import { signedIn } from '../session.svelte';
+  import { setupFromURL, signedIn } from '../session.svelte';
 
   let { mode }: { mode: 'setup' | 'login' } = $props();
 
-  let token = $state('');
+  let token = $state(setupFromURL);
   let username = $state('');
   let password = $state('');
   let password2 = $state('');
@@ -34,7 +34,7 @@
     <div class="brand"><span class="logo" aria-hidden="true">H</span>{t('app.name')}</div>
     <h1>{mode === 'setup' ? t('auth.setupTitle') : t('auth.loginTitle')}</h1>
     {#if mode === 'setup'}
-      <p class="muted small">{t('auth.setupHint')}</p>
+      <p class="muted small">{setupFromURL ? t('auth.setupHintFilled') : t('auth.setupHint')}</p>
       <label>
         <span>{t('auth.setupToken')}</span>
         <input type="password" autocomplete="off" required bind:value={token} />

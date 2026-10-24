@@ -59,11 +59,26 @@ var version = "dev"
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, os.Args[1:], os.Getenv, os.Stderr, nil); err != nil {
+	// In a console window of its own (Windows: a double click, HyRoute's
+	// «Открыть панель») the window is the panel's: it says so, and an
+	// error stays on screen instead of closing it.
+	own := ownConsole()
+	var ready chan string
+	if own {
+		setConsoleTitle("HyRoute Server")
+		ready = make(chan string, 1)
+		go func() {
+			fmt.Fprintf(os.Stderr, "\nHyRoute Server работает: http://%s\nЗакройте это окно, чтобы остановить панель.\n\n", <-ready)
+		}()
+	}
+	if err := run(ctx, os.Args[1:], os.Getenv, os.Stderr, ready); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
 		fmt.Fprintln(os.Stderr, "hyroute-server:", err)
+		if own {
+			waitEnter()
+		}
 		os.Exit(1)
 	}
 }

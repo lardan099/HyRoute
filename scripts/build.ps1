@@ -1,13 +1,14 @@
-# Builds bin\HyRoute.exe (GUI), bin\hyroute-updater.exe and
-# bin\hyroutectl.exe (command line) next to hysteria.exe and WinDivert.
-# Needs only Go: frontend\dist is committed.
+# Builds bin\HyRoute.exe (GUI), bin\hyroute-updater.exe,
+# bin\hyroutectl.exe (command line) and bin\hyroute-server.exe (HyRoute
+# Server, opened from the servers page) next to hysteria.exe and WinDivert.
+# Needs only Go: frontend\dist and web\admin\dist are committed.
 #   .\scripts\build.ps1            build
-#   .\scripts\build.ps1 -Frontend  also rebuild the UI (needs Node.js/npm)
+#   .\scripts\build.ps1 -Frontend  also rebuild both UIs (needs Node.js/npm)
 #Requires -Version 5.1
 param([switch]$Frontend)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-foreach ($p in 'HyRoute', 'hyroute-updater', 'hyroutectl') {
+foreach ($p in 'HyRoute', 'hyroute-updater', 'hyroutectl', 'hyroute-server') {
     if (Get-Process $p -ErrorAction SilentlyContinue) {
         throw "$p.exe is running: close it first, otherwise the exe cannot be replaced"
     }
@@ -16,14 +17,16 @@ $deps = Get-Content (Join-Path $root 'build\deps.json') -Raw | ConvertFrom-Json
 & (Join-Path $PSScriptRoot 'fetch-deps.ps1')
 Push-Location $root
 try {
-    if ($Frontend -or -not (Test-Path 'frontend\dist\index.html')) {
-        Push-Location frontend
-        try {
-            npm ci
-            if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
-            npm run build
-            if ($LASTEXITCODE -ne 0) { throw 'frontend build failed' }
-        } finally { Pop-Location }
+    foreach ($ui in 'frontend', 'web\admin') {
+        if ($Frontend -or -not (Test-Path "$ui\dist\index.html")) {
+            Push-Location $ui
+            try {
+                npm ci
+                if ($LASTEXITCODE -ne 0) { throw "npm ci failed ($ui)" }
+                npm run build
+                if ($LASTEXITCODE -ne 0) { throw "UI build failed ($ui)" }
+            } finally { Pop-Location }
+        }
     }
     $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
     go vet ./...
@@ -58,12 +61,18 @@ try {
         go run "github.com/tc-hib/go-winres@$($deps.tools.goWinres)" make --arch amd64 --in hyroutectl.json --out ..\..\cmd\hyroutectl\rsrc --file-version "$num.0" --product-version "$num.0"
         if ($LASTEXITCODE -ne 0) { throw 'go-winres (hyroutectl) failed' }
     } finally { Pop-Location }
-    go build -tags desktop,production -trimpath -ldflags "-H windowsgui $ld" -o bin\HyRoute.exe .\cmd\hyroute
+    # HyRoute Server first: HyRoute.exe pins its SHA-256 and starts only
+    # that file (cmd/hyroute/serverpanel.go). A console program (its window
+    # is the panel's).
+    go build -trimpath -ldflags "-s -w -X main.version=$ver" -o bin\hyroute-server.exe .\cmd\hyroute-server
+    if ($LASTEXITCODE -ne 0) { throw 'go build (hyroute-server) failed' }
+    $panel = (Get-FileHash -Algorithm SHA256 bin\hyroute-server.exe).Hash.ToLowerInvariant()
+    go build -tags desktop,production -trimpath -ldflags "-H windowsgui $ld -X main.panelSHA256=$panel" -o bin\HyRoute.exe .\cmd\hyroute
     if ($LASTEXITCODE -ne 0) { throw 'go build (HyRoute) failed' }
     go build -trimpath -ldflags "-H windowsgui" -o bin\hyroute-updater.exe .\cmd\hyroute-updater
     if ($LASTEXITCODE -ne 0) { throw 'go build (updater) failed' }
     # Console subsystem: no -H windowsgui.
     go build -trimpath -ldflags "$ld" -o bin\hyroutectl.exe .\cmd\hyroutectl
     if ($LASTEXITCODE -ne 0) { throw 'go build (hyroutectl) failed' }
-    Write-Host "Built bin\HyRoute.exe, bin\hyroute-updater.exe and bin\hyroutectl.exe ($ver, $rev)"
+    Write-Host "Built bin\HyRoute.exe, bin\hyroute-updater.exe, bin\hyroutectl.exe and bin\hyroute-server.exe ($ver, $rev)"
 } finally { Pop-Location }

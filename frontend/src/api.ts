@@ -583,6 +583,7 @@ interface GUI {
   RemoveFirewallRule(): Promise<void>;
   DeleteStaleDriverService(): Promise<void>;
   OpenDataDir(): Promise<void>;
+  OpenServerPanel(): Promise<void>;
   MoveToProgramFiles(): Promise<void>;
   CopyText(text: string): Promise<void>;
   Subscriptions(): Promise<Subscription[]>;

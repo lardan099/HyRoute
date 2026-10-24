@@ -116,6 +116,7 @@ export const ru = {
 
   'auth.setupTitle': 'Первый запуск',
   'auth.setupHint': 'Создайте владельца. Код первого запуска лежит в файле setup-token в каталоге данных hyroute-server (путь к файлу — в журнале при запуске).',
+  'auth.setupHintFilled': 'Создайте владельца панели: придумайте имя и пароль. Код первого запуска подставил HyRoute.',
   'auth.setupToken': 'Код первого запуска',
   'auth.loginTitle': 'Вход',
   'auth.username': 'Имя пользователя',
