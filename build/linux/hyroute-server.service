@@ -1,0 +1,37 @@
+# HyRoute Server. Installed by install-server.sh, which replaces this file
+# on every update: change settings with «systemctl edit hyroute-server»
+# (a drop-in, which stays), not here.
+[Unit]
+Description=HyRoute Server
+Documentation=https://github.com/lardan099/HyRoute/blob/main/docs/SERVER_MANAGER.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/hyroute-server
+Restart=on-failure
+StateDirectory=hyroute-server
+StateDirectoryMode=0700
+# The panel needs its data directory and the network, nothing more. Root
+# without capabilities: it still owns its files, as the maintenance
+# commands run with sudo expect (docs/SERVER_MANAGER.md).
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

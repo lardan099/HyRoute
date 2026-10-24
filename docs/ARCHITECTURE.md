@@ -129,7 +129,8 @@ HyRoute. Данные WebView2 лежат не здесь, а в `%LOCALAPPDATA%
   Репозиторий обновлений — `main.updateRepo` в `cmd/hyroute` (по умолчанию этот), другой
   задаётся при сборке: `-X main.updateRepo=owner/repo`.
 - Релиз собирает `.github/workflows/release.yml` по тегу `v*`:
-  `HyRoute-<версия>-windows-amd64.zip` и `SHA256SUMS`.
+  `HyRoute-<версия>-windows-amd64.zip` и `SHA256SUMS`, а также пакеты HyRoute Server
+  (`scripts/build-server.sh`) и `install-server.sh`; их суммы — в том же `SHA256SUMS`.
 - Тесты не требуют драйвера и идут на Linux и Windows: `go test ./...`
   ([что покрыто](architecture/testing.md)).
 

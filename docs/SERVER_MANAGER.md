@@ -4,11 +4,33 @@ HyRoute Server — панель для своих серверов Hysteria 2. �
 
 Панель состоит из одной программы `hyroute-server` (controller) с веб-интерфейсом. Controller запускается где угодно — на своём компьютере, на домашнем сервере или на отдельном VPS — и управляет серверами Hysteria по SSH. На самих серверах ничего, кроме Hysteria, не ставится.
 
-> Панель в разработке, готовых сборок пока нет: её собирают из исходников.
+## Установка
 
-## Сборка
+**Linux с systemd** (Debian, Ubuntu и похожие; x86_64 или arm64) — одна команда на машине, где будет панель:
 
-Нужен Go 1.27. Веб-интерфейс уже собран и лежит в репозитории, Node.js не нужен.
+```sh
+curl -fsSL https://github.com/lardan099/HyRoute/releases/latest/download/install-server.sh | sudo sh
+```
+
+Скрипт берёт панель из последнего релиза HyRoute, сверяет её с `SHA256SUMS` релиза, кладёт программу в `/usr/local/bin/hyroute-server`, ставит и запускает службу `hyroute-server`. В конце он пишет код первого запуска и готовую команду SSH-туннеля, через который панель открывается в браузере. Если нет `curl`, поставьте его: `sudo apt install curl`.
+
+- **Обновление** — та же команда: она заменит программу и перезапустит службу. База, ключ и настройки не меняются.
+- **Своя версия:** `curl -fsSL … | sudo HYROUTE_SERVER_VERSION=v1.3.7 sh` (версия — тег релиза).
+- **Настройки службы** (флаги из таблицы ниже) задаются переменными в дополнении к службе: `sudo systemctl edit hyroute-server`, затем, например,
+
+  ```ini
+  [Service]
+  Environment=HYROUTE_SERVER_BACKUP_INTERVAL=24h
+  ```
+
+  и `sudo systemctl restart hyroute-server`. Сам файл службы скрипт перезаписывает при каждом обновлении, а дополнение остаётся. Файл службы, написанный вручную (без строки скрипта в начале), скрипт не трогает.
+- **Удаление:** `sudo systemctl disable --now hyroute-server`, затем удалите `/usr/local/bin/hyroute-server` и `/etc/systemd/system/hyroute-server.service`. Данные остаются в `/var/lib/hyroute-server`: удалите и их, если они не нужны.
+
+Служба работает от root, но в песочнице systemd: без особых прав root (кроме порта ниже 1024), без записи в системные каталоги, с домашними каталогами только для чтения. В `/etc`, `/usr`, `/home` и `/root` служба писать не может: если каталог данных (`HYROUTE_SERVER_DATA_DIR`) или файл ключа указаны там, добавьте в дополнение `ReadWritePaths=<каталог>`. Сертификаты TLS и файл парольной фразы она только читает, им это не нужно.
+
+**Вручную.** В релизе есть архивы `hyroute-server-<версия>-linux-amd64.tar.gz`, `-linux-arm64.tar.gz` (программа и файл службы `hyroute-server.service`) и `-windows-amd64.zip` (`hyroute-server.exe`); их суммы — в `SHA256SUMS`. В Windows распакуйте архив и запустите `hyroute-server.exe`: панель откроется по адресу `http://127.0.0.1:8480`, код первого запуска — в `C:\ProgramData\HyRoute Server\setup-token`.
+
+**Из исходников.** Нужен Go 1.27; веб-интерфейс уже собран и лежит в репозитории, Node.js не нужен.
 
 ```sh
 go build -o hyroute-server ./cmd/hyroute-server
@@ -17,6 +39,8 @@ go build -o hyroute-server ./cmd/hyroute-server
 Собирается под Linux и Windows. Управляемые серверы — Linux с systemd (Debian, Ubuntu и похожие).
 
 ## Запуск
+
+Без скрипта установки панель запускается просто программой:
 
 ```sh
 ./hyroute-server
@@ -57,33 +81,17 @@ go build -o hyroute-server ./cmd/hyroute-server
 
 Мастер-ключ можно передать и переменной `HYROUTE_MASTER_KEY` — тогда файл не читается и не создаётся. Переменная из одних пробелов и переводов строки считается незаданной: ключ берётся из файла, с теми же проверками прав.
 
-Пример службы systemd для Linux (`/etc/systemd/system/hyroute-server.service`):
-
-```ini
-[Unit]
-Description=HyRoute Server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart=/usr/local/bin/hyroute-server
-Restart=on-failure
-StateDirectory=hyroute-server
-StateDirectoryMode=0700
-NoNewPrivileges=true
-
-[Install]
-WantedBy=multi-user.target
-```
+Служба systemd для ручной установки — файл `hyroute-server.service` из архива (в репозитории — `build/linux/hyroute-server.service`):
 
 ```sh
 sudo install -m 0755 hyroute-server /usr/local/bin/
+sudo install -m 0644 hyroute-server.service /etc/systemd/system/
 sudo systemctl enable --now hyroute-server
 ```
 
 ## Первый запуск
 
-При первом запуске панель пишет в журнал, где лежит код первого запуска (сам код в журнал не попадает):
+Скрипт установки показывает код первого запуска сам. Иначе: при первом запуске панель пишет в журнал, где лежит код (сам код в журнал не попадает):
 
 ```sh
 sudo cat /var/lib/hyroute-server/setup-token

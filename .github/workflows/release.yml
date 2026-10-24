@@ -76,8 +76,45 @@ jobs:
           path: out/
           if-no-files-found: error
           retention-days: 7
+  # HyRoute Server (docs/SERVER_MANAGER.md): Linux and Windows packages
+  # and install-server.sh, in the same release and SHA256SUMS. Pure Go, so
+  # one Linux runner builds them all.
+  server:
+    runs-on: ubuntu-latest
+    env:
+      HYROUTE_VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.x'
+          check-latest: true
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+      - name: Admin UI from the sources
+        # As the client's UI: built here, not taken from web/admin/dist.
+        working-directory: web/admin
+        run: |
+          npm ci
+          npm run build
+      - name: Build
+        run: sh scripts/build-server.sh
+      - name: Smoke test
+        run: |
+          mkdir "$RUNNER_TEMP/s"
+          tar -xzf "dist/server/hyroute-server-${TAG#v}-linux-amd64.tar.gz" -C "$RUNNER_TEMP/s"
+          "$RUNNER_TEMP/s/hyroute-server" version | grep -F "hyroute-server $TAG"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: server
+          path: dist/server/
+          if-no-files-found: error
+          retention-days: 7
   publish:
-    needs: build
+    needs: [build, server]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -86,6 +123,10 @@ jobs:
         with:
           name: release
           path: out
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: server
+          path: server
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -99,4 +140,6 @@ jobs:
           fi
           pre=""
           case "$TAG" in *-*) pre="--prerelease";; esac
-          gh release create "$TAG" "out/HyRoute-${TAG#v}-windows-amd64.zip" out/SHA256SUMS --verify-tag --title "HyRoute $TAG" --notes-file out/notes.md $pre
+          # One SHA256SUMS: the client's updater looks up its zip by name.
+          cat server/SHA256SUMS >> out/SHA256SUMS
+          gh release create "$TAG" "out/HyRoute-${TAG#v}-windows-amd64.zip" server/hyroute-server-* server/install-server.sh out/SHA256SUMS --verify-tag --title "HyRoute $TAG" --notes-file out/notes.md $pre
