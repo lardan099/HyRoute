@@ -35,6 +35,7 @@ type winHost struct {
 	pid    uint32
 	geom   string    // where the last window was (windowGeom)
 	goneAt time.Time // when the last window process ended
+	at     string    // the panel: "x,y" of the click that opens it
 }
 
 // errNoWindow: a call that needs the window came while it is closed.
@@ -93,6 +94,9 @@ func (h *winHost) startLocked(state string) error {
 	}
 	if h.panel {
 		args = []string{"--window", fmt.Sprintf("%d,%d", toWinR.Fd(), fromWinW.Fd()), "--window-panel"}
+		if h.at != "" {
+			args = append(args, "--window-panel-at", h.at)
+		}
 	}
 	cmd := exec.Command(h.exe, args...)
 	cmd.Env = windowEnv(os.Environ())

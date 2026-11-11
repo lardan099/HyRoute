@@ -40,7 +40,11 @@ type Bridge struct {
 	ctx     atomic.Pointer[context.Context]
 	unsaved atomic.Int32
 	closing atomic.Bool // the close is decided: OnBeforeClose lets it through
-	panel   bool        // the panel by the tray icon (panel_windows.go)
+	// The panel by the tray icon (panel_windows.go): where the icon was
+	// clicked, and whether the window is shown yet.
+	panel      bool
+	panelAt    winPoint
+	panelShown atomic.Bool
 }
 
 // Call runs a method of GUI in the main process for the page.
@@ -98,7 +102,7 @@ func parseGeom(s string) (windowGeom, bool) {
 // runWindow is the window process. pipes is "<read handle>,<write handle>":
 // the ends of the two pipes the main process made for it. panel: it is
 // the panel by the tray icon, not the main window.
-func runWindow(pipes, state, geom string, panel bool) {
+func runWindow(pipes, state, geom string, panel bool, panelAt string) {
 	var rh, wh uintptr
 	if _, err := fmt.Sscanf(pipes, "%d,%d", &rh, &wh); err != nil || rh == 0 || wh == 0 {
 		messageBox("HyRoute", "Окно HyRoute запускает сам HyRoute.")
@@ -107,6 +111,9 @@ func runWindow(pipes, state, geom string, panel bool) {
 	in, out := os.NewFile(rh, "from-hyroute"), os.NewFile(wh, "to-hyroute")
 	peer := uirpc.New(in, out)
 	b := &Bridge{peer: peer, panel: panel}
+	if panel {
+		b.panelAt = parsePanelAt(panelAt)
+	}
 	peer.OnCall = b.answer
 	peer.OnEvent = func(name string, args []json.RawMessage) {
 		ctx := b.context()
@@ -187,7 +194,8 @@ func runWindow(pipes, state, geom string, panel bool) {
 }
 
 // runPanel is the panel's window: small, without a frame, on top, placed
-// by the tray icon while hidden and shown once its page is drawn.
+// by the tray icon while hidden and shown once its page has said how tall
+// it is (PanelFit; a page that never does is shown all the same).
 func runPanel(b *Bridge, webviewDir string) {
 	err := wails.Run(&options.App{
 		Title:            panelTitle,
@@ -202,12 +210,11 @@ func runPanel(b *Bridge, webviewDir string) {
 		LogLevel:         logger.ERROR,
 		OnStartup: func(ctx context.Context) {
 			b.ctx.Store(&ctx)
-			placePanel()
+			placePanel(b.panelAt, 0)
 		},
 		OnDomReady: func(ctx context.Context) {
 			b.peer.Notify("window.ready")
-			runtime.WindowShow(ctx)
-			go b.watchPanel(ctx)
+			time.AfterFunc(1500*time.Millisecond, func() { b.showPanelWindow(ctx) })
 		},
 		// Nothing of the panel's is unsaved, and closing it never means
 		// more than closing it.

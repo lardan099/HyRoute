@@ -65,11 +65,12 @@ func main() {
 	winState := flag.String("window-state", "normal", "set by HyRoute: the window process starts normal or minimised")
 	winGeom := flag.String("window-geom", "", "set by HyRoute: where the last window was")
 	winPanel := flag.Bool("window-panel", false, "set by HyRoute: the window process is the panel by the tray icon")
+	winPanelAt := flag.String("window-panel-at", "", "set by HyRoute: where the tray icon was clicked (x,y)")
 	flag.Parse()
 
 	// The window process (window_windows.go): nothing below is its part.
 	if *winPipes != "" {
-		runWindow(*winPipes, *winState, *winGeom, *winPanel)
+		runWindow(*winPipes, *winState, *winGeom, *winPanel, *winPanelAt)
 		return
 	}
 

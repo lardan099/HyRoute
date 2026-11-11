@@ -18,6 +18,20 @@
   let busy = $state(false);
   let error = $state('');
   let loaded = $state(false);
+  let root = $state<HTMLElement | null>(null);
+
+  // The window is as tall as what is in it: the page tells it once there
+  // is something to show, and again whenever that grows or shrinks (a
+  // list opened, an error). The first call also shows the window.
+  $effect(() => {
+    const el = root;
+    if (!el || !(loaded || error)) return;
+    const fit = () => w.go?.main?.Bridge?.PanelFit?.(Math.ceil(el.getBoundingClientRect().height));
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
 
   const st = $derived(ui.status);
   const online = $derived(st != null && st.state !== 'disconnected' && !(st.state === 'error' && !st.stats));
@@ -118,7 +132,7 @@
   });
 </script>
 
-<div class="tp">
+<div class="tp" bind:this={root}>
   <div class="head">
     <span class="dot {tone}"></span>
     <b class="grow ellipsis">{title}</b>
@@ -195,19 +209,19 @@
 </div>
 
 <style>
-  :global(html), :global(body) { height: 100%; overflow: hidden; }
-  .tp { height: 100vh; display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border); }
+  :global(html), :global(body) { overflow: hidden; }
+  .tp { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border); }
   .head { display: flex; align-items: center; gap: 8px; font-size: 15px; }
   .msg { margin-top: -4px; overflow-wrap: anywhere; }
   .big { justify-content: center; padding: 9px 12px; font-weight: 600; }
-  .rows { flex: 1; min-height: 0; overflow: hidden auto; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 2px; }
+  .rows { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .line { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 8px; background: none; border-radius: var(--radius-sm); text-align: left; }
   button.line:hover:not(:disabled) { background: var(--surface-2); }
   .line:disabled { opacity: 1; cursor: default; }
   .line .val { flex: 1; min-width: 0; text-align: right; font-weight: 600; }
   .line .val.off { color: var(--muted); font-weight: 400; }
   label.line { cursor: pointer; }
-  .choices { display: grid; gap: 1px; max-height: 190px; overflow-y: auto; margin: 0 0 4px; padding: 4px; background: var(--surface-2); border-radius: var(--radius-sm); }
+  .choices { display: grid; gap: 1px; max-height: 240px; overflow-y: auto; margin: 0 0 4px; padding: 4px; background: var(--surface-2); border-radius: var(--radius-sm); }
   .choice { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 6px 8px; background: none; border-radius: 6px; text-align: left; font-size: 13px; }
   .choice:hover:not(:disabled) { background: var(--surface-3); }
   .choice.on { color: var(--accent); font-weight: 600; }
