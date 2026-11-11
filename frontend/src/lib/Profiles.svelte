@@ -33,6 +33,40 @@
   // reports, a background subscription update included, so the page never
   // shows (and moves by) a list that is no longer there.
   const list = $derived(ui.profiles);
+
+  // The list's view, the window's own (not settings), as on «Правила»: a
+  // search over names, addresses, subscriptions and protocols, and rows in
+  // one line. dense: the user's choice once made, else by the list's
+  // length.
+  let query = $state('');
+  let compact = $state<boolean | null>(storedCompact());
+  const q = $derived(query.trim().toLowerCase());
+  const dense = $derived(compact ?? list.length > 8);
+  const has = (text: string | undefined) => (text ?? '').toLowerCase().includes(q);
+  const shown = $derived(q ? list.filter((p) => has(p.name) || has(p.server) || has(p.sourceName) || has(p.protocol) || has(p.transport)) : list);
+  // Servers of more than one place (subscriptions, added by hand): a
+  // compact list says where each run of them comes from.
+  const places = $derived(new Set(list.map((p) => p.source || '')).size);
+
+  function storedCompact(): boolean | null {
+    try {
+      const v = localStorage.getItem('hyroute.serversCompact');
+      return v === '1' ? true : v === '0' ? false : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function setCompact(on: boolean) {
+    compact = on;
+    try {
+      localStorage.setItem('hyroute.serversCompact', on ? '1' : '0');
+    } catch {}
+  }
+
+  function usedText(p: ProfileSummary): string {
+    return p.usedBy.length ? 'Используют: ' + p.usedBy.map((u) => hide(u)).join(', ') : 'Не используется правилами';
+  }
   let adding = $state(false);
   let text = $state('');
   let result = $state<ImportResult | null>(null);
@@ -244,18 +278,34 @@
     </div>
   {/if}
 
-  <div class="list">
-    {#each list as p, i (p.id)}
+  {#if list.length > 1}
+    <div class="row tools">
+      <input class="grow search" type="text" placeholder="Найти сервер: название, адрес, подписка" bind:value={query} />
+      {#if q}<span class="muted small found">{shown.length} из {list.length}</span>{/if}
+      <div class="seg">
+        <button class:on={!dense} onclick={() => setCompact(false)} title="Название, под ним адрес и кем используется">Крупно</button>
+        <button class:on={dense} onclick={() => setCompact(true)} title="Сервер в одну строку: на экране помещается втрое больше">Компактно</button>
+      </div>
+    </div>
+  {/if}
+
+  <div class="list" class:dense>
+    {#if q && !shown.length}<div class="card muted">Такого сервера нет.</div>{/if}
+    {#each shown as p, j (p.id)}
+      {@const i = list.indexOf(p)}
       {@const t = tunnel(p.id)}
+      {#if dense && places > 1 && (j === 0 || (shown[j - 1].source || '') !== (p.source || ''))}
+        <div class="place muted small">{p.source ? `Подписка «${hide(p.sourceName)}»` : 'Добавлены вручную'}</div>
+      {/if}
       <div class="srv card" class:main={p.main} class:missing={p.missing}>
         <button class="icon star" class:on={p.main} onclick={() => run(() => api.SetMain(p.id))} title={p.main ? 'Основной сервер' : 'Сделать основным'}>
           <Icon name="star" size={18} />
         </button>
         <div class="grow info">
-          <div class="name ellipsis">{hide(p.name)}</div>
+          <div class="name ellipsis" title={dense ? usedText(p) : undefined}>{hide(p.name)}</div>
           <div class="meta">
             <span class="mono ellipsis">{hide(p.server)}</span>
-            {#if p.source}<span class="badge"><Icon name="rss" size={11} />{hide(p.sourceName)}</span>{/if}
+            {#if p.source && !(dense && places > 1)}<span class="badge"><Icon name="rss" size={11} />{hide(p.sourceName)}</span>{/if}
             {#if p.missing}<span class="badge warn-b" title="Сервер пропал из подписки, но его используют правила">нет в подписке</span>{/if}
             {#if p.duplicateOf && p.duplicateSub && !p.source}
               <span class="badge warn-b" title="Тот же адрес, пароль и настройки, что у «{hide(p.duplicateOf)}» из подписки «{hide(p.duplicateSub)}»: та копия обновляется вместе с подпиской">есть в подписке «{hide(p.duplicateSub)}»</span>
@@ -266,9 +316,7 @@
             {#if p.obfs}<span class="badge">{p.obfs}</span>{/if}
             {#if p.pinned}<span class="badge" title="Сертификат проверяется по отпечатку">pin</span>{:else if p.insecure}<span class="badge warn-b" title="Сертификат не проверяется">insecure</span>{/if}
           </div>
-          <div class="muted small ellipsis">
-            {#if p.usedBy.length}Используют: {p.usedBy.map((u) => hide(u)).join(', ')}{:else}Не используется правилами{/if}
-          </div>
+          {#if !dense}<div class="muted small ellipsis">{usedText(p)}</div>{/if}
         </div>
         {#if t}
           <div class="state" title={hide(t.message)}>
@@ -276,12 +324,16 @@
             <span class="faint small mono">↓ {fmtBytes(t.recv)}</span>
           </div>
         {/if}
-        <button onclick={() => (checking = p)} title="Запустить и проверить: подключение, внешний IP, задержка, UDP"><Icon name="zap" size={15} />Проверить</button>
+        <button class:icon={dense} onclick={() => (checking = p)} title="Запустить и проверить: подключение, внешний IP, задержка, UDP"
+          ><Icon name="zap" size={dense ? 16 : 15} />{#if !dense}Проверить{/if}</button
+        >
         <div class="acts">
           <button class="icon" onclick={() => edit(p)} title="Изменить"><Icon name="edit" size={16} /></button>
           <button class="icon" onclick={() => run(() => api.CopyURI(p.id), 'Ссылка скопирована (в ней пароль сервера)')} title="Копировать ссылку"><Icon name="copy" size={16} /></button>
-          <button class="icon" onclick={() => move(p.id, -1)} disabled={i === 0} title="Выше"><Icon name="up" size={16} /></button>
-          <button class="icon" onclick={() => move(p.id, 1)} disabled={i === list.length - 1} title="Ниже"><Icon name="down" size={16} /></button>
+          <button class="icon" onclick={() => move(p.id, -1)} disabled={i === 0 || !!q} title={q ? 'Очистите поиск, чтобы менять порядок' : 'Выше'}><Icon name="up" size={16} /></button>
+          <button class="icon" onclick={() => move(p.id, 1)} disabled={i === list.length - 1 || !!q} title={q ? 'Очистите поиск, чтобы менять порядок' : 'Ниже'}
+            ><Icon name="down" size={16} /></button
+          >
           <button class="icon danger" onclick={() => remove(p)} title="Удалить"><Icon name="trash" size={16} /></button>
         </div>
       </div>
@@ -325,7 +377,21 @@
   header { align-items: flex-start; }
   .sub { margin: 4px 0 0; }
   textarea { width: 100%; }
+  .tools { gap: 10px; align-items: center; }
+  .search { max-width: 460px; }
+  .found { white-space: nowrap; }
   .list { display: grid; gap: 8px; }
+  /* Rows in one line: the name, the address, then what fits of the rest. */
+  .list.dense { gap: 4px; }
+  .list.dense .srv { padding: 3px 10px; gap: 8px; }
+  .list.dense .info { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+  .list.dense .name { flex: none; max-width: 44%; font-size: 13.5px; }
+  .list.dense .meta { flex: 1; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+  .list.dense .meta > :global(*) { flex: none; }
+  .list.dense .meta > .mono { flex: 0 1 auto; min-width: 70px; }
+  .list.dense .state { font-size: 12.5px; }
+  .place { margin: 8px 2px 0; }
+  .place:first-child { margin-top: 0; }
   .srv { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
   .srv.main { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
   .srv.missing { border-style: dashed; }

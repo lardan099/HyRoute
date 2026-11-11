@@ -402,6 +402,11 @@ func (g *GUI) SwitchRulesetFromTray(id string) error {
 	return err
 }
 
+// ServersBrief and SetMainFromTray: the menu's «Сервер» submenu, the same
+// way.
+func (g *GUI) ServersBrief() app.ServersBrief  { return g.ctl.ServersBrief() }
+func (g *GUI) SetMainFromTray(id string) error { return g.ctl.SetMain(id) }
+
 func (g *GUI) TidyRules(s settings.Settings, accept []string) app.TidyView {
 	return g.ctl.TidyRules(s, accept)
 }

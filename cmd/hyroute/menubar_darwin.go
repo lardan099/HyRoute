@@ -55,7 +55,12 @@ type menubar struct {
 	slots  []*systray.MenuItem
 	ids    []string // the profile of each slot
 	rsSig  string
-	wake   chan struct{}
+	// The «Сервер» submenu (trayservers.go), as the profiles' one.
+	srv      *systray.MenuItem
+	srvSlots []*systray.MenuItem
+	srvIDs   []string // the server or group of each slot
+	srvSig   string
+	wake     chan struct{}
 }
 
 func runMenubar() {
@@ -96,6 +101,14 @@ func (m *menubar) ready() {
 	m.status.Disable()
 	m.toggle = systray.AddMenuItem("Подключить", "")
 	m.toggle.Disable()
+	m.srv = systray.AddMenuItem("Сервер", "")
+	for range trayServersMax {
+		it := m.srv.AddSubMenuItemCheckbox("", "", false)
+		it.Hide()
+		m.srvSlots = append(m.srvSlots, it)
+	}
+	m.srvIDs = make([]string, len(m.srvSlots))
+	m.srv.Hide()
 	m.rs = systray.AddMenuItem("Профиль правил", "")
 	for range trayRulesetsMax {
 		it := m.rs.AddSubMenuItemCheckbox("", "", false)
@@ -127,6 +140,18 @@ func (m *menubar) ready() {
 				m.mu.Unlock()
 				if id != "" {
 					go m.call("SwitchRulesetFromTray", id)
+				}
+			}
+		}()
+	}
+	for i, it := range m.srvSlots {
+		go func() {
+			for range it.ClickedCh {
+				m.mu.Lock()
+				id := m.srvIDs[i]
+				m.mu.Unlock()
+				if id != "" {
+					go m.setMain(id)
 				}
 			}
 		}()
@@ -238,6 +263,58 @@ func (m *menubar) refresh() {
 		if json.Unmarshal(r, &b) == nil {
 			m.showRulesets(b)
 		}
+	}
+	if r, err := m.call("ServersBrief"); err == nil {
+		var b app.ServersBrief
+		if json.Unmarshal(r, &b) == nil {
+			m.showServers(b)
+		}
+	}
+}
+
+// setMain makes the clicked server the main one; the window says why when
+// it cannot be.
+func (m *menubar) setMain(id string) {
+	if _, err := m.call("SetMainFromTray", id); err != nil {
+		openWindow()
+		return
+	}
+	m.refresh()
+}
+
+func (m *menubar) showServers(b app.ServersBrief) {
+	visible, title, items, sig := trayServersView(b)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sig == m.srvSig {
+		return
+	}
+	m.srvSig = sig
+	if !visible {
+		m.srv.Hide()
+		return
+	}
+	m.srv.SetTitle(strings.ReplaceAll(title, "&&", "&"))
+	m.srv.Show()
+	for i, it := range m.srvSlots {
+		if i >= len(items) {
+			m.srvIDs[i] = ""
+			it.Hide()
+			continue
+		}
+		m.srvIDs[i] = items[i].ID
+		it.SetTitle(strings.ReplaceAll(items[i].Title, "&&", "&")) // trayMenuText doubles it for Windows
+		if items[i].Checked {
+			it.Check()
+		} else {
+			it.Uncheck()
+		}
+		if items[i].Disabled {
+			it.Disable()
+		} else {
+			it.Enable()
+		}
+		it.Show()
 	}
 }
 

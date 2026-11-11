@@ -212,7 +212,8 @@ type Controller struct {
 	// conn-rules: undo entries under their own leaf lock (connrules.go)
 	connRulesState
 	browserState
-	backupState // backup: backupMu and importMu (backup.go)
+	zapretBriefState // the tray's read of «Обход DPI» (traybrief.go)
+	backupState      // backup: backupMu and importMu (backup.go)
 }
 
 // New builds a controller with journals and a logger.
