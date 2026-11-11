@@ -259,6 +259,10 @@ export type Tidy = {
 
 export type TidyView = { items: Tidy[]; geoNote?: string; rules: Rule[] };
 
+// The DPI bypass as the tray menu and the panel show it (app.ZapretBrief:
+// a Go struct without JSON names).
+export type ZapretBrief = { Shown: boolean; Enabled: boolean; Targets: string[] };
+
 export interface LintIssue {
   index: number;
   severity: 'warn' | 'info';
@@ -633,6 +637,11 @@ interface GUI {
   ApplyRulesText(text: string, replace: boolean, guard: EditGuard): Promise<RulesTextResult>;
   LintRules(s: Settings): Promise<LintIssue[]>;
   TidyRules(s: Settings, accept: string[]): Promise<TidyView>;
+  // The panel by the tray icon (Windows).
+  ZapretBrief(): Promise<ZapretBrief>;
+  SetZapretEnabled(on: boolean): Promise<void>;
+  PanelOpenWindow(): Promise<void>;
+  PanelQuit(): Promise<void>;
   DuplicateRule(list: Rule[], r: Rule, skip: number): Promise<number>; // index, -1 = none
   Explain(q: { app: string; target: string; proto: string; port?: number }, s: Settings | null): Promise<Explanation>;
   BrowseExe(): Promise<string>;

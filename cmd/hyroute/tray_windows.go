@@ -318,7 +318,7 @@ func (g *GUI) trayReady(gen uint64) {
 	dpi := trayZapretItem()            // hidden until the bypass has services
 	systray.AddSeparator()
 	quit := systray.AddMenuItem("Выход", "")
-	systray.SetOnTapped(g.showWindow) // left click opens, right click shows the menu
+	systray.SetOnTapped(g.showPanel) // left click: the panel; right click shows the menu
 
 	if g.trayUp(status, toggle) {
 		g.ctl.Log.Info("the tray icon appeared: the close button hides HyRoute to the tray again")

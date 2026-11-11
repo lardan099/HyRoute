@@ -22,15 +22,19 @@ import (
 
 // winHost is the main process's side of the window process
 // (window_windows.go): it starts it when the window opens, passes calls
-// both ways and hears when it is gone. At most one window process runs.
+// both ways and hears when it is gone. At most one window process runs
+// per host: GUI has one for the main window and one for the panel
+// (panel_windows.go).
 type winHost struct {
-	g   *GUI
-	exe string // HyRoute.exe; "" (tests): no window is ever started
+	g     *GUI
+	exe   string // HyRoute.exe; "" (tests): no window is ever started
+	panel bool   // the panel's host
 
-	mu   sync.Mutex
-	peer *uirpc.Peer
-	pid  uint32
-	geom string // where the last window was (windowGeom)
+	mu     sync.Mutex
+	peer   *uirpc.Peer
+	pid    uint32
+	geom   string    // where the last window was (windowGeom)
+	goneAt time.Time // when the last window process ended
 }
 
 // errNoWindow: a call that needs the window came while it is closed.
@@ -87,6 +91,9 @@ func (h *winHost) startLocked(state string) error {
 	if h.geom != "" {
 		args = append(args, "--window-geom", h.geom)
 	}
+	if h.panel {
+		args = []string{"--window", fmt.Sprintf("%d,%d", toWinR.Fd(), fromWinW.Fd()), "--window-panel"}
+	}
 	cmd := exec.Command(h.exe, args...)
 	cmd.Env = windowEnv(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -116,6 +123,7 @@ func (h *winHost) startLocked(state string) error {
 		if h.peer == peer {
 			h.peer, h.pid = nil, 0
 		}
+		h.goneAt = time.Now()
 		h.mu.Unlock()
 		h.g.ctl.Log.Debug("window closed")
 	}()
@@ -195,6 +203,11 @@ func (h *winHost) attach(peer *uirpc.Peer) {
 func (h *winHost) answer(method string, args []json.RawMessage) (any, error) {
 	if !strings.HasPrefix(method, "window.") {
 		return h.g.dispatch(method, args)
+	}
+	if h.panel {
+		// The panel has no place to remember, nothing unsaved, and is
+		// not the window whose coming up says HyRoute started well.
+		return nil, nil
 	}
 	switch method {
 	case "window.ready":

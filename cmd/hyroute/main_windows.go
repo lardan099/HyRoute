@@ -64,11 +64,12 @@ func main() {
 	winPipes := flag.String("window", "", "set by HyRoute: be its window process (the pipes it made)")
 	winState := flag.String("window-state", "normal", "set by HyRoute: the window process starts normal or minimised")
 	winGeom := flag.String("window-geom", "", "set by HyRoute: where the last window was")
+	winPanel := flag.Bool("window-panel", false, "set by HyRoute: the window process is the panel by the tray icon")
 	flag.Parse()
 
 	// The window process (window_windows.go): nothing below is its part.
 	if *winPipes != "" {
-		runWindow(*winPipes, *winState, *winGeom)
+		runWindow(*winPipes, *winState, *winGeom, *winPanel)
 		return
 	}
 
@@ -286,6 +287,7 @@ func main() {
 	gui := &GUI{ctl: ctl, dataDir: dataDir, dllDir: dir, runtimeDir: runtimeDir, core: coreMgr, updateEvent: *updEvent,
 		life: life, quitCh: make(chan struct{})}
 	gui.win = &winHost{g: gui, exe: exe}
+	gui.panel = &winHost{g: gui, exe: exe, panel: true}
 	gui.cli = cs
 	// Set before any goroutine below can report a change.
 	ctl.CoreVersion = func() string { return coreMgr.Info().Version }

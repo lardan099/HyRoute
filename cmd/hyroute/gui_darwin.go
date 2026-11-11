@@ -303,3 +303,8 @@ func (g *GUI) ServiceVersion() string { return version + " " + build }
 
 // Platform tells the page which system it runs on.
 func (g *GUI) Platform() string { return "macos" }
+
+// The panel by the tray icon is the Windows tray's (panel_windows.go): the
+// menu bar icon has its menu.
+func (g *GUI) PanelOpenWindow() {}
+func (g *GUI) PanelQuit()       {}

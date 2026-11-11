@@ -38,8 +38,9 @@ type GUI struct {
 	// actually run (administrators-only folder).
 	runtimeDir string
 	// life ends when HyRoute exits (long calls of the page stop).
-	life context.Context
-	win  *winHost
+	life  context.Context
+	win   *winHost
+	panel *winHost // the panel by the tray icon (panel_windows.go)
 
 	dispatchOnce sync.Once
 	dispatchFn   uirpc.Handler
@@ -64,6 +65,7 @@ type GUI struct {
 // Disconnect: with the kill switch on the internet stays closed until
 // HyRoute connects again or the user opens it.
 func (g *GUI) shutdown() {
+	g.panel.close()
 	g.win.close()
 	g.ctl.StopNetModes() // netmodes: no network rule acts during the exit
 	g.ctl.Shutdown()
@@ -113,6 +115,7 @@ func (g *GUI) signalHealthy() {
 
 func (g *GUI) emitStatus() {
 	g.win.notify("status")
+	g.panel.notify("status")
 	go g.updateTray()
 	if !g.connUp.Load() {
 		go g.noteConnected()
