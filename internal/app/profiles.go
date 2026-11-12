@@ -49,6 +49,13 @@ type ProfileSummary struct {
 	// manual copy can be offered for deletion.
 	DuplicateOf  string `json:"duplicateOf,omitempty"`
 	DuplicateSub string `json:"duplicateSub,omitempty"`
+	// The last «Проверить все» of the server (ping.go): PingAt is when
+	// (Unix seconds, 0 never), PingMs the delay, 0 with PingErr saying why
+	// there was no answer. Pinging: a run under way has not reached it.
+	PingMs  int64  `json:"pingMs,omitempty"`
+	PingErr string `json:"pingErr,omitempty"`
+	PingAt  int64  `json:"pingAt,omitempty"`
+	Pinging bool   `json:"pinging,omitempty"`
 }
 
 func (c *Controller) summaryLocked(p *hysteria.Profile) ProfileSummary {
@@ -61,6 +68,7 @@ func (c *Controller) summaryLocked(p *hysteria.Profile) ProfileSummary {
 		s.SNI, s.Pinned = p.VLESS.SNI, p.VLESS.PinSHA256 != ""
 	}
 	s.SourceName = c.sourceNameLocked(p.Source)
+	c.pingLocked(p, &s)
 	return s
 }
 

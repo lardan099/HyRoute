@@ -213,6 +213,7 @@ type Controller struct {
 	connRulesState
 	browserState
 	zapretBriefState // the tray's read of «Обход DPI» (traybrief.go)
+	pingState        // «Проверить все»: guarded by mu (ping.go)
 	backupState      // backup: backupMu and importMu (backup.go)
 }
 

@@ -293,6 +293,12 @@ func (g *GUI) SavePrefs(p store.Prefs) error {
 
 func (g *GUI) CheckProfile(id string) (app.CheckResult, error) { return g.ctl.CheckProfile(id) }
 
+// «Проверить все» on the servers page: the delay of every server, or of
+// the ones named. It runs in the background; the results come with
+// Profiles.
+func (g *GUI) PingServers(ids []string) app.PingState { return g.ctl.PingServers(ids) }
+func (g *GUI) PingStop()                              { g.ctl.PingStop() }
+
 // Diagnostics is the support report (Privacy mode when privacy).
 func (g *GUI) Diagnostics(privacy bool) string {
 	return g.ctl.Diagnostics(g.systemLines(), privacy)

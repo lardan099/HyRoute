@@ -1224,7 +1224,7 @@ func waitConnectedCtx(ctx context.Context, ep *tunnels.Endpoint, timeout time.Du
 			if st.Message != "" {
 				return st, errors.New(st.Message)
 			}
-			return st, groups.Errorf("Hysteria не подключилась за %d с", int(timeout.Seconds()))
+			return st, groups.Errorf("Сервер не подключился за %d с", int(timeout.Seconds()))
 		}
 		select {
 		case <-ctx.Done():

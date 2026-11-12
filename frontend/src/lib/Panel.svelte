@@ -156,7 +156,9 @@
           {#if sec.title}<div class="sec muted small">{sec.title}</div>{/if}
           {#each sec.list as p (p.id)}
             <button class="choice" class:on={p.id === mainId} disabled={busy || (p.missing && p.id !== mainId)} onclick={() => run(() => api.SetMain(p.id)).then(() => (open = ''))}>
-              <span class="ellipsis">{hide(p.name)}</span>{#if p.id === mainId}<Icon name="check" size={14} />{/if}
+              <span class="grow ellipsis">{hide(p.name)}</span>
+              {#if p.pingMs}<span class="ms muted">{p.pingMs} мс</span>{:else if p.pingAt}<span class="ms faint">нет ответа</span>{/if}
+              {#if p.id === mainId}<Icon name="check" size={14} />{/if}
             </button>
           {/each}
         {/each}
@@ -225,6 +227,7 @@
   .choice { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 6px 8px; background: none; border-radius: 6px; text-align: left; font-size: 13px; }
   .choice:hover:not(:disabled) { background: var(--surface-3); }
   .choice.on { color: var(--accent); font-weight: 600; }
+  .choice .ms { flex: none; font-size: 12px; font-weight: 400; font-variant-numeric: tabular-nums; }
   .sec { padding: 6px 8px 2px; }
   .foot { display: flex; gap: 6px; }
   .foot .grow { justify-content: center; }

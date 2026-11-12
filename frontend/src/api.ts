@@ -117,6 +117,19 @@ export interface ProfileSummary {
   fastOpen: boolean;
   duplicateOf?: string; // the server with exactly the same connection that is kept
   duplicateSub?: string; // its subscription: this manual copy can be deleted
+  // The last «Проверить все» of the server: when (Unix seconds), the delay
+  // in ms, or why there was no answer. pinging: a run has not reached it.
+  pingMs?: number;
+  pingErr?: string;
+  pingAt?: number;
+  pinging?: boolean;
+}
+
+// PingState is a «Проверить все» run under way.
+export interface PingState {
+  running: boolean;
+  done: number;
+  total: number;
 }
 
 export interface ImportResult {
@@ -658,6 +671,8 @@ interface GUI {
   Prefs(): Promise<Prefs>;
   SavePrefs(p: Prefs): Promise<void>;
   CheckProfile(id: string): Promise<CheckResult>;
+  PingServers(ids: string[]): Promise<PingState>; // [] — all of them; the results come with Profiles
+  PingStop(): Promise<void>;
   Diagnostics(privacy: boolean): Promise<string>;
   CopyDiagnostics(privacy: boolean): Promise<void>;
   Updates(): Promise<Updates>;
