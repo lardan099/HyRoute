@@ -125,6 +125,39 @@ func TestPingServers(t *testing.T) {
 	}
 }
 
+// The cores connect together, the requests go one server at a time.
+func TestPingOneAtATime(t *testing.T) {
+	r := newLiveRig(t)
+	c := r.c
+	servers(t, c)
+	var now, most atomic.Int32
+	probe := func() {
+		n := now.Add(1)
+		for {
+			m := most.Load()
+			if n <= m || most.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		time.Sleep(30 * time.Millisecond)
+		now.Add(-1)
+	}
+	r.onProbe.Store(&probe)
+	c.PingServers(nil)
+	waitPing(t, c)
+	if n := r.temp.Load(); n != 3 {
+		t.Fatalf("%d temporary cores, want 3", n)
+	}
+	if m := most.Load(); m != 1 {
+		t.Fatalf("%d servers measured at once", m)
+	}
+	for _, p := range c.Profiles() {
+		if p.PingMs < 30 {
+			t.Fatalf("%+v", p)
+		}
+	}
+}
+
 // A run under way is the only one, and «Остановить» ends it without
 // results.
 func TestPingStop(t *testing.T) {

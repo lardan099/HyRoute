@@ -163,13 +163,20 @@ type liveRig struct {
 	// closed; tempHeld is signalled first (TestProbeGroup makes its two
 	// calls overlap so).
 	holdTemp, tempHeld chan struct{}
+	// onProbe, when set, runs in every request that reaches web.
+	onProbe atomic.Pointer[func()]
 }
 
 func newLiveRig(t *testing.T) *liveRig {
 	t.Helper()
 	c, _ := newCtl(t)
 	r := &liveRig{c: c, runs: map[string]*ctlRunner{}, slow: map[string]bool{}, room: 100}
-	r.web = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
+	r.web = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if f := r.onProbe.Load(); f != nil {
+			(*f)()
+		}
+		w.WriteHeader(204)
+	}))
 	t.Cleanup(r.web.Close)
 	r.socks = &socks5.Server{Dial: func(string, string) (net.Conn, error) { return net.Dial("tcp", r.web.Listener.Addr().String()) }}
 	if err := r.socks.Listen("127.0.0.1:0"); err != nil {

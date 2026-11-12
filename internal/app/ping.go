@@ -17,13 +17,16 @@ import (
 // measured the way a group's check measures its members: a request for
 // the probe address through the server, the time to the first byte of the
 // answer (the better of two). A server that routes now is measured in
-// place, the others through a temporary Hysteria or Xray each, a few at a
-// time. The results live in memory until HyRoute exits and are shown with
-// the servers (ProfileSummary); they take no part in what groups pick.
+// place, the others through a temporary Hysteria or Xray each. The cores
+// start and connect a few at a time, which is where a dead server takes
+// its seconds; the requests themselves go one server at a time, so that
+// no measurement shares the line and the processor with another. The
+// results live in memory until HyRoute exits and are shown with the
+// servers (ProfileSummary); they take no part in what groups pick.
 
 const (
-	// pingWorkers is how many servers are measured at a time: each one
-	// that does not route starts a core of its own.
+	// pingWorkers is how many servers are started and connected at a
+	// time: each one that does not route starts a core of its own.
 	pingWorkers = 6
 	// pingTries: the first request through a server just started also
 	// resolves the name and warms the connection up.
@@ -35,6 +38,9 @@ const (
 var (
 	pingConnectWait = 8 * time.Second
 	pingBudget      = 10 * time.Minute
+	// pingProbes is how many servers are measured at once: one, or the
+	// delays would include each other's load.
+	pingProbes = 1
 )
 
 // pingResult is the last measurement of a server.
@@ -193,7 +199,7 @@ func (c *Controller) runPing(ctx context.Context, run *pingRun, list []hysteria.
 		}
 	}()
 
-	room := &pingRoom{}
+	room := &pingRoom{probe: make(chan struct{}, pingProbes)}
 	jobs := make(chan hysteria.Profile)
 	var wg sync.WaitGroup
 	answered := 0
@@ -240,11 +246,25 @@ feed:
 	c.changed()
 }
 
-// pingRoom counts the temporary cores of a run: while HyRoute routes,
-// each takes room in the list of server addresses left alone.
+// pingRoom is what the servers of a run share. It counts the temporary
+// cores: while HyRoute routes, each takes room in the list of server
+// addresses left alone. And it gives the turn to measure (probe).
 type pingRoom struct {
 	mu       sync.Mutex
 	inFlight int
+	probe    chan struct{}
+}
+
+// measure is pingBest in the server's turn: connected, it waits for the
+// servers measured before it.
+func (r *pingRoom) measure(ctx context.Context, rawURL string, dial func(context.Context, socks5.Addr) (net.Conn, error)) (time.Duration, error) {
+	select {
+	case r.probe <- struct{}{}:
+	case <-ctx.Done():
+		return 0, groups.ErrCanceled
+	}
+	defer func() { <-r.probe }()
+	return pingBest(ctx, rawURL, dial)
 }
 
 // take waits for room for one more temporary core. false: there is none
@@ -293,7 +313,7 @@ func (c *Controller) pingVia(ctx context.Context, sess Session, p hysteria.Profi
 	if sess != nil && sess.Endpoint(p.ID) != nil {
 		// A routing endpoint, measured in place and past its Dial: a
 		// probe that fails is not a connection of the user's that failed.
-		return pingBest(ctx, rawURL, func(ctx context.Context, dst socks5.Addr) (net.Conn, error) {
+		return room.measure(ctx, rawURL, func(ctx context.Context, dst socks5.Addr) (net.Conn, error) {
 			return c.probeDial(ctx, p.ID, dst)
 		})
 	}
@@ -312,7 +332,7 @@ func (c *Controller) pingVia(ctx context.Context, sess Session, p hysteria.Profi
 	if _, err := waitConnectedCtx(ctx, ep, connectWait(p, pingConnectWait)); err != nil {
 		return 0, err
 	}
-	return pingBest(ctx, rawURL, func(ctx context.Context, dst socks5.Addr) (net.Conn, error) {
+	return room.measure(ctx, rawURL, func(ctx context.Context, dst socks5.Addr) (net.Conn, error) {
 		cl := ep.SOCKS()
 		return cl.Connect(ctx, dst)
 	})
