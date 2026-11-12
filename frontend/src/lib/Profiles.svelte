@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, errText, fmtBytes, type ProfileSummary, type Profile, type ImportResult } from '../api';
-  import { ui, hide } from '../state.svelte';
+  import { ui, hide, serverSections } from '../state.svelte';
   import Icon from './Icon.svelte';
   import ProfileEditor from './ProfileEditor.svelte';
   import CheckProfile from './CheckProfile.svelte';
@@ -43,24 +43,40 @@
   const q = $derived(query.trim().toLowerCase());
   const dense = $derived(compact ?? list.length > 8);
   const has = (text: string | undefined) => (text ?? '').toLowerCase().includes(q);
-  const found = $derived(q ? list.filter((p) => has(p.name) || has(p.server) || has(p.sourceName) || has(p.protocol) || has(p.transport)) : list);
+  // Servers of more than one place (subscriptions, added by hand): a
+  // compact list says where each run of them comes from, and the list can
+  // show one place only. place is the one picked: '*' all of them, '-'
+  // those added by hand, else a subscription; one that is gone is all.
+  const places = $derived(new Set(list.map((p) => p.source || '')).size);
+  const sections = $derived(places > 1 ? serverSections() : []);
+  const placeOf = (p: ProfileSummary) => p.source || '-';
+  let place = $state('*');
+  const scope = $derived(sections.some((s) => (s.key || '-') === place) ? place : '*');
+  const inScope = $derived(scope === '*' ? list : list.filter((p) => placeOf(p) === scope));
+  const found = $derived(q ? inScope.filter((p) => has(p.name) || has(p.server) || has(p.sourceName) || has(p.protocol) || has(p.transport)) : inScope);
+  // narrowed: not the whole list is shown, and «Проверить» measures what is.
+  const narrowed = $derived(!!q || scope !== '*');
 
   // «Проверить все»: the backend measures the servers in the background
   // and the results come with the list (pingMs, pingErr, pingAt). byPing
   // shows the list by them, the fastest first; the order of the servers
-  // itself stays, and is not changed while the list is shown so.
+  // itself stays, and is not changed while the list is shown so. With one
+  // subscription picked or a search typed the button measures only the
+  // servers shown: a subscription may bring a hundred.
   const left = $derived(list.filter((p) => p.pinging).length);
   const pinging = $derived(left > 0);
   const measured = $derived(list.some((p) => p.pingAt));
   let byPing = $state(false);
-  let mine = $state(false); // a run of all servers started here: its end sorts the list
+  let mine = $state(false); // a run of the servers shown started here: its end sorts the list
   const ranked = $derived(byPing && measured);
   // Those that answered by their delay, then those not measured, then
   // those that did not answer.
   const rank = (p: ProfileSummary) => (p.pingMs ? p.pingMs : p.pingAt ? 2e9 : 1e9);
   const shown = $derived(ranked ? [...found].sort((a, b) => rank(a) - rank(b)) : found);
   // fixed: why the servers cannot be moved now ('' they can).
-  const fixed = $derived(q ? 'Очистите поиск, чтобы менять порядок' : ranked ? 'Включите «Свой порядок», чтобы менять порядок' : '');
+  const fixed = $derived(
+    q ? 'Очистите поиск, чтобы менять порядок' : scope !== '*' ? 'Выберите «Все серверы», чтобы менять порядок' : ranked ? 'Отожмите «По пингу», чтобы менять порядок' : '',
+  );
 
   $effect(() => {
     if (!mine || pinging) return;
@@ -68,16 +84,29 @@
     if (measured) byPing = true;
   });
 
-  async function ping(ids: string[]) {
+  // ping measures the servers named ([] all of them); sort: the list goes
+  // by ping when the run ends.
+  async function ping(ids: string[], sort = false) {
     error = '';
     info = '';
     try {
       await api.PingServers(ids);
       await load();
-      if (!ids.length) mine = true;
+      if (sort) mine = true;
     } catch (e) {
       error = errText(e);
     }
+  }
+
+  // pingPlace is «Проверить» of a subscription's heading: the list shows
+  // that place only and its servers are measured.
+  function pingPlace(key: string) {
+    query = '';
+    place = key;
+    ping(
+      list.filter((p) => placeOf(p) === key).map((p) => p.id),
+      true,
+    );
   }
 
   function pingTitle(p: ProfileSummary): string {
@@ -85,9 +114,6 @@
     const what = p.pingMs ? `Пинг ${p.pingMs} мс: время ответа на короткий запрос через сервер` : `Сервер не ответил: ${hide(p.pingErr ?? '')}`;
     return `${what}. Измерено в ${at}. Щёлкните, чтобы измерить заново.`;
   }
-  // Servers of more than one place (subscriptions, added by hand): a
-  // compact list says where each run of them comes from.
-  const places = $derived(new Set(list.map((p) => p.source || '')).size);
 
   function storedCompact(): boolean | null {
     try {
@@ -279,7 +305,10 @@
       него идёт VPN, если в правиле не выбран другой сервер. Щёлкните по звёздочке, чтобы сделать сервер основным.
     </p>
     <ul>
-      <li><b>«Проверить все»</b> измеряет пинг каждого сервера и ставит самые быстрые наверх: чем меньше миллисекунд, тем лучше. «Нет ответа» — сервер сейчас не работает.</li>
+      <li>
+        <b>«Проверить все»</b> измеряет пинг каждого сервера и ставит самые быстрые наверх: чем меньше миллисекунд, тем лучше. «Нет ответа» — сервер
+        сейчас не работает. Чтобы проверить не все, выберите рядом одну подписку или наберите что-нибудь в поиске: проверятся только показанные.
+      </li>
       <li><b>«Проверить»</b> в строке сервера проверяет его подробно: подключение, внешний IP, задержка, UDP.</li>
       <li>Новый сервер: «Добавить сервер» и вставьте ссылку <code>hysteria2://…</code> или <code>vless://…</code>. Ссылка подписки (<code>https://…</code>) добавляется на странице «Подписки».</li>
       <li>Серверы из подписки обновляются сами, их не нужно добавлять заново.</li>
@@ -323,18 +352,33 @@
   {#if list.length > 1}
     <div class="row tools">
       <input class="grow search" type="text" placeholder="Найти сервер: название, адрес, подписка" bind:value={query} />
-      {#if q}<span class="muted small found">{shown.length} из {list.length}</span>{/if}
+      {#if sections.length}
+        <select class="scope" bind:value={place} title="Какие серверы показывать: все или одной подписки">
+          <option value="*">Все серверы</option>
+          {#each sections as s (s.key)}
+            <option value={s.key || '-'}>{s.title} · {s.list.length}</option>
+          {/each}
+        </select>
+      {/if}
       {#if pinging}
         <button onclick={() => api.PingStop()} title="Остановить проверку: серверы, до которых она не дошла, останутся как были"><Icon name="x" size={15} />Остановить · осталось {left}</button>
       {:else}
-        <button onclick={() => ping([])} title="Измерить пинг всех серверов: короткий запрос через каждый. Список встанет по пингу, самые быстрые наверху"
-          ><Icon name="zap" size={15} />Проверить все</button
+        <button
+          onclick={() => ping(narrowed ? found.map((p) => p.id) : [], true)}
+          disabled={narrowed && !found.length}
+          title="{narrowed ? 'Измерить пинг серверов, которые показаны' : 'Измерить пинг всех серверов'}: короткий запрос через каждый. Список встанет по пингу, самые быстрые наверху"
+          ><Icon name="zap" size={15} />{narrowed ? `Проверить показанные · ${found.length}` : 'Проверить все'}</button
         >
       {/if}
       {#if measured}
         <div class="seg">
-          <button class:on={!byPing} onclick={() => (byPing = false)} title="Серверы в вашем порядке">Свой порядок</button>
-          <button class:on={byPing} onclick={() => (byPing = true)} title="Сначала серверы с меньшим пингом, в конце — те, что не ответили">По пингу</button>
+          <button
+            class:on={byPing}
+            aria-pressed={byPing}
+            onclick={() => (byPing = !byPing)}
+            title={byPing ? 'Список стоит по пингу: быстрые наверху, не ответившие в конце. Щёлкните, чтобы вернуть свой порядок' : 'Поставить список по пингу: быстрые наверху, не ответившие в конце'}
+            >По пингу</button
+          >
         </div>
       {/if}
       <div class="seg">
@@ -350,7 +394,12 @@
       {@const i = list.indexOf(p)}
       {@const t = tunnel(p.id)}
       {#if dense && places > 1 && !ranked && (j === 0 || (shown[j - 1].source || '') !== (p.source || ''))}
-        <div class="place muted small">{p.source ? `Подписка «${hide(p.sourceName)}»` : 'Добавлены вручную'}</div>
+        <div class="place muted small">
+          {p.source ? `Подписка «${hide(p.sourceName)}»` : 'Добавлены вручную'}
+          {#if scope === '*' && !q}
+            <button class="link" disabled={pinging} onclick={() => pingPlace(placeOf(p))} title="Показать только эти серверы и измерить их пинг">Проверить</button>
+          {/if}
+        </div>
       {/if}
       <div class="srv card" class:main={p.main} class:missing={p.missing}>
         <button class="icon star" class:on={p.main} onclick={() => run(() => api.SetMain(p.id))} title={p.main ? 'Основной сервер' : 'Сделать основным'}>
@@ -360,7 +409,7 @@
           <div class="name ellipsis" title={dense ? usedText(p) : undefined}>{hide(p.name)}</div>
           <div class="meta">
             <span class="mono ellipsis">{hide(p.server)}</span>
-            {#if p.source && !(dense && places > 1 && !ranked)}<span class="badge"><Icon name="rss" size={11} />{hide(p.sourceName)}</span>{/if}
+            {#if p.source && scope === '*' && !(dense && places > 1 && !ranked)}<span class="badge"><Icon name="rss" size={11} />{hide(p.sourceName)}</span>{/if}
             {#if p.missing}<span class="badge warn-b" title="Сервер пропал из подписки, но его используют правила">нет в подписке</span>{/if}
             {#if p.duplicateOf && p.duplicateSub && !p.source}
               <span class="badge warn-b" title="Тот же адрес, пароль и настройки, что у «{hide(p.duplicateOf)}» из подписки «{hide(p.duplicateSub)}»: та копия обновляется вместе с подпиской">есть в подписке «{hide(p.duplicateSub)}»</span>
@@ -442,8 +491,8 @@
   textarea { width: 100%; }
   .tools { gap: 10px; align-items: center; flex-wrap: wrap; }
   .tools button { white-space: nowrap; }
-  .search { max-width: 460px; }
-  .found { white-space: nowrap; }
+  .search { max-width: 460px; min-width: 170px; }
+  .scope { max-width: 230px; }
   .list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
   /* Rows in one line: the name, the address, then what fits of the rest. */
   .list.dense { gap: 4px; }
@@ -454,7 +503,7 @@
   .list.dense .meta > :global(*) { flex: none; }
   .list.dense .meta > .mono { flex: 0 1 auto; min-width: 70px; }
   .list.dense .state { font-size: 12.5px; }
-  .place { margin: 8px 2px 0; }
+  .place { display: flex; align-items: baseline; gap: 10px; margin: 8px 2px 0; }
   .place:first-child { margin-top: 0; }
   .srv { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
   .srv.main { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
