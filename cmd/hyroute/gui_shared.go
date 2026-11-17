@@ -274,6 +274,22 @@ func (g *GUI) ClearLogs() error { return g.ctl.ClearLogs() }
 
 func (g *GUI) Prefs() store.Prefs { return g.ctl.Prefs() }
 
+func (g *GUI) migrateBrowserRules() string {
+	if g.ctl.Prefs().BrowserRulesMigrated {
+		return ""
+	}
+	count, err := g.ctl.MigrateBrowserRules()
+	if err != nil {
+		g.ctl.Log.Warn("browser rule migration incomplete", "err", err)
+		return "Не удалось закончить обновление доменных правил. Подробности в журнале."
+	}
+	if count == 0 {
+		return ""
+	}
+	g.ctl.Log.Info("domain rules scoped to Chrome", "rules", count, "backup", store.BrowserRulesBackup)
+	return fmt.Sprintf("В доменные правила добавлен Google Chrome. Изменено правил %d. Прежние правила сохранены в резервной копии.", count)
+}
+
 // SavePrefs keeps the fields other calls own: the rule-database ones
 // (SetGeoPrefs), the postponed version (SkipAppVersion, "Позже"), the
 // command line's mode (SetCLIMode) and the browser extension's access
@@ -286,6 +302,7 @@ func (g *GUI) SavePrefs(p store.Prefs) error {
 		p.SkipVersion = cur.SkipVersion
 		p.CLI = cur.CLI
 		p.Browser = cur.Browser
+		p.BrowserRulesMigrated = cur.BrowserRulesMigrated
 		*cur = p
 		return nil
 	})
@@ -338,8 +355,8 @@ func (g *GUI) ConvertACL(text, mode, suffix, actions string) (app.ConvertResult,
 
 // ImportRules converts rules of another program (SwitchyOmega, v2rayN,
 // Throne, FoxyProxy, Clash, PAC …) into rules text.
-func (g *GUI) ImportRules(text, format string, to map[string]string) (app.RulesImport, error) {
-	return g.ctl.ImportRules(text, format, to)
+func (g *GUI) ImportRules(text, format string, to map[string]string, browser string) (app.RulesImport, error) {
+	return g.ctl.ImportRules(text, format, to, browser)
 }
 
 func (g *GUI) GeoCategories(kind, query string) []string {

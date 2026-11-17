@@ -1,6 +1,8 @@
 package app
 
 import (
+	"net/netip"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -111,7 +113,8 @@ type BrowserPage struct {
 type BrowserInfo struct {
 	State   string          `json:"state"`   // as Status
 	Ruleset string          `json:"ruleset"` // the active rule profile
-	Main    string          `json:"main"`    // the main server or group ("" = none)
+	App     string          `json:"app,omitempty"`
+	Main    string          `json:"main"` // the main server or group ("" = none)
 	Targets []BrowserTarget `json:"targets"`
 	Sites   []BrowserSite   `json:"sites"`
 	// Page: the page's site, when it can have rules of its own.
@@ -157,6 +160,8 @@ type BrowserResult struct {
 // ErrBrowserOff: the extension is turned off in HyRoute.
 var ErrBrowserOff = sentenceError("Расширение для браузера выключено в HyRoute: «Настройки» → «Расширение для браузера»")
 
+var errBrowserApp = sentenceError("HyRoute не определил браузер. Перезапустите браузер и снова откройте расширение")
+
 // BrowserOn reports whether the extension may talk to HyRoute (prefs
 // "browser"; never while prefs.json is broken).
 func (c *Controller) BrowserOn() bool {
@@ -185,6 +190,12 @@ func (c *Controller) BrowserInfo(q BrowserQuery) (BrowserInfo, error) {
 	c.browserSeen.Store(time.Now().Unix())
 	st := c.Status()
 	info := BrowserInfo{State: st.State, Targets: []BrowserTarget{}, Sites: []BrowserSite{}}
+	proc := browserProc(q.App)
+	if proc != nil {
+		info.App = proc.Name
+	} else {
+		info.Problem = errBrowserApp.Error()
+	}
 	if err := c.settingsBrokenError(); err != nil {
 		info.Problem = err.Error()
 	}
@@ -212,12 +223,11 @@ func (c *Controller) BrowserInfo(q BrowserQuery) (BrowserInfo, error) {
 	if site, label := browserSite(q.Page); site != "" {
 		info.Page = &BrowserPage{Site: site, Label: label}
 		for _, r := range cfg.Rules {
-			if isBrowserRule(r) && browserRuleSite(r) == site {
+			if info.App != "" && browserRuleFor(r, info.App) && browserRuleSite(r) == site {
 				info.Page.Items += len(r.Domains)
 			}
 		}
 	}
-	proc := browserProc(q.App)
 	seen := map[string]bool{}
 	for _, h := range q.Hosts {
 		host, ok := rules.HostName(h)
@@ -237,16 +247,25 @@ func (c *Controller) BrowserInfo(q BrowserQuery) (BrowserInfo, error) {
 
 // browserProc is the browser as the rules see its connections.
 func browserProc(app string) *procinfo.Info {
-	app = strings.TrimSpace(app)
-	if app == "" {
+	app = strings.ToLower(strings.TrimSpace(app))
+	if app == "" || app == "." || app == ".." || strings.ContainsAny(app, "*?:/\\\r\n\t") {
 		return nil
 	}
-	return &procinfo.Info{Name: strings.ToLower(baseName(app))}
+	return &procinfo.Info{Name: app}
+}
+
+// Chromium on macOS opens connections from its in-bundle network helper.
+func browserAppMatches(app string) []rules.AppMatch {
+	apps := []rules.AppMatch{{Pattern: app}}
+	if runtime.GOOS == "darwin" && !strings.HasSuffix(app, ".exe") {
+		apps = append(apps, rules.AppMatch{Pattern: app + " Helper"})
+	}
+	return apps
 }
 
 // browserRoute is the route of an HTTPS connection of the browser to host.
 func (c *Controller) browserRoute(cfg rules.Config, main string, proc *procinfo.Info, host string) BrowserRoute {
-	w, _ := rules.Winner(cfg, rules.Flow{Proc: proc, Proto: 6, Name: host, Main: main})
+	w := browserWinner(cfg, main, proc, host)
 	r := connRoute(cfg, w, main)
 	out := BrowserRoute{Index: w}
 	switch r.Action {
@@ -265,10 +284,10 @@ func (c *Controller) browserRoute(cfg rules.Config, main string, proc *procinfo.
 	}
 	if r.Rule != nil {
 		out.Rule = r.Rule.Name
-		out.Browser = isBrowserRule(*r.Rule)
+		out.Browser = proc != nil && browserRuleFor(*r.Rule, proc.Name)
 	}
 	for _, rule := range cfg.Rules {
-		if !isBrowserRule(rule) || !rule.On() {
+		if proc == nil || !rule.On() || !browserRuleFor(rule, proc.Name) {
 			continue
 		}
 		for _, d := range rule.Domains {
@@ -281,6 +300,13 @@ func (c *Controller) browserRoute(cfg rules.Config, main string, proc *procinfo.
 	return out
 }
 
+func browserWinner(cfg rules.Config, main string, proc *procinfo.Info, host string) int {
+	w, _ := rules.Winner(cfg, rules.Flow{
+		Proc: proc, Proto: 6, Dst: netip.AddrPortFrom(netip.Addr{}, 443), Name: host, Main: main,
+	})
+	return w
+}
+
 // browserCatches: the extension's item d (".site" or an exact name)
 // covers host.
 func browserCatches(d, host string) bool {
@@ -290,12 +316,15 @@ func browserCatches(d, host string) bool {
 	return host == d
 }
 
-// isBrowserRule: a rule the extension keeps — its name, and nothing but
-// plain names (no programs, ports or protocol), so the user's own rule
-// that only borrowed the name is never rewritten.
+// isBrowserRule: a rule the extension keeps — its name and plain sites,
+// with either a browser scope or the legacy global shape. A user's own
+// program rule that only borrowed the prefix is never rewritten.
 func isBrowserRule(r rules.Rule) bool {
-	if !strings.HasPrefix(r.Name, BrowserRulePrefix) || len(r.AllApps()) > 0 || r.Domain != nil ||
+	if !strings.HasPrefix(r.Name, BrowserRulePrefix) || r.Domain != nil ||
 		len(r.Ports) > 0 || (r.Protocol != "" && !strings.EqualFold(r.Protocol, "any")) || len(r.Fallback) > 0 {
+		return false
+	}
+	if apps := r.AllApps(); len(apps) > 0 && !browserRuleScope(r, apps[0].Pattern) {
 		return false
 	}
 	for _, d := range r.Domains {
@@ -305,6 +334,17 @@ func isBrowserRule(r rules.Rule) bool {
 	}
 	return true
 }
+
+func browserRuleScope(r rules.Rule, app string) bool {
+	return strings.HasSuffix(strings.TrimSuffix(r.Name, browserHostsSuffix), browserAppSuffix(app)) &&
+		slices.Equal(r.AllApps(), browserAppMatches(app))
+}
+
+func browserRuleFor(r rules.Rule, app string) bool {
+	return isBrowserRule(r) && browserRuleScope(r, app)
+}
+
+func browserAppSuffix(app string) string { return " [" + app + "]" }
 
 // browserHostsRule: an address rule of the extension (by name).
 func browserHostsRule(r rules.Rule) bool { return strings.HasSuffix(r.Name, browserHostsSuffix) }
@@ -330,6 +370,9 @@ func browserSite(page string) (site, label string) {
 // the edits of that site's pages with the same route, nothing more.
 func browserRuleSite(r rules.Rule) string {
 	name := strings.TrimSuffix(strings.TrimPrefix(r.Name, BrowserRulePrefix), browserHostsSuffix)
+	if apps := r.AllApps(); len(apps) > 0 && browserRuleScope(r, apps[0].Pattern) {
+		name = strings.TrimSuffix(name, browserAppSuffix(apps[0].Pattern))
+	}
 	h, ok := rules.HostName(name)
 	if !ok {
 		return ""
@@ -340,13 +383,12 @@ func browserRuleSite(r rules.Rule) string {
 	return ""
 }
 
-// hoistBrowserRules puts the extension's rules first: the address rules,
-// then the site rules, each in their order, then everything else.
-func hoistBrowserRules(rs []rules.Rule) []rules.Rule {
+// hoistBrowserRules puts this browser's address and site rules first.
+func hoistBrowserRules(rs []rules.Rule, app string) []rules.Rule {
 	var addrs, sites, rest []rules.Rule
 	for _, r := range rs {
 		switch {
-		case !isBrowserRule(r):
+		case !browserRuleFor(r, app):
 			rest = append(rest, r)
 		case browserHostsRule(r):
 			addrs = append(addrs, r)
@@ -438,6 +480,10 @@ func (c *Controller) BrowserAdd(e BrowserEdit) (BrowserResult, error) {
 	if !c.BrowserOn() {
 		return BrowserResult{}, ErrBrowserOff
 	}
+	proc := browserProc(e.App)
+	if proc == nil {
+		return BrowserResult{}, errBrowserApp
+	}
 	items, err := browserItems(e.Sites)
 	if err != nil {
 		return BrowserResult{}, err
@@ -446,7 +492,6 @@ func (c *Controller) BrowserAdd(e BrowserEdit) (BrowserResult, error) {
 	if err != nil {
 		return BrowserResult{}, err
 	}
-	proc := browserProc(e.App)
 	site, label := browserSite(e.Page)
 	if site == "" {
 		label = word
@@ -456,7 +501,7 @@ func (c *Controller) BrowserAdd(e BrowserEdit) (BrowserResult, error) {
 		changed := false
 		for _, p := range items {
 			hosts := !strings.HasPrefix(p, ".")
-			name := BrowserRulePrefix + label
+			name := BrowserRulePrefix + label + browserAppSuffix(proc.Name)
 			if hosts {
 				name += browserHostsSuffix
 			}
@@ -465,7 +510,7 @@ func (c *Controller) BrowserAdd(e BrowserEdit) (BrowserResult, error) {
 			}
 			mine := -1
 			for i, r := range cfg.Rules {
-				if isBrowserRule(r) && r.On() && browserHostsRule(r) == hosts && r.Action == act && r.Profile == profile && browserRuleSite(r) == site {
+				if browserRuleFor(r, proc.Name) && r.On() && browserHostsRule(r) == hosts && r.Action == act && r.Profile == profile && browserRuleSite(r) == site {
 					mine = i
 					break
 				}
@@ -477,7 +522,7 @@ func (c *Controller) BrowserAdd(e BrowserEdit) (BrowserResult, error) {
 			moved := false
 			for i := range cfg.Rules {
 				r := &cfg.Rules[i]
-				if !isBrowserRule(*r) {
+				if !browserRuleFor(*r, proc.Name) {
 					continue
 				}
 				// The same name with the same route in another site's rule
@@ -498,12 +543,14 @@ func (c *Controller) BrowserAdd(e BrowserEdit) (BrowserResult, error) {
 				if !hosts {
 					// Below the address rules of the extension.
 					for i, r := range cfg.Rules {
-						if isBrowserRule(r) && browserHostsRule(r) {
+						if browserRuleFor(r, proc.Name) && browserHostsRule(r) {
 							at = i + 1
 						}
 					}
 				}
-				cfg.Rules = slices.Insert(cfg.Rules, at, rules.Rule{ID: newID(), Name: name, Action: act, Profile: profile})
+				cfg.Rules = slices.Insert(cfg.Rules, at, rules.Rule{
+					ID: newID(), Name: name, Apps: browserAppMatches(proc.Name), Action: act, Profile: profile,
+				})
 				mine = at
 			}
 			cfg.Rules[mine].Domains = append(cfg.Rules[mine].Domains, p)
@@ -514,7 +561,7 @@ func (c *Controller) BrowserAdd(e BrowserEdit) (BrowserResult, error) {
 				res.Added++
 			}
 		}
-		cfg.Rules = dropEmptyBrowserRules(cfg.Rules)
+		cfg.Rules = dropEmptyBrowserRules(cfg.Rules, proc.Name)
 		if !changed {
 			return false, nil
 		}
@@ -523,12 +570,12 @@ func (c *Controller) BrowserAdd(e BrowserEdit) (BrowserResult, error) {
 			out = []BrowserLoss{}
 			for _, p := range items {
 				host := strings.TrimPrefix(p, ".")
-				w, _ := rules.Winner(*cfg, rules.Flow{Proc: proc, Proto: 6, Name: host})
-				if w < 0 || !isBrowserRule(cfg.Rules[w]) || cfg.Rules[w].Action != act || cfg.Rules[w].Profile != profile {
+				w := browserWinner(*cfg, "", proc, host)
+				if w < 0 || !browserRuleFor(cfg.Rules[w], proc.Name) || cfg.Rules[w].Action != act || cfg.Rules[w].Profile != profile {
 					rule := "«Всё остальное»"
 					if w >= 0 {
 						rule = cfg.Rules[w].Name
-						if above == "" && !isBrowserRule(cfg.Rules[w]) {
+						if above == "" && !browserRuleFor(cfg.Rules[w], proc.Name) {
 							above = rule
 						}
 					}
@@ -539,7 +586,7 @@ func (c *Controller) BrowserAdd(e BrowserEdit) (BrowserResult, error) {
 		}
 		var above string
 		if res.Lost, above = lost(); above != "" {
-			cfg.Rules = hoistBrowserRules(cfg.Rules)
+			cfg.Rules = hoistBrowserRules(cfg.Rules, proc.Name)
 			res.Raised = above
 			res.Lost, _ = lost()
 		}
@@ -563,6 +610,10 @@ func (c *Controller) BrowserRemove(e BrowserEdit) (BrowserResult, error) {
 	if !c.BrowserOn() {
 		return BrowserResult{}, ErrBrowserOff
 	}
+	proc := browserProc(e.App)
+	if proc == nil {
+		return BrowserResult{}, errBrowserApp
+	}
 	site, _ := browserSite(e.Page)
 	whole := len(e.Sites) == 0 && site != ""
 	var items []string
@@ -576,7 +627,7 @@ func (c *Controller) BrowserRemove(e BrowserEdit) (BrowserResult, error) {
 	save, err := c.editRules(func(cfg *rules.Config) (bool, error) {
 		for i := range cfg.Rules {
 			r := &cfg.Rules[i]
-			if !isBrowserRule(*r) {
+			if !browserRuleFor(*r, proc.Name) {
 				continue
 			}
 			n := len(r.Domains)
@@ -589,7 +640,7 @@ func (c *Controller) BrowserRemove(e BrowserEdit) (BrowserResult, error) {
 			}
 			res.Removed += n - len(r.Domains)
 		}
-		cfg.Rules = dropEmptyBrowserRules(cfg.Rules)
+		cfg.Rules = dropEmptyBrowserRules(cfg.Rules, proc.Name)
 		return res.Removed > 0, nil
 	})
 	if err != nil {
@@ -601,6 +652,6 @@ func (c *Controller) BrowserRemove(e BrowserEdit) (BrowserResult, error) {
 }
 
 // dropEmptyBrowserRules removes the extension's rules left without sites.
-func dropEmptyBrowserRules(rs []rules.Rule) []rules.Rule {
-	return slices.DeleteFunc(rs, func(r rules.Rule) bool { return isBrowserRule(r) && len(r.Domains) == 0 })
+func dropEmptyBrowserRules(rs []rules.Rule, app string) []rules.Rule {
+	return slices.DeleteFunc(rs, func(r rules.Rule) bool { return browserRuleFor(r, app) && len(r.Domains) == 0 })
 }

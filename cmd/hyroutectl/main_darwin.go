@@ -18,6 +18,7 @@ import (
 
 	"github.com/lardan099/hyroute/internal/ctl"
 	"github.com/lardan099/hyroute/internal/ctl/cli"
+	"github.com/lardan099/hyroute/internal/procinfo"
 )
 
 // Stamped by the build (the release tag, as in HyRoute).
@@ -48,7 +49,8 @@ func main() {
 	}
 	var code int
 	if cli.IsNativeHost(os.Args[1:]) {
-		code = cli.NativeHost(ctx, os.Args[1:], os.Stdin, os.Stdout, "", d)
+		parent := procinfo.NewCache().Get(uint32(os.Getppid()))
+		code = cli.NativeHost(ctx, os.Args[1:], os.Stdin, os.Stdout, parent.Name, d)
 	} else {
 		code = cli.Run(ctx, os.Args[1:], d)
 	}

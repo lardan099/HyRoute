@@ -13,6 +13,7 @@ import (
 func (c *conv) pac(text string) error {
 	src := stripJSComments(text)
 	if init, profiles, ok := omegaPAC(src); ok {
+		c.res.BrowserOnly = true
 		return c.omegaPAC(src, init, profiles)
 	}
 	body, line, ok := pacFunction(src)

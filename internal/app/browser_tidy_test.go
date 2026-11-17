@@ -103,16 +103,18 @@ func TestTidyBrowserRules(t *testing.T) {
 	if again := c.TidyRules(st, nil); slices.ContainsFunc(again.Items, func(t rules.Tidy) bool { return t.ID == TidyBrowser }) {
 		t.Fatalf("%+v", again.Items)
 	}
-	// The extension keeps the rules again: a site without a page goes
-	// into the rule of its route, not into a new one.
+	// A site without a page goes into the rule of its route for this
+	// browser. The tidied legacy rule keeps its global scope and domains.
 	if _, err := c.SaveRulesIn(EditGuard{}, st.Config); err != nil {
 		t.Fatal(err)
 	}
-	res, err := c.BrowserAdd(BrowserEdit{Sites: []string{".z.example"}, To: "id:" + nl})
-	if err != nil || res.Rule != "Из браузера: NL" || res.Added != 1 {
+	res, err := c.BrowserAdd(BrowserEdit{App: "chrome.exe", Sites: []string{".z.example"}, To: "id:" + nl})
+	if err != nil || res.Rule != "Из браузера: NL [chrome.exe]" || res.Added != 1 {
 		t.Fatalf("%+v %v", res, err)
 	}
-	if got := c.Settings().Rules[0]; got.ID != "old" || !slices.Contains(got.Domains, ".z.example") {
-		t.Fatalf("%+v", got)
+	gotRules := c.Settings().Rules
+	if scoped, legacy := gotRules[0], gotRules[1]; !browserRuleFor(scoped, "chrome.exe") ||
+		!slices.Contains(scoped.Domains, ".z.example") || legacy.ID != "old" || slices.Contains(legacy.Domains, ".z.example") {
+		t.Fatalf("%+v", gotRules[:2])
 	}
 }

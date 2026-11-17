@@ -712,7 +712,7 @@ interface GUI {
   ConvertACL(text: string, mode: 'domains' | 'rules', suffix: string, actions: string): Promise<ConvertResult>;
   // Rules of another program into rules text; to: source place -> vpn,
   // direct, block or id:<server or group>.
-  ImportRules(text: string, format: string, to: Record<string, string>): Promise<RulesImport>;
+  ImportRules(text: string, format: string, to: Record<string, string>, browser: string): Promise<RulesImport>;
 }
 
 export interface InspectHit {
@@ -764,6 +764,8 @@ export interface RulesImportTarget {
 }
 
 export interface RulesImport {
+  browserOnly?: boolean;
+  browserApp?: string;
   format: string;
   title: string;
   formats: { id: string; title: string }[];

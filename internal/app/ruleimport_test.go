@@ -30,7 +30,11 @@ func TestImportRulesPAC(t *testing.T) {
         return "PROXY 127.0.0.1:8080";
     }
 });`
-	res, err := c.ImportRules(pac, "", nil)
+	preview, err := c.ImportRules(pac, "", nil, "")
+	if err != nil || !preview.BrowserOnly || preview.Count == 0 || preview.Text != "" || preview.DefaultLine != "" {
+		t.Fatalf("%+v %v", preview, err)
+	}
+	res, err := c.ImportRules(pac, "", nil, "chrome.exe")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,10 +44,10 @@ func TestImportRulesPAC(t *testing.T) {
 	if res.Targets[0].Name != "My proxy" || res.Targets[0].To != "vpn" || res.Targets[0].Rules != 1 || res.Targets[0].Detail != "PROXY 127.0.0.1:8080" {
 		t.Fatalf("targets %+v", res.Targets)
 	}
-	if res.Targets[1].To != "direct" || res.Default != "DIRECT" || res.DefaultLine != "* -> напрямую" {
+	if res.Targets[1].To != "direct" || res.Default != "DIRECT" || res.DefaultLine != "chrome.exe -> напрямую | без дочерних" {
 		t.Fatalf("default %+v %q %q", res.Targets, res.Default, res.DefaultLine)
 	}
-	if !strings.Contains(res.Text, "PAC My proxy: example.com =exact.example.org -> vpn\n") || !strings.Contains(res.Text, "PAC DIRECT: direct.example -> напрямую\n") {
+	if !strings.Contains(res.Text, "PAC My proxy: chrome.exe example.com =exact.example.org -> vpn | без дочерних\n") || !strings.Contains(res.Text, "PAC DIRECT: chrome.exe direct.example -> напрямую | без дочерних\n") {
 		t.Fatalf("%s", res.Text)
 	}
 	if strings.Contains(res.Text, "* ->") {
@@ -51,24 +55,56 @@ func TestImportRulesPAC(t *testing.T) {
 	}
 
 	// The proxy to a server: the rules name it.
-	res, err = c.ImportRules(pac, "pac", map[string]string{"My proxy": "id:" + de, "DIRECT": "block"})
+	res, err = c.ImportRules(pac, "pac", map[string]string{"My proxy": "id:" + de, "DIRECT": "block"}, "chrome.exe")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(res.Text, "-> DE one\n") || res.DefaultLine != "* -> блок" {
+	if !strings.Contains(res.Text, "-> DE one | без дочерних\n") || res.DefaultLine != "chrome.exe -> блок | без дочерних" {
 		t.Fatalf("%s\n%s", res.Text, res.DefaultLine)
 	}
 	got := c.ParseRulesText(res.Text + "\n" + res.DefaultLine)
-	if len(got.Errors) != 0 || len(got.Rules) != 2 || !got.HasDefault || got.DefaultAction != rules.Block {
+	if len(got.Errors) != 0 || len(got.Rules) != 3 || got.HasDefault || got.Rules[2].Action != rules.Block {
 		t.Fatalf("%+v", got)
 	}
 	if got.Rules[0].Profile != de || got.Rules[0].Action != rules.Tunnel || got.Rules[1].Action != rules.Block {
 		t.Fatalf("%+v", got.Rules)
 	}
 	// A server deleted since: back to the suggestion.
-	res, _ = c.ImportRules(pac, "pac", map[string]string{"My proxy": "id:gone"})
+	res, _ = c.ImportRules(pac, "pac", map[string]string{"My proxy": "id:gone"}, "chrome.exe")
 	if res.Targets[0].To != "vpn" {
 		t.Fatalf("%+v", res.Targets)
+	}
+}
+
+func TestImportOmegaBrowserScope(t *testing.T) {
+	c, _ := newCtl(t)
+	source := "[SwitchyOmega Conditions]\n@with result\n*.ingest.example +proxy\n* +proxy\n"
+	out, err := c.ImportRules(source, "", nil, "Chrome.EXE")
+	if err != nil || !out.BrowserOnly || out.BrowserApp != "chrome.exe" || out.DefaultLine == "" {
+		t.Fatalf("%+v %v", out, err)
+	}
+	parsed := c.ParseRulesText(out.Text + "\n" + out.DefaultLine + "\n* -> напрямую")
+	if len(parsed.Errors) > 0 {
+		t.Fatal(parsed.Errors)
+	}
+	if _, err := c.SaveRulesIn(EditGuard{}, rules.Config{Rules: parsed.Rules, DefaultAction: parsed.DefaultAction}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		host, app string
+		port      int
+		want      rules.Action
+	}{
+		{"ingest.example", "obs64.exe", 1935, rules.Direct},
+		{"ingest.example", "chrome.exe", 443, rules.Tunnel},
+		{"ingest.example", "msedge.exe", 443, rules.Direct},
+		{"other.example", "chrome.exe", 443, rules.Tunnel},
+		{"other.example", "obs64.exe", 443, rules.Direct},
+	} {
+		got := c.Explain(ExplainQuery{Target: tt.host, App: tt.app, Port: tt.port}, nil)
+		if got.Winner.Action != tt.want {
+			t.Errorf("%s %s: %+v", tt.app, tt.host, got.Winner)
+		}
 	}
 }
 
@@ -81,7 +117,7 @@ func TestImportRulesV2RayN(t *testing.T) {
 		"True\tMine\t\tproxy\t\t\t\t\tdomain:example.com,full:exact.example.org,word,regexp:^a\\.example$,192.0.2.0/24,app.exe",
 		"True\tGames\t\tproxy\t27000-27100\t\t\tudp\t",
 	}, "\n")
-	res, err := c.ImportRules(text, "", nil)
+	res, err := c.ImportRules(text, "", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,14 +147,14 @@ func TestImportRulesV2RayN(t *testing.T) {
 
 func TestImportRulesHysteria(t *testing.T) {
 	c := geoCtl(t)
-	res, err := c.ImportRules("acl:\n  inline:\n    - my_nl(suffix:example.com)\n    - direct(all)\n", "", nil)
+	res, err := c.ImportRules("acl:\n  inline:\n    - my_nl(suffix:example.com)\n    - direct(all)\n", "", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Format != "hysteria" || res.Count != 1 || res.DefaultLine != "* -> напрямую" || strings.Contains(res.Text, "* ->") {
 		t.Fatalf("%+v", res)
 	}
-	if _, err := c.ImportRules("  ", "", nil); err == nil {
+	if _, err := c.ImportRules("  ", "", nil, ""); err == nil {
 		t.Fatal("empty text imported")
 	}
 }
@@ -140,7 +176,7 @@ func TestImportRulesGuessServer(t *testing.T) {
 		id[a.Name] = a.ID
 	}
 	text := "*.a.example +hyst\n*.b.example +kazah\n*.c.example +nl\n*.d.example +de\n*.e.example +other\n* +direct\n"
-	res, err := c.ImportRules(text, "", nil)
+	res, err := c.ImportRules(text, "", nil, "chrome.exe")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,11 +189,11 @@ func TestImportRulesGuessServer(t *testing.T) {
 			t.Errorf("%s: to %q guess %v, want %q", tg.Name, tg.To, tg.Guess, want[tg.Name])
 		}
 	}
-	if !strings.Contains(res.Text, "Omega kazah: b.example -> Казахстан\n") {
+	if !strings.Contains(res.Text, "Omega kazah: chrome.exe b.example -> Казахстан | без дочерних\n") {
 		t.Fatalf("%s", res.Text)
 	}
 	// The user's choice wins over the guess.
-	res, _ = c.ImportRules(text, "", map[string]string{"kazah": "id:" + id["🇳🇱 Amsterdam"]})
+	res, _ = c.ImportRules(text, "", map[string]string{"kazah": "id:" + id["🇳🇱 Amsterdam"]}, "chrome.exe")
 	for _, tg := range res.Targets {
 		if tg.Name == "kazah" && (tg.To != "id:"+id["🇳🇱 Amsterdam"] || tg.Guess) {
 			t.Fatalf("%+v", tg)

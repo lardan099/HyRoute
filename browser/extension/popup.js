@@ -95,7 +95,7 @@ function rows() {
     const key = whole ? '.' + s.site : s.host;
     let row = out.get(key);
     if (!row) {
-      row = { key, label: whole ? s.siteLabel : s.label, hosts: [], n: 0, err: '', routes: new Map(), top: false, pattern: '' };
+      row = { key, label: whole ? s.siteLabel : s.label, hosts: [], n: 0, err: '', routes: new Map(), rules: new Set(), top: false, pattern: '' };
       out.set(key, row);
     }
     const seen = state.hosts[s.host] || { n: 0, err: '' };
@@ -103,6 +103,7 @@ function rows() {
     row.n += seen.n;
     if (seen.err && !row.err) row.err = seen.err;
     row.routes.set(s.route.to + '|' + (s.route.server || ''), s.route);
+    row.rules.add(s.route.rule || '');
     if (s.host === state.top) {
       row.top = true;
       if (s.route.pattern) row.pattern = s.route.pattern;
@@ -126,6 +127,8 @@ function el(tag, attrs = {}, ...kids) {
 
 function rowEl(row) {
   const only = row.routes.size === 1 ? [...row.routes.values()][0] : null;
+  const why = row.rules.size > 1 ? 'Снимите «Целиком сайты», чтобы увидеть правило для каждого адреса.' :
+    only?.rule ? 'Правило «' + only.rule + '»' : only ? 'Всё остальное' : '';
   const box = el('input', { type: 'checkbox', checked: state.checked.has(row.key) });
   box.checked = state.checked.has(row.key);
   box.addEventListener('change', () => {
@@ -143,7 +146,7 @@ function rowEl(row) {
   const label = el('label', { class: 'row' + (row.top ? ' top' : '') },
     box,
     el('span', { class: 'name' }, row.label, sub.length ? el('span', { class: 'sub' }, ...sub) : null),
-    el('span', { class: 'route ' + routeClass(only), title: only?.rule ? 'Правило «' + only.rule + '»' : only ? 'Всё остальное' : '' },
+    el('span', { class: 'route ' + routeClass(only), title: why },
       only ? routeText(only) : 'по-разному'),
   );
   const out = [label];
@@ -154,8 +157,8 @@ function rowEl(row) {
   } else if (row.top && row.pattern) {
     out.push(el('div', { class: 'mine' }, 'Есть в правилах из браузера',
       el('button', { class: 'linkbtn', type: 'button', onclick: () => remove(row.pattern) }, 'убрать')));
-  } else if (row.top && only?.rule && !only.browser) {
-    out.push(el('div', { class: 'mine' }, 'Решает правило «' + only.rule + '»'));
+  } else if (row.top && row.rule && !row.browser) {
+    out.push(el('div', { class: 'mine' }, 'Решает правило «' + row.rule + '»'));
   }
   return out;
 }
@@ -290,6 +293,8 @@ async function refresh() {
   st.className = 'pill' + (state.info.state === 'connected' ? ' on' : '');
   $('ruleset').textContent = state.info.ruleset;
   $('ruleset').title = 'Профиль правил: ' + state.info.ruleset;
+  $('browser-scope').textContent = state.info.app ? 'Новые правила только для ' + state.info.app : '';
+  $('browser-scope').hidden = !state.info.app;
   render();
   if (state.info.problem) showProblem(state.info.problem);
 }

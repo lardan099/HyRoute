@@ -130,6 +130,8 @@ type Target struct {
 type Result struct {
 	Format Format
 	Rules  []Rule
+	// BrowserOnly marks exports of browser proxy switches.
+	BrowserOnly bool
 	// Default is the target of "everything else" ("" = the source does not
 	// say).
 	Default  string
@@ -158,7 +160,7 @@ func Convert(text string, f Format) (Result, error) {
 	if f == Auto {
 		f = Detect(text)
 	}
-	c := &conv{res: Result{Format: f}}
+	c := &conv{res: Result{Format: f, BrowserOnly: f == Omega || f == OmegaBak}}
 	var err error
 	switch f {
 	case Omega:

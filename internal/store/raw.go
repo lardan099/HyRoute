@@ -13,6 +13,8 @@ type RawFile struct {
 	Data   []byte
 }
 
+const BrowserRulesBackup = "browser-rules-before-update.hyroute-backup"
+
 // rawFiles are the data files ReadRaw and WriteRaw accept: fixed names,
 // never user input. Features register theirs here.
 var rawFiles = map[string]bool{
@@ -25,6 +27,7 @@ var rawFiles = map[string]bool{
 	"groups.json":        true, // groups (registered by backup)
 	"dns.json":           true, // dns (registered by backup)
 	"networks.json":      true, // netmodes (registered by backup)
+	BrowserRulesBackup:   true,
 }
 
 // maxRawBytes bounds a raw read: far above any real data file.

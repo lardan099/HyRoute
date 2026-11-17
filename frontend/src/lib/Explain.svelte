@@ -134,6 +134,9 @@
   {#if error}<div class="note error">{hide(error)}</div>{/if}
   {#if init?.note}<div class="note info small">{init.note}</div>{/if}
   {#if ex}
+    {#if !ex.q.app.trim() && ex.q.target.trim()}
+      <p class="muted small">Чтобы проверить маршрут в браузере, укажите его в поле «Программа».</p>
+    {/if}
     <div class="result route-{ex.winner.action}">
       {queryText(ex)} → {routeText(ex.winner.action, ex.winner.profile, ex.group, ex.via)}
     </div>

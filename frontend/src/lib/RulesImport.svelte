@@ -28,6 +28,20 @@
   let text = $state('');
   let fileName = $state('');
   let format = $state('');
+  const browserOptions = [
+    { name: 'Google Chrome', windows: 'chrome.exe', mac: 'Google Chrome' },
+    { name: 'Microsoft Edge', windows: 'msedge.exe', mac: 'Microsoft Edge' },
+    { name: 'Яндекс Браузер', windows: 'browser.exe', mac: 'Yandex' },
+    { name: 'Brave', windows: 'brave.exe', mac: 'Brave Browser' },
+    { name: 'Opera', windows: 'opera.exe', mac: 'Opera' },
+    { name: 'Vivaldi', windows: 'vivaldi.exe', mac: 'Vivaldi' },
+    { name: 'Firefox', windows: 'firefox.exe', mac: 'firefox' },
+  ];
+  let browserChoice = $state('');
+  let customBrowser = $state('');
+  const browser = $derived(browserChoice === 'other' ? customBrowser : browserChoice);
+  let browserOnly = $state(false);
+  let previewPending = $state(false);
   // to: where each place of the source goes. Choices are remembered (this
   // computer only): "kazah" chosen for NL once goes there next time too.
   const REMEMBER = 'hyroute.importTo';
@@ -44,6 +58,7 @@
   let error = $state('');
   let busy = $state(false);
   let saved = $state(false);
+  const ready = $derived(!!res && !previewPending && !error && (!res.browserOnly || !!res.browserApp && res.browserApp === browser.trim().toLowerCase()));
   trackUnsaved(() => text.trim() !== '' && !saved); // backup
 
   // A new rule profile: its name and «Всё остальное» ('' = the source's
@@ -63,25 +78,33 @@
     const t = text;
     const f = format;
     const m = { ...to };
+    const b = browser;
+    const my = ++seq;
     clearTimeout(timer);
     if (!t.trim()) {
       res = null;
+      browserOnly = false;
+      previewPending = false;
       error = '';
       return;
     }
+    previewPending = true;
     timer = setTimeout(async () => {
-      const my = ++seq;
       try {
-        const r = await api.ImportRules(t, f, m);
+        const r = await api.ImportRules(t, f, m, b);
         if (my !== seq) return;
         res = r;
+        browserOnly = !!r.browserOnly;
         error = '';
       } catch (e) {
         if (my !== seq) return;
         res = null;
         error = errText(e);
+      } finally {
+        if (my === seq) previewPending = false;
       }
     }, 250);
+    return () => clearTimeout(timer);
   });
 
   const MAX = 16 << 20;
@@ -133,7 +156,7 @@
   const profileWord = $derived((ui.status?.ruleset?.count ?? 0) >= 2 && rulesetName ? `профиля «${hide(rulesetName)}»` : 'правил');
 
   async function addToRules() {
-    if (!res || busy) return;
+    if (!res || !ready || busy) return;
     busy = true;
     error = '';
     try {
@@ -149,6 +172,7 @@
   }
 
   function restLine(): string {
+    if (res?.browserOnly) return `${res.defaultLine}\n* -> напрямую`;
     if (!rest) return res?.defaultLine || '* -> напрямую';
     if (rest === 'direct') return '* -> напрямую';
     if (rest === 'block') return '* -> блок';
@@ -157,7 +181,7 @@
   }
 
   async function createProfile() {
-    if (!res || busy) return;
+    if (!res || !ready || busy) return;
     const name = profileName.trim();
     if (!name) {
       error = 'Введите название профиля';
@@ -242,6 +266,23 @@
 
       <div class="right">
         {#if error}<div class="note error small">{masked ? hide(error) : error}</div>{/if}
+        {#if browserOnly}
+          <label class="browser">
+            <b class="small">Браузер для этих правил</b>
+            <select bind:value={browserChoice}>
+              <option value="">Выберите браузер</option>
+              {#each browserOptions as option}<option value={ui.mac ? option.mac : option.windows}>{option.name}</option>{/each}
+              <option value="other">Другой браузер</option>
+            </select>
+          </label>
+          {#if browserChoice === 'other'}
+            <label class="browser">
+              <span class="small">Имя файла браузера</span>
+              <input bind:value={customBrowser} placeholder={ui.mac ? 'Например, Chromium' : 'Например, chromium.exe'} spellcheck="false" />
+            </label>
+          {/if}
+          <div class="muted small">Импортированные правила действуют только для выбранного браузера.</div>
+        {/if}
         {#if res}
           {#if res.targets.length}
             <b class="small">Куда идёт каждый выход</b>
@@ -266,7 +307,7 @@
           {/if}
           <div class="summary small">
             <Icon name="check" size={15} />
-            Правил: {res.count}{res.defaultLine ? ` · всё остальное: ${res.defaultLine.replace('* -> ', '')}` : ''}
+            Правил: {res.count}{!res.browserOnly && res.defaultLine ? ` · всё остальное: ${res.defaultLine.replace('* -> ', '')}` : ''}
           </div>
           {#each res.notes as n}<div class="muted small">{n}</div>{/each}
           {#if res.warnings.length}
@@ -282,7 +323,7 @@
       </div>
     </div>
 
-    {#if res}
+    {#if res?.text}
       <div class="result">
         <div class="row">
           <b class="grow small">Правила HyRoute</b>
@@ -298,14 +339,18 @@
           <span class="muted small">Название профиля</span>
           <input bind:value={profileName} maxlength="40" placeholder="Например, Из Omega" />
         </label>
-        <label>
-          <span class="muted small">Всё остальное</span>
-          <select bind:value={rest}>
-            <option value="">{res.defaultLine ? `Как там: ${res.defaultLine.replace('* -> ', '')}` : 'Напрямую'}</option>
-            {#each toOptions as o}<option value={o.value}>{o.label}</option>{/each}
-            <TargetOptions current={['', 'vpn', 'direct', 'block'].includes(rest) ? '' : rest} />
-          </select>
-        </label>
+        {#if res.browserOnly}
+          <span class="muted small">В новом профиле остальные программы идут напрямую.</span>
+        {:else}
+          <label>
+            <span class="muted small">Всё остальное</span>
+            <select bind:value={rest}>
+              <option value="">{res.defaultLine ? `Как там: ${res.defaultLine.replace('* -> ', '')}` : 'Напрямую'}</option>
+              {#each toOptions as o}<option value={o.value}>{o.label}</option>{/each}
+              <TargetOptions current={['', 'vpn', 'direct', 'block'].includes(rest) ? '' : rest} />
+            </select>
+          </label>
+        {/if}
       </div>
     {/if}
 
@@ -315,13 +360,13 @@
       <button onclick={onclose} disabled={busy}>Закрыть</button>
       {#if ui.expert}
         {#if asProfile}
-          <button class="primary" onclick={createProfile} disabled={!res || !res.count || busy || stale}>Создать профиль</button>
+          <button class="primary" onclick={createProfile} disabled={!ready || !res?.count || busy || stale}>Создать профиль</button>
         {:else}
           <button onclick={() => (asProfile = true)} disabled={!res || !res.count || busy}>Новым профилем…</button>
         {/if}
       {/if}
       {#if !asProfile}
-        <button class="primary" onclick={addToRules} disabled={!res || !res.count || busy || stale} title="Правила добавятся в конец списка, «Всё остальное» не меняется"
+        <button class="primary" onclick={addToRules} disabled={!ready || !res?.count || busy || stale} title="Правила добавятся в конец списка, «Всё остальное» не меняется"
           >Добавить в конец {profileWord}</button
         >
       {/if}
@@ -341,6 +386,7 @@
   .fmt select { max-width: 300px; }
   textarea { width: 100%; height: 30vh; font-size: 12.5px; line-height: 1.5; resize: vertical; font-family: var(--mono); }
   .right { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .browser { display: grid; gap: 4px; }
   .targets { display: grid; gap: 6px; max-height: 30vh; overflow: auto; }
   .t { display: grid; grid-template-columns: minmax(0, 1fr) 170px; gap: 8px; align-items: center; }
   .tn { display: flex; flex-direction: column; min-width: 0; }

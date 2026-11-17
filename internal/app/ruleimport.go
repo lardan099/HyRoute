@@ -37,10 +37,12 @@ type RulesImportTarget struct {
 
 // RulesImport is a converted source.
 type RulesImport struct {
-	Format  string              `json:"format"`
-	Title   string              `json:"title"`
-	Formats []RulesImportFormat `json:"formats"`
-	Targets []RulesImportTarget `json:"targets"`
+	Format      string              `json:"format"`
+	Title       string              `json:"title"`
+	Formats     []RulesImportFormat `json:"formats"`
+	Targets     []RulesImportTarget `json:"targets"`
+	BrowserOnly bool                `json:"browserOnly,omitempty"`
+	BrowserApp  string              `json:"browserApp,omitempty"`
 	// Text: the rules as rules text, without «всё остальное».
 	Text  string `json:"text"`
 	Count int    `json:"count"`
@@ -63,7 +65,7 @@ func importFormats() []RulesImportFormat {
 // ImportRules converts rules of another program. format "" detects it;
 // to maps a source place to vpn, direct, block or id:<server or group>
 // (a place not in it goes where its kind suggests).
-func (c *Controller) ImportRules(text, format string, to map[string]string) (RulesImport, error) {
+func (c *Controller) ImportRules(text, format string, to map[string]string, browser string) (RulesImport, error) {
 	res := RulesImport{Formats: importFormats(), Targets: []RulesImportTarget{}, Warnings: []string{}, Notes: []string{}}
 	f := ruleconv.Format(format)
 	if f == ruleconv.Auto {
@@ -88,6 +90,16 @@ func (c *Controller) ImportRules(text, format string, to map[string]string) (Rul
 	res.Warnings = append(res.Warnings, cr.Warnings...)
 	res.Notes = append(res.Notes, cr.Notes...)
 	res.Default = cr.Default
+	res.BrowserOnly = cr.BrowserOnly
+	var browserApps []rules.AppMatch
+	if cr.BrowserOnly && strings.TrimSpace(browser) != "" {
+		proc := browserProc(browser)
+		if proc == nil {
+			return res, sentenceError("Укажите точное имя программы браузера, например chrome.exe")
+		}
+		res.BrowserApp = proc.Name
+		browserApps = browserAppMatches(proc.Name)
+	}
 
 	c.mu.Lock()
 	ts := c.targetsLocked()
@@ -122,6 +134,7 @@ func (c *Controller) ImportRules(text, format string, to map[string]string) (Rul
 	for _, r := range cr.Rules {
 		rt := routes[r.Target]
 		rule := rules.Rule{Name: importName(r, cr.Format), Protocol: r.Proto, Ports: rules.PortList(r.Ports), Action: rt.act, Profile: rt.profile}
+		rule.Apps = browserApps
 		if r.Off {
 			off := false
 			rule.Enabled = &off
@@ -140,18 +153,28 @@ func (c *Controller) ImportRules(text, format string, to map[string]string) (Rul
 			}
 		}
 	}
+	res.Count = len(rs)
+	if cr.BrowserOnly && len(browserApps) == 0 {
+		return res, nil // preview the targets, but never emit global rules
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Импорт: %s. Правила проверяются сверху вниз, как и там.\n", f.Title())
 	writeRuleLines(&b, rs, ts)
-	res.Text, res.Count = b.String(), len(rs)
+	res.Text = b.String()
 	if cr.Default != "" {
 		rt := routes[cr.Default]
-		res.DefaultLine = "* -> " + targetWords(rt.act, rt.profile, nil, ts)
+		if cr.BrowserOnly {
+			var fallback strings.Builder
+			writeRuleLines(&fallback, []rules.Rule{{Apps: browserApps, Action: rt.act, Profile: rt.profile}}, ts)
+			res.DefaultLine = strings.TrimSpace(fallback.String())
+		} else {
+			res.DefaultLine = "* -> " + targetWords(rt.act, rt.profile, nil, ts)
+		}
 	}
 
 	// The text must read back as the same rules: what it cannot hold is
 	// said, not saved.
-	back := parseRulesText(res.Text, ts)
+	back := parseRulesText(res.Text+"\n"+res.DefaultLine, ts)
 	for _, e := range back.Errors {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("в результате, строка %d: %s — исправьте её перед сохранением", e.Line, e.Text))
 	}

@@ -50,6 +50,8 @@ type Prefs struct {
 	// extension's rules (BrowserOn); "" = off. Any other value reads as
 	// off.
 	Browser string `json:"browser,omitempty"`
+	// BrowserRulesMigrated records the one-time narrowing of old domain rules.
+	BrowserRulesMigrated bool `json:"browserRulesMigrated,omitempty"`
 }
 
 // BrowserOn is Prefs.Browser for an extension allowed in.

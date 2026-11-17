@@ -109,6 +109,7 @@ func runDaemon(verbose, stub bool) {
 	life, endLife := context.WithCancel(context.Background())
 	defer endLife()
 	gui := &GUI{ctl: ctl, dataDir: dataDir, binDir: binDir, life: life, core: coreMgr, quitCh: make(chan struct{})}
+	gui.notice = gui.migrateBrowserRules()
 	gui.win = &winHost{g: gui}
 	ctl.OnChange = gui.emitStatus
 	ctl.OnSettings = func(rev uint64) { gui.win.notify("settings", rev) }

@@ -290,6 +290,7 @@ func main() {
 	gui.win = &winHost{g: gui, exe: exe}
 	gui.panel = &winHost{g: gui, exe: exe, panel: true}
 	gui.cli = cs
+	browserRulesNotice := gui.migrateBrowserRules()
 	// Set before any goroutine below can report a change.
 	ctl.CoreVersion = func() string { return coreMgr.Info().Version }
 	ctl.OnChange = gui.emitStatus
@@ -337,6 +338,9 @@ func main() {
 	case *updFrom != "":
 		gui.notice = "HyRoute обновлён: " + *updFrom + " → " + version + "."
 		ctl.Log.Info("updated", "from", *updFrom, "to", version)
+	}
+	if browserRulesNotice != "" {
+		gui.notice = strings.TrimSpace(gui.notice + " " + browserRulesNotice)
 	}
 	// Started by the sign-in task: in the tray, or minimized without it.
 	// The kill switch check starts HyRoute with its window shown: the
