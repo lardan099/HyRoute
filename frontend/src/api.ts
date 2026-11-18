@@ -626,6 +626,7 @@ export interface MergeStats {
 
 interface GUI {
   Status(): Promise<Status>;
+  TunnelReasons(id: string): Promise<string[] | null>;
   Connect(): Promise<void>;
   Disconnect(): Promise<void>;
   Reconnect(): Promise<void>;
@@ -1725,6 +1726,14 @@ export interface ConnRuleInfo {
   rulesetName: string;
 }
 
+export interface ConnectionRoute {
+  action?: Action;
+  rule?: string;
+  profile?: string;
+  fallback?: string[];
+  note?: string;
+}
+
 export interface ConnRuleRef {
   index: number;
   rule: Rule;
@@ -1762,6 +1771,7 @@ export interface ConnRuleRequest {
 
 interface GUI {
   ConnRuleInfo(f: ConnFacts): Promise<ConnRuleInfo>;
+  ConnectionRoute(f: ConnFacts): Promise<ConnectionRoute>;
   AddConnRule(r: ConnRuleRequest): Promise<ConnRuleResult>;
   UndoConnRule(token: string): Promise<void>;
 }

@@ -53,6 +53,8 @@ func (g *GUI) emitSettings(rev uint64) {
 
 func (g *GUI) Status() app.Status { return g.ctl.Status() }
 
+func (g *GUI) TunnelReasons(id string) []string { return g.ctl.TunnelReasons(id) }
+
 func (g *GUI) Connect() error { return g.ctl.Connect() }
 
 func (g *GUI) Disconnect() { g.ctl.Disconnect() }

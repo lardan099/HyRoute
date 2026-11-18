@@ -9,6 +9,10 @@ import "github.com/lardan099/hyroute/internal/app"
 // ConnRuleInfo is what the menu of a Connections row offers.
 func (g *GUI) ConnRuleInfo(f app.ConnFacts) (app.ConnRuleInfo, error) { return g.ctl.ConnRuleInfo(f) }
 
+func (g *GUI) ConnectionRoute(f app.ConnFacts) (app.ConnectionRoute, error) {
+	return g.ctl.ConnectionRoute(f)
+}
+
 // AddConnRule creates a rule from a Connections row.
 func (g *GUI) AddConnRule(r app.ConnRuleRequest) (app.ConnRuleResult, error) {
 	return g.ctl.AddConnRule(r)

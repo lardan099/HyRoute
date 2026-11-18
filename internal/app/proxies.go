@@ -482,7 +482,7 @@ func (c *Controller) proxyDialer(p store.LocalProxy) localproxy.Dialer {
 		if groups.IsGroupID(id) {
 			return c.proxyGroupDial(ctx, s, p, id, dst)
 		}
-		hold := c.proxyWake(ctx, s, id) // a sleeping server starts
+		hold := c.proxyWake(ctx, s, id, p.ID) // a sleeping server starts
 		ep := s.Endpoint(id)
 		if ep == nil {
 			hold()
@@ -716,7 +716,7 @@ func (c *Controller) proxyUDPDialer(p store.LocalProxy) localproxy.UDPDialer {
 			return nil, errors.New("HyRoute не подключён")
 		}
 		member, group, failover := id, "", false
-		hold := c.proxyWake(ctx, s, id) // a sleeping server starts
+		hold := c.proxyWake(ctx, s, id, p.ID) // a sleeping server starts
 		served := false
 		defer func() {
 			if !served {

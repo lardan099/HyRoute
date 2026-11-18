@@ -24,15 +24,17 @@ var (
 
 // proxyUse is a server kept awake by proxies (c.proxyAwake, c.mu).
 type proxyUse struct {
-	last time.Time // the last proxy connection opened or closed
-	open int       // proxy connections open through it
+	last         time.Time      // the last proxy connection opened or closed
+	open         int            // proxy connections open through it
+	listeners    map[string]int // open connections by local proxy ID
+	lastListener string         // the proxy that began the current idle window
 }
 
 // proxyWake marks profile id used by a proxy now and, when it sleeps,
 // starts it and waits until it can carry traffic (or failed, ctx ended,
 // proxyWakeWait passed). It returns the release of the connection that
 // follows: call it once the connection closes (a no-op for groups).
-func (c *Controller) proxyWake(ctx context.Context, s Session, id string) (hold func()) {
+func (c *Controller) proxyWake(ctx context.Context, s Session, id, listener string) (hold func()) {
 	if groups.IsGroupID(id) || s == nil {
 		return func() {}
 	}
@@ -52,6 +54,10 @@ func (c *Controller) proxyWake(ctx context.Context, s Session, id string) (hold 
 	}
 	u.last = time.Now()
 	u.open++
+	if u.listeners == nil {
+		u.listeners = make(map[string]int)
+	}
+	u.listeners[listener]++
 	wait := proxyWakeWait
 	if p := c.profiles.Find(id); p != nil {
 		wait = connectWait(*p, proxyWakeWait)
@@ -64,6 +70,11 @@ func (c *Controller) proxyWake(ctx context.Context, s Session, id string) (hold 
 	release := sync.OnceFunc(func() {
 		c.mu.Lock()
 		u.open--
+		u.listeners[listener]--
+		if u.listeners[listener] == 0 {
+			delete(u.listeners, listener)
+		}
+		u.lastListener = listener
 		u.last = time.Now()
 		c.mu.Unlock()
 	})

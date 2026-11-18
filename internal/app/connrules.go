@@ -15,6 +15,7 @@ import (
 	"golang.org/x/net/idna"
 
 	"github.com/lardan099/hyroute/internal/dnscache"
+	"github.com/lardan099/hyroute/internal/dnspolicy"
 	"github.com/lardan099/hyroute/internal/flows"
 	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/procinfo"
@@ -428,6 +429,64 @@ func (c *Controller) connECH(fl connFlow) (kind, name string) {
 		return "hidden", ""
 	}
 	return "", ""
+}
+
+// ConnectionRoute describes the configured route for the recorded destination,
+// before health checks pick a group member or a fallback for a new connection.
+type ConnectionRoute struct {
+	Action   string   `json:"action,omitempty"`
+	Rule     string   `json:"rule,omitempty"`
+	Profile  string   `json:"profile,omitempty"`
+	Fallback []string `json:"fallback,omitempty"`
+	Note     string   `json:"note,omitempty"`
+}
+
+func (c *Controller) ConnectionRoute(f ConnFacts) (ConnectionRoute, error) {
+	fl, err := c.resolveFlow(f)
+	if err != nil {
+		return ConnectionRoute{}, err
+	}
+	if note := excludedText(fl); note != "" {
+		return ConnectionRoute{Note: note}, nil
+	}
+	if fl.DNSQuery {
+		return ConnectionRoute{Note: "Запрос обработан политикой DNS."}, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.settingsBroken != nil {
+		return ConnectionRoute{}, c.settingsBroken
+	}
+	set := *c.set
+	set.Main = c.mainTargetLocked()
+	sub := rules.Subject{Proc: fl.Proc, Proto: fl.Proto, Dst: fl.Dst}
+	port := fl.Dst.Port()
+	if c.dnsBroken == nil && c.dns.BlockBrowserDoH && dnspolicy.IsBrowser(fl.Proc) && (port == 443 || port == 853) {
+		if dnspolicy.IsDoHAddr(fl.Dst.Addr()) || slices.ContainsFunc(fl.Names(), dnspolicy.IsDoHHost) {
+			return ConnectionRoute{Action: "block", Rule: dnspolicy.RuleBrowserDoH}, nil
+		}
+	}
+	var res rules.Result
+	switch {
+	case rules.NamelessUDP(set.ExactWeb, c.settings.QUICBlocked(), fl.Proto, port):
+		res = set.EvaluateSites(sub, nil)
+	case fl.Name != "":
+		res = set.EvaluateDomain(sub, fl.Name, rules.SrcNone)
+	case fl.SitesPartial:
+		return ConnectionRoute{Note: "В записи сохранена только часть имён адреса. Однозначно восстановить маршрут нельзя."}, nil
+	default:
+		res = set.EvaluateSites(sub, fl.Sites)
+	}
+	if res.NeedsDomain {
+		if c.settings.QUICBlocked() && fl.Proto == 17 && port == 443 {
+			return ConnectionRoute{Action: "block", Rule: "Блокировка QUIC без имени сайта"}, nil
+		}
+		if fl.Proto == 6 && f.Stage != "sniff-timeout" && rules.WebPort(port) {
+			return ConnectionRoute{Note: "Маршрут зависит от имени сайта. Запись не позволяет его определить."}, nil
+		}
+		res = set.EvaluateNoDomain(sub)
+	}
+	return ConnectionRoute{Action: res.Action.String(), Rule: res.Rule, Profile: res.Profile, Fallback: res.Fallback}, nil
 }
 
 // ConnRuleInfo is what the menu of a Connections row offers.

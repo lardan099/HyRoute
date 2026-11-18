@@ -6,6 +6,7 @@
   import ConnMenu, { showConnResult, setConnNav } from './ConnMenu.svelte';
   import RuleEditor from './RuleEditor.svelte';
   import Explain from './Explain.svelte';
+  import ConnectionComparison from './ConnectionComparison.svelte';
   import { ruleTitle } from '../ruletitle';
   import { every } from '../poll';
 
@@ -356,7 +357,7 @@
   {#if selected}
     <div class="card details">
       <div class="head">
-      <div class="why route-{selected.route}"><b>{selected.process || `PID ${selected.pid}`}</b> → {hide(selected.domain) || hide(selected.dst)}: {routeText(selected)}</div>
+      <div class="why"><b>{selected.process || `PID ${selected.pid}`}</b> → {hide(selected.domain) || hide(selected.dst)}{#if selected.stage === 'dns'}: {routeText(selected)}{/if}</div>
       <div class="dbtns">
         <button
           onclick={(e) => {
@@ -368,6 +369,9 @@
       </div>
       </div>
       <div class="muted">{whyText(selected)}</div>
+      {#if selected.stage !== 'dns'}
+        <ConnectionComparison flow={selected} />
+      {/if}
       <div class="mono small facts">
         <span>{hide(selected.path || selected.process)} (PID {selected.pid})</span>
         <span>{selected.proto} {hide(selected.src)} → {hide(selected.dst)}</span>

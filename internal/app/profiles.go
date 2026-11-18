@@ -82,6 +82,10 @@ func fastOpen(p *hysteria.Profile) bool { return p.FastOpen || p.IsVLESS() }
 // through profile id, resolving "" to the main target, and the running
 // groups that hold it.
 func (c *Controller) usedByLocked(id string) []string {
+	return append(c.ruleUsesLocked(id), c.memberOfLocked(id)...)
+}
+
+func (c *Controller) ruleUsesLocked(id string) []string {
 	out := []string{}
 	resolve := func(p string) string {
 		if p == "" {
@@ -110,7 +114,7 @@ func (c *Controller) usedByLocked(id string) []string {
 			out = append(out, "по умолчанию (запасной)")
 		}
 	}
-	return append(out, c.memberOfLocked(id)...)
+	return out
 }
 
 func fallbackHas(fb []string, id string, resolve func(string) string) bool {
