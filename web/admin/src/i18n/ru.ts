@@ -2,6 +2,7 @@
 // another language is one more file of the same shape.
 export const ru = {
   'app.name': 'HyRoute Server',
+  'app.support': 'ПОДДЕРЖАТЬ РАЗРАБОТЧИКА',
   // The locale of dates and times.
   'app.locale': 'ru-RU',
 

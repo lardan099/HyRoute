@@ -17,6 +17,10 @@
 </p>
 
 <p align="center">
+  <a href="https://pay.cloudtips.ru/p/067a1ae1">ПОДДЕРЖАТЬ РАЗРАБОТЧИКА</a>
+</p>
+
+<p align="center">
   <img src="docs/screenshots/home.png" width="860" alt="Главное окно HyRoute">
 </p>
 
