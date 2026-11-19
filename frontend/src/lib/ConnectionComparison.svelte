@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, connFacts, dnsRuleLabel, errText, isGroupId, type ConnectionRoute, type Flow } from '../api';
   import { hide, profileName, targetText, ui } from '../state.svelte';
+  import { usedTunnel } from './flowOverview';
 
   let { flow }: { flow: Flow } = $props();
   let plan = $state<ConnectionRoute | null>(null);
@@ -34,7 +35,7 @@
   function recorded(f: Flow): string {
     if (f.route === 'block' && /^(rst:|dropped:)/.test(f.outcome)) return 'Заблокировано';
     if (f.route === 'direct' && ['passed', 'relayed'].includes(f.outcome)) return 'Напрямую';
-    if (f.route === 'tunnel' && (f.outcome === 'relayed' || (f.outcome === 'tunneled' && (f.sent > 0 || f.recv > 0)))) {
+    if (usedTunnel(f)) {
       if (f.profile === 'telegram-ws') return 'Мост Telegram · внешний выход неизвестен';
       if (!f.profile || isGroupId(f.profile)) return 'Через VPN · сервер неизвестен';
       return [profileName(f.profile), f.group && targetText(f.group), f.failover && 'запасной'].filter(Boolean).join(' · ');
