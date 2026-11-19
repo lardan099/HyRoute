@@ -435,7 +435,7 @@ type formerName struct {
 var (
 	auditNamed = map[string]string{
 		"server_created": kindServer, "server_updated": kindServer, "server_deleted": kindServer,
-		"chain_created": kindChain, "chain_updated": kindChain, "chain_deleted": kindChain,
+		"chain_created": kindChain, "chain_updated": kindChain, "chain_deleted": kindChain, "chain_forgotten": kindChain,
 		"user_created": kindUser, "user_role_changed": kindUser, "user_scope_changed": kindUser, "user_blocked": kindUser,
 		"user_unblocked": kindUser, "user_password_reset": kindUser, "user_password_changed": kindUser, "user_deleted": kindUser,
 	}

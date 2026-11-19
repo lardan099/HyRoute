@@ -193,14 +193,14 @@
 <div class="layout">
   <header class="row">
     <h1 class="grow">Настройки</h1>
-    <a class="support small" href="https://pay.cloudtips.ru/p/067a1ae1" target="_blank" rel="noopener noreferrer"
+    <a class="support-link" href="https://pay.cloudtips.ru/p/067a1ae1" target="_blank" rel="noopener noreferrer"
       onclick={(event) => {
         const runtime = (window as Window & { runtime?: { BrowserOpenURL(url: string): void } }).runtime;
         if (runtime?.BrowserOpenURL) {
           event.preventDefault();
           runtime.BrowserOpenURL(event.currentTarget.href);
         }
-      }}>ПОДДЕРЖАТЬ РАЗРАБОТЧИКА</a>
+      }}>Поддержать разработчика</a>
   </header>
   {#if error}<div class="note error">{hide(error)}</div>{/if}
   {#if ok}<div class="note ok">{ok}</div>{/if}
@@ -572,7 +572,6 @@
   .mode { margin: 10px 0 12px; }
   p { margin: 0 0 10px; user-select: text; }
   .small { font-size: 12px; }
-  .support { color: var(--accent); }
   .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin-bottom: 10px; user-select: text; }
   .err { color: var(--block); }
   .opts { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; align-items: center; margin: 12px 0 8px; }

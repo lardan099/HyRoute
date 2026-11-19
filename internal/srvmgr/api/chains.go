@@ -14,6 +14,7 @@ import (
 	"github.com/lardan099/hyroute/internal/srvmgr/acl"
 	"github.com/lardan099/hyroute/internal/srvmgr/cascade"
 	"github.com/lardan099/hyroute/internal/srvmgr/model"
+	"github.com/lardan099/hyroute/internal/srvmgr/store"
 	"github.com/lardan099/hyroute/internal/srvmgr/topology"
 )
 
@@ -274,7 +275,22 @@ func (s *server) deleteChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errNotFound)
 		return
 	}
-	if err := s.chains(r).Delete(r.Context(), id, principal(r).User.ID); err != nil {
+	user := principal(r).User
+	var err error
+	if r.URL.Query().Get("localOnly") == "true" {
+		if !user.Role.CanForce() {
+			writeError(w, errForbidden)
+			return
+		}
+		err = s.Store.ForgetChain(r.Context(), id, user.ID, time.Now())
+		if errors.Is(err, store.ErrBusy) {
+			writeError(w, &Error{Status: http.StatusConflict, Code: "chain_busy", Message: "Дождитесь завершения задания каскада и повторите удаление."})
+			return
+		}
+	} else {
+		err = s.chains(r).Delete(r.Context(), id, user.ID)
+	}
+	if err != nil {
 		s.fail(w, r, chainError(err))
 		return
 	}

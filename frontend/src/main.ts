@@ -1,5 +1,6 @@
 import { mount } from 'svelte';
 import './style.css';
+import '../../web/shared/support-link.css';
 import App from './App.svelte';
 import Panel from './lib/Panel.svelte';
 

@@ -1,0 +1,36 @@
+.support-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 12px 6px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
+  border-radius: 12px;
+  background: linear-gradient(115deg, color-mix(in srgb, var(--accent) 13%, var(--surface)), var(--surface));
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-decoration: none;
+}
+
+.support-link::before {
+  content: "♥" / "";
+  display: grid;
+  place-items: center;
+  flex: 0 0 29px;
+  height: 29px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font: 18px/1 "Segoe UI Symbol", sans-serif;
+}
+
+.support-link:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 13%, var(--surface));
+}
+
+.support-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}

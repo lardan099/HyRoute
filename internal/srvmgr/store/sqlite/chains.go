@@ -204,6 +204,27 @@ func (d *DB) UpdateChain(ctx context.Context, id int64, name, notes string, at t
 }
 
 func (d *DB) DeleteChain(ctx context.Context, id int64, at time.Time) error {
+	return d.removeChain(ctx, id, at, nil)
+}
+
+func (d *DB) ForgetChain(ctx context.Context, id, actor int64, at time.Time) error {
+	return d.removeChain(ctx, id, at, func(t *sql.Tx, c model.Chain) error {
+		var busy bool
+		err := t.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM jobs
+			WHERE kind IN ('link', 'unlink') AND `+unfinished+` AND json_extract(params, '$.chain') = ?)`, id).Scan(&busy)
+		if err != nil {
+			return err
+		}
+		if busy {
+			return store.ErrBusy
+		}
+		_, err = t.ExecContext(ctx, `INSERT INTO audit_log (ts, user_id, action, target, details)
+			VALUES (?, ?, 'chain_forgotten', ?, ?)`, unixTime(at), actor, fmt.Sprintf("chain/%d", id), c.Name)
+		return err
+	})
+}
+
+func (d *DB) removeChain(ctx context.Context, id int64, at time.Time, before func(*sql.Tx, model.Chain) error) error {
 	return d.tx(ctx, func(t *sql.Tx) error {
 		cs, err := loadChains(ctx, t, id)
 		if err != nil {
@@ -211,6 +232,11 @@ func (d *DB) DeleteChain(ctx context.Context, id int64, at time.Time) error {
 		}
 		if len(cs) == 0 {
 			return store.ErrNotFound
+		}
+		if before != nil {
+			if err := before(t, cs[0]); err != nil {
+				return err
+			}
 		}
 		if _, err := t.ExecContext(ctx, `DELETE FROM chains WHERE id = ?`, id); err != nil {
 			return err

@@ -6,7 +6,7 @@
   import { onMount } from 'svelte';
   import { api, asApiError, type ApiError, type Chain, type Server } from '../api';
   import { t, type Key } from '../i18n';
-  import { can } from '../session.svelte';
+  import { can, canForce, session } from '../session.svelte';
   import { go, route } from '../router.svelte';
   import { flag, stateTone } from '../lib/format';
   import { busy, deployed, linkStateText, linkTone, pendingEntry } from '../lib/chain';
@@ -19,7 +19,7 @@
   let servers = $state<Server[]>([]);
   let error = $state<ApiError | null>(null);
   let creating = $state(false);
-  let confirm = $state<{ chain: Chain; kind: 'delete' | 'unlink' } | null>(null);
+  let confirm = $state<{ chain: Chain; kind: 'delete' | 'unlink' | 'forget' } | null>(null);
   // notice: why the link of a chain just created did not start.
   let notice = $state<ApiError | null>(null);
   // A cascade listed is in the caller's scope as a whole.
@@ -89,6 +89,7 @@
                 <Menu label={t('servers.more')}>
                   {#if deployed(c) && !busy(c)}<button onclick={() => (confirm = { chain: c, kind: 'unlink' })}>{t(multi ? 'cascades.unlinkN' : 'cascades.unlink')}</button>{/if}
                   {#if !busy(c)}<button class="danger" onclick={() => (confirm = { chain: c, kind: 'delete' })}>{t('cascades.delete')}</button>{/if}
+                  {#if deployed(c) && canForce(session.user)}<button class="danger" onclick={() => (confirm = { chain: c, kind: 'forget' })}>{t('cascades.forget')}</button>{/if}
                 </Menu>
               </div>
             {/if}

@@ -9,7 +9,7 @@
   import Dialog from './Dialog.svelte';
   import { deployed } from './chain';
 
-  let { chain, kind, onclose, ondone }: { chain: Chain; kind: 'delete' | 'unlink' | 'force'; onclose: () => void; ondone: (job: Job | null) => void } = $props();
+  let { chain, kind, onclose, ondone }: { chain: Chain; kind: 'delete' | 'unlink' | 'force' | 'forget'; onclose: () => void; ondone: (job: Job | null) => void } = $props();
 
   let busy = $state(false);
   let error = $state<ApiError | null>(null);
@@ -17,7 +17,8 @@
   // multi: a cascade with relays (several links).
   const multi = $derived(chain.links.length > 1);
   const leftKey = (role: string) => (role === 'entry' ? 'cascades.forceLeftEntry' : role === 'relay' ? 'cascades.forceLeftRelay' : 'cascades.forceLeftExit');
-  const title = $derived(kind === 'unlink' ? t('cascades.unlinkTitle') : kind === 'force' ? t('cascades.forceDelete') : t('cascades.deleteTitle'));
+  const titles = { unlink: 'cascades.unlinkTitle', force: 'cascades.forceDelete', delete: 'cascades.deleteTitle', forget: 'cascades.forget' } as const;
+  const title = $derived(t(titles[kind]));
 
   async function go() {
     busy = true;
@@ -25,6 +26,10 @@
     try {
       if (kind === 'unlink') ondone(await api.unlinkChain(chain.id, false));
       else if (kind === 'force') ondone(await api.forceDeleteChain(chain.id));
+      else if (kind === 'forget') {
+        await api.forgetChain(chain.id);
+        ondone(null);
+      }
       else if (onServers) ondone(await api.unlinkChain(chain.id, true));
       else {
         await api.deleteChain(chain.id);
@@ -39,7 +44,9 @@
 </script>
 
 <Dialog {title} {onclose}>
-  {#if kind === 'force'}
+  {#if kind === 'forget'}
+    <p>{t('cascades.forgetText', { name: chain.name })}</p>
+  {:else if kind === 'force'}
     <p>{t(multi ? 'cascades.forceTextN' : 'cascades.forceText', { name: chain.name })}</p>
     {#each chain.unreachable ?? [] as u (u.serverId)}
       <p class="head">{t(leftKey(u.role), { name: u.name })}</p>
@@ -62,7 +69,7 @@
   {#if error}<div class="note error" role="alert">{error.message}</div>{/if}
   {#snippet actions()}
     <button onclick={onclose}>{t('common.cancel')}</button>
-    <button class="primary danger-bg" onclick={go} disabled={busy}>{kind === 'unlink' ? t(multi ? 'cascades.unlinkN' : 'cascades.unlink') : kind === 'force' ? t('cascades.forceConfirm') : t('cascades.delete')}</button>
+    <button class="primary danger-bg" onclick={go} disabled={busy}>{kind === 'unlink' ? t(multi ? 'cascades.unlinkN' : 'cascades.unlink') : kind === 'force' ? t('cascades.forceConfirm') : kind === 'forget' ? t('cascades.forget') : t('cascades.delete')}</button>
   {/snippet}
 </Dialog>
 

@@ -126,6 +126,57 @@ func TestChainsAPI(t *testing.T) {
 	}
 }
 
+// A reset server has no usable installation. Forgetting its cascade uses
+// only the controller database, even if the last link state is stale.
+func TestForgetChainAPI(t *testing.T) {
+	m := newMatrix(t)
+	ctx := context.Background()
+	id, err := strconv.ParseInt(m.vars["chain"], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := m.db.ChainByID(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := c.Links[0]
+	link.State = model.LinkUnlinking
+	if err := m.db.UpdateLink(ctx, link); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/chains/" + m.vars["chain"] + "?localOnly=true"
+	admin := m.clients[model.RoleAdmin]
+	code(t, m.clients[model.RoleOperator].do("DELETE", path, nil, nil), http.StatusForbidden, "forbidden")
+
+	// A queued unlink still owns the chain. Once finished, its old link
+	// state alone must not block removal.
+	job, err := m.jobs.SubmitOn(ctx, cascade.JobUnlink, c.Nodes, map[string]any{"chain": id, "entry": c.Entry(), "exit": c.Exit()}, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code(t, admin.do("DELETE", path, nil, nil), http.StatusConflict, "chain_busy")
+	job.State = model.JobFailed
+	if err := m.db.UpdateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if rec := admin.do("DELETE", path, nil, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	code(t, admin.do("GET", "/api/v1/chains/"+m.vars["chain"], nil, nil), http.StatusNotFound, "not_found")
+	for _, node := range c.Nodes {
+		s, err := m.db.ServerByID(ctx, node)
+		if err != nil || s.Role != model.RoleStandalone {
+			t.Fatalf("server %d after local deletion: %s, %v", node, s.Role, err)
+		}
+	}
+	if jobs, err := m.db.ListJobs(ctx, model.JobFilter{Limit: 1}); err != nil || len(jobs) != 1 || jobs[0].ID != job.ID {
+		t.Fatalf("unexpected new job: %+v, %v", jobs, err)
+	}
+	if audit, err := m.db.ListAudit(ctx, 1); err != nil || len(audit) != 1 || audit[0].Action != "chain_forgotten" || audit[0].Details != c.Name {
+		t.Fatalf("missing local deletion audit: %+v, %v", audit, err)
+	}
+}
+
 // A deployed chain is deleted without the server «Удалить каскад» could
 // not reach: only by owners and admins, only after that failure, and the
 // request is audited. The chain lists what stays on the server.

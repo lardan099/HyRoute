@@ -2,7 +2,7 @@
 // another language is one more file of the same shape.
 export const ru = {
   'app.name': 'HyRoute Server',
-  'app.support': 'ПОДДЕРЖАТЬ РАЗРАБОТЧИКА',
+  'app.support': 'Поддержать разработчика',
   // The locale of dates and times.
   'app.locale': 'ru-RU',
 
@@ -860,6 +860,7 @@ export const ru = {
   'audit.a.chain_created': 'Каскад создан',
   'audit.a.chain_updated': 'Каскад изменён',
   'audit.a.chain_deleted': 'Каскад удалён',
+  'audit.a.chain_forgotten': 'Каскад удалён только из менеджера',
   'audit.a.chain_force_delete': 'Каскад удалён без недоступного сервера',
   'audit.a.preset.create': 'Пресет создан',
   'audit.a.preset.import': 'Пресет загружен из файла',
@@ -1105,6 +1106,8 @@ export const ru = {
   'cascades.notChecked': 'ещё не проверялась',
   'cascades.staleNote': 'Сервер каскада изменился (пароли, порты, адрес или конфиг входа): связь нужно обновить.',
   'cascades.deleteTitle': 'Удалить каскад',
+  'cascades.forget': 'Удалить только из менеджера',
+  'cascades.forgetText': 'Удалить запись о каскаде «{name}»? Менеджер не будет подключаться к серверам. Если на них ещё работают службы и правила каскада, их придётся убрать вручную.',
   'cascades.deleteDeployed': 'Связь «{name}» сначала снимется с серверов: со входа уберётся outbound «cascade», остановится и удалится служба связи, с выхода — пользователь связи. Затем каскад удалится.',
   'cascades.deleteNew': 'Каскад «{name}» не развёрнут на серверах и просто удалится.',
   'cascades.unlinkTitle': 'Снять связь',

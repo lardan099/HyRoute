@@ -21,7 +21,7 @@
   let servers = $state<Record<number, Server>>({});
   let checks = $state<LinkCheck[]>([]);
   let error = $state<ApiError | null>(null);
-  let confirm = $state<'delete' | 'unlink' | 'force' | null>(null);
+  let confirm = $state<'delete' | 'unlink' | 'force' | 'forget' | null>(null);
   let editing = $state(false);
   let name = $state('');
   let notes = $state('');
@@ -158,6 +158,7 @@
       <button onclick={edit}>{t('cascades.rename')}</button>
       <button onclick={() => ((tplDesc = ''), (tplOpen = true))}>{t('ctpl.save')}</button>
       {#if !busy(chain)}<button class="danger" onclick={() => (confirm = 'delete')}>{t('cascades.delete')}</button>{/if}
+      {#if deployed(chain) && canForce(session.user)}<button class="danger" onclick={() => (confirm = 'forget')}>{t('cascades.forget')}</button>{/if}
     {/if}
   </div>
   {#if chain.links.some((l) => l.state === 'stale')}<div class="note warn">{t('cascades.staleNote')}</div>{/if}

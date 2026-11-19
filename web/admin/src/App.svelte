@@ -48,7 +48,7 @@
         >
       {/each}
     </nav>
-    <a class="nav support small" href="https://pay.cloudtips.ru/p/067a1ae1" target="_blank" rel="noopener noreferrer">{t('app.support')}</a>
+    <a class="support-link" href="https://pay.cloudtips.ru/p/067a1ae1" target="_blank" rel="noopener noreferrer">{t('app.support')}</a>
     {#if session.user}
       <div class="who small">
         <span class="ellipsis">{session.user.username}</span>
@@ -121,7 +121,7 @@
   .nav:hover { background: var(--surface-2); color: var(--text); }
   .nav.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 
-  .support { margin-top: auto; }
+  .support-link { margin-top: auto; align-self: flex-start; }
   .who { display: flex; flex-direction: column; padding: 8px 12px; min-width: 0; }
   .center { min-height: 100%; display: grid; place-items: center; padding: 24px; }
 

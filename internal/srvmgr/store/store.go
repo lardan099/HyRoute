@@ -82,6 +82,9 @@ type Chains interface {
 	// DeleteChain removes the chain with its nodes, links and their
 	// secrets.
 	DeleteChain(ctx context.Context, id int64, at time.Time) error
+	// ForgetChain removes the local record and audits the decision. An
+	// unfinished link or unlink job for this chain returns ErrBusy.
+	ForgetChain(ctx context.Context, id, actor int64, at time.Time) error
 	ChainByID(ctx context.Context, id int64) (model.Chain, error)
 	// ListChains is every chain, by name.
 	ListChains(ctx context.Context) ([]model.Chain, error)

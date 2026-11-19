@@ -1380,6 +1380,7 @@ export const api = {
   createChain: (input: { name: string; notes: string; nodes: number[]; link: LinkParams }) => request<Chain>('POST', '/chains', input),
   updateChain: (id: number, name: string, notes: string) => request<Chain>('PATCH', `/chains/${id}`, { name, notes }),
   deleteChain: (id: number) => request<void>('DELETE', `/chains/${id}`),
+  forgetChain: (id: number) => request<void>('DELETE', `/chains/${id}?localOnly=true`),
   linkChain: (id: number) => request<Job>('POST', `/chains/${id}/link`),
   unlinkChain: (id: number, del: boolean) => request<Job>('POST', `/chains/${id}/unlink`, { delete: del }),
   forceDeleteChain: (id: number) => request<Job>('POST', `/chains/${id}/unlink`, { delete: true, force: true }),
