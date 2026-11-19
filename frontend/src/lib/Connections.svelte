@@ -6,10 +6,11 @@
   import ConnMenu, { showConnResult, setConnNav } from './ConnMenu.svelte';
   import RuleEditor from './RuleEditor.svelte';
   import Explain from './Explain.svelte';
+  import ConnectionsByApp from './ConnectionsByApp.svelte';
   import ConnectionComparison from './ConnectionComparison.svelte';
   import { ruleTitle } from '../ruletitle';
   import { every } from '../poll';
-  import { flowFailed, flowState, overviewGroups, overviewKey, usedTunnel } from './flowOverview';
+  import { flowFailed, usedTunnel } from './flowOverview';
 
   let { go }: { go: (id: string) => void } = $props();
   // svelte-ignore state_referenced_locally
@@ -35,7 +36,6 @@
   }
   let detail = $state(savedView());
   let failedOnly = $state(false);
-  let expanded = $state(false);
   let copyMessage = $state('');
   let route = $state('all');
   let showClosed = $state(true);
@@ -122,21 +122,18 @@
       );
   });
   const failures = $derived(matching.filter(flowFailed));
-  const flows = $derived((failedOnly ? failures : matching).slice(0, 1500));
-  const groups = $derived(detail ? null : overviewGroups(flows));
-  const rows = $derived.by(() => {
-    if (!groups) return flows;
-    const representatives = Array.from(groups.values(), (g) => g.flow);
-    return [...representatives.filter(flowFailed), ...representatives.filter((f) => !flowFailed(f))];
-  });
-  const selectedGroup = $derived(!detail && selected ? overviewKey(selected) : '');
+  const flows = $derived(failedOnly ? failures : matching);
+  const rows = $derived(detail ? flows : []);
   function isSelected(f: Flow): boolean {
-    return detail ? selected?.id === f.id && selected?.start === f.start : selectedGroup === overviewKey(f);
+    return selected?.id === f.id && selected?.start === f.start;
+  }
+  function inspect(f: Flow) {
+    choose(f);
+    switchView(true);
   }
   function choose(f: Flow) {
     if (isSelected(f)) return;
     selected = f;
-    expanded = false;
     copyMessage = '';
   }
   async function filterChanged() {
@@ -161,18 +158,6 @@
     if (f.route === 'block') return ruleText(f.rule);
     if (f.route === 'direct' && (f.outcome === 'passed' || f.outcome === 'relayed')) return 'Без VPN';
     return f.route === 'tunnel' ? 'Попытка через VPN' : f.route === 'direct' ? 'Попытка без VPN' : 'Ещё не определено';
-  }
-  function summary(f: Flow): string {
-    if (f.stage === 'dns') return whyText(f);
-    if (f.tooBig && !f.sent) return 'Данные не прошли: размер пакета превышает предел туннеля.';
-    if (f.outcome.includes('tunnel unavailable')) return 'VPN-сервер недоступен. Можно выбрать другой сервер для следующих подключений.';
-    if (flowFailed(f)) return 'Попытка подключения завершилась ошибкой. Причина из журнала доступна в технических деталях.';
-    if (f.route === 'block') return 'HyRoute заблокировал соединение. ' + whyText(f);
-    if (usedTunnel(f) && f.failover) return 'Соединение прошло через запасной сервер. Менять настройки не требуется.';
-    if (usedTunnel(f) && f.profile === 'telegram-ws') return 'Telegram подключился через встроенный мост HyRoute.';
-    if (usedTunnel(f)) return 'Программа подключилась через VPN.';
-    if (f.outcome === 'passed' || f.route === 'direct' && f.outcome === 'relayed') return 'HyRoute пропустил трафик напрямую.';
-    return flowState(f);
   }
   async function copyFacts(f: Flow) {
     try {
@@ -228,8 +213,7 @@
   }
 
   function openMenu(f: Flow, anchor: { x: number; y: number }, el: HTMLElement | null) {
-    if (!detail && selected && isSelected(f)) f = selected;
-    if (!isSelected(f)) { expanded = false; copyMessage = ''; }
+    if (!isSelected(f)) copyMessage = '';
     selected = f;
     menu = { flow: JSON.parse(JSON.stringify(f)), anchor, el };
   }
@@ -341,26 +325,22 @@
   const attribLabel: Record<string, string> = { dnscache: 'служба DNS Windows' };
 </script>
 
-<div class="wrap">
+<div class="wrap" class:overview={!detail}>
   <header>
     <h1>Соединения</h1>
-    <p class="muted sub">
-      {detail ? 'Каждая строка — отдельная запись. Выберите её, чтобы сравнить маршруты.' : 'Какие программы выходят в интернет и как они подключаются.'}
-    </p>
-  </header>
-  <div class="row toolbar">
     <div class="seg" role="group" aria-label="Вид соединений">
       <button class:on={!detail} aria-pressed={!detail} onclick={() => switchView(false)}>Обзор</button>
       <button class:on={detail} aria-pressed={detail} onclick={() => switchView(true)}>Подробно</button>
     </div>
+  </header>
+  <div class="row toolbar filters">
     <input class="grow" aria-label="Поиск соединений" placeholder="Программа, сайт или IP" bind:value={query} oninput={filterChanged} />
-    <label class="check"><input type="checkbox" bind:checked={paused} /> Пауза</label>
-  </div>
-  <div class="row toolbar">
+
     <div class="seg" role="group" aria-label="Исход соединения">
       <button class:on={!failedOnly} aria-pressed={!failedOnly} onclick={() => { failedOnly = false; filterChanged(); }}>Все</button>
       <button class:on={failedOnly} aria-pressed={failedOnly} onclick={() => { failedOnly = true; filterChanged(); }}>Не подключились · {failures.length}</button>
     </div>
+    <label class="check"><input type="checkbox" bind:checked={paused} /> Пауза</label>
     {#if detail || route !== 'all'}
     <select aria-label="Маршрут" bind:value={route} onchange={filterChanged}>
       <option value="all">Все маршруты</option>
@@ -380,21 +360,21 @@
   </div>
   {#if error}<div class="note error">{error}</div>{/if}
 
+  {#if !detail}
+    <ConnectionsByApp {flows} {selected} routeLabel={simpleRoute} {inspect} filtered={!!query || failedOnly || route !== 'all'} />
+  {:else}
   <div class="table panel" data-selectall tabindex="-1" bind:this={tableEl} bind:clientHeight={viewH} onscroll={(e) => (scrollTop = (e.currentTarget as HTMLElement).scrollTop)}>
-    <table class:overview={!detail}>
+    <table>
       <thead>
         <tr>
-          {#if detail}
           <th>Начало</th><th>Процесс</th><th>Назначение</th><th>Правило / маршрут</th><th>Исход</th>
           <th class="num">Трафик ↓ / ↑</th><th class="num">Длит.</th><th class="act" title="Действия"></th>
-          {:else}
-          <th>Сайт / программа</th><th>Что произошло</th><th>Как подключилось</th><th class="act" title="Действия"></th>
-          {/if}
+
         </tr>
       </thead>
       <tbody bind:this={tbody}>
-        {#if first > 0}<tr class="spacer" aria-hidden="true" style:height="{first * rowH}px"><td colspan={detail ? 8 : 4}></td></tr>{/if}
-        {#each drawn as f, k (detail ? f.id : overviewKey(f))}
+        {#if first > 0}<tr class="spacer" aria-hidden="true" style:height="{first * rowH}px"><td colspan="8"></td></tr>{/if}
+        {#each drawn as f, k (f.id)}
           {@const i = first + k}
           <tr
             data-i={i}
@@ -410,7 +390,6 @@
               openMenu(f, { x: e.clientX, y: e.clientY }, e.currentTarget as HTMLElement);
             }}
           >
-            {#if detail}
             <td class="mono">{fmtTime(f.start)}</td>
             <td title={hideUserPath(f.path)}>{hide(f.process) || 'Не определён'}<small>PID {f.pid}</small></td>
             <td title={hide(f.domain) || hide(f.dst)}>{hide(f.domain) || 'Имя неизвестно'}{#if (f.count ?? 0) > 1}<span class="muted"> ×{f.count}</span>{/if}{#if srcLabel[f.domainSrc]}<span class="src">{srcLabel[f.domainSrc]}</span>{/if}<small class="mono">{f.proto} {hide(f.dst)}</small></td>
@@ -418,12 +397,7 @@
             <td title={hide(f.outcome)}>{hide(f.outcome)}</td>
             <td class="num">{fmtBytes(f.recv)} / {fmtBytes(f.sent)}</td>
             <td class="num">{fmtDuration(f.duration)}</td>
-            {:else}
-            {@const count = groups?.get(overviewKey(f))?.count ?? 1}
-            <td title={hide(f.domain || f.dst)}><b>{hide(f.domain || f.dst)}</b><small>{hide(f.process) || `PID ${f.pid}`}{count > 1 ? ' · ×' + count : ''}</small></td>
-            <td class:bad-text={flowFailed(f)}><span class="rowstate"><Icon name={flowFailed(f) ? 'alert' : f.route === 'block' ? 'shield' : 'activity'} size={14}/>{flowState(f)}</span></td>
-            <td title={simpleRoute(f)}>{simpleRoute(f)}</td>
-            {/if}
+
             <td class="act">
               <button
                 class="icon more"
@@ -440,7 +414,7 @@
             </td>
           </tr>
         {/each}
-        {#if last < rows.length}<tr class="spacer" aria-hidden="true" style:height="{(rows.length - last) * rowH}px"><td colspan={detail ? 8 : 4}></td></tr>{/if}
+        {#if last < rows.length}<tr class="spacer" aria-hidden="true" style:height="{(rows.length - last) * rowH}px"><td colspan="8"></td></tr>{/if}
       </tbody>
     </table>
     {#if rows.length === 0}<p class="muted empty">{failedOnly ? 'Неудачных подключений по этому фильтру нет.' : query || route !== 'all' ? 'Совпадений нет.' : 'Соединений нет. Они появляются после подключения.'}</p>{/if}
@@ -455,14 +429,12 @@
           onclick={(e) => {
             const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
             openMenu(selected!, { x: r.left, y: r.bottom }, e.currentTarget as HTMLElement);
-          }}><Icon name="wand" size={15} />{!detail && flowFailed(selected) && selected.route === 'tunnel' ? 'Выбрать другой сервер…' : 'Изменить маршрут…'}</button
+          }}><Icon name="wand" size={15} />Изменить маршрут…</button
         >
         <button class="icon" aria-label="Закрыть" onclick={() => (selected = null)}>×</button>
       </div>
       </div>
-      <div>{detail ? whyText(selected) : summary(selected)}</div>
-      {#if !detail}<button class="link more-facts" aria-expanded={expanded} onclick={() => (expanded = !expanded)}>Технические детали</button>{/if}
-      {#if detail || expanded}
+      <div>{whyText(selected)}</div>
       {#if selected.stage !== 'dns'}
         <ConnectionComparison flow={selected} />
       {/if}
@@ -476,8 +448,8 @@
         {/if}
       </div>
       <div class="row"><button class="link" onclick={() => selected && copyFacts(selected)}><Icon name="copy" size={14}/>Скопировать детали</button><span role="status" class="muted small">{copyMessage}</span></div>
-      {/if}
     </div>
+  {/if}
   {/if}
 </div>
 
@@ -517,15 +489,11 @@
 <style>
   .wrap { display: flex; flex-direction: column; height: 100%; gap: 10px; }
   .toolbar input { max-width: 420px; }
-  .overview { width: 100%; table-layout: fixed; }
-  .overview th:first-child { width: 39%; }
-  .overview .act { width: 30px; }
-  .overview td { padding: 6px 8px; }
-  .overview td b, .overview td small { display: block; overflow: hidden; text-overflow: ellipsis; }
-  .overview td small { color: var(--muted); }
+  .wrap.overview { width:100%; max-width:1220px; margin-inline:auto; gap:12px; }
+  header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+  .overview header h1 { margin:0; font-size:clamp(24px, 2vw, 32px); letter-spacing:-.025em; }
+  .toolbar { flex-wrap:wrap; }
   td small { display: block; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
-  .rowstate { display: inline-flex; align-items: center; gap: 6px; }
-  .more-facts { justify-self: start; }
   .details { max-height: 50%; overflow: auto; }
   .table { flex: 1; min-height: 0; overflow: auto; padding: 0; border-radius: var(--radius); outline: none; }
   table { font-size: 12.5px; }
@@ -559,7 +527,6 @@
   .head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 6px 12px; }
   .why { font-weight: 600; flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; }
   .facts { display: grid; gap: 2px; color: var(--muted); margin-top: 4px; }
-  .sub { margin: 4px 0 0; }
   .dbtns { display: flex; gap: 6px; align-items: center; margin: -6px -8px 0 auto; }
   .act { width: 30px; padding: 0 4px; text-align: center; }
   .more { width: 24px; height: 22px; padding: 0; opacity: 0.55; }

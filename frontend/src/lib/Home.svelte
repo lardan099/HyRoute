@@ -19,35 +19,6 @@
   let busy = $state(false);
   let error = $state('');
   let checking = $state(false);
-  let reasonServer = $state('');
-  let reasons = $state<string[] | null>(null);
-  let reasonError = $state('');
-  const reasonVisible = $derived(!!reasonServer && !!ui.status?.tunnels.some((t) => t.id === reasonServer));
-  $effect(() => {
-    const id = reasonServer;
-    if (!id) return;
-    if (!reasonVisible) { reasonServer = ''; return; }
-    let active = true;
-    let loading = false;
-    reasons = null;
-    reasonError = '';
-    async function refresh() {
-      if (loading) return;
-      loading = true;
-      try {
-        const result = await api.TunnelReasons(id);
-        if (active) { reasons = result ?? []; reasonError = ''; }
-      } catch (e) {
-        if (active) reasonError = errText(e);
-      } finally {
-        loading = false;
-      }
-    }
-    refresh();
-    const stop = every(refresh, 3000);
-    return () => { active = false; stop(); };
-  });
-
   async function loadSettings() {
     try {
       settings = await api.Settings();
@@ -511,14 +482,6 @@
               <div class="grow">
                 <div class="ellipsis"><b>{ui.profiles.some((p) => p.id === t.id) ? profileName(t.id) : hide(t.name)}</b> <span class="muted small">{tunnelText[t.state] ?? t.state}</span></div>
                 {#if t.message && t.state !== 'connected'}<div class="small bad-text">{hide(t.message)}</div>{/if}
-                <button class="link small" aria-expanded={reasonServer === t.id} onclick={() => (reasonServer = reasonServer === t.id ? '' : t.id)}>Почему запущен?</button>
-                {#if reasonServer === t.id}
-                  {#if reasonError}<div class="small bad-text">{hide(reasonError)}</div>
-                  {:else if reasons === null}<div class="muted small">Проверяем…</div>
-                  {:else if reasons.length}
-                    <ul class="reasons small">{#each reasons as reason}<li>{hide(reason)}</li>{/each}</ul>
-                  {:else}<div class="muted small">Активных назначений больше нет.</div>{/if}
-                {/if}
               </div>
               {#if t.rejected}<span class="badge" title="Соединений отклонено, пока сервер был недоступен">отклонено {t.rejected}</span>{/if}
               <span class="small muted mono">↑ {fmtBytes(t.sent)} ↓ {fmtBytes(t.recv)}</span>
@@ -606,7 +569,6 @@
   .tunnels { display: grid; gap: 4px; }
   .tunnel { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: var(--radius-sm); }
   .tunnel:hover { background: var(--surface-2); }
-  .reasons { margin: 4px 0; padding-left: 20px; max-height: 12em; overflow: auto; overflow-wrap: anywhere; }
   .bad-text { color: var(--block); }
 
   @media (max-width: 900px) {
