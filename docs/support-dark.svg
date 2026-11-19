@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="278" height="46" viewBox="0 0 278 46">
+  <title>Поддержать разработчика</title>
+  <rect x=".5" y=".5" width="277" height="45" rx="12" fill="#212830" stroke="#3d444d"/>
+  <rect x="7" y="7" width="32" height="32" rx="9" fill="#432638"/>
+  <path fill="#f778ba" d="M23 31.5 15 24a5.2 5.2 0 0 1 8-6.6 5.2 5.2 0 0 1 8 6.6Z"/>
+  <text x="49" y="27.5" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="600" letter-spacing=".35" fill="#f0f6fc">ПОДДЕРЖАТЬ РАЗРАБОТЧИКА</text>
+  <path d="M253 27.5 262 18.5m-7.5 0h7.5V26" fill="none" stroke="#9198a1" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

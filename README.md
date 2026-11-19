@@ -17,7 +17,12 @@
 </p>
 
 <p align="center">
-  <a href="https://pay.cloudtips.ru/p/067a1ae1">ПОДДЕРЖАТЬ РАЗРАБОТЧИКА</a>
+  <a href="https://pay.cloudtips.ru/p/067a1ae1">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/support-dark.svg">
+      <img src="docs/support-light.svg" width="278" height="46" alt="Поддержать разработчика">
+    </picture>
+  </a>
 </p>
 
 <p align="center">
