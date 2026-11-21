@@ -108,6 +108,7 @@ export interface ProfileSummary {
   protocol: string; // hysteria2 | vless
   transport: string; // VLESS: "REALITY", "WS · TLS" …
   flow: string; // VLESS flow, '' none
+  balance?: boolean;
   main: boolean;
   source: string;
   sourceName: string;

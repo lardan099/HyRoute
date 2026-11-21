@@ -71,6 +71,9 @@ func parseVLESS(s string) (p Profile, warnings []string, err error) {
 // parameters are included (bandwidth, hop intervals etc. are not part of the
 // share-link spec).
 func (p *Profile) URI() string {
+	if p.Balance != nil {
+		return ""
+	}
 	if p.IsVLESS() {
 		port, _ := VLESSPort(p.Ports)
 		return vless.Link{Name: p.Name, Host: p.Host, Port: port, Settings: p.VLESS}.String()

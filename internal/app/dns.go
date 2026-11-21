@@ -179,6 +179,13 @@ func (c *Controller) dnsNamesLocked() dnspolicy.Names {
 		if _, err := netip.ParseAddr(p.Host); err != nil && p.Host != "" {
 			n.Servers = append(n.Servers, p.Host)
 		}
+		if p.Balance != nil {
+			for _, node := range p.Balance.Nodes {
+				if _, err := netip.ParseAddr(node.Host); err != nil {
+					n.Servers = append(n.Servers, node.Host)
+				}
+			}
+		}
 	}
 	if c.dns.Direct.Preset == dnspolicy.Custom {
 		if s, err := dnspolicy.ParseUpstream(c.dns.Direct.URL, false); err == nil {

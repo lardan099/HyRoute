@@ -343,8 +343,12 @@ func (s *Supervisor) loop(ctx context.Context) {
 }
 
 func (s *Supervisor) resolve(ctx context.Context) ([]netip.Addr, error) {
-	if s.Profile.HostIsIP() {
-		return []netip.Addr{netip.MustParseAddr(s.Profile.Host).Unmap()}, nil
+	return s.resolveHost(ctx, s.Profile.Host)
+}
+
+func (s *Supervisor) resolveHost(ctx context.Context, host string) ([]netip.Addr, error) {
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return []netip.Addr{ip.Unmap()}, nil
 	}
 	res := s.Resolve
 	if res == nil {
@@ -354,7 +358,7 @@ func (s *Supervisor) resolve(ctx context.Context) ([]netip.Addr, error) {
 	}
 	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	ips, err := res(rctx, s.Profile.Host)
+	ips, err := res(rctx, host)
 	if err != nil {
 		return nil, err
 	}
@@ -364,9 +368,31 @@ func (s *Supervisor) resolve(ctx context.Context) ([]netip.Addr, error) {
 	slices.SortFunc(ips, func(a, b netip.Addr) int { return a.Compare(b) })
 	ips = slices.Compact(ips)
 	if len(ips) == 0 {
-		return nil, fmt.Errorf("no addresses for %s", s.Profile.Host)
+		return nil, fmt.Errorf("no addresses for %s", host)
 	}
 	return ips, nil
+}
+
+// resolveBalance pins one address of each available node. A DNS failure
+// leaves that node out of this run without disabling the entire profile.
+func (s *Supervisor) resolveBalance(ctx context.Context) (nodes, excluded []netip.Addr) {
+	nodes = make([]netip.Addr, len(s.Profile.Balance.Nodes))
+	var wg sync.WaitGroup
+	for i, n := range s.Profile.Balance.Nodes {
+		wg.Go(func() {
+			if ips, err := s.resolveHost(ctx, n.Host); err == nil {
+				nodes[i] = pickPinned(ips, netip.Addr{})
+			}
+		})
+	}
+	wg.Wait()
+	for _, ip := range nodes {
+		if ip.IsValid() {
+			excluded = append(excluded, ip)
+		}
+	}
+	slices.SortFunc(excluded, netip.Addr.Compare)
+	return nodes, slices.Compact(excluded)
 }
 
 // pickPinned prefers IPv4: IPv6 connectivity is often absent. failed is
@@ -394,9 +420,22 @@ func pickPinned(ips []netip.Addr, failed netip.Addr) netip.Addr {
 // runOnce runs one Hysteria process until it exits. It returns how long it
 // stayed connected and why it stopped.
 func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, string) {
-	ips, err := s.resolve(ctx)
-	if err != nil {
-		return 0, ErrTimeout, "Не удалось разрешить имя сервера " + s.Profile.Host + ": " + err.Error()
+	var ips, balanceIPs []netip.Addr
+	var err error
+	balance := s.Profile.Balance
+	if balance != nil {
+		if err := s.Profile.Validate(); err != nil {
+			return 0, ErrConfig, err.Error()
+		}
+		balanceIPs, ips = s.resolveBalance(ctx)
+		if len(ips) == 0 {
+			return 0, ErrTimeout, "Не удалось разрешить ни один адрес балансировщика Xray"
+		}
+	} else {
+		ips, err = s.resolve(ctx)
+		if err != nil {
+			return 0, ErrTimeout, "Не удалось разрешить имя сервера " + s.Profile.Host + ": " + err.Error()
+		}
 	}
 	var pinned netip.Addr
 	if s.Profile.PinServerIP && !s.Profile.HostIsIP() {
@@ -428,7 +467,11 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 		opts.ServerIP = pinned.String()
 	}
 	var cfg []byte
-	if vl {
+	if balance != nil {
+		cfg, err = vless.BalanceConfig(*balance, balanceIPs, vless.Run{
+			SOCKSListen: opts.SOCKSListen, SOCKSUsername: user, SOCKSPassword: pass,
+		})
+	} else if vl {
 		port, _ := VLESSPort(s.Profile.Ports)
 		cfg, err = vless.Config(s.Profile.VLESS, vless.Run{Host: s.Profile.Host, Port: port, Dial: pinned,
 			SOCKSListen: opts.SOCKSListen, SOCKSUsername: user, SOCKSPassword: pass})
@@ -511,12 +554,15 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 		// is up once its SOCKS5 port answers and a request goes through
 		// the server (watchVLESS).
 		var lastWarn atomic.Pointer[string]
-		vport, _ := VLESSPort(s.Profile.Ports)
-		vhost := s.Profile.Host
-		if pinned.IsValid() {
-			vhost = pinned.String()
+		var vlessServer string
+		if balance == nil {
+			vport, _ := VLESSPort(s.Profile.Ports)
+			vhost := s.Profile.Host
+			if pinned.IsValid() {
+				vhost = pinned.String()
+			}
+			vlessServer = net.JoinHostPort(vhost, strconv.Itoa(vport))
 		}
-		vlessServer := net.JoinHostPort(vhost, strconv.Itoa(vport))
 		go func() {
 			defer close(readDone)
 			sc := bufio.NewScanner(pr)
@@ -639,7 +685,7 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 	go func() { exited <- proc.Wait(); pw.Close() }()
 
 	var ticker <-chan time.Time
-	if !s.Profile.HostIsIP() {
+	if balance == nil && !s.Profile.HostIsIP() {
 		every := s.ReResolveEvery
 		if every == 0 {
 			every = 5 * time.Minute

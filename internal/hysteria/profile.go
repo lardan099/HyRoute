@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ type Profile struct {
 	// Hysteria fields stay empty.
 	Protocol string         `json:"protocol,omitempty"`
 	VLESS    vless.Settings `json:"vless,omitzero"`
+	Balance  *vless.Balance `json:"balance,omitempty"`
 	// Host is a domain or IP literal (no brackets).
 	Host string `json:"host"`
 	// Ports is "443", "20000-50000" or "443,20000-50000" (port hopping).
@@ -126,22 +128,52 @@ func (p *Profile) Transport() string {
 // Secrets are the values no log may show: the auth and obfuscation
 // passwords of Hysteria, the user ID of VLESS.
 func (p *Profile) Secrets() []string {
-	return []string{p.Auth, p.Obfs.Password, p.VLESS.ID}
+	return append([]string{p.Auth, p.Obfs.Password, p.VLESS.ID}, p.BalanceIDs()...)
 }
 
 // ClearSecrets empties the secrets (a backup without them).
 func (p *Profile) ClearSecrets() {
 	p.Auth, p.Obfs.Password, p.VLESS.ID = "", "", ""
+	p.SetBalanceIDs(nil)
 }
 
 // HasSecrets: any secret is set.
 func (p *Profile) HasSecrets() bool {
-	return p.Auth != "" || p.Obfs.Password != "" || p.VLESS.ID != ""
+	return slices.ContainsFunc(p.Secrets(), func(secret string) bool { return secret != "" })
 }
 
 // CopySecrets takes the secrets of from.
 func (p *Profile) CopySecrets(from Profile) {
 	p.Auth, p.Obfs.Password, p.VLESS.ID = from.Auth, from.Obfs.Password, from.VLESS.ID
+	p.SetBalanceIDs(from.BalanceIDs())
+}
+
+func (p *Profile) BalanceIDs() []string {
+	if p.Balance == nil {
+		return nil
+	}
+	ids := make([]string, len(p.Balance.Nodes))
+	for i, n := range p.Balance.Nodes {
+		ids[i] = n.Settings.ID
+	}
+	return ids
+}
+
+// SetBalanceIDs copies the nodes before changing their IDs because profiles
+// are commonly copied by value, including for secret-free backups.
+func (p *Profile) SetBalanceIDs(ids []string) {
+	if p.Balance == nil {
+		return
+	}
+	b := *p.Balance
+	b.Nodes = slices.Clone(b.Nodes)
+	for i := range b.Nodes {
+		b.Nodes[i].Settings.ID = ""
+		if i < len(ids) {
+			b.Nodes[i].Settings.ID = ids[i]
+		}
+	}
+	p.Balance = &b
 }
 
 type TLS struct {
@@ -189,6 +221,14 @@ type QUIC struct {
 
 // Validate checks the fields HyRoute relies on.
 func (p *Profile) Validate() error {
+	if p.Balance != nil {
+		q := *p
+		q.ID, q.Name, q.Source, q.Protocol, q.Missing, q.Balance = "", "", "", "", false, nil
+		if !p.IsVLESS() || !reflect.DeepEqual(q, Profile{}) {
+			return errors.New("балансировщик Xray хранит адреса и параметры только в узлах")
+		}
+		return p.Balance.Validate()
+	}
 	if p.Host == "" {
 		return errors.New("server host is empty")
 	}

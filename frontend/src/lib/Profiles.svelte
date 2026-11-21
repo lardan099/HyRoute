@@ -441,8 +441,10 @@
           ><Icon name="zap" size={dense ? 16 : 15} />{#if !dense}Проверить{/if}</button
         >
         <div class="acts">
-          <button class="icon" onclick={() => edit(p)} title="Изменить"><Icon name="edit" size={16} /></button>
-          <button class="icon" onclick={() => run(() => api.CopyURI(p.id), 'Ссылка скопирована (в ней пароль сервера)')} title="Копировать ссылку"><Icon name="copy" size={16} /></button>
+          {#if !p.balance}
+            <button class="icon" onclick={() => edit(p)} title="Изменить"><Icon name="edit" size={16} /></button>
+            <button class="icon" onclick={() => run(() => api.CopyURI(p.id), 'Ссылка скопирована (в ней пароль сервера)')} title="Копировать ссылку"><Icon name="copy" size={16} /></button>
+          {/if}
           <button class="icon" onclick={() => move(p.id, -1)} disabled={i === 0 || !!fixed} title={fixed || 'Выше'}><Icon name="up" size={16} /></button>
           <button class="icon" onclick={() => move(p.id, 1)} disabled={i === list.length - 1 || !!fixed} title={fixed || 'Ниже'}><Icon name="down" size={16} /></button>
           <button class="icon danger" onclick={() => remove(p)} title="Удалить"><Icon name="trash" size={16} /></button>

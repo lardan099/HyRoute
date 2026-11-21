@@ -245,6 +245,8 @@ func fillZero(t *testing.T, v reflect.Value) {
 	for i := 0; i < v.NumField(); i++ {
 		f := v.Field(i)
 		switch {
+		case v.Type().Field(i).Name == "Balance":
+			// The balancer is a separate profile format, tested in subs_balance_test.go.
 		case f.Kind() == reflect.Struct:
 			fillZero(t, f)
 		case !f.IsZero():

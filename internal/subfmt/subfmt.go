@@ -24,6 +24,8 @@ type Result struct {
 	Format string
 	// Links are the servers as vless:// and hysteria2:// links.
 	Links []string
+	// Balancers are Xray configs whose catch-all rule selects VLESS nodes.
+	Balancers []XrayBalancer
 	// Other counts the servers of other protocols by type ("vmess",
 	// "trojan", …).
 	Other map[string]int
@@ -77,6 +79,12 @@ func (r *Result) json(body []byte) bool {
 			continue
 		}
 		found = true
+		if r.xrayBalancer(cfg.Remarks, raw, cfg.Outbounds) {
+			if r.Format == "" {
+				r.Format = "Xray"
+			}
+			continue
+		}
 		for _, ob := range cfg.Outbounds {
 			var head struct {
 				Type     string `json:"type"`     // sing-box

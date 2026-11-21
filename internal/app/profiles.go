@@ -29,6 +29,7 @@ type ProfileSummary struct {
 	Protocol  string `json:"protocol"`
 	Transport string `json:"transport"`
 	Flow      string `json:"flow"`
+	Balance   bool   `json:"balance,omitempty"`
 	// Main: rules without an explicit profile use this one.
 	Main bool `json:"main"`
 	// Source: "" (manual) or "sub:<id>"; SourceName is the subscription.
@@ -66,6 +67,9 @@ func (c *Controller) summaryLocked(p *hysteria.Profile) ProfileSummary {
 	if p.IsVLESS() {
 		s.Protocol, s.Transport, s.Flow = "vless", p.Transport(), p.VLESS.Flow
 		s.SNI, s.Pinned = p.VLESS.SNI, p.VLESS.PinSHA256 != ""
+	}
+	if p.Balance != nil {
+		s.Balance, s.Transport, s.Server = true, "leastLoad", fmt.Sprintf("%d узлов", len(p.Balance.Nodes))
 	}
 	s.SourceName = c.sourceNameLocked(p.Source)
 	c.pingLocked(p, &s)
@@ -379,6 +383,9 @@ func hostName(h string) bool {
 
 // SaveProfile creates (empty ID) or replaces a profile.
 func (c *Controller) SaveProfile(p hysteria.Profile) (ProfileSummary, error) {
+	if p.Balance != nil {
+		return ProfileSummary{}, errors.New("балансировщик Xray обновляется из подписки")
+	}
 	host, ports, err := editorHost(p.Host, p.Ports)
 	if err != nil {
 		return ProfileSummary{}, err
@@ -395,6 +402,10 @@ func (c *Controller) SaveProfile(p hysteria.Profile) (ProfileSummary, error) {
 	// Only an edit that makes a duplicate is refused: a server that
 	// already was one can still be renamed (or changed to another).
 	cur := c.profiles.Find(p.ID)
+	if cur != nil && cur.Balance != nil {
+		c.mu.Unlock()
+		return ProfileSummary{}, errors.New("балансировщик Xray обновляется из подписки")
+	}
 	unchanged := p.ID != "" && cur != nil && connKey(*cur) == connKey(p)
 	if o := c.sameServerLocked(p, p.ID); o != nil && !unchanged {
 		c.mu.Unlock()
@@ -543,6 +554,9 @@ func (c *Controller) ExportURI(id string) (string, error) {
 	p, err := c.Profile(id)
 	if err != nil {
 		return "", err
+	}
+	if p.Balance != nil {
+		return "", errors.New("балансировщик Xray нельзя представить одной ссылкой VLESS")
 	}
 	return p.URI(), nil
 }

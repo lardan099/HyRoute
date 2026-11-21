@@ -104,7 +104,9 @@ func (s *Supervisor) watchVLESS(ctx context.Context, addr, server string, kick c
 				warn = *w
 			}
 			kind, msg := ClassifyXray(err, warn)
-			kind, msg = directCheck(ctx, server, kind, msg)
+			if server != "" {
+				kind, msg = directCheck(ctx, server, kind, msg)
+			}
 			if !connected && fails < vlessFirstTries {
 				// Still starting: the reason shows at once, not only
 				// after the last try.

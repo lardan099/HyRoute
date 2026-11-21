@@ -173,14 +173,63 @@ func (c *Controller) httpFetch(ctx context.Context, rawURL string) (FetchResult,
 	if c.Device != nil {
 		c.Device(u.Hostname()).setHeaders(req.Header)
 	}
+	res, headers, err := c.requestSubscription(req)
+	if err != nil {
+		return FetchResult{}, err
+	}
+	// Remnawave-style panels can serve a list of VLESS links to generic
+	// clients and the actual Xray balancer only to JSON-capable clients.
+	// Keep the generic response if the alternate format has no supported
+	// balancer. The existing account and device headers stay the same.
+	if u.Scheme == "https" && headers.Get("Profile-Web-Page-Url") != "" {
+		if l := ParseLinks(string(res.Body)); slices.ContainsFunc(l.Profiles, func(p hysteria.Profile) bool { return p.IsVLESS() }) {
+			compatCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			compat := req.Clone(compatCtx)
+			compat.Header.Set("User-Agent", "Happ/HyRoute-"+c.Version+" HyRoute/"+c.Version)
+			compat.Header.Set("Accept", "application/json, */*")
+			alternate, _, err := c.requestSubscription(compat)
+			cancel()
+			if err == nil {
+				if l, err := parseSubscription(alternate.Body); err == nil &&
+					slices.ContainsFunc(l.Profiles, func(p hysteria.Profile) bool { return p.Balance != nil }) {
+					return alternate, nil
+				}
+			}
+			if c.hasBalanceReplacement(rawURL, l.Profiles) {
+				return FetchResult{}, errors.New("панель не вернула конфигурацию балансировщика Xray. Сохранён предыдущий профиль")
+			}
+		}
+	}
+	return res, nil
+}
+
+// A temporary failure of the JSON response must not replace an existing
+// balancer with the panel's same-name link intended for generic clients.
+func (c *Controller) hasBalanceReplacement(rawURL string, profiles []hysteria.Profile) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sub := slices.IndexFunc(c.subs, func(s store.Subscription) bool { return s.URL == rawURL })
+	if sub < 0 {
+		return false
+	}
+	source := "sub:" + c.subs[sub].ID
+	for _, p := range c.profiles.List {
+		if p.Source == source && p.Balance != nil && slices.ContainsFunc(profiles, func(q hysteria.Profile) bool { return p.Name == q.Name }) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Controller) requestSubscription(req *http.Request) (FetchResult, http.Header, error) {
 	resp, err := subClient().Do(req)
 	viaVPN := false
-	if failed := err != nil || resp.StatusCode >= 500; failed && u.Scheme == "https" {
+	if failed := err != nil || resp.StatusCode >= 500; failed && req.URL.Scheme == "https" {
 		// A panel the network blocks: once more through the main server's
 		// tunnel, as the rule databases do (https only: the VPN server
 		// must not see the token).
 		if tun := c.mainEndpoint(); tun != nil {
-			if r2, err2 := subTunnelClient(tun).Do(req.Clone(ctx)); err2 == nil {
+			if r2, err2 := subTunnelClient(tun).Do(req.Clone(req.Context())); err2 == nil {
 				if resp != nil {
 					resp.Body.Close()
 				}
@@ -196,22 +245,22 @@ func (c *Controller) httpFetch(ctx context.Context, rawURL string) (FetchResult,
 		if errors.As(err, &ue) {
 			err = ue.Err
 		}
-		return FetchResult{}, fmt.Errorf("сервер подписки недоступен: %v", err)
+		return FetchResult{}, nil, fmt.Errorf("сервер подписки недоступен: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return FetchResult{}, fmt.Errorf("сервер подписки ответил %s", resp.Status)
+		return FetchResult{}, nil, fmt.Errorf("сервер подписки ответил %s", resp.Status)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSubBody+1))
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("ответ подписки оборван: %v", err)
+		return FetchResult{}, nil, fmt.Errorf("ответ подписки оборван: %v", err)
 	}
 	if len(body) > maxSubBody {
-		return FetchResult{}, errors.New("ответ подписки больше 5 МБ")
+		return FetchResult{}, nil, errors.New("ответ подписки больше 5 МБ")
 	}
 	res := panelHeaders(resp.Header)
 	res.Body, res.ViaVPN = body, viaVPN
-	return res, nil
+	return res, resp.Header, nil
 }
 
 // decodeTitle handles "base64:..." titles used by common panels.
@@ -261,6 +310,11 @@ func parseSubscription(body []byte) (Links, error) {
 	}
 	if r, ok := subfmt.Convert(body); ok {
 		l = ParseLinks(strings.Join(r.Links, "\n"))
+		profiles := make([]hysteria.Profile, 0, len(r.Balancers)+len(l.Profiles))
+		for _, b := range r.Balancers {
+			profiles = append(profiles, hysteria.Profile{Name: b.Name, Protocol: hysteria.ProtoVLESS, Balance: &b.Balance})
+		}
+		l.Profiles = append(profiles, l.Profiles...)
 		l.Format = r.Format
 		l.Warnings = append(r.Warnings, l.Warnings...)
 		l.Errors = append(r.Errors, l.Errors...)

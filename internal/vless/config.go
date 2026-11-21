@@ -30,15 +30,20 @@ type Run struct {
 // one VLESS outbound, nothing else (no routing, DNS or geo files: HyRoute
 // decides what goes into the tunnel).
 func Config(s Settings, r Run) ([]byte, error) {
+	out, err := outbound(s, r, "proxy")
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := clientConfig(r, false)
+	if err != nil {
+		return nil, err
+	}
+	cfg["outbounds"] = []any{out}
+	return json.MarshalIndent(cfg, "", "  ")
+}
+
+func outbound(s Settings, r Run, tag string) (map[string]any, error) {
 	if err := s.ValidateFor(r.Host); err != nil {
-		return nil, err
-	}
-	lhost, lport, err := net.SplitHostPort(r.SOCKSListen)
-	if err != nil {
-		return nil, err
-	}
-	port, err := strconv.Atoi(lport)
-	if err != nil {
 		return nil, err
 	}
 	if r.Port < 1 || r.Port > 65535 {
@@ -57,16 +62,12 @@ func Config(s Settings, r Run) ([]byte, error) {
 	if a, err := netip.ParseAddr(r.Host); err != nil || !a.IsValid() {
 		name = r.Host
 	}
-	level := r.LogLevel
-	if level == "" {
-		level = "warning"
-	}
 	enc := s.Encryption
 	if enc == "" {
 		enc = "none"
 	}
-	outbound := map[string]any{
-		"tag":      "proxy",
+	return map[string]any{
+		"tag":      tag,
 		"protocol": "vless",
 		"settings": map[string]any{
 			"address":    address,
@@ -76,24 +77,41 @@ func Config(s Settings, r Run) ([]byte, error) {
 			"encryption": enc,
 		},
 		"streamSettings": stream(s, name),
+	}, nil
+}
+
+func clientConfig(r Run, sniff bool) (map[string]any, error) {
+	lhost, lport, err := net.SplitHostPort(r.SOCKSListen)
+	if err != nil {
+		return nil, err
 	}
-	cfg := map[string]any{
-		"log": map[string]any{"loglevel": level, "access": "none", "dnsLog": false},
-		"inbounds": []any{map[string]any{
-			"tag":      "socks-in",
-			"listen":   lhost,
-			"port":     port,
-			"protocol": "socks",
-			"settings": map[string]any{
-				"auth":     "password",
-				"accounts": []any{map[string]any{"user": r.SOCKSUsername, "pass": r.SOCKSPassword}},
-				"udp":      true,
-				"ip":       lhost,
-			},
-		}},
-		"outbounds": []any{outbound},
+	port, err := strconv.Atoi(lport)
+	if err != nil {
+		return nil, err
 	}
-	return json.MarshalIndent(cfg, "", "  ")
+	level := r.LogLevel
+	if level == "" {
+		level = "warning"
+	}
+	in := map[string]any{
+		"tag":      "socks-in",
+		"listen":   lhost,
+		"port":     port,
+		"protocol": "socks",
+		"settings": map[string]any{
+			"auth":     "password",
+			"accounts": []any{map[string]any{"user": r.SOCKSUsername, "pass": r.SOCKSPassword}},
+			"udp":      true,
+			"ip":       lhost,
+		},
+	}
+	if sniff {
+		in["sniffing"] = map[string]any{"enabled": true, "routeOnly": true}
+	}
+	return map[string]any{
+		"log":      map[string]any{"loglevel": level, "access": "none", "dnsLog": false},
+		"inbounds": []any{in},
+	}, nil
 }
 
 // stream is streamSettings. name is the server's domain ("" for an IP).

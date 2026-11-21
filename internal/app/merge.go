@@ -1,6 +1,9 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -21,6 +24,10 @@ type MergeStats struct {
 // authority port ("443,443,20000-30000"), the same link parses to
 // "443,20000-30000" today.
 func connKey(p hysteria.Profile) string {
+	if p.Balance != nil {
+		raw, _ := json.Marshal(p.Balance)
+		return fmt.Sprintf("xray-balance:%x", sha256.Sum256(raw))
+	}
 	p.Name, p.ID, p.Source, p.Missing = "", "", "", false
 	p.Ports = hysteria.NormalizePorts(p.Ports)
 	return p.URI()
@@ -43,6 +50,9 @@ func sameServers(a, b []hysteria.Profile) bool {
 
 // endpointKey is host and port set (see connKey).
 func endpointKey(p hysteria.Profile) string {
+	if p.Balance != nil {
+		return "xray-balance:" + p.Name
+	}
 	return strings.ToLower(p.Host) + ":" + hysteria.NormalizePorts(p.Ports)
 }
 
@@ -159,6 +169,9 @@ func mergeSubscription(list []hysteria.Profile, source string, fresh []hysteria.
 // is the user's: the rest of the editor's Hysteria settings mean nothing
 // to the other protocol.
 func keepLocal(fresh, old hysteria.Profile) hysteria.Profile {
+	if fresh.Balance != nil || old.Balance != nil {
+		return fresh
+	}
 	if fresh.IsVLESS() || old.IsVLESS() {
 		fresh.PinServerIP = old.PinServerIP
 		return fresh

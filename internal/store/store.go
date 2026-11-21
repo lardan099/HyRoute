@@ -84,7 +84,8 @@ type secrets struct {
 	Auth string `json:"auth,omitempty"`
 	Obfs string `json:"obfs,omitempty"`
 	// VLESS is a VLESS server's user ID.
-	VLESS string `json:"vless,omitempty"`
+	VLESS      string   `json:"vless,omitempty"`
+	BalanceIDs []string `json:"balanceIDs,omitempty"`
 }
 
 type storedProfiles struct {
@@ -121,6 +122,7 @@ func (s *Store) LoadProfiles() (*Profiles, error) {
 				return nil, fmt.Errorf("profile %q: secrets cannot be decrypted (profiles.json from another user or machine?): %w", p.Name, err)
 			}
 			p.Auth, p.Obfs.Password, p.VLESS.ID = sec.Auth, sec.Obfs, sec.VLESS
+			p.SetBalanceIDs(sec.BalanceIDs)
 		}
 		out.List = append(out.List, p.Profile)
 	}
@@ -132,7 +134,7 @@ func (s *Store) SaveProfiles(p *Profiles) error {
 	defer s.mu.Unlock()
 	sp := storedProfiles{Active: p.Active, List: []storedProfile{}}
 	for _, pr := range p.List {
-		raw, _ := json.Marshal(secrets{Auth: pr.Auth, Obfs: pr.Obfs.Password, VLESS: pr.VLESS.ID})
+		raw, _ := json.Marshal(secrets{Auth: pr.Auth, Obfs: pr.Obfs.Password, VLESS: pr.VLESS.ID, BalanceIDs: pr.BalanceIDs()})
 		sealed, err := seal(raw)
 		if err != nil {
 			return fmt.Errorf("seal secrets: %w", err)
