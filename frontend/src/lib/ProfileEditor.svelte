@@ -28,6 +28,7 @@
     if (!ui.privacy) revealed = false;
   });
   const ro = $derived(ui.privacy && !revealed);
+  const ingressProfiles = $derived(ui.profiles.filter((server) => server.id !== p.id && !server.via));
   // A press that started in a field and ended on the backdrop is not a
   // click on the backdrop.
   let downOnBackdrop = false;
@@ -91,6 +92,20 @@
   }
 </script>
 
+{#snippet ingressPicker()}
+  <label for="pe-via">Подключаться через</label>
+  <select id="pe-via" value={p.via ?? ''} onchange={(e) => (p.via = e.currentTarget.value || undefined)}
+    title="Первый VPN подключается к серверу этого профиля">
+    <option value="">Напрямую</option>
+    {#if p.via && !ingressProfiles.some((server) => server.id === p.via)}
+      <option value={p.via}>Первый VPN недоступен</option>
+    {/if}
+    {#each ingressProfiles as server (server.id)}
+      <option value={server.id}>{hide(server.name)} · {hide(server.server)}</option>
+    {/each}
+  </select>
+{/snippet}
+
 <div
   class="backdrop"
   role="presentation"
@@ -98,27 +113,28 @@
   onclick={(e) => downOnBackdrop && e.target === e.currentTarget && onclose()}
 >
   <div class="dialog" role="dialog" aria-modal="true">
-    <h2>{p.id ? 'Сервер' : 'Новый сервер'}</h2>
-    {#if sourceName && isVLESS}
+    <h2>{p.balance ? hide(p.name) : p.id ? 'Сервер' : 'Новый сервер'}</h2>
+    {#if sourceName && isVLESS && !p.balance}
       <div class="note warn">
-        Сервер из подписки «{hide(sourceName)}». При её обновлении все его настройки, кроме «Резолвить адрес», снова возьмутся из
-        подписки, так что их правки здесь временные. Добавить этот сервер отдельно с теми же адресом, UUID и настройками нельзя: это
-        был бы дубль.
+        Сервер из подписки «{hide(sourceName)}». При обновлении сохраняются выбор первого VPN и настройка «Резолвить адрес».
+        Остальные параметры снова берутся из подписки.
       </div>
-    {:else if sourceName}
+    {:else if sourceName && !p.balance}
       <div class="note warn">
         Сервер из подписки «{hide(sourceName)}». При её обновлении название, адрес, пароль, обфускация, SNI, отпечаток и
-        «insecure» снова возьмутся из ссылки подписки, так что их правки здесь временные. Сохраняются скорость, «Резолвить
-        адрес» и интервал port hopping, если ссылка подписки не задаёт свой. Добавить этот сервер отдельно с теми же адресом,
-        паролем и настройками нельзя: это был бы дубль.
+        «insecure» снова возьмутся из ссылки подписки, так что их правки здесь временные. Сохраняются первый VPN, скорость,
+        «Резолвить адрес» и интервал port hopping, если ссылка подписки не задаёт свой.
       </div>
     {/if}
-    {#if ro}
+    {#if ro && !p.balance}
       <div class="note info row">
         <span class="grow">Включено «Скрыть данные»: название, адрес и SNI скрыты.</span>
         <button onclick={() => (revealed = true)}>Показать и редактировать</button>
       </div>
     {/if}
+    {#if p.balance}
+      <div class="grid">{@render ingressPicker()}</div>
+    {:else}
     <div class="grid">
       <label for="pe-proto">Протокол</label>
       <div class="row">
@@ -148,6 +164,7 @@
           <input bind:value={p.ports} style="width: 170px" placeholder="443 или 443,20000-50000" title="Порт или диапазоны для port hopping" />
         {/if}
       </div>
+      {@render ingressPicker()}
     {#if isVLESS && p.vless}
       <label for="pe-uuid">UUID</label>
       <div class="row">
@@ -289,10 +306,12 @@
           <input id="pe-kh" bind:value={p.vless.headerType} placeholder="none, srtp, utp, wechat-video, dtls, wireguard, dns" />
         {/if}
 
-        <span></span>
-        <label class="check" title="HyRoute сам резолвит адрес и передаёт Xray IP: исключение из перехвата совпадает точно">
-          <input type="checkbox" bind:checked={p.pinServerIP} /> Резолвить адрес в HyRoute и передавать IP
-        </label>
+        {#if !p.via}
+          <span></span>
+          <label class="check" title="HyRoute сам резолвит адрес и передаёт Xray IP: исключение из перехвата совпадает точно">
+            <input type="checkbox" bind:checked={p.pinServerIP} /> Резолвить адрес в HyRoute и передавать IP
+          </label>
+        {/if}
       </div>
     </details>
     {:else}
@@ -322,19 +341,22 @@
         <label for="pe-hop">Port hopping</label>
         <input id="pe-hop" bind:value={p.hop.interval} placeholder="интервал, напр. 30s" style="width: 170px" />
 
-        <span></span>
-        <label class="check" title="HyRoute сам резолвит адрес и передаёт Hysteria IP: исключение из перехвата совпадает точно">
-          <input type="checkbox" bind:checked={p.pinServerIP} /> Резолвить адрес в HyRoute и передавать IP
-        </label>
+        {#if !p.via}
+          <span></span>
+          <label class="check" title="HyRoute сам резолвит адрес и передаёт Hysteria IP: исключение из перехвата совпадает точно">
+            <input type="checkbox" bind:checked={p.pinServerIP} /> Резолвить адрес в HyRoute и передавать IP
+          </label>
+        {/if}
       </div>
     </details>
+    {/if}
     {/if}
     <!-- An error may quote the address or another server's name. -->
     {#if error}<div class="note error">{ro ? hide(error) : error}</div>{/if}
     <p class="muted small">Если сервер сейчас используется, он переподключится с новыми настройками.</p>
     <div class="actions">
       <button onclick={onclose}>Отмена</button>
-      <button class="primary" onclick={save} disabled={saving || !p.host.trim()}>Сохранить</button>
+      <button class="primary" onclick={save} disabled={saving || (!p.balance && !p.host.trim())}>Сохранить</button>
     </div>
   </div>
 </div>

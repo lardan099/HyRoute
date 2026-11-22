@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+
+	"github.com/lardan099/hyroute/internal/socks5"
 )
 
 // Run is what one start of xray.exe needs besides the settings.
@@ -17,6 +19,7 @@ type Run struct {
 	Host string
 	Port int
 	Dial netip.Addr
+	Via  *socks5.Client
 	// SOCKS5 inbound on loopback with random credentials, so that other
 	// local processes cannot use the tunnel.
 	SOCKSListen   string // 127.0.0.1:port
@@ -26,9 +29,10 @@ type Run struct {
 	LogLevel string
 }
 
+const viaTag = "via"
+
 // Config is the xray.exe client config: a SOCKS5 inbound (with UDP) and
-// one VLESS outbound, nothing else (no routing, DNS or geo files: HyRoute
-// decides what goes into the tunnel).
+// a VLESS outbound. HyRoute decides what goes into the tunnel.
 func Config(s Settings, r Run) ([]byte, error) {
 	out, err := outbound(s, r, "proxy")
 	if err != nil {
@@ -38,8 +42,62 @@ func Config(s Settings, r Run) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg["outbounds"] = []any{out}
+	outbounds := []any{out}
+	if r.Via != nil {
+		via, err := viaOutbound(*r.Via)
+		if err != nil {
+			return nil, err
+		}
+		outbounds = append(outbounds, via)
+	}
+	cfg["outbounds"] = outbounds
 	return json.MarshalIndent(cfg, "", "  ")
+}
+
+func viaOutbound(client socks5.Client) (map[string]any, error) {
+	host, rawPort, err := net.SplitHostPort(client.Server)
+	port, portErr := strconv.Atoi(rawPort)
+	if err != nil || host != "127.0.0.1" || portErr != nil || port < 1 || port > 65535 ||
+		client.Username == "" || client.Password == "" {
+		return nil, errors.New("недопустимый локальный SOCKS5 первого VPN")
+	}
+	return map[string]any{
+		"tag":      viaTag,
+		"protocol": "socks",
+		"settings": map[string]any{
+			"address": host, "port": port, "user": client.Username, "pass": client.Password,
+		},
+	}, nil
+}
+
+// ValidateChain accepts transports whose sockets follow dialerProxy.
+func (s Settings) ValidateChain() error {
+	switch NormalizeNetwork(s.Network) {
+	case "", "ws", "httpupgrade", "grpc":
+	case "xhttp":
+		if alpn := splitList(s.ALPN); s.Security == "tls" && len(alpn) == 1 && alpn[0] == "h3" {
+			return errors.New("XHTTP через HTTP/3 не поддерживает цепочку VPN")
+		}
+		extra, _, err := CleanExtra(s.Extra)
+		if err != nil {
+			return err
+		}
+		var settings map[string]json.RawMessage
+		if extra != "" {
+			if err := json.Unmarshal([]byte(extra), &settings); err != nil {
+				return err
+			}
+		}
+		if _, ok := settings["downloadSettings"]; ok {
+			return errors.New("XHTTP с отдельным адресом загрузки не поддерживает цепочку VPN")
+		}
+	default:
+		return errors.New("транспорт VLESS не поддерживает цепочку VPN")
+	}
+	if s.ECH != "" {
+		return errors.New("VLESS с ECH не поддерживает цепочку VPN")
+	}
+	return nil
 }
 
 func outbound(s Settings, r Run, tag string) (map[string]any, error) {
@@ -48,6 +106,14 @@ func outbound(s Settings, r Run, tag string) (map[string]any, error) {
 	}
 	if r.Port < 1 || r.Port > 65535 {
 		return nil, errors.New("порт сервера вне 1–65535")
+	}
+	if r.Via != nil {
+		if r.Dial.IsValid() {
+			return nil, errors.New("адрес выходного VPN должен разрешать первый VPN")
+		}
+		if err := s.ValidateChain(); err != nil {
+			return nil, err
+		}
 	}
 	address := r.Host
 	if r.Dial.IsValid() {
@@ -66,6 +132,10 @@ func outbound(s Settings, r Run, tag string) (map[string]any, error) {
 	if enc == "" {
 		enc = "none"
 	}
+	st := stream(s, name)
+	if r.Via != nil {
+		st["sockopt"] = map[string]any{"dialerProxy": viaTag}
+	}
 	return map[string]any{
 		"tag":      tag,
 		"protocol": "vless",
@@ -76,7 +146,7 @@ func outbound(s Settings, r Run, tag string) (map[string]any, error) {
 			"flow":       s.Flow,
 			"encryption": enc,
 		},
-		"streamSettings": stream(s, name),
+		"streamSettings": st,
 	}, nil
 }
 

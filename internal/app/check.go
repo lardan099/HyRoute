@@ -135,6 +135,12 @@ func (c *Controller) CheckProfile(id string) (CheckResult, error) {
 func (c *Controller) acquire(p hysteria.Profile) (*tunnels.Endpoint, func()) {
 	c.mu.Lock()
 	sess := c.sess
+	var ingress hysteria.Profile
+	if p.Via != "" && p.Via != p.ID {
+		if up := c.profiles.Find(p.Via); up != nil && up.Via == "" {
+			ingress = *up
+		}
+	}
 	if sess == nil && c.checkMgr == nil {
 		f := c.Runners
 		if f == nil {
@@ -146,10 +152,21 @@ func (c *Controller) acquire(p hysteria.Profile) (*tunnels.Endpoint, func()) {
 	}
 	mgr := c.checkMgr
 	c.mu.Unlock()
+	var acquire func(hysteria.Profile) (*tunnels.Endpoint, func())
 	if sess != nil {
-		return sess.Acquire(p)
+		acquire = sess.Acquire
+	} else {
+		acquire = mgr.Acquire
 	}
-	return mgr.Acquire(p)
+	if ingress.ID == "" {
+		return acquire(p)
+	}
+	_, releaseIngress := acquire(ingress)
+	ep, release := acquire(p)
+	return ep, func() {
+		release()
+		releaseIngress()
+	}
 }
 
 func waitConnected(ep *tunnels.Endpoint, timeout time.Duration, core string) (hysteria.Status, error) {

@@ -72,6 +72,7 @@ type Supervisor struct {
 	// and whenever they change, so the exclusion is in place before
 	// Hysteria sends its first packet.
 	SetServerIPs func([]netip.Addr) error
+	Via          func() Upstream
 	// Resolve defaults to the system resolver. On Windows that is
 	// GetAddrInfoW -> Dnscache, whose DNS traffic is never routed.
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
@@ -107,6 +108,9 @@ type restart struct {
 // Start launches the supervision loop. Stop must be called to end it.
 func (s *Supervisor) Start() error {
 	if err := s.Profile.Validate(); err != nil {
+		if s.Profile.Via != "" {
+			s.setStatus(func(st *Status) { st.State, st.Kind, st.Message = Failed, ErrConfig, err.Error() })
+		}
 		return err
 	}
 	if err := os.MkdirAll(s.RunDir, 0o700); err != nil {
@@ -423,7 +427,36 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 	var ips, balanceIPs []netip.Addr
 	var err error
 	balance := s.Profile.Balance
-	if balance != nil {
+	vl := s.Profile.IsVLESS()
+	var upstream *socks5.Client
+	var relayDone <-chan struct{}
+	var udpRelay string
+	if s.Profile.Via != "" {
+		if err := s.Profile.Validate(); err != nil {
+			return 0, ErrConfig, err.Error()
+		}
+		cl, err := s.waitUpstream(ctx)
+		if err != nil {
+			return 0, ErrTimeout, err.Error()
+		}
+		upstream = &cl
+		if !vl {
+			port, _ := VLESSPort(s.Profile.Ports)
+			dst, err := socks5.ParseHostPort(net.JoinHostPort(s.Profile.Host, strconv.Itoa(port)))
+			if err != nil {
+				return 0, ErrConfig, err.Error()
+			}
+			bridge, err := startUDPChain(ctx, cl, dst)
+			if err != nil {
+				return 0, ErrOther, "Не удалось открыть UDP через первый VPN: " + err.Error()
+			}
+			defer func() {
+				bridge.close()
+				bridge.wg.Wait()
+			}()
+			udpRelay, relayDone = bridge.local.LocalAddr().String(), bridge.done
+		}
+	} else if balance != nil {
 		if err := s.Profile.Validate(); err != nil {
 			return 0, ErrConfig, err.Error()
 		}
@@ -438,7 +471,7 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 		}
 	}
 	var pinned netip.Addr
-	if s.Profile.PinServerIP && !s.Profile.HostIsIP() {
+	if len(ips) > 0 && s.Profile.PinServerIP && !s.Profile.HostIsIP() {
 		pinned = pickPinned(ips, s.pinFailed)
 	}
 	if s.SetServerIPs != nil {
@@ -455,10 +488,14 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 	defer releasePort()
 	user, pass := randomString(16), randomString(32)
 	if s.Redactor != nil {
-		s.Redactor.SetGroup(s.RedactGroup, append(s.Profile.Secrets(), user, pass)...)
+		secrets := append(s.Profile.Secrets(), user, pass)
+		if upstream != nil {
+			secrets = append(secrets, upstream.Username, upstream.Password)
+		}
+		s.Redactor.SetGroup(s.RedactGroup, secrets...)
 	}
-	vl := s.Profile.IsVLESS()
 	opts := RunOptions{
+		UDPRelay:      udpRelay,
 		SOCKSListen:   net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
 		SOCKSUsername: user,
 		SOCKSPassword: pass,
@@ -469,11 +506,11 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 	var cfg []byte
 	if balance != nil {
 		cfg, err = vless.BalanceConfig(*balance, balanceIPs, vless.Run{
-			SOCKSListen: opts.SOCKSListen, SOCKSUsername: user, SOCKSPassword: pass,
+			SOCKSListen: opts.SOCKSListen, SOCKSUsername: user, SOCKSPassword: pass, Via: upstream,
 		})
 	} else if vl {
 		port, _ := VLESSPort(s.Profile.Ports)
-		cfg, err = vless.Config(s.Profile.VLESS, vless.Run{Host: s.Profile.Host, Port: port, Dial: pinned,
+		cfg, err = vless.Config(s.Profile.VLESS, vless.Run{Host: s.Profile.Host, Port: port, Dial: pinned, Via: upstream,
 			SOCKSListen: opts.SOCKSListen, SOCKSUsername: user, SOCKSPassword: pass})
 	} else {
 		cfg, err = BuildConfig(&s.Profile, opts)
@@ -514,6 +551,10 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 	)
 	if vl {
 		args, env = []string{"run", "-format", "json", "-c", cfgPath}, os.Environ()
+		if upstream != nil {
+			// A browser dialer or merged config could bypass dialerProxy.
+			env = append(env, "xray.browser.dialer=", "xray.location.confdir=")
+		}
 	}
 	exe := s.Exe
 	if s.ExePath != nil {
@@ -555,7 +596,7 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 		// the server (watchVLESS).
 		var lastWarn atomic.Pointer[string]
 		var vlessServer string
-		if balance == nil {
+		if balance == nil && upstream == nil {
 			vport, _ := VLESSPort(s.Profile.Ports)
 			vhost := s.Profile.Host
 			if pinned.IsValid() {
@@ -685,7 +726,12 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 	go func() { exited <- proc.Wait(); pw.Close() }()
 
 	var ticker <-chan time.Time
-	if balance == nil && !s.Profile.HostIsIP() {
+	var chainTicker <-chan time.Time
+	if upstream != nil {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		chainTicker = t.C
+	} else if balance == nil && !s.Profile.HostIsIP() {
 		every := s.ReResolveEvery
 		if every == 0 {
 			every = 5 * time.Minute
@@ -708,6 +754,20 @@ wait:
 			break wait
 		case r := <-kick:
 			restartReason, restartKind = r.msg, r.kind
+			proc.Kill()
+		case <-relayDone:
+			relayDone = nil
+			restartReason, restartKind = "UDP-соединение через первый VPN закрыто", ErrTimeout
+			proc.Kill()
+		case <-chainTicker:
+			if ep := s.Via(); ep != nil && ep.Available() {
+				cl := ep.SOCKS()
+				if cl.Server == upstream.Server && cl.Username == upstream.Username && cl.Password == upstream.Password {
+					continue
+				}
+			}
+			chainTicker = nil
+			restartReason, restartKind = "Соединение с первым VPN изменилось", ErrTimeout
 			proc.Kill()
 		case <-ticker:
 			newIPs, err := s.resolve(ctx)

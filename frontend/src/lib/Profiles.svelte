@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, errText, fmtBytes, type ProfileSummary, type Profile, type ImportResult } from '../api';
-  import { ui, hide, serverSections } from '../state.svelte';
+  import { ui, hide, profileName, serverSections } from '../state.svelte';
   import Icon from './Icon.svelte';
   import ProfileEditor from './ProfileEditor.svelte';
   import CheckProfile from './CheckProfile.svelte';
@@ -409,6 +409,7 @@
           <div class="name ellipsis" title={dense ? usedText(p) : undefined}>{hide(p.name)}</div>
           <div class="meta">
             <span class="mono ellipsis">{hide(p.server)}</span>
+            {#if p.via}<span class="badge">через {profileName(p.via)}</span>{/if}
             {#if p.source && scope === '*' && !(dense && places > 1 && !ranked)}<span class="badge"><Icon name="rss" size={11} />{hide(p.sourceName)}</span>{/if}
             {#if p.missing}<span class="badge warn-b" title="Сервер пропал из подписки, но его используют правила">нет в подписке</span>{/if}
             {#if p.duplicateOf && p.duplicateSub && !p.source}
@@ -441,8 +442,8 @@
           ><Icon name="zap" size={dense ? 16 : 15} />{#if !dense}Проверить{/if}</button
         >
         <div class="acts">
+          <button class="icon" onclick={() => edit(p)} title={p.balance ? 'Настроить цепочку VPN' : 'Изменить'}><Icon name="edit" size={16} /></button>
           {#if !p.balance}
-            <button class="icon" onclick={() => edit(p)} title="Изменить"><Icon name="edit" size={16} /></button>
             <button class="icon" onclick={() => run(() => api.CopyURI(p.id), 'Ссылка скопирована (в ней пароль сервера)')} title="Копировать ссылку"><Icon name="copy" size={16} /></button>
           {/if}
           <button class="icon" onclick={() => move(p.id, -1)} disabled={i === 0 || !!fixed} title={fixed || 'Выше'}><Icon name="up" size={16} /></button>

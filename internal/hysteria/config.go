@@ -1,6 +1,7 @@
 package hysteria
 
 import (
+	"errors"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -10,6 +11,8 @@ import (
 type RunOptions struct {
 	// ServerIP, when valid, replaces Host in the server field (pin IP mode).
 	ServerIP string
+	// UDPRelay is the loopback address that carries QUIC through the first VPN.
+	UDPRelay string
 	// SOCKS5 inbound on loopback, with random credentials so other local
 	// processes cannot use the tunnel.
 	SOCKSListen   string
@@ -97,6 +100,9 @@ func BuildConfig(p *Profile, o RunOptions) ([]byte, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
+	if p.Via != "" && o.UDPRelay == "" {
+		return nil, errors.New("нет UDP-ретранслятора первого VPN")
+	}
 	host := p.Host
 	sni := p.TLS.SNI
 	if o.ServerIP != "" {
@@ -105,6 +111,9 @@ func BuildConfig(p *Profile, o RunOptions) ([]byte, error) {
 			// Keep the certificate check on the domain when we pin the IP.
 			sni = p.Host
 		}
+	}
+	if o.UDPRelay != "" && sni == "" {
+		sni = p.Host
 	}
 	c := yConfig{
 		Server:   ServerString(host, p.Ports),
@@ -115,6 +124,9 @@ func BuildConfig(p *Profile, o RunOptions) ([]byte, error) {
 			Username: o.SOCKSUsername,
 			Password: o.SOCKSPassword,
 		},
+	}
+	if o.UDPRelay != "" {
+		c.Server = o.UDPRelay
 	}
 	// Hysteria checks pinSHA256 in addition to the CA chain, so a pinned
 	// self-signed certificate would still fail with "unknown authority".
@@ -134,7 +146,11 @@ func BuildConfig(p *Profile, o RunOptions) ([]byte, error) {
 	if p.Hop != (Hop{}) {
 		c.Transport = &yTransport{UDP: yTransportUDP{HopInterval: p.Hop.Interval, MinHopInterval: p.Hop.MinInterval, MaxHopInterval: p.Hop.MaxInterval}}
 	}
-	if q := yQUIC(p.QUIC); q != (yQUIC{}) {
+	q := yQUIC(p.QUIC)
+	if o.UDPRelay != "" {
+		q.DisablePathMTUDiscovery = true
+	}
+	if q != (yQUIC{}) {
 		c.QUIC = &q
 	}
 	if p.Congestion != (Congestion{}) {

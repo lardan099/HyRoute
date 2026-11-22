@@ -33,6 +33,10 @@ func connKey(p hysteria.Profile) string {
 	return p.URI()
 }
 
+func profileConnKey(p hysteria.Profile) string {
+	return connKey(p) + "\x00" + p.Via
+}
+
 // sameServers reports whether a and b are the same servers: the same
 // connections, whatever their names and order (a panel may put the
 // traffic left into every name).
@@ -169,6 +173,7 @@ func mergeSubscription(list []hysteria.Profile, source string, fresh []hysteria.
 // is the user's: the rest of the editor's Hysteria settings mean nothing
 // to the other protocol.
 func keepLocal(fresh, old hysteria.Profile) hysteria.Profile {
+	fresh.Via = old.Via
 	if fresh.Balance != nil || old.Balance != nil {
 		return fresh
 	}

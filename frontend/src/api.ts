@@ -63,10 +63,12 @@ export interface Profile {
   quic: Record<string, unknown>;
   fastOpen?: boolean;
   pinServerIP: boolean;
+  via?: string;
   // '' (Hysteria 2) or 'vless' (run by Xray): a VLESS server uses host,
   // ports (one), pinServerIP and vless; the Hysteria fields stay empty.
   protocol?: string;
   vless?: VLESSSettings;
+  balance?: object;
 }
 
 // The VLESS part of a server (internal/vless.Settings).
@@ -109,6 +111,7 @@ export interface ProfileSummary {
   transport: string; // VLESS: "REALITY", "WS · TLS" …
   flow: string; // VLESS flow, '' none
   balance?: boolean;
+  via?: string;
   main: boolean;
   source: string;
   sourceName: string;

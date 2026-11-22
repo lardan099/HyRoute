@@ -53,6 +53,8 @@ type Profile struct {
 	// PinServerIP makes HyRoute resolve Host itself and hand Hysteria the IP,
 	// so the excluded IP is exactly the one Hysteria connects to.
 	PinServerIP bool `json:"pinServerIP"`
+	// Via is the ID of the profile that carries this server's connection.
+	Via string `json:"via,omitempty"`
 
 	// Source is "" for profiles added by hand, "sub:<id>" for profiles
 	// that a subscription manages.
@@ -221,11 +223,19 @@ type QUIC struct {
 
 // Validate checks the fields HyRoute relies on.
 func (p *Profile) Validate() error {
+	if p.Via != "" && p.ID == p.Via {
+		return errors.New("профиль не может подключаться через себя")
+	}
 	if p.Balance != nil {
 		q := *p
-		q.ID, q.Name, q.Source, q.Protocol, q.Missing, q.Balance = "", "", "", "", false, nil
+		q.ID, q.Name, q.Source, q.Protocol, q.Missing, q.Balance, q.Via = "", "", "", "", false, nil, ""
 		if !p.IsVLESS() || !reflect.DeepEqual(q, Profile{}) {
 			return errors.New("балансировщик Xray хранит адреса и параметры только в узлах")
+		}
+		if p.Via != "" {
+			if err := p.Balance.ValidateChain(); err != nil {
+				return err
+			}
 		}
 		return p.Balance.Validate()
 	}
@@ -241,6 +251,11 @@ func (p *Profile) Validate() error {
 	}
 	if _, err := ParsePorts(p.Ports); err != nil {
 		return err
+	}
+	if p.Via != "" {
+		if _, err := VLESSPort(p.Ports); err != nil {
+			return errors.New("для Hysteria 2 через другой VPN нужен один порт")
+		}
 	}
 	switch strings.ToLower(p.Obfs.Type) {
 	case "":
@@ -286,8 +301,14 @@ func (p *Profile) validateVLESS() error {
 	}
 	q := *p
 	q.ID, q.Name, q.Source, q.Missing, q.Host, q.Ports, q.Protocol, q.VLESS, q.PinServerIP = "", "", "", false, "", "", "", vless.Settings{}, false
+	q.Via = ""
 	if !reflect.DeepEqual(q, Profile{}) {
 		return errors.New("у сервера VLESS не бывает настроек Hysteria (auth, obfs, port hopping, скорость, QUIC)")
+	}
+	if p.Via != "" {
+		if err := p.VLESS.ValidateChain(); err != nil {
+			return err
+		}
 	}
 	return p.VLESS.ValidateFor(p.Host)
 }

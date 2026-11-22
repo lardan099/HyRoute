@@ -574,6 +574,7 @@ func collectSections(st cfgState, keys []string, secrets bool, app *BackupAppear
 						p.ClearSecrets()
 					}
 					v.List = append(v.List, p)
+					refs = append(refs, p.Via)
 				}
 			}
 			refs = append(refs, v.Main)
@@ -588,6 +589,7 @@ func collectSections(st cfgState, keys []string, secrets bool, app *BackupAppear
 				for _, p := range st.Profiles.List {
 					if p.Source == "sub:"+s.ID {
 						b.Servers = append(b.Servers, p)
+						refs = append(refs, p.Via)
 					}
 				}
 				list = append(list, b)

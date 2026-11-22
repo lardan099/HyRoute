@@ -36,6 +36,7 @@ type Runner interface {
 type Hooks struct {
 	// SetServerIPs must be called before Hysteria sends its first packet.
 	SetServerIPs func([]netip.Addr) error
+	Via          func() hysteria.Upstream
 	OnStatus     func(hysteria.Status)
 	LogLine      func(hysteria.LogLine)
 	// RedactGroup is the redactor group for this runner's secrets.
@@ -217,6 +218,21 @@ func (m *Manager) newEndpoint(key string, p hysteria.Profile, test bool) *Endpoi
 	}
 	e.r = m.New(p, Hooks{
 		SetServerIPs: func(ips []netip.Addr) error { return m.setIPs(e.ipKey, ips) },
+		Via: func() hysteria.Upstream {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if p.Via == "" || p.Via == p.ID {
+				return nil
+			}
+			up := m.eps[p.Via]
+			if up == nil && test {
+				up = m.eps["test:"+p.Via]
+			}
+			if up == nil || up.Profile.Via != "" {
+				return nil
+			}
+			return up
+		},
 		OnStatus: func(st hysteria.Status) {
 			if m.OnStatus != nil {
 				m.OnStatus(p.ID, st)

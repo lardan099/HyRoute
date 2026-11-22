@@ -274,6 +274,7 @@ func (c *Controller) routedLocked() map[string]bool {
 		routed[id] = true
 	}
 	c.expandGroupsLocked(routed)
+	c.addChainIngressLocked(routed)
 	return routed
 }
 

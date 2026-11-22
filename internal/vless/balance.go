@@ -3,6 +3,7 @@ package vless
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strconv"
 	"time"
@@ -55,6 +56,15 @@ func (b Balance) Validate() error {
 	return nil
 }
 
+func (b Balance) ValidateChain() error {
+	for _, n := range b.Nodes {
+		if err := n.connectionSettings().ValidateChain(); err != nil {
+			return fmt.Errorf("узел %s: %w", n.Host, err)
+		}
+	}
+	return nil
+}
+
 // BalanceConfig gives every resolved node its own Xray outbound. The
 // addresses are pinned so the engine can exclude exactly what Xray dials.
 // An invalid address marks a node whose DNS lookup failed this time.
@@ -62,7 +72,7 @@ func BalanceConfig(b Balance, ips []netip.Addr, r Run) ([]byte, error) {
 	if err := b.Validate(); err != nil {
 		return nil, err
 	}
-	if len(ips) != len(b.Nodes) {
+	if r.Via == nil && len(ips) != len(b.Nodes) || r.Via != nil && len(ips) != 0 {
 		return nil, errors.New("не совпадают адреса и узлы балансировщика")
 	}
 	cfg, err := clientConfig(r, b.BlockBitTorrent)
@@ -72,10 +82,14 @@ func BalanceConfig(b Balance, ips []netip.Addr, r Run) ([]byte, error) {
 	const prefix = "balanced-"
 	var outbounds []any
 	for i, n := range b.Nodes {
-		if !ips[i].IsValid() {
-			continue
+		node := Run{Host: n.Host, Port: n.Port, Via: r.Via}
+		if r.Via == nil {
+			node.Dial = ips[i]
+			if !node.Dial.IsValid() {
+				continue
+			}
 		}
-		out, err := outbound(n.connectionSettings(), Run{Host: n.Host, Port: n.Port, Dial: ips[i]}, prefix+strconv.Itoa(i))
+		out, err := outbound(n.connectionSettings(), node, prefix+strconv.Itoa(i))
 		if err != nil {
 			return nil, err
 		}
@@ -83,6 +97,13 @@ func BalanceConfig(b Balance, ips []netip.Addr, r Run) ([]byte, error) {
 	}
 	if len(outbounds) == 0 {
 		return nil, errors.New("ни один адрес балансировщика не разрешился")
+	}
+	if r.Via != nil {
+		via, err := viaOutbound(*r.Via)
+		if err != nil {
+			return nil, err
+		}
+		outbounds = append(outbounds, via)
 	}
 	var rules []any
 	if b.BlockBitTorrent {

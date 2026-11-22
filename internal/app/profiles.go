@@ -30,6 +30,7 @@ type ProfileSummary struct {
 	Transport string `json:"transport"`
 	Flow      string `json:"flow"`
 	Balance   bool   `json:"balance,omitempty"`
+	Via       string `json:"via,omitempty"`
 	// Main: rules without an explicit profile use this one.
 	Main bool `json:"main"`
 	// Source: "" (manual) or "sub:<id>"; SourceName is the subscription.
@@ -63,7 +64,7 @@ func (c *Controller) summaryLocked(p *hysteria.Profile) ProfileSummary {
 	s := ProfileSummary{ID: p.ID, Name: p.Name, Server: hysteria.ServerString(p.Host, p.Ports), Host: p.Host,
 		Obfs: p.Obfs.Type, SNI: p.TLS.SNI, Insecure: p.TLS.Insecure, Pinned: p.TLS.PinSHA256 != "",
 		Main: p.ID == c.mainTargetLocked(), Source: p.Source, Missing: p.Missing, UsedBy: c.usedByLocked(p.ID), FastOpen: fastOpen(p),
-		Protocol: "hysteria2"}
+		Protocol: "hysteria2", Via: p.Via}
 	if p.IsVLESS() {
 		s.Protocol, s.Transport, s.Flow = "vless", p.Transport(), p.VLESS.Flow
 		s.SNI, s.Pinned = p.VLESS.SNI, p.VLESS.PinSHA256 != ""
@@ -87,6 +88,16 @@ func fastOpen(p *hysteria.Profile) bool { return p.FastOpen || p.IsVLESS() }
 // groups that hold it.
 func (c *Controller) usedByLocked(id string) []string {
 	return append(c.ruleUsesLocked(id), c.memberOfLocked(id)...)
+}
+
+func (c *Controller) chainRefsLocked(id string) []string {
+	var refs []string
+	for _, p := range c.profiles.List {
+		if p.Via != "" && p.Via == id {
+			refs = append(refs, "цепочка «"+p.Name+"»")
+		}
+	}
+	return refs
 }
 
 func (c *Controller) ruleUsesLocked(id string) []string {
@@ -184,7 +195,7 @@ func (c *Controller) Profiles() []ProfileSummary {
 	kept := map[string]*hysteria.Profile{} // connKey -> the server kept
 	for i := range c.profiles.List {
 		p := &c.profiles.List[i]
-		k := connKey(*p)
+		k := profileConnKey(*p)
 		if o := kept[k]; o == nil || o.Source == "" && p.Source != "" {
 			kept[k] = p
 		}
@@ -192,7 +203,7 @@ func (c *Controller) Profiles() []ProfileSummary {
 	for i := range c.profiles.List {
 		p := &c.profiles.List[i]
 		s := c.summaryLocked(p)
-		if o := kept[connKey(*p)]; o != p {
+		if o := kept[profileConnKey(*p)]; o != p {
 			s.DuplicateOf = o.Name
 			if o.Source != "" {
 				s.DuplicateSub = c.sourceNameLocked(o.Source)
@@ -206,9 +217,9 @@ func (c *Controller) Profiles() []ProfileSummary {
 // sameServerLocked is the server other than skip with exactly the
 // connection of p (its name aside), nil when none.
 func (c *Controller) sameServerLocked(p hysteria.Profile, skip string) *hysteria.Profile {
-	k := connKey(p)
+	k := profileConnKey(p)
 	for i := range c.profiles.List {
-		if o := &c.profiles.List[i]; o.ID != skip && connKey(*o) == k {
+		if o := &c.profiles.List[i]; o.ID != skip && profileConnKey(*o) == k {
 			return o
 		}
 	}
@@ -264,7 +275,7 @@ func (c *Controller) ImportURIs(text string) (ImportResult, error) {
 	var added []hysteria.Profile
 	seen := map[string]string{} // connKey -> name, within the text
 	for _, p := range parsed.Profiles {
-		k := connKey(p)
+		k := profileConnKey(p)
 		switch o := c.sameServerLocked(p, ""); {
 		case o != nil:
 			res.Skipped = append(res.Skipped, fmt.Sprintf("«%s» уже есть: %s", p.Name, c.duplicateServerText(o)))
@@ -383,30 +394,54 @@ func hostName(h string) bool {
 
 // SaveProfile creates (empty ID) or replaces a profile.
 func (c *Controller) SaveProfile(p hysteria.Profile) (ProfileSummary, error) {
-	if p.Balance != nil {
-		return ProfileSummary{}, errors.New("балансировщик Xray обновляется из подписки")
-	}
-	host, ports, err := editorHost(p.Host, p.Ports)
-	if err != nil {
-		return ProfileSummary{}, err
-	}
-	p.Host, p.Ports = host, ports
-	p.Normalize()
-	if err := p.Validate(); err != nil {
-		return ProfileSummary{}, err
-	}
-	if p.Name == "" {
-		p.Name = p.Host
+	if p.Balance == nil {
+		host, ports, err := editorHost(p.Host, p.Ports)
+		if err != nil {
+			return ProfileSummary{}, err
+		}
+		p.Host, p.Ports = host, ports
+		p.Normalize()
+		if err := p.Validate(); err != nil {
+			return ProfileSummary{}, err
+		}
+		if p.Name == "" {
+			p.Name = p.Host
+		}
 	}
 	c.mu.Lock()
 	// Only an edit that makes a duplicate is refused: a server that
 	// already was one can still be renamed (or changed to another).
 	cur := c.profiles.Find(p.ID)
-	if cur != nil && cur.Balance != nil {
+	switch {
+	case p.Balance != nil && cur != nil && cur.Balance != nil:
+		// The provider owns the nodes even when the local chain changes.
+		via := p.Via
+		p = *cur
+		p.Via = via
+		if err := p.Validate(); err != nil {
+			c.mu.Unlock()
+			return ProfileSummary{}, err
+		}
+	case p.Balance != nil || cur != nil && cur.Balance != nil:
 		c.mu.Unlock()
 		return ProfileSummary{}, errors.New("балансировщик Xray обновляется из подписки")
 	}
-	unchanged := p.ID != "" && cur != nil && connKey(*cur) == connKey(p)
+	if p.Via != "" {
+		ingress := c.profiles.Find(p.Via)
+		if ingress == nil {
+			c.mu.Unlock()
+			return ProfileSummary{}, errors.New("первый VPN цепочки не найден")
+		}
+		if ingress.Via != "" {
+			c.mu.Unlock()
+			return ProfileSummary{}, errors.New("первый VPN цепочки уже подключается через другой VPN")
+		}
+		if refs := c.chainRefsLocked(p.ID); len(refs) > 0 {
+			c.mu.Unlock()
+			return ProfileSummary{}, fmt.Errorf("профиль уже используется как первый VPN: %s", strings.Join(refs, ", "))
+		}
+	}
+	unchanged := p.ID != "" && cur != nil && profileConnKey(*cur) == profileConnKey(p)
 	if o := c.sameServerLocked(p, p.ID); o != nil && !unchanged {
 		c.mu.Unlock()
 		return ProfileSummary{}, fmt.Errorf("такой сервер уже есть: %s — с тем же адресом, паролем и настройками", c.duplicateServerText(o))
@@ -427,7 +462,7 @@ func (c *Controller) SaveProfile(p hysteria.Profile) (ProfileSummary, error) {
 	if next.Active == "" {
 		next.Active = p.ID
 	}
-	err = c.saveProfilesLocked(next)
+	err := c.saveProfilesLocked(next)
 	sum := c.summaryLocked(&p)
 	c.mu.Unlock()
 	c.changed()
@@ -458,6 +493,10 @@ func (c *Controller) DeleteProfile(id string) error {
 	if err := c.deleteServerCheckLocked(id); err != nil {
 		c.mu.Unlock()
 		return err
+	}
+	if refs := c.chainRefsLocked(id); len(refs) > 0 {
+		c.mu.Unlock()
+		return fmt.Errorf("профиль используется как первый VPN: %s", strings.Join(refs, ", "))
 	}
 	if refs := c.explicitRefsLocked(id); len(refs) > 0 {
 		c.mu.Unlock()

@@ -342,6 +342,7 @@ func (c *Controller) routingLocked() (*rules.Set, []hysteria.Profile, []string) 
 		}
 	}
 	usedGroups := c.expandGroupsLocked(used)
+	c.addChainIngressLocked(used)
 	var want []hysteria.Profile // in list order
 	for _, p := range c.profiles.List {
 		if used[p.ID] {
@@ -352,6 +353,16 @@ func (c *Controller) routingLocked() (*rules.Set, []hysteria.Profile, []string) 
 		want = append(want, hysteria.Profile{ID: stubProfile, Name: "stub"})
 	}
 	return &set, want, usedGroups
+}
+
+func (c *Controller) addChainIngressLocked(used map[string]bool) {
+	for _, p := range c.profiles.List {
+		if p.Via != "" && used[p.ID] {
+			if ingress := c.profiles.Find(p.Via); ingress != nil && ingress.Via == "" {
+				used[ingress.ID] = true
+			}
+		}
+	}
 }
 
 // applyRoutingLocked pushes the current rules and profiles to the running

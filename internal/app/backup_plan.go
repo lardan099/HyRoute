@@ -188,6 +188,9 @@ func importedPathErr(p string, env planEnv) string {
 // check and Validate (a placeholder obfs password stands for one a copy
 // without secrets could not carry). It returns the server normalized.
 func validServer(p hysteria.Profile, secrets bool) (hysteria.Profile, error) {
+	if p.Balance != nil {
+		return p, p.Validate()
+	}
 	host, ports, err := editorHost(p.Host, p.Ports)
 	if err != nil {
 		return p, err
@@ -278,6 +281,7 @@ type planCtx struct {
 	full     map[string]hysteria.Profile // the backup's servers by their ID in the file
 	removed  []removedServer             // current servers the restore drops (kept if still referenced)
 	cands    []removedServer             // add mode: subscription servers of the file not matched, kept only if referenced
+	chainIDs map[string]bool             // restored profiles whose ingress IDs refer to the backup
 	dangling []danglingRef
 	shortN   int
 	used     map[string]bool // IDs taken in the result
@@ -304,7 +308,7 @@ func planRestore(cur cfgState, p *backup.Payload, ch BackupChoice, env planEnv) 
 	d := decodeSections(p)
 	pl := &restorePlan{redact: map[string][]string{}}
 	x := &planCtx{pl: pl, cur: cur, p: p, d: d, ch: map[string]string{}, env: env, tmap: map[string]string{},
-		full: map[string]hysteria.Profile{}, used: map[string]bool{}, rsmap: map[string]string{}}
+		full: map[string]hysteria.Profile{}, used: map[string]bool{}, rsmap: map[string]string{}, chainIDs: map[string]bool{}}
 	for k, m := range ch.Sections {
 		x.ch[k] = m
 	}
@@ -326,6 +330,7 @@ func planRestore(cur cfgState, p *backup.Payload, ch BackupChoice, env planEnv) 
 
 	x.planServers()
 	x.planSubs()
+	x.remapChains()
 	x.planMain()
 	x.planGroups()
 	x.planRules()
@@ -591,6 +596,7 @@ func (x *planCtx) planServers() {
 			x.tmap[b.ID] = cur.ID
 			b.ID = cur.ID
 			x.used[b.ID] = true
+			x.chainIDs[b.ID] = b.Via != ""
 			next.Profiles.List = append(next.Profiles.List, b)
 			updated++
 			continue
@@ -598,6 +604,7 @@ func (x *planCtx) planServers() {
 		id := x.freeID(b.ID)
 		x.tmap[b.ID] = id
 		b.ID = id
+		x.chainIDs[b.ID] = b.Via != ""
 		if free {
 			b.ClearSecrets()
 			noPass++
@@ -691,6 +698,7 @@ func (x *planCtx) planSubs() {
 				}
 				x.tmap[s.ID] = id
 				s.ID = id
+				x.chainIDs[s.ID] = s.Via != ""
 				next.Profiles.List = append(next.Profiles.List, s)
 			}
 			if ns.Enabled {
@@ -768,6 +776,7 @@ func (x *planCtx) planSubs() {
 			bid := s.ID
 			s.ID = x.freeID(s.ID)
 			x.tmap[bid] = s.ID
+			x.chainIDs[s.ID] = s.Via != ""
 			next.Profiles.List = append(next.Profiles.List, s)
 		}
 		if ns.Enabled {
@@ -1325,6 +1334,49 @@ func (x *planCtx) planProxies() {
 
 // resultRefs: the targets referenced in the result (every rule profile,
 // disabled rules too; proxies; the main target), as targetRefsLocked.
+func (x *planCtx) remapChains() {
+	list := x.pl.next.Profiles.List
+	index := indexOf(list)
+	unresolved := map[string]string{}
+	remap := func(p *hysteria.Profile) {
+		id := p.Via
+		if mapped := x.tmap[id]; mapped != "" {
+			p.Via = mapped
+			x.dangling = append(x.dangling, danglingRef{"цепочка «" + p.Name + "»", p.Via})
+			return
+		}
+		if full, ok := x.full[id]; ok {
+			if i, _ := matchServer(full, list, index, true, nil); i >= 0 {
+				p.Via = list[i].ID
+				return
+			}
+		} else if cur := x.pl.next.Profiles.Find(id); cur != nil {
+			if hint, ok := x.p.Targets[id]; ok && !hint.Group &&
+				hint.Name == cur.Name && strings.EqualFold(hint.Host, cur.Host) &&
+				hysteria.NormalizePorts(hint.Ports) == hysteria.NormalizePorts(cur.Ports) {
+				return
+			}
+		}
+		// An unrelated current server can have the backup's ingress ID.
+		// Keep a dangling reference so this profile cannot connect directly.
+		if unresolved[id] == "" {
+			unresolved[id] = x.freeID(id)
+		}
+		p.Via = unresolved[id]
+		x.dangling = append(x.dangling, danglingRef{"цепочка «" + p.Name + "»", p.Via})
+	}
+	for i := range list {
+		if x.chainIDs[list[i].ID] {
+			remap(&list[i])
+		}
+	}
+	for i := range x.cands {
+		if p := &x.cands[i].p; p.Via != "" {
+			remap(p)
+		}
+	}
+}
+
 func (x *planCtx) resultRefs() map[string][]string {
 	next := &x.pl.next
 	refs := map[string][]string{}
@@ -1357,6 +1409,9 @@ func (x *planCtx) resultRefs() map[string][]string {
 	for _, p := range next.Proxies {
 		add(p.Profile, "прокси «"+p.Name+"»")
 	}
+	for _, p := range next.Profiles.List {
+		add(p.Via, "цепочка «"+p.Name+"»")
+	}
 	add(next.mainTarget(), "основной")
 	return refs
 }
@@ -1377,6 +1432,11 @@ func (x *planCtx) keep(r removedServer) {
 // keepReferenced is step 6.
 func (x *planCtx) keepReferenced() {
 	refs := x.resultRefs()
+	for _, r := range slices.Concat(x.removed, x.cands) {
+		if r.p.Via != "" && len(refs[r.p.ID]) > 0 {
+			refs[r.p.Via] = append(refs[r.p.Via], "цепочка «"+r.p.Name+"»")
+		}
+	}
 	n := 0
 	var rest []removedServer
 	for _, r := range x.removed {

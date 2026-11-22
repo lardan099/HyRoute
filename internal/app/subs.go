@@ -919,7 +919,7 @@ func (c *Controller) applyFetched(id string, res FetchResult, rollback bool, tag
 // groupPinsLocked.)
 func (c *Controller) profileUsedLocked(id string) bool {
 	return id == c.profiles.Active || c.refsUnknownLocked() != nil || c.groupsBroken != nil ||
-		len(c.explicitRefsLocked(id)) > 0 || len(c.proxyRefsLocked(id)) > 0
+		len(c.explicitRefsLocked(id)) > 0 || len(c.proxyRefsLocked(id)) > 0 || len(c.chainRefsLocked(id)) > 0
 }
 
 // proxyRefsLocked lists local proxies that name profile id explicitly.
