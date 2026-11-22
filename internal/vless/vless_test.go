@@ -3,7 +3,9 @@ package vless
 import (
 	"encoding/json"
 	"net/netip"
+	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -121,6 +123,34 @@ func TestRoundTrip(t *testing.T) {
 		}
 		if !reflect.DeepEqual(a, b) {
 			t.Errorf("round trip of %s:\n%+v\n%+v", link, a, b)
+		}
+	}
+}
+
+func TestTCPFragmentShareLink(t *testing.T) {
+	want := TCPFragment{Packets: "tlshello", Length: "20-40", Interval: "0-2"}
+	link := Link{Host: "example.org", Port: 443, Settings: Settings{
+		ID: "fragment-test", Security: "tls", TCPFragment: want,
+	}}
+	got, warnings, err := Parse(link.String())
+	if err != nil || len(warnings) != 0 || got.Settings.TCPFragment != want {
+		t.Fatalf("fm round trip: %+v %v %v", got.Settings.TCPFragment, warnings, err)
+	}
+	for _, bad := range []string{
+		`{"tcp":[{"type":"fragment","settings":{"packets":"tlshello","length":"0-40","interval":"0-2"}}]}`,
+		`{"tcp":[{"type":"fragment","settings":{"packets":"tlshello","length":"20-40","interval":"0-2","unknown":"value"}}]}`,
+		`{"udp":[{"type":"unsupported"}]}`,
+	} {
+		u, err := url.Parse(link.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := u.Query()
+		q.Set("fm", bad)
+		u.RawQuery = q.Encode()
+		got, warnings, err := Parse(u.String())
+		if err != nil || !slices.Contains(warnings, "finalmask не переносится") || got.Settings.TCPFragment != (TCPFragment{}) {
+			t.Fatalf("unsupported fm: %+v %v %v", got.Settings.TCPFragment, warnings, err)
 		}
 	}
 }

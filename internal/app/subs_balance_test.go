@@ -36,7 +36,8 @@ const balanceJSON = `[
   },
   {
     "remarks":"Сервер",
-    "outbounds":[{"tag":"direct-node","protocol":"vless","settings":{"address":"a.example","port":443,"id":"test-balance-secret-a"},"streamSettings":{"security":"tls"}}]
+    "outbounds":[{"tag":"direct-node","protocol":"vless","settings":{"address":"a.example","port":443,"id":"test-balance-secret-a"},
+      "streamSettings":{"security":"tls","finalmask":{"tcp":[{"type":"fragment","settings":{"packets":"tlshello","length":"20-40","interval":"5-10"}}]}}}]
   }
 ]`
 
@@ -77,6 +78,7 @@ func TestSubscriptionReplacesPlaceholderWithSelectableXrayBalance(t *testing.T) 
 		t.Fatal(err)
 	}
 	placeholder := ctl.Profiles()[0]
+	originalNode := ctl.Profiles()[1]
 	if placeholder.Host != "placeholder.example" || placeholder.Balance {
 		t.Fatal("initial non-JSON response was not used")
 	}
@@ -85,7 +87,8 @@ func TestSubscriptionReplacesPlaceholderWithSelectableXrayBalance(t *testing.T) 
 		t.Fatal(err)
 	}
 	profiles := ctl.Profiles()
-	if len(profiles) != 2 || profiles[0].ID != placeholder.ID || !profiles[0].Balance || profiles[0].Host != "" {
+	if len(profiles) != 2 || profiles[0].ID != placeholder.ID || !profiles[0].Balance || profiles[0].Host != "" ||
+		profiles[1].ID != originalNode.ID {
 		t.Fatalf("selectable balancer did not replace the placeholder: %+v", profiles)
 	}
 	if err := ctl.SetMain(placeholder.ID); err != nil {
@@ -111,6 +114,16 @@ func TestSubscriptionReplacesPlaceholderWithSelectableXrayBalance(t *testing.T) 
 	b := saved.Find(placeholder.ID).Balance
 	if b.Nodes[0].Settings.ID != "test-balance-secret-a" || b.Nodes[0].Fragment.Packets != "tlshello" {
 		t.Fatal("balancer lost its settings after saving")
+	}
+	single := saved.Find(originalNode.ID)
+	if single == nil || single.VLESS.TCPFragment != b.Nodes[0].Fragment {
+		t.Fatal("the same finalmask must be imported for an individual profile")
+	}
+	singleConfig, err := vless.Config(single.VLESS, vless.Run{
+		Host: single.Host, Port: 443, SOCKSListen: "127.0.0.1:32000",
+	})
+	if err != nil || !strings.Contains(string(singleConfig), `"type": "fragment"`) {
+		t.Fatalf("individual Xray config lost the mask: %v", err)
 	}
 	stored, err := os.ReadFile(filepath.Join(ctl.Store.Dir, "profiles.json"))
 	if err != nil || strings.Contains(string(stored), "test-balance-secret") {

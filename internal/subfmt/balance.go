@@ -126,25 +126,6 @@ func xrayNode(ob json.RawMessage, tag string) (vless.Node, error) {
 			return vless.Node{}, errors.New("неподдерживаемый выход балансировщика Xray")
 		}
 	}
-	var stream map[string]json.RawMessage
-	json.Unmarshal(parts["streamSettings"], &stream)
-	var fragment vless.TCPFragment
-	if raw := stream["finalmask"]; raw != nil && string(raw) != "null" {
-		var finalmask map[string]json.RawMessage
-		var tcp []struct {
-			Type     string
-			Settings vless.TCPFragment
-		}
-		if json.Unmarshal(raw, &finalmask) != nil || len(finalmask) != 1 ||
-			json.Unmarshal(finalmask["tcp"], &tcp) != nil || len(tcp) != 1 || tcp[0].Type != "fragment" ||
-			tcp[0].Settings == (vless.TCPFragment{}) {
-			return vless.Node{}, errors.New("у узла балансировщика неподдерживаемый finalmask")
-		}
-		fragment = tcp[0].Settings
-		delete(stream, "finalmask")
-		parts["streamSettings"], _ = json.Marshal(stream)
-		ob, _ = json.Marshal(parts)
-	}
 	var converted Result
 	converted.xray("vless", tag, ob)
 	if len(converted.Links) != 1 || len(converted.Warnings) != 0 {
@@ -154,5 +135,7 @@ func xrayNode(ob json.RawMessage, tag string) (vless.Node, error) {
 	if err != nil {
 		return vless.Node{}, errors.New("не удалось разобрать узел балансировщика VLESS")
 	}
+	fragment := link.Settings.TCPFragment
+	link.Settings.TCPFragment = vless.TCPFragment{}
 	return vless.Node{Host: link.Host, Port: link.Port, Settings: link.Settings, Fragment: fragment}, nil
 }

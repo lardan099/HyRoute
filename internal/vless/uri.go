@@ -1,6 +1,7 @@
 package vless
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -104,6 +105,13 @@ func Parse(raw string) (l Link, warnings []string, err error) {
 		}
 	}
 	s.Seed = get("seed")
+	if raw := get("fm"); raw != "" {
+		if f, err := ParseTCPFragment([]byte(raw)); err == nil && s.Network != "kcp" {
+			s.TCPFragment = f
+		} else {
+			warnings = append(warnings, "finalmask не переносится")
+		}
+	}
 	if s.Network == "grpc" && s.Mode == "" && s.ServiceName == "" {
 		// Some panels put the service name in path.
 		s.ServiceName, s.Path = s.Path, ""
@@ -120,9 +128,7 @@ func Parse(raw string) (l Link, warnings []string, err error) {
 		}
 	}
 	// Defaults or values with no effect on the client.
-	for _, k := range []string{"packetEncoding", "fm"} {
-		q.Del(k)
-	}
+	q.Del("packetEncoding")
 	for k := range q {
 		warnings = append(warnings, "ignored parameter "+k)
 	}
@@ -181,6 +187,10 @@ func (l Link) String() string {
 	set("mode", s.Mode)
 	set("extra", s.Extra)
 	set("seed", s.Seed)
+	if s.TCPFragment != (TCPFragment{}) {
+		raw, _ := json.Marshal(s.TCPFragment.finalMask())
+		q.Set("fm", string(raw))
+	}
 	u := url.URL{
 		Scheme:   "vless",
 		User:     url.User(s.ID),

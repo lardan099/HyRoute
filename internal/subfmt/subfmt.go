@@ -426,8 +426,12 @@ func (r *Result) xray(protocol, name string, raw json.RawMessage) {
 	if len(ss.Sockopt) > 0 {
 		r.warn(name, "sockopt (цепочки, fragment и т. п.) не переносится")
 	}
-	if len(ss.FinalMask) > 0 && string(ss.FinalMask) != "null" && vless.NormalizeNetwork(s.Network) != "kcp" {
-		r.warn(name, "finalmask не переносится")
+	if len(ss.FinalMask) > 0 && string(ss.FinalMask) != "null" {
+		if fragment, err := vless.ParseTCPFragment(ss.FinalMask); err == nil && vless.NormalizeNetwork(s.Network) != "kcp" {
+			s.TCPFragment = fragment
+		} else {
+			r.warn(name, "finalmask не переносится")
+		}
 	}
 	if o.Mux != nil && o.Mux.Enabled {
 		r.warn(name, "mux не переносится")

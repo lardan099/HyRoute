@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
-	"regexp"
 	"strconv"
 	"time"
 )
@@ -20,31 +19,21 @@ type Balance struct {
 }
 
 type Node struct {
-	Host     string      `json:"host"`
-	Port     int         `json:"port"`
-	Settings Settings    `json:"settings"`
+	Host     string   `json:"host"`
+	Port     int      `json:"port"`
+	Settings Settings `json:"settings"`
+	// Fragment is how HyRoute 1.3.38 stores the mask of a balanced node.
 	Fragment TCPFragment `json:"fragment,omitzero"`
-}
-
-type TCPFragment struct {
-	Packets  string `json:"packets"`
-	Length   string `json:"length"`
-	Interval string `json:"interval"`
 }
 
 const MaxBalanceNodes = 64
 
-var fragmentRange = regexp.MustCompile(`^[0-9]{1,4}(-[0-9]{1,4})?$`)
-
-func (f TCPFragment) Validate() error {
-	if f == (TCPFragment{}) {
-		return nil
+func (n Node) connectionSettings() Settings {
+	s := n.Settings
+	if s.TCPFragment == (TCPFragment{}) {
+		s.TCPFragment = n.Fragment
 	}
-	if (f.Packets != "tlshello" && !fragmentRange.MatchString(f.Packets)) ||
-		!fragmentRange.MatchString(f.Length) || !fragmentRange.MatchString(f.Interval) {
-		return errors.New("недопустимые параметры TCP fragment")
-	}
-	return nil
+	return s
 }
 
 func (b Balance) Validate() error {
@@ -58,10 +47,8 @@ func (b Balance) Validate() error {
 		if n.Host == "" || n.Port < 1 || n.Port > 65535 {
 			return errors.New("у узла балансировщика нет корректного адреса или порта")
 		}
-		if err := n.Settings.ValidateFor(n.Host); err != nil {
-			return err
-		}
-		if err := n.Fragment.Validate(); err != nil {
+		settings := n.connectionSettings()
+		if err := settings.ValidateFor(n.Host); err != nil {
 			return err
 		}
 	}
@@ -88,14 +75,9 @@ func BalanceConfig(b Balance, ips []netip.Addr, r Run) ([]byte, error) {
 		if !ips[i].IsValid() {
 			continue
 		}
-		out, err := outbound(n.Settings, Run{Host: n.Host, Port: n.Port, Dial: ips[i]}, prefix+strconv.Itoa(i))
+		out, err := outbound(n.connectionSettings(), Run{Host: n.Host, Port: n.Port, Dial: ips[i]}, prefix+strconv.Itoa(i))
 		if err != nil {
 			return nil, err
-		}
-		if n.Fragment != (TCPFragment{}) {
-			out["streamSettings"].(map[string]any)["finalmask"] = map[string]any{
-				"tcp": []any{map[string]any{"type": "fragment", "settings": n.Fragment}},
-			}
 		}
 		outbounds = append(outbounds, out)
 	}

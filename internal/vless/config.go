@@ -217,6 +217,9 @@ func stream(s Settings, name string) map[string]any {
 	default:
 		st["security"] = "none"
 	}
+	if s.TCPFragment != (TCPFragment{}) {
+		st["finalmask"] = s.TCPFragment.finalMask()
+	}
 	return st
 }
 

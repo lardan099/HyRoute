@@ -124,7 +124,8 @@ UUID — секрет: шифруется DPAPI вместе с `auth` и пар
 Подписки и вставка в «Добавить сервер», кроме списков ссылок, читают конфиги клиентов
 (`internal/subfmt`): Clash/Mihomo (`proxies`, типы `vless` и `hysteria2`), sing-box (`outbounds`
 с `type`) и Xray (`outbounds` с `protocol`, один конфиг или список). Серверы переводятся в ссылки и
-разбираются тем же `hysteria.ParseURI`; чего ссылка не несёт (`sockopt`, `mux`, `finalmask`,
+разбираются тем же `hysteria.ParseURI`. Одна TCP-маска `fragment` переносится из
+`finalmask` в параметр `fm` ссылки VLESS. Неподдерживаемые параметры (`sockopt`, `mux`, другие маски,
 `skip-cert-verify`), уходит в предупреждения, другие протоколы — в «пропущенные».
 
 ## Несколько серверов одновременно

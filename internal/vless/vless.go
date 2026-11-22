@@ -56,14 +56,15 @@ type Settings struct {
 	// header. Host and Path: ws, httpupgrade, xhttp, the raw HTTP header.
 	// Mode: grpc "gun" or "multi", xhttp "auto", "packet-up", "stream-up"
 	// or "stream-one". Extra: xhttp's extra settings (a JSON object).
-	HeaderType  string `json:"headerType,omitempty"`
-	Host        string `json:"host,omitempty"`
-	Path        string `json:"path,omitempty"`
-	ServiceName string `json:"serviceName,omitempty"`
-	Authority   string `json:"authority,omitempty"`
-	Mode        string `json:"mode,omitempty"`
-	Extra       string `json:"extra,omitempty"`
-	Seed        string `json:"seed,omitempty"` // mKCP
+	HeaderType  string      `json:"headerType,omitempty"`
+	Host        string      `json:"host,omitempty"`
+	Path        string      `json:"path,omitempty"`
+	ServiceName string      `json:"serviceName,omitempty"`
+	Authority   string      `json:"authority,omitempty"`
+	Mode        string      `json:"mode,omitempty"`
+	Extra       string      `json:"extra,omitempty"`
+	Seed        string      `json:"seed,omitempty"` // mKCP
+	TCPFragment TCPFragment `json:"tcpFragment,omitzero"`
 }
 
 // Transports and securities HyRoute runs.
@@ -100,6 +101,12 @@ func NormalizeNetwork(n string) string {
 func (s *Settings) Validate() error {
 	if err := ValidID(s.ID); err != nil {
 		return err
+	}
+	if err := s.TCPFragment.Validate(); err != nil {
+		return err
+	}
+	if s.Network == "kcp" && s.TCPFragment != (TCPFragment{}) {
+		return errors.New("TCP fragment требует транспорт на TCP")
 	}
 	switch s.Flow {
 	case "", FlowVision, FlowVisionUDP443:
