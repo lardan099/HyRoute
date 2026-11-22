@@ -98,6 +98,7 @@ func New(cfg Config) *Engine {
 	e.Core = NewCore(cfg.Options, cfg.Tunnels, procinfo.NewCache(), e.inject)
 	e.Core.Log = cfg.Log
 	e.Core.SelfPID = uint32(os.Getpid())
+	e.Core.SelfName = SelfName()
 	e.Core.OwnerFallback = attrib.LookupOwner
 	e.Core.Groups = cfg.Groups
 	e.Core.SysDNS = NewSysDNSView(sysdns.Snapshot, cfg.Log)

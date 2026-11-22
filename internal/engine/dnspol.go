@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -171,9 +173,13 @@ func (c *Core) dnsHold(a netip.Addr) bool {
 	return d == dnsMain || d == dnsSecondary
 }
 
-// ownHysteria: a hysteria.exe or xray.exe (VLESS) HyRoute started.
+// ownHysteria: a hysteria.exe or xray.exe (VLESS) HyRoute started, or a
+// copy of HyRoute itself (an AmneziaWG server).
 func (c *Core) ownHysteria(proc *procinfo.Info) bool {
-	return c.SelfPID != 0 && proc != nil && ownCoreName(proc.Name) && proc.Parent != nil && proc.Parent.PID == c.SelfPID
+	if c.SelfPID == 0 || proc == nil || proc.Parent == nil || proc.Parent.PID != c.SelfPID {
+		return false
+	}
+	return ownCoreName(proc.Name) || c.SelfName != "" && proc.Name == c.SelfName
 }
 
 // own reports HyRoute's own traffic: its process, or a Hysteria it started
@@ -917,6 +923,16 @@ func (c *Core) maintainDNS(now time.Time) {
 		c.kickedAt.Store(now.UnixNano())
 		c.SysDNS.Kick()
 	}
+}
+
+// SelfName is the lower-case basename of the running executable
+// (Core.SelfName).
+func SelfName() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(filepath.Base(exe))
 }
 
 // ownCoreName: the executable names of the cores HyRoute starts (Windows,

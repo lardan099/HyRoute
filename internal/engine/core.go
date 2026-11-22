@@ -154,6 +154,9 @@ type Core struct {
 	TCPTable    func() ([]attrib.TCPRow, error)
 	SelfPID     uint32
 	DnscachePID atomic.Uint32
+	// SelfName is HyRoute's executable (lower-case basename): the
+	// AmneziaWG servers it starts run the same file ("--awg").
+	SelfName string
 	// SystemDNS reports whether an address is a DNS server of the system
 	// (its network adapters'): Dnscache's encrypted DNS goes there.
 	SystemDNS func(netip.Addr) bool
@@ -958,8 +961,8 @@ func (c *Core) decide(p *packet.Packet, addr *divert.Address, proto uint8, key n
 }
 
 // exclusion is the mandatory exclusion (docs/architecture/interception.md) that a flow of a
-// known owner falls under, if any: HyRoute itself, the Hysteria and Xray
-// processes it started, and the Windows DNS client (Dnscache), which resolves the
+// known owner falls under, if any: HyRoute itself, the Hysteria, Xray and
+// AmneziaWG processes it started, and the Windows DNS client (Dnscache), which resolves the
 // Hysteria servers: plain DNS on port 53, and DNS over HTTPS (TCP 443) or
 // TLS (TCP 853) to the system's DNS servers when Windows encrypts DNS.
 // Dnscache may share its svchost with other services, whose HTTPS to

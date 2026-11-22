@@ -47,12 +47,12 @@ func ParseVPNKey(key string) (Conf, []string, error) {
 	if err != nil {
 		return Conf{}, nil, err
 	}
-	text := string(data)
-	if IsConf(text) {
-		return ParseConf(text)
-	}
+	// The app's JSON holds the configuration in a string: JSON first.
 	var k amneziaKey
 	if err := json.Unmarshal(data, &k); err != nil {
+		if text := string(data); IsConf(text) {
+			return ParseConf(text)
+		}
 		return Conf{}, nil, errors.New("ключ vpn:// не прочитан: внутри нет ни конфига, ни данных приложения Amnezia")
 	}
 	if len(k.APIConfig) > 0 || len(k.AuthData) > 0 || len(k.APIKey) > 0 {

@@ -228,6 +228,7 @@ func New(cfg Config) *Engine {
 	e.Core = NewCore(cfg.Options, cfg.Tunnels, procinfo.NewCache(), e.inject)
 	e.Core.Log = cfg.Log
 	e.Core.SelfPID = uint32(os.Getpid())
+	e.Core.SelfName = SelfName()
 	e.Core.SystemDNS = (&systemDNS{}).Has
 	e.Core.IPv4Route = (&ipv4Route{}).Has
 	e.Core.OwnerFallback = func(proto uint8, local, remote netip.AddrPort) (uint32, bool) {
