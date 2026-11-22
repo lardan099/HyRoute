@@ -393,7 +393,7 @@
       <h2>С чего начать</h2>
       <ol>
         <li>
-          <b>Добавьте сервер.</b> Вставьте ссылку <code>hysteria2://…</code> или <code>vless://…</code> от вашего VPN или ссылку подписки.
+          <b>Добавьте сервер.</b> Вставьте ссылку <code>hysteria2://…</code> или <code>vless://…</code> от вашего VPN, ключ <code>vpn://…</code> или конфиг AmneziaWG, или ссылку подписки.
           <div class="row"><button class="primary" onclick={() => go('servers')}><Icon name="plus" size={16} />Добавить сервер</button><button onclick={() => go('subs')}><Icon name="rss" size={16} />Добавить подписку</button></div>
         </li>
         <li><b>Решите, что пускать через VPN:</b> весь трафик или только нужные программы и сайты.</li>

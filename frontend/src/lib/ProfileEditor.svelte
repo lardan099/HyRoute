@@ -45,11 +45,17 @@
   // what was typed for the other protocol until the save, where the
   // backend drops it.
   const isVLESS = $derived(p.protocol === 'vless');
+  // AmneziaWG: its settings live in p.awg, the endpoint in host and ports.
+  const isAWG = $derived(p.protocol === 'awg');
   function setProtocol(proto: string) {
     p.protocol = proto;
     if (proto === 'vless') {
       p.vless ??= { id: '', security: 'reality' };
       if (/[,-]/.test(p.ports)) p.ports = '443';
+    }
+    if (proto === 'awg') {
+      p.awg ??= { privateKey: '', publicKey: '', address: '' };
+      if (/[,-]/.test(p.ports) || !p.id) p.ports = '51820';
     }
   }
   // v is p.vless for the VLESS fields (always set while isVLESS).
@@ -70,7 +76,7 @@
     // and the pin as they are, and the backend trims only the address.
     if (p.tls.sni) p.tls.sni = p.tls.sni.trim();
     if (p.tls.pinSHA256) p.tls.pinSHA256 = p.tls.pinSHA256.trim();
-    if (!isVLESS && pinBad || isVLESS && vPinBad) {
+    if (!isVLESS && !isAWG && pinBad || isVLESS && vPinBad) {
       error = 'Отпечаток (pinSHA256) должен быть SHA-256 сертификата: 64 шестнадцатеричных символа (можно через «:»). С другим значением сервер не подключится.';
       return;
     }
@@ -141,6 +147,7 @@
         <select id="pe-proto" value={p.protocol ?? ''} onchange={(e) => setProtocol((e.currentTarget as HTMLSelectElement).value)}>
           <option value="">Hysteria 2</option>
           <option value="vless">VLESS (Xray)</option>
+          <option value="awg">AmneziaWG / WireGuard</option>
         </select>
       </div>
 
@@ -160,12 +167,54 @@
         {/if}
         {#if isVLESS}
           <input bind:value={p.ports} style="width: 170px" placeholder="443" title="Порт сервера" />
+        {:else if isAWG}
+          <input bind:value={p.ports} style="width: 170px" placeholder="51820" title="UDP-порт сервера" />
         {:else}
           <input bind:value={p.ports} style="width: 170px" placeholder="443 или 443,20000-50000" title="Порт или диапазоны для port hopping" />
         {/if}
       </div>
       {@render ingressPicker()}
-    {#if isVLESS && p.vless}
+    {#if isAWG && p.awg}
+      <label for="pe-awg-key">Приватный ключ</label>
+      <div class="row">
+        <input id="pe-awg-key" class="grow mono" type={showSecrets ? 'text' : 'password'} bind:value={p.awg.privateKey} placeholder="PrivateKey из [Interface]" />
+        <label class="check"><input type="checkbox" bind:checked={showSecrets} /> показать</label>
+      </div>
+
+      <label for="pe-awg-pub">Ключ сервера</label>
+      <input id="pe-awg-pub" class="mono" bind:value={p.awg.publicKey} placeholder="PublicKey из [Peer]" />
+
+      <label for="pe-awg-addr">Адрес в VPN</label>
+      <div class="row">
+        <input id="pe-awg-addr" class="grow" bind:value={p.awg.address} placeholder="Address, например 10.8.1.2/32" />
+        <input class="grow" bind:value={p.awg.dns} placeholder="DNS, по умолчанию 1.1.1.1" title="DNS-серверы, которые спрашиваются через туннель" />
+      </div>
+
+      <label for="pe-awg-jc">Мусорные пакеты</label>
+      <div class="row">
+        <input id="pe-awg-jc" class="num" type="number" min="0" max="128" bind:value={p.awg.jc} placeholder="Jc" title="Jc: сколько мусорных пакетов перед рукопожатием" />
+        <input class="num" type="number" min="0" bind:value={p.awg.jmin} placeholder="Jmin" title="Jmin: наименьший размер" />
+        <input class="num" type="number" min="0" bind:value={p.awg.jmax} placeholder="Jmax" title="Jmax: наибольший размер" />
+      </div>
+
+      <label for="pe-awg-s1">Дополнение S1–S4</label>
+      <div class="row">
+        <input id="pe-awg-s1" class="num" type="number" min="0" bind:value={p.awg.s1} placeholder="S1" title="S1: к пакету начала рукопожатия" />
+        <input class="num" type="number" min="0" bind:value={p.awg.s2} placeholder="S2" title="S2: к ответу на рукопожатие" />
+        <input class="num" type="number" min="0" bind:value={p.awg.s3} placeholder="S3" title="S3: к пакету cookie" />
+        <input class="num" type="number" min="0" bind:value={p.awg.s4} placeholder="S4" title="S4: к пакетам с данными" />
+      </div>
+
+      <label for="pe-awg-h1">Заголовки H1–H4</label>
+      <div class="row">
+        <input id="pe-awg-h1" class="grow mono" bind:value={p.awg.h1} placeholder="H1" title="Число или диапазон «от-до»" />
+        <input class="grow mono" bind:value={p.awg.h2} placeholder="H2" title="Число или диапазон «от-до»" />
+        <input class="grow mono" bind:value={p.awg.h3} placeholder="H3" title="Число или диапазон «от-до»" />
+        <input class="grow mono" bind:value={p.awg.h4} placeholder="H4" title="Число или диапазон «от-до»" />
+      </div>
+      <span></span>
+      <p class="muted small hint">Обфускация должна совпадать с сервером. Проще всего добавить сервер из конфига .conf или ключа vpn:// — тогда всё заполнится само. Без этих параметров это обычный WireGuard.</p>
+    {:else if isVLESS && p.vless}
       <label for="pe-uuid">UUID</label>
       <div class="row">
         <input id="pe-uuid" class="grow mono" type={showSecrets ? 'text' : 'password'} bind:value={p.vless.id} placeholder="id пользователя" />
@@ -259,7 +308,53 @@
     {/if}
     </div>
 
-    {#if isVLESS && p.vless}
+    {#if isAWG && p.awg}
+    <details class="adv">
+      <summary>Дополнительно: общий ключ, MTU, пакеты I1–I5, AmneziaWG 3</summary>
+      <div class="grid">
+        <label for="pe-awg-psk">Общий ключ</label>
+        <input id="pe-awg-psk" class="mono" type={showSecrets ? 'text' : 'password'} bind:value={p.awg.presharedKey} placeholder="PresharedKey, если сервер его выдал" />
+
+        <label for="pe-awg-mtu">MTU и keepalive</label>
+        <div class="row">
+          <input id="pe-awg-mtu" class="num" type="number" min="576" max="65535" bind:value={p.awg.mtu} placeholder="1420" title="MTU туннеля" />
+          <input bind:value={p.awg.keepalive} style="width: 170px" placeholder="PersistentKeepalive, с" title="Раз в сколько секунд слать keepalive: число или диапазон «от-до»" />
+        </div>
+
+        <label for="pe-awg-i1">Пакеты I1–I5</label>
+        <input id="pe-awg-i1" class="mono" bind:value={p.awg.i1} placeholder="I1, например <b 0x…><r 16><t>" />
+        <span></span>
+        <input class="mono" bind:value={p.awg.i2} placeholder="I2" />
+        <span></span>
+        <input class="mono" bind:value={p.awg.i3} placeholder="I3" />
+        <span></span>
+        <input class="mono" bind:value={p.awg.i4} placeholder="I4" />
+        <span></span>
+        <input class="mono" bind:value={p.awg.i5} placeholder="I5" />
+
+        <label for="pe-awg-hpk">Защита заголовков</label>
+        <input id="pe-awg-hpk" class="mono" type={showSecrets ? 'text' : 'password'} bind:value={p.awg.headerProtectionKey} placeholder="HeaderProtectionKey (AmneziaWG 3)" />
+
+        <label for="pe-awg-pad">Дополнение данных</label>
+        <input id="pe-awg-pad" bind:value={p.awg.contentPadding} style="width: 170px" placeholder="ContentPaddingAddition" title="Число или диапазон «от-до»" />
+
+        <span></span>
+        <div class="row">
+          <label class="check"><input type="checkbox" bind:checked={p.awg.randomTrailers} /> Случайные хвосты пакетов (RandomTrailers)</label>
+          <label class="check"><input type="checkbox" bind:checked={p.awg.disableCookies} /> Без cookie (DisableCookies)</label>
+        </div>
+
+        <label for="pe-awg-rekey">Таймеры, с</label>
+        <div class="row">
+          <input id="pe-awg-rekey" class="grow" bind:value={p.awg.rekeyAfterTime} placeholder="RekeyAfterTime" />
+          <input class="grow" bind:value={p.awg.rekeyTimeout} placeholder="RekeyTimeout" />
+          <input class="grow" bind:value={p.awg.rejectAfterTime} placeholder="RejectAfterTime" />
+          <input class="grow" bind:value={p.awg.keepaliveTimeout} placeholder="KeepaliveTimeout" />
+          <input class="grow" bind:value={p.awg.maxHandshakeAttempts} placeholder="MaxHandshakeAttempts" />
+        </div>
+      </div>
+    </details>
+    {:else if isVLESS && p.vless}
     <details class="adv">
       <summary>Дополнительно: TLS, шифрование VLESS, XHTTP</summary>
       <div class="grid">
@@ -371,4 +466,6 @@
   input.bad { border-color: var(--block); }
   .ro { padding: 6px 0; overflow-wrap: anywhere; }
   textarea.mono { width: 100%; }
+  input.num { width: 90px; }
+  p.hint { margin: 0; }
 </style>

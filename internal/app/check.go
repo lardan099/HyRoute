@@ -57,12 +57,13 @@ func (c *Controller) CheckProfile(id string) (CheckResult, error) {
 	ep, release := c.acquire(p)
 	defer release()
 
-	// 1. Hysteria (Xray for VLESS) connects. Xray is up once a request
-	// went through the server, and the first may take a few tries.
+	// 1. Hysteria (Xray for VLESS, AmneziaWG) connects. Xray and
+	// AmneziaWG are up once a request went through the server, and the
+	// first may take a few tries.
 	start := time.Now()
-	limit, core := 20*time.Second, "Hysteria"
-	if p.IsVLESS() {
-		limit, core = 45*time.Second, "Xray"
+	limit, core := 20*time.Second, p.CoreName()
+	if p.Probed() {
+		limit = 45 * time.Second
 	}
 	st, err := waitConnected(ep, limit, core)
 	step := CheckStep{Name: "Запуск " + core + " и подключение к серверу", Ms: time.Since(start).Milliseconds()}
@@ -182,8 +183,8 @@ func waitConnected(ep *tunnels.Endpoint, timeout time.Duration, core string) (hy
 			if st.Message != "" {
 				return st, errors.New(st.Message)
 			}
-			if core == "Xray" {
-				return st, fmt.Errorf("Xray не подключилась за %d с: сервер не отвечает", int(timeout.Seconds()))
+			if core != "Hysteria" {
+				return st, fmt.Errorf("%s не подключилась за %d с: сервер не отвечает", core, int(timeout.Seconds()))
 			}
 			return st, errors.New("Hysteria не подключилась за 20 с: сервер не отвечает (порт, obfs-пароль или блокировка UDP)")
 		}

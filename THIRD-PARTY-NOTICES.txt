@@ -21,6 +21,14 @@ WinDivert.dll, WinDivert64.sys - WinDivert 2.2.2 (https://github.com/basil00/Win
 Wails v2 (https://github.com/wailsapp/wails), compiled into HyRoute.exe
   License: MIT.
 
+amneziawg-go (https://github.com/amnezia-vpn/amneziawg-go), compiled into
+HyRoute.exe: runs AmneziaWG and WireGuard servers in a process of its own
+  License: MIT, Copyright (C) 2017-2025 WireGuard LLC (the text is the
+  same as Wails' below, with that name). With it the network stack of
+  gVisor (https://github.com/google/gvisor, Apache-2.0),
+  golang.zx2c4.com/wintun (MIT), github.com/google/btree (Apache-2.0) and
+  golang.org/x/time (BSD-3-Clause).
+
 Go modules compiled into HyRoute.exe (see go.mod for the full list),
 including golang.org/x/net, golang.org/x/sys and golang.org/x/crypto (BSD-3-Clause),
 gopkg.in/yaml.v3 (MIT and Apache-2.0), github.com/labstack/echo (MIT),

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lardan099/hyroute/internal/awg"
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/rules"
 	"github.com/lardan099/hyroute/internal/vless"
@@ -36,6 +37,37 @@ func TestProfilesRoundTripKeepsSecretsOutOfPlainFields(t *testing.T) {
 	if got.Active != "a" || len(got.List) != 2 || got.List[0].Auth != "pw-auth" || got.List[0].Obfs.Password != "pw-obfs" ||
 		got.List[1].VLESS != p.List[1].VLESS || got.List[0].VLESS != (vless.Settings{}) {
 		t.Fatalf("%+v", got)
+	}
+}
+
+func TestProfilesSealAmneziaWGKeys(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Test keys, not real ones.
+	priv, psk, hpk := strings.Repeat("A", 43)+"=", strings.Repeat("B", 43)+"=", strings.Repeat("C", 43)+"="
+	p := &Profiles{Active: "a", List: []hysteria.Profile{{ID: "a", Name: "awg", Host: "203.0.113.5", Ports: "51820",
+		Protocol: hysteria.ProtoAWG, AWG: awg.Settings{PrivateKey: priv, PublicKey: strings.Repeat("D", 43) + "=",
+			PresharedKey: psk, HeaderProtectionKey: hpk, Address: "10.8.1.2/32", Jc: 4, S1: 16, S2: 16, S3: 16, S4: 16}}}}
+	if err := s.SaveProfiles(p); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(s.Dir, "profiles.json"))
+	for _, k := range []string{priv, psk, hpk} {
+		if strings.Contains(string(raw), k) {
+			t.Fatalf("a plain key on disk: %s", raw)
+		}
+	}
+	if !strings.Contains(string(raw), strings.Repeat("D", 43)) {
+		t.Error("the server's public key is not secret, yet it is not in the plain fields")
+	}
+	got, err := s.LoadProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.List[0].AWG != p.List[0].AWG {
+		t.Fatalf("%+v", got.List[0].AWG)
 	}
 }
 

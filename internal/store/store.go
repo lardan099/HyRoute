@@ -1,7 +1,8 @@
 // Package store keeps HyRoute's state in %APPDATA%\HyRoute:
 //
-//	profiles.json   Hysteria profiles; auth and obfs password are sealed
-//	                with DPAPI (current user) on Windows
+//	profiles.json   server profiles; their secrets (passwords, VLESS IDs,
+//	                AmneziaWG keys) are sealed with DPAPI (current user)
+//	                on Windows
 //	settings.json   rules and routing options (internal/settings format)
 //	rulesets.json   rule profiles (rulesets.go); only once there are two
 //	networks.json   network rules (internal/netmode format)
@@ -86,6 +87,11 @@ type secrets struct {
 	// VLESS is a VLESS server's user ID.
 	VLESS      string   `json:"vless,omitempty"`
 	BalanceIDs []string `json:"balanceIDs,omitempty"`
+	// An AmneziaWG server's keys: the client's private key, the
+	// preshared key and the header protection key.
+	AWGKey string `json:"awgKey,omitempty"`
+	AWGPSK string `json:"awgPSK,omitempty"`
+	AWGHPK string `json:"awgHPK,omitempty"`
 }
 
 type storedProfiles struct {
@@ -123,6 +129,7 @@ func (s *Store) LoadProfiles() (*Profiles, error) {
 			}
 			p.Auth, p.Obfs.Password, p.VLESS.ID = sec.Auth, sec.Obfs, sec.VLESS
 			p.SetBalanceIDs(sec.BalanceIDs)
+			p.AWG.PrivateKey, p.AWG.PresharedKey, p.AWG.HeaderProtectionKey = sec.AWGKey, sec.AWGPSK, sec.AWGHPK
 		}
 		out.List = append(out.List, p.Profile)
 	}
@@ -134,7 +141,8 @@ func (s *Store) SaveProfiles(p *Profiles) error {
 	defer s.mu.Unlock()
 	sp := storedProfiles{Active: p.Active, List: []storedProfile{}}
 	for _, pr := range p.List {
-		raw, _ := json.Marshal(secrets{Auth: pr.Auth, Obfs: pr.Obfs.Password, VLESS: pr.VLESS.ID, BalanceIDs: pr.BalanceIDs()})
+		raw, _ := json.Marshal(secrets{Auth: pr.Auth, Obfs: pr.Obfs.Password, VLESS: pr.VLESS.ID, BalanceIDs: pr.BalanceIDs(),
+			AWGKey: pr.AWG.PrivateKey, AWGPSK: pr.AWG.PresharedKey, AWGHPK: pr.AWG.HeaderProtectionKey})
 		sealed, err := seal(raw)
 		if err != nil {
 			return fmt.Errorf("seal secrets: %w", err)

@@ -26,6 +26,10 @@ import (
 // reads the generated config, serves SOCKS5 with the configured credentials
 // and logs like the real client.
 func TestMain(m *testing.M) {
+	if os.Getenv("FAKE_AWG") != "" {
+		fakeAWG()
+		return
+	}
 	if mode := os.Getenv("FAKE_XRAY"); mode != "" {
 		fakeXray(mode)
 		return

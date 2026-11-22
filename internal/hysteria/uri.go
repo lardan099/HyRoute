@@ -4,19 +4,30 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/lardan099/hyroute/internal/awg"
 	"github.com/lardan099/hyroute/internal/hy2uri"
 	"github.com/lardan099/hyroute/internal/vless"
 )
 
 // LinkSchemes are the share link schemes ParseURI reads.
-var LinkSchemes = []string{"hysteria2", "hy2", "vless"}
+var LinkSchemes = []string{"hysteria2", "hy2", "vless", "vpn"}
 
 // ParseURI parses hysteria2:// and hy2:// share links (see hy2uri.Parse
-// for the accepted variants) and vless:// ones (vless.Parse) into a
-// profile.
+// for the accepted variants), vless:// ones (vless.Parse) and the Amnezia
+// app's vpn:// keys with an AmneziaWG or WireGuard connection
+// (awg.ParseVPNKey) into a profile.
 func ParseURI(s string) (p Profile, warnings []string, err error) {
-	if scheme, _, _ := strings.Cut(strings.TrimSpace(s), "://"); strings.EqualFold(scheme, "vless") {
+	scheme, _, _ := strings.Cut(strings.TrimSpace(s), "://")
+	if strings.EqualFold(scheme, "vless") {
 		return parseVLESS(s)
+	}
+	if strings.EqualFold(scheme, "vpn") {
+		c, warnings, err := awg.ParseVPNKey(s)
+		if err != nil {
+			return p, nil, err
+		}
+		p = AWGProfile(c)
+		return p, warnings, p.Validate()
 	}
 	l, warnings, err := hy2uri.Parse(s)
 	if err != nil {
@@ -67,12 +78,37 @@ func parseVLESS(s string) (p Profile, warnings []string, err error) {
 	return p, warnings, p.Validate()
 }
 
+// ParseAWGConf reads a WireGuard or AmneziaWG configuration (.conf).
+func ParseAWGConf(text string) (Profile, []string, error) {
+	c, warnings, err := awg.ParseConf(text)
+	if err != nil {
+		return Profile{}, nil, err
+	}
+	p := AWGProfile(c)
+	return p, warnings, p.Validate()
+}
+
+// AWGProfile is the profile of a parsed configuration.
+func AWGProfile(c awg.Conf) Profile {
+	return Profile{
+		Name:     c.Name,
+		Host:     c.Host,
+		Ports:    strconv.Itoa(c.Port),
+		Protocol: ProtoAWG,
+		AWG:      c.Settings,
+	}
+}
+
 // URI exports the profile in the official format. Only connection
 // parameters are included (bandwidth, hop intervals etc. are not part of the
-// share-link spec).
+// share-link spec). An AmneziaWG server has no link: it is its .conf.
 func (p *Profile) URI() string {
 	if p.Balance != nil {
 		return ""
+	}
+	if p.IsAWG() {
+		port, _ := strconv.Atoi(p.Ports)
+		return awg.Conf{Name: p.Name, Host: p.Host, Port: port, Settings: p.AWG}.String()
 	}
 	if p.IsVLESS() {
 		port, _ := VLESSPort(p.Ports)

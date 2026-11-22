@@ -197,11 +197,15 @@ func validServer(p hysteria.Profile, secrets bool) (hysteria.Profile, error) {
 	}
 	p.Host, p.Ports = host, ports
 	q := p
-	if !secrets && !q.IsVLESS() && q.Obfs.Password == "" {
+	if !secrets && q.Protocol == hysteria.ProtoHysteria2 && q.Obfs.Password == "" {
 		q.Obfs.Password = "x"
 	}
 	if !secrets && q.IsVLESS() && q.VLESS.ID == "" {
 		q.VLESS.ID = "x"
+	}
+	if !secrets && q.IsAWG() && q.AWG.PrivateKey == "" {
+		// Any key: a backup without secrets has none.
+		q.AWG.PrivateKey = q.AWG.PublicKey
 	}
 	if err := q.Validate(); err != nil {
 		return p, err

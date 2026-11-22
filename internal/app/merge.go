@@ -177,7 +177,7 @@ func keepLocal(fresh, old hysteria.Profile) hysteria.Profile {
 	if fresh.Balance != nil || old.Balance != nil {
 		return fresh
 	}
-	if fresh.IsVLESS() || old.IsVLESS() {
+	if fresh.Protocol != hysteria.ProtoHysteria2 || old.Protocol != hysteria.ProtoHysteria2 {
 		fresh.PinServerIP = old.PinServerIP
 		return fresh
 	}

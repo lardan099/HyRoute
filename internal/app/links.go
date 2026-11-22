@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/lardan099/hyroute/internal/awg"
 	"github.com/lardan099/hyroute/internal/hysteria"
 )
 
@@ -37,12 +38,16 @@ func (l *Links) IgnoredTotal() int {
 	return n
 }
 
-// ParseLinks finds hysteria2://, hy2:// and vless:// links in text (one
-// per line or separated by spaces). A body without any "://" is tried as base64 (the
-// common subscription format).
+// ParseLinks finds hysteria2://, hy2://, vless:// links and vpn:// keys in
+// text (one per line or separated by spaces), or reads it as WireGuard and
+// AmneziaWG configurations (.conf). A body without any "://" is tried as
+// base64 (the common subscription format).
 func ParseLinks(text string) Links {
 	res := Links{Ignored: map[string]int{}}
 	text = strings.TrimPrefix(strings.TrimSpace(text), "\ufeff")
+	if awg.IsConf(text) {
+		return parseConfs(text)
+	}
 	if !strings.Contains(text, "://") {
 		if dec, ok := decodeBase64(text); ok && strings.Contains(dec, "://") {
 			text, res.Base64 = dec, true
@@ -89,6 +94,31 @@ func ParseLinks(text string) Links {
 	}
 	if res.Errors == nil {
 		res.Errors = []string{}
+	}
+	return res
+}
+
+// parseConfs reads one or more pasted .conf files.
+func parseConfs(text string) Links {
+	res := Links{Ignored: map[string]int{}, Warnings: []string{}, Errors: []string{}}
+	confs := awg.SplitConfs(text)
+	for i, conf := range confs {
+		p, warns, err := hysteria.ParseAWGConf(conf)
+		if err != nil {
+			label := "конфиг"
+			if len(confs) > 1 {
+				label = fmt.Sprintf("конфиг %d", i+1)
+			}
+			res.Errors = append(res.Errors, label+": "+err.Error())
+			continue
+		}
+		if p.Name == "" {
+			p.Name = p.Host
+		}
+		for _, w := range warns {
+			res.Warnings = append(res.Warnings, p.Name+": "+w)
+		}
+		res.Profiles = append(res.Profiles, p)
 	}
 	return res
 }

@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/awg"
 	"github.com/lardan099/hyroute/internal/logx"
 	"github.com/lardan099/hyroute/internal/socks5"
 	"github.com/lardan099/hyroute/internal/vless"
@@ -332,7 +333,7 @@ func (s *Supervisor) loop(ctx context.Context) {
 			delay = 200 * time.Millisecond
 			backoff /= 2
 		case kind == ErrPortBusy:
-			msg = "Hysteria не может открыть локальный порт SOCKS5, и это повторяется: возможно, его не даёт открыть защитная программа"
+			msg = s.coreName() + " не может открыть локальный порт SOCKS5, и это повторяется: возможно, его не даёт открыть защитная программа"
 		}
 		s.setStatus(func(st *Status) {
 			st.State, st.Kind, st.Message, st.RetryIn = Failed, kind, msg, delay
@@ -427,7 +428,7 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 	var ips, balanceIPs []netip.Addr
 	var err error
 	balance := s.Profile.Balance
-	vl := s.Profile.IsVLESS()
+	vl, aw := s.Profile.IsVLESS(), s.Profile.IsAWG()
 	var upstream *socks5.Client
 	var relayDone <-chan struct{}
 	var udpRelay string
@@ -471,7 +472,8 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 		}
 	}
 	var pinned netip.Addr
-	if len(ips) > 0 && s.Profile.PinServerIP && !s.Profile.HostIsIP() {
+	// amneziawg-go takes the endpoint as an IP: HyRoute always resolves it.
+	if len(ips) > 0 && (s.Profile.PinServerIP || aw) && !s.Profile.HostIsIP() {
 		pinned = pickPinned(ips, s.pinFailed)
 	}
 	if s.SetServerIPs != nil {
@@ -488,7 +490,7 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 	defer releasePort()
 	user, pass := randomString(16), randomString(32)
 	if s.Redactor != nil {
-		secrets := append(s.Profile.Secrets(), user, pass)
+		secrets := slices.Concat(s.Profile.Secrets(), s.Profile.AWG.HexSecrets(), []string{user, pass})
 		if upstream != nil {
 			secrets = append(secrets, upstream.Username, upstream.Password)
 		}
@@ -508,6 +510,11 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 		cfg, err = vless.BalanceConfig(*balance, balanceIPs, vless.Run{
 			SOCKSListen: opts.SOCKSListen, SOCKSUsername: user, SOCKSPassword: pass, Via: upstream,
 		})
+	} else if aw {
+		var ep netip.AddrPort
+		if ep, err = s.awgEndpoint(pinned, udpRelay); err == nil {
+			cfg, err = s.Profile.AWG.Run(ep, opts.SOCKSListen, user, pass)
+		}
 	} else if vl {
 		port, _ := VLESSPort(s.Profile.Ports)
 		cfg, err = vless.Config(s.Profile.VLESS, vless.Run{Host: s.Profile.Host, Port: port, Dial: pinned, Via: upstream,
@@ -523,7 +530,7 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 	// Every run gets a file of its own: supervisors of different profiles
 	// share RunDir, and a shared name let one profile's Hysteria read
 	// another profile's config (wrong server, clashing SOCKS5 port).
-	cfgPath := filepath.Join(s.RunDir, configName(vl))
+	cfgPath := filepath.Join(s.RunDir, configName(vl || aw))
 	s.socks = socks5.Client{Server: opts.SOCKSListen, Username: user, Password: pass}
 	s.kick = kick
 	s.status.SOCKS = opts.SOCKSListen
@@ -549,6 +556,9 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 		"HYSTERIA_LOG_LEVEL=info",
 		"HYSTERIA_DISABLE_UPDATE_CHECK=1",
 	)
+	if aw {
+		args, env = awgArgs(cfgPath), os.Environ()
+	}
 	if vl {
 		args, env = []string{"run", "-format", "json", "-c", cfgPath}, os.Environ()
 		if upstream != nil {
@@ -590,13 +600,16 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 		})
 	}
 	readDone := make(chan struct{})
-	if vl {
+	if vl || aw {
 		// Xray connects to the server per connection, not at start: it
 		// is up once its SOCKS5 port answers and a request goes through
-		// the server (watchVLESS).
+		// the server (watchVLESS). So is AmneziaWG, whose handshake
+		// alone does not show that the server lets traffic out.
 		var lastWarn atomic.Pointer[string]
+		var handshake atomic.Bool
+		var dnsAt atomic.Int64 // the child's last warning about DNS
 		var vlessServer string
-		if balance == nil && upstream == nil {
+		if vl && balance == nil && upstream == nil {
 			vport, _ := VLESSPort(s.Profile.Ports)
 			vhost := s.Profile.Host
 			if pinned.IsValid() {
@@ -609,8 +622,16 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 			sc := bufio.NewScanner(pr)
 			sc.Buffer(make([]byte, 64*1024), 1024*1024)
 			for sc.Scan() {
-				l := ParseXrayLine(sc.Text())
-				ev, fatal := InterpretXray(l)
+				var l LogLine
+				var ev Event
+				var fatal bool
+				if aw {
+					l = ParseLogLine(sc.Text())
+					ev, fatal = InterpretAWG(l)
+				} else {
+					l = ParseXrayLine(sc.Text())
+					ev, fatal = InterpretXray(l)
+				}
 				if s.Redactor != nil {
 					l = redactLine(s.Redactor, l)
 					ev.Message = s.Redactor.Redact(ev.Message)
@@ -623,6 +644,10 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 					evMu.Lock()
 					lastKind, lastMsg = ev.Kind, ev.Message
 					evMu.Unlock()
+				case aw && l.Str("event") == awg.EventHandshake:
+					handshake.Store(true)
+				case aw && l.Str("event") == awg.EventDNS:
+					dnsAt.Store(time.Now().UnixNano())
 				case l.Level == "warn" || l.Level == "error":
 					m := l.Msg
 					lastWarn.Store(&m)
@@ -630,10 +655,16 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 			}
 			io.Copy(io.Discard, pr)
 		}()
+		classify := ClassifyXray
+		if aw {
+			classify = func(err error, _ string) (ErrorKind, string) {
+				return ClassifyAWG(err, handshake.Load(), time.Since(time.Unix(0, dnsAt.Load())) < 2*time.Minute)
+			}
+		}
 		probes.Add(1)
 		go func() {
 			defer probes.Done()
-			s.watchVLESS(runCtx, opts.SOCKSListen, vlessServer, kick, &lastWarn, func() {
+			s.watchVLESS(runCtx, opts.SOCKSListen, vlessServer, kick, &lastWarn, classify, func() {
 				evMu.Lock()
 				first := connectedAt.IsZero()
 				if first {
@@ -925,12 +956,12 @@ type process interface {
 }
 
 // configName is a unique name for one run's config file: YAML for
-// Hysteria, JSON for Xray.
-func configName(xray bool) string {
+// Hysteria, JSON for Xray and AmneziaWG.
+func configName(json bool) string {
 	var b [12]byte
 	rand.Read(b[:])
 	ext := "yaml"
-	if xray {
+	if json {
 		ext = "json"
 	}
 	return fmt.Sprintf("hy-%x.%s", b, ext)

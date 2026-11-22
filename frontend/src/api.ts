@@ -64,11 +64,50 @@ export interface Profile {
   fastOpen?: boolean;
   pinServerIP: boolean;
   via?: string;
-  // '' (Hysteria 2) or 'vless' (run by Xray): a VLESS server uses host,
-  // ports (one), pinServerIP and vless; the Hysteria fields stay empty.
+  // '' (Hysteria 2), 'vless' (run by Xray) or 'awg' (AmneziaWG): a VLESS
+  // server uses host, ports (one), pinServerIP and vless, an AmneziaWG one
+  // host, ports (one) and awg; the Hysteria fields stay empty.
   protocol?: string;
   vless?: VLESSSettings;
+  awg?: AWGSettings;
   balance?: object;
+}
+
+// The AmneziaWG part of a server (internal/awg.Settings): keys in base64,
+// address and DNS as lists with commas, ranges as "a-b".
+export interface AWGSettings {
+  privateKey: string;
+  publicKey: string;
+  presharedKey?: string;
+  address: string;
+  dns?: string;
+  mtu?: number;
+  keepalive?: string;
+  jc?: number;
+  jmin?: number;
+  jmax?: number;
+  s1?: number;
+  s2?: number;
+  s3?: number;
+  s4?: number;
+  h1?: string;
+  h2?: string;
+  h3?: string;
+  h4?: string;
+  i1?: string;
+  i2?: string;
+  i3?: string;
+  i4?: string;
+  i5?: string;
+  headerProtectionKey?: string;
+  contentPadding?: string;
+  randomTrailers?: boolean;
+  disableCookies?: boolean;
+  rekeyAfterTime?: string;
+  rekeyTimeout?: string;
+  rejectAfterTime?: string;
+  keepaliveTimeout?: string;
+  maxHandshakeAttempts?: string;
 }
 
 // The VLESS part of a server (internal/vless.Settings).
@@ -107,8 +146,8 @@ export interface ProfileSummary {
   sni: string;
   insecure: boolean;
   pinned: boolean;
-  protocol: string; // hysteria2 | vless
-  transport: string; // VLESS: "REALITY", "WS · TLS" …
+  protocol: string; // hysteria2 | vless | awg
+  transport: string; // VLESS: "REALITY", "WS · TLS" …; AmneziaWG without obfuscation: "WireGuard"
   flow: string; // VLESS flow, '' none
   balance?: boolean;
   via?: string;

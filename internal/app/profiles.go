@@ -24,8 +24,9 @@ type ProfileSummary struct {
 	SNI      string `json:"sni"`
 	Insecure bool   `json:"insecure"`
 	Pinned   bool   `json:"pinned"`
-	// Protocol is "hysteria2" or "vless"; Transport describes a VLESS
-	// connection ("REALITY", "WS · TLS"), Flow is its flow ("" none).
+	// Protocol is "hysteria2", "vless" or "awg"; Transport describes a
+	// VLESS connection ("REALITY", "WS · TLS"), or is "WireGuard" for an
+	// AmneziaWG server without obfuscation; Flow is VLESS's flow ("" none).
 	Protocol  string `json:"protocol"`
 	Transport string `json:"transport"`
 	Flow      string `json:"flow"`
@@ -68,6 +69,9 @@ func (c *Controller) summaryLocked(p *hysteria.Profile) ProfileSummary {
 	if p.IsVLESS() {
 		s.Protocol, s.Transport, s.Flow = "vless", p.Transport(), p.VLESS.Flow
 		s.SNI, s.Pinned = p.VLESS.SNI, p.VLESS.PinSHA256 != ""
+	}
+	if p.IsAWG() {
+		s.Protocol, s.Transport = "awg", p.Transport()
 	}
 	if p.Balance != nil {
 		s.Balance, s.Transport, s.Server = true, "leastLoad", fmt.Sprintf("%d узлов", len(p.Balance.Nodes))
@@ -269,7 +273,7 @@ func (c *Controller) ImportURIs(text string) (ImportResult, error) {
 	}
 	res.Warnings, res.Errors = parsed.Warnings, parsed.Errors
 	if len(parsed.Profiles) == 0 && len(res.Errors) == 0 {
-		return res, errors.New("не найдено ни одной ссылки hysteria2://, hy2:// или vless://")
+		return res, errors.New("не найдено ни одной ссылки hysteria2://, hy2://, vless://, ключа vpn:// или конфига AmneziaWG")
 	}
 	c.mu.Lock()
 	var added []hysteria.Profile

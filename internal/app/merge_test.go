@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lardan099/hyroute/internal/awg"
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/vless"
 )
@@ -173,8 +174,9 @@ func TestMergeKeepsLocalSettings(t *testing.T) {
 	// must either travel in the share link or be kept by keepLocal.
 	fillZero(t, reflect.ValueOf(&old).Elem())
 	old.PinServerIP, old.Missing = false, false // a parsed link has PinServerIP=true
-	// The VLESS fields are the other protocol's (TestMergeKeepsLocalSettingsVLESS).
-	old.Protocol, old.VLESS = "", vless.Settings{}
+	// The VLESS and AmneziaWG fields are the other protocols'
+	// (TestMergeKeepsLocalSettingsVLESS).
+	old.Protocol, old.VLESS, old.AWG = "", vless.Settings{}, awg.Settings{}
 	fresh, _, err := hysteria.ParseURI(old.URI())
 	if err != nil {
 		t.Fatal(err)

@@ -28,7 +28,7 @@ func (s *Supervisor) waitUpstream(ctx context.Context) (socks5.Client, error) {
 		if s.Via != nil {
 			if ep := s.Via(); ep != nil && ep.Available() {
 				if !s.Profile.IsVLESS() && !ep.UDPAvailable() {
-					return socks5.Client{}, errors.New("первый VPN не пропускает UDP, необходимый для Hysteria 2")
+					return socks5.Client{}, errors.New("первый VPN не пропускает UDP, необходимый для " + s.Profile.ProtocolName())
 				}
 				if cl := ep.SOCKS(); cl.Server != "" {
 					return cl, nil

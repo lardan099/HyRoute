@@ -177,7 +177,36 @@
     }
   }
 
-  // failedLinks returns the hysteria2:// / hy2:// / vless:// links of text that the
+  // importFiles adds the WireGuard and AmneziaWG configurations (.conf) or
+  // the files with links picked in the dialog, each file by itself: a file
+  // without a "# Name" line is named after the file.
+  let fileInput = $state<HTMLInputElement>();
+  async function importFiles(files: FileList | null | undefined) {
+    if (!files?.length) return;
+    error = '';
+    info = '';
+    const all: ImportResult = { added: [], warnings: [], errors: [], skipped: [] };
+    for (const f of Array.from(files)) {
+      try {
+        let t = await f.text();
+        if (/\[interface\]/i.test(t) && !/^\s*#\s*name\s*[=:]/im.test(t)) t = `# Name = ${f.name.replace(/\.(conf|txt)$/i, '')}\n${t}`;
+        const r = await api.ImportURIs(t);
+        all.added.push(...r.added);
+        all.warnings.push(...r.warnings);
+        all.skipped.push(...r.skipped);
+        all.errors.push(...r.errors.map((e) => `${f.name}: ${e}`));
+      } catch (e) {
+        all.errors.push(`${f.name}: ${errText(e)}`);
+      }
+    }
+    if (fileInput) fileInput.value = '';
+    result = all;
+    await after();
+    if (all.added.length) info = `Добавлено серверов: ${all.added.length} — ${all.added.map((p) => p.name).join(', ')}`;
+    if ((all.added.length || all.skipped.length) && !all.errors.length && !all.warnings.length) adding = false;
+  }
+
+  // failedLinks returns the hysteria2:// / hy2:// / vless:// / vpn:// links of text that the
   // import errors ("ссылка N: …", N counting those links) name, one per
   // line. It splits links the way the backend's splitLinks does; text it
   // finds no links in (a base64 list) gives ''.
@@ -190,7 +219,7 @@
       const starts = [...line.matchAll(/(?:^|[\t\f ])([A-Za-z][A-Za-z0-9+.\-]*:\/\/)/g)];
       starts.forEach((m, i) => {
         const scheme = m[1].slice(0, -3).toLowerCase();
-        if (scheme !== 'hysteria2' && scheme !== 'hy2' && scheme !== 'vless') return;
+        if (scheme !== 'hysteria2' && scheme !== 'hy2' && scheme !== 'vless' && scheme !== 'vpn') return;
         n++;
         const end = i + 1 < starts.length ? starts[i + 1].index : line.length;
         if (bad.has(n)) out.push(line.slice(m.index + m[0].length - m[1].length, end).trim());
@@ -310,7 +339,11 @@
         сейчас не работает. Чтобы проверить не все, выберите рядом одну подписку или наберите что-нибудь в поиске: проверятся только показанные.
       </li>
       <li><b>«Проверить»</b> в строке сервера проверяет его подробно: подключение, внешний IP, задержка, UDP.</li>
-      <li>Новый сервер: «Добавить сервер» и вставьте ссылку <code>hysteria2://…</code> или <code>vless://…</code>. Ссылка подписки (<code>https://…</code>) добавляется на странице «Подписки».</li>
+      <li>
+        Новый сервер: «Добавить сервер» и вставьте ссылку <code>hysteria2://…</code> или <code>vless://…</code>, ключ <code>vpn://…</code> из
+        приложения Amnezia или конфиг AmneziaWG и WireGuard (<code>.conf</code>: текстом или кнопкой «Открыть файл .conf»). Ссылка подписки
+        (<code>https://…</code>) добавляется на странице «Подписки».
+      </li>
       <li>Серверы из подписки обновляются сами, их не нужно добавлять заново.</li>
     </ul>
   </Help>
@@ -318,10 +351,17 @@
   {#if adding}
     <section class="card">
       <h2>Добавить сервер</h2>
-      <textarea rows="4" class:masked={ui.privacy} placeholder="Вставьте ссылки hysteria2://…, hy2://… или vless://… (по одной на строку) или конфиг Clash, sing-box, Xray" bind:value={text}></textarea>
+      <textarea
+        rows="4"
+        class:masked={ui.privacy}
+        placeholder="Вставьте ссылки hysteria2://…, hy2://…, vless://… или ключ vpn://… (по одной на строку), конфиг AmneziaWG или WireGuard, конфиг Clash, sing-box, Xray"
+        bind:value={text}
+      ></textarea>
       <div class="row" style="margin-top: 10px">
         <button class="primary" onclick={() => doImport(false)} disabled={!text.trim()}>Добавить</button>
         <button onclick={() => doImport(true)}><Icon name="clipboard" size={16} />Из буфера обмена</button>
+        <button onclick={() => fileInput?.click()} title="Конфиги AmneziaWG и WireGuard: можно несколько файлов сразу"><Icon name="folder" size={16} />Открыть файл .conf</button>
+        <input bind:this={fileInput} type="file" accept=".conf,.txt" multiple hidden onchange={(e) => importFiles(e.currentTarget.files)} />
         <div class="grow"></div>
         <button class="ghost" onclick={create}>Заполнить вручную</button>
       </div>
@@ -417,6 +457,7 @@
               <button class="link small" onclick={() => removeCopy(p)}>Удалить копию</button>
             {:else if p.duplicateOf}<span class="badge warn-b" title="Тот же адрес, пароль и настройки, что у «{hide(p.duplicateOf)}»: копию можно удалить">дубль «{hide(p.duplicateOf)}»</span>{/if}
             {#if p.protocol === 'vless'}<span class="badge" title="VLESS через Xray">VLESS · {p.transport}</span>{/if}
+            {#if p.protocol === 'awg'}<span class="badge" title={p.transport ? 'AmneziaWG без обфускации: обычный WireGuard' : 'AmneziaWG'}>{p.transport || 'AmneziaWG'}</span>{/if}
             {#if p.flow}<span class="badge" title={p.flow}>Vision</span>{/if}
             {#if p.obfs}<span class="badge">{p.obfs}</span>{/if}
             {#if p.pinned}<span class="badge" title="Сертификат проверяется по отпечатку">pin</span>{:else if p.insecure}<span class="badge warn-b" title="Сертификат не проверяется">insecure</span>{/if}
@@ -444,7 +485,11 @@
         <div class="acts">
           <button class="icon" onclick={() => edit(p)} title={p.balance ? 'Настроить цепочку VPN' : 'Изменить'}><Icon name="edit" size={16} /></button>
           {#if !p.balance}
-            <button class="icon" onclick={() => run(() => api.CopyURI(p.id), 'Ссылка скопирована (в ней пароль сервера)')} title="Копировать ссылку"><Icon name="copy" size={16} /></button>
+            {#if p.protocol === 'awg'}
+              <button class="icon" onclick={() => run(() => api.CopyURI(p.id), 'Конфиг .conf скопирован (в нём приватный ключ)')} title="Копировать конфиг .conf"><Icon name="copy" size={16} /></button>
+            {:else}
+              <button class="icon" onclick={() => run(() => api.CopyURI(p.id), 'Ссылка скопирована (в ней пароль сервера)')} title="Копировать ссылку"><Icon name="copy" size={16} /></button>
+            {/if}
           {/if}
           <button class="icon" onclick={() => move(p.id, -1)} disabled={i === 0 || !!fixed} title={fixed || 'Выше'}><Icon name="up" size={16} /></button>
           <button class="icon" onclick={() => move(p.id, 1)} disabled={i === list.length - 1 || !!fixed} title={fixed || 'Ниже'}><Icon name="down" size={16} /></button>

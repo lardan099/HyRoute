@@ -44,23 +44,20 @@ const (
 )
 
 // coreName names the program this profile runs in.
-func (s *Supervisor) coreName() string {
-	if s.Profile.IsVLESS() {
-		return "Xray"
-	}
-	return "Hysteria"
-}
+func (s *Supervisor) coreName() string { return s.Profile.CoreName() }
 
 // watchVLESS waits for Xray's SOCKS5 port, calls up after the first
 // request that went through the server, and keeps checking every
 // vlessProbeEvery. A run that never gets a request through, or stops
-// getting them through, is restarted with the reason (Xray's last warning
-// says it best).
+// getting them through, is restarted with the reason classify gives
+// (Xray's last warning says it best). AmneziaWG runs are watched the same
+// way.
 //
 // server is the address Xray dials (the pinned IP or the host, with the
 // port): a failed check also tries it directly, to tell a server that
 // does not answer from one that answers but lets nothing through.
-func (s *Supervisor) watchVLESS(ctx context.Context, addr, server string, kick chan restart, lastWarn *atomic.Pointer[string], up func()) {
+func (s *Supervisor) watchVLESS(ctx context.Context, addr, server string, kick chan restart, lastWarn *atomic.Pointer[string],
+	classify func(error, string) (ErrorKind, string), up func()) {
 	send := func(r restart) {
 		if ctx.Err() == nil {
 			select {
@@ -70,7 +67,7 @@ func (s *Supervisor) watchVLESS(ctx context.Context, addr, server string, kick c
 		}
 	}
 	if !waitListening(ctx, addr, 15*time.Second) {
-		send(restart{ErrPortBusy, "Xray не открыла локальный порт SOCKS5, перезапуск"})
+		send(restart{ErrPortBusy, s.coreName() + " не открыла локальный порт SOCKS5, перезапуск"})
 		return
 	}
 	c := s.SOCKS()
@@ -103,7 +100,7 @@ func (s *Supervisor) watchVLESS(ctx context.Context, addr, server string, kick c
 			if w := lastWarn.Load(); w != nil {
 				warn = *w
 			}
-			kind, msg := ClassifyXray(err, warn)
+			kind, msg := classify(err, warn)
 			if server != "" {
 				kind, msg = directCheck(ctx, server, kind, msg)
 			}

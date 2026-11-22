@@ -121,7 +121,7 @@
     <select bind:value={source} title="Чей журнал">
       <option value="engine">HyRoute</option>
       <option value="hysteria">Серверы — все (Hysteria и Xray)</option>
-      {#each ui.profiles as p (p.id)}<option value={'hysteria:' + p.id}>{p.protocol === 'vless' ? 'Xray' : 'Hysteria'} — {serverLabel(p)}</option>{/each}
+      {#each ui.profiles as p (p.id)}<option value={'hysteria:' + p.id}>{p.protocol === 'vless' ? 'Xray' : p.protocol === 'awg' ? 'AmneziaWG' : 'Hysteria'} — {serverLabel(p)}</option>{/each}
     </select>
     <select bind:value={level}>
       <option value="debug">Все уровни</option>

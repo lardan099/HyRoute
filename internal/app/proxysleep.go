@@ -83,10 +83,10 @@ func (c *Controller) proxyWake(ctx context.Context, s Session, id, listener stri
 }
 
 // connectWait is how long server p may take to connect, base for
-// Hysteria: Xray (VLESS) gets 45 s to its 20, as «Проверить» gives it
-// (the three tries of its start, hysteria/xray.go).
+// Hysteria: Xray (VLESS) and AmneziaWG get 45 s to its 20, as «Проверить»
+// gives them (the three tries of their start, hysteria/xray.go).
 func connectWait(p hysteria.Profile, base time.Duration) time.Duration {
-	if p.IsVLESS() {
+	if p.Probed() {
 		return base * 9 / 4
 	}
 	return base

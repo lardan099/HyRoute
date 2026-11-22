@@ -26,6 +26,7 @@ import (
 	buildfiles "github.com/lardan099/hyroute/build"
 	"github.com/lardan099/hyroute/internal/app"
 	"github.com/lardan099/hyroute/internal/autostart"
+	"github.com/lardan099/hyroute/internal/awg"
 	"github.com/lardan099/hyroute/internal/core"
 	"github.com/lardan099/hyroute/internal/fwrule"
 	"github.com/lardan099/hyroute/internal/hysteria"
@@ -66,8 +67,14 @@ func main() {
 	winGeom := flag.String("window-geom", "", "set by HyRoute: where the last window was")
 	winPanel := flag.Bool("window-panel", false, "set by HyRoute: the window process is the panel by the tray icon")
 	winPanelAt := flag.String("window-panel-at", "", "set by HyRoute: where the tray icon was clicked (x,y)")
+	awgConfig := flag.String("awg", "", "set by HyRoute: run one AmneziaWG server from this config file")
 	flag.Parse()
 
+	// An AmneziaWG server (internal/awg) in a process of its own, as
+	// hysteria.exe runs a Hysteria server: nothing below is its part.
+	if *awgConfig != "" {
+		os.Exit(awg.Main(*awgConfig))
+	}
 	// The window process (window_windows.go): nothing below is its part.
 	if *winPipes != "" {
 		runWindow(*winPipes, *winState, *winGeom, *winPanel, *winPanelAt)

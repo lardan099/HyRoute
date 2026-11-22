@@ -40,13 +40,17 @@ func (cfg *Config) XrayPath() string {
 	return filepath.Join(cfg.Dir, "xray.exe")
 }
 
-// RunnerFactory starts a hysteria.Supervisor per profile: hysteria.exe, or
-// xray.exe for VLESS. The profile check uses it outside a session too.
+// RunnerFactory starts a hysteria.Supervisor per profile: hysteria.exe,
+// xray.exe for VLESS, HyRoute itself (cfg.Exe, "--awg") for AmneziaWG. The
+// profile check uses it outside a session too.
 func RunnerFactory(cfg Config) tunnels.Factory {
 	return func(p hysteria.Profile, h tunnels.Hooks) tunnels.Runner {
 		exe, path := cfg.HysteriaPath(), cfg.HysteriaPath
 		if p.IsVLESS() {
 			exe, path = cfg.XrayPath(), cfg.XrayPath
+		}
+		if p.IsAWG() {
+			exe, path = cfg.Exe, nil
 		}
 		return &hysteria.Supervisor{
 			Exe:          exe,
@@ -67,7 +71,8 @@ func RunnerFactory(cfg Config) tunnels.Factory {
 type Config struct {
 	// Dir holds WinDivert.dll, WinDivert64.sys, hysteria.exe and xray.exe.
 	Dir string
-	// Exe is the program the relay firewall rule allows.
+	// Exe is HyRoute itself: the program the relay firewall rule allows,
+	// and the one that runs AmneziaWG servers ("--awg").
 	Exe string
 	// Hysteria returns the hysteria.exe to launch (read at every profile
 	// start). Nil = Dir\hysteria.exe.

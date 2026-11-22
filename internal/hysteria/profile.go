@@ -1,6 +1,7 @@
 // Package hysteria manages HyRoute's server profiles (URI import/export,
 // config generation) and supervises the process that runs one: hysteria.exe
-// for Hysteria 2, xray.exe for VLESS (internal/vless).
+// for Hysteria 2, xray.exe for VLESS (internal/vless), HyRoute itself for
+// AmneziaWG (internal/awg).
 //
 // Field names follow https://v2.hysteria.network/docs/advanced/Full-Client-Config/
 // (checked against apernet/hysteria app/v2.12.3).
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/awg"
 	"github.com/lardan099/hyroute/internal/hy2uri"
 	"github.com/lardan099/hyroute/internal/vless"
 )
@@ -25,6 +27,7 @@ import (
 const (
 	ProtoHysteria2 = "" // the default: profiles saved before VLESS have none
 	ProtoVLESS     = "vless"
+	ProtoAWG       = "awg"
 )
 
 type Profile struct {
@@ -36,6 +39,9 @@ type Profile struct {
 	Protocol string         `json:"protocol,omitempty"`
 	VLESS    vless.Settings `json:"vless,omitzero"`
 	Balance  *vless.Balance `json:"balance,omitempty"`
+	// AWG is an AmneziaWG (or plain WireGuard) server's settings; it uses
+	// Host and Ports (one port) for the endpoint.
+	AWG awg.Settings `json:"awg,omitzero"`
 	// Host is a domain or IP literal (no brackets).
 	Host string `json:"host"`
 	// Ports is "443", "20000-50000" or "443,20000-50000" (port hopping).
@@ -86,19 +92,52 @@ func SameConnectionNoSecrets(a, b Profile) bool {
 // IsVLESS: the profile runs through Xray.
 func (p *Profile) IsVLESS() bool { return p.Protocol == ProtoVLESS }
 
+// IsAWG: the profile is an AmneziaWG (or WireGuard) server.
+func (p *Profile) IsAWG() bool { return p.Protocol == ProtoAWG }
+
+// Probed: the server is up once a request went through it (Xray and
+// AmneziaWG report no connection of their own, see xray.go).
+func (p *Profile) Probed() bool { return p.IsVLESS() || p.IsAWG() }
+
 // ProtocolName names the protocol for the user.
 func (p *Profile) ProtocolName() string {
-	if p.IsVLESS() {
+	switch {
+	case p.IsVLESS():
 		return "VLESS"
+	case p.IsAWG():
+		return "AmneziaWG"
 	}
 	return "Hysteria 2"
 }
 
-// Normalize clears the fields of the other protocol (an editor may send
-// both) and puts VLESS's transport name in HyRoute's form.
+// CoreName names the program that runs the profile.
+func (p *Profile) CoreName() string {
+	switch {
+	case p.IsVLESS():
+		return "Xray"
+	case p.IsAWG():
+		return "AmneziaWG"
+	}
+	return "Hysteria"
+}
+
+// Normalize clears the fields of the other protocols (an editor may send
+// them all) and puts VLESS's transport name in HyRoute's form.
 func (p *Profile) Normalize() {
-	if p.IsVLESS() {
+	if p.Protocol != ProtoHysteria2 {
 		p.Auth, p.TLS, p.Obfs, p.Hop, p.Bandwidth, p.Congestion, p.QUIC, p.FastOpen = "", TLS{}, Obfs{}, Hop{}, Bandwidth{}, Congestion{}, QUIC{}, false
+	}
+	if !p.IsAWG() {
+		p.AWG = awg.Settings{}
+	}
+	if p.IsAWG() {
+		p.VLESS = vless.Settings{}
+		// HyRoute resolves the endpoint itself: amneziawg-go takes an IP.
+		p.PinServerIP = false
+		p.AWG.Trim()
+		return
+	}
+	if p.IsVLESS() {
 		p.VLESS.Network = vless.NormalizeNetwork(p.VLESS.Network)
 		if p.VLESS.Encryption == "none" {
 			p.VLESS.Encryption = ""
@@ -109,8 +148,12 @@ func (p *Profile) Normalize() {
 }
 
 // Transport describes the connection for the list: "REALITY",
-// "WS · TLS", "XHTTP · REALITY" (VLESS only).
+// "WS · TLS", "XHTTP · REALITY" (VLESS); "WireGuard" for an AmneziaWG
+// server without obfuscation.
 func (p *Profile) Transport() string {
+	if p.IsAWG() && !p.AWG.Obfuscated() {
+		return "WireGuard"
+	}
 	if !p.IsVLESS() {
 		return ""
 	}
@@ -128,15 +171,16 @@ func (p *Profile) Transport() string {
 }
 
 // Secrets are the values no log may show: the auth and obfuscation
-// passwords of Hysteria, the user ID of VLESS.
+// passwords of Hysteria, the user ID of VLESS, the keys of AmneziaWG.
 func (p *Profile) Secrets() []string {
-	return append([]string{p.Auth, p.Obfs.Password, p.VLESS.ID}, p.BalanceIDs()...)
+	return slices.Concat([]string{p.Auth, p.Obfs.Password, p.VLESS.ID}, p.BalanceIDs(), p.AWG.Secrets())
 }
 
 // ClearSecrets empties the secrets (a backup without them).
 func (p *Profile) ClearSecrets() {
 	p.Auth, p.Obfs.Password, p.VLESS.ID = "", "", ""
 	p.SetBalanceIDs(nil)
+	p.AWG.ClearSecrets()
 }
 
 // HasSecrets: any secret is set.
@@ -148,6 +192,7 @@ func (p *Profile) HasSecrets() bool {
 func (p *Profile) CopySecrets(from Profile) {
 	p.Auth, p.Obfs.Password, p.VLESS.ID = from.Auth, from.Obfs.Password, from.VLESS.ID
 	p.SetBalanceIDs(from.BalanceIDs())
+	p.AWG.CopySecrets(from.AWG)
 }
 
 func (p *Profile) BalanceIDs() []string {
@@ -246,6 +291,8 @@ func (p *Profile) Validate() error {
 	case ProtoHysteria2:
 	case ProtoVLESS:
 		return p.validateVLESS()
+	case ProtoAWG:
+		return p.validateAWG()
 	default:
 		return fmt.Errorf("протокол %q не поддерживается", p.Protocol)
 	}
@@ -311,6 +358,24 @@ func (p *Profile) validateVLESS() error {
 		}
 	}
 	return p.VLESS.ValidateFor(p.Host)
+}
+
+// validateAWG: one port, no settings of the other protocols, and settings
+// amneziawg-go takes.
+func (p *Profile) validateAWG() error {
+	rs, err := ParsePorts(p.Ports)
+	if err != nil {
+		return err
+	}
+	if len(rs) != 1 || rs[0].From != rs[0].To {
+		return errors.New("у сервера AmneziaWG один порт, без диапазонов")
+	}
+	q := *p
+	q.ID, q.Name, q.Source, q.Missing, q.Host, q.Ports, q.Protocol, q.AWG, q.PinServerIP, q.Via = "", "", "", false, "", "", "", awg.Settings{}, false, ""
+	if !reflect.DeepEqual(q, Profile{}) {
+		return errors.New("у сервера AmneziaWG не бывает настроек Hysteria и VLESS")
+	}
+	return p.AWG.Validate()
 }
 
 // VLESSPort is the one port of a VLESS server.

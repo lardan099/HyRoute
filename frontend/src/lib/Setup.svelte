@@ -119,7 +119,7 @@
     if (!t) return;
     busy = true;
     try {
-      if (/(hysteria2|hy2|vless):\/\//i.test(t)) {
+      if (/(hysteria2|hy2|vless|vpn):\/\//i.test(t) || /\[interface\]/i.test(t)) {
         const r = await api.ImportURIs(t);
         warnings = r.warnings ?? [];
         if (r.added.length) {
@@ -135,7 +135,7 @@
         const pv = await api.PreviewSubscription(t);
         if (pv.count === 0) {
           error = pv.ignoredTotal
-            ? `В этой подписке нет серверов Hysteria 2 и VLESS, только серверы других видов (${Object.keys(pv.ignored).join(', ')}). HyRoute работает с Hysteria 2 и VLESS: попросите у VPN-сервиса ссылку на них.`
+            ? `В этой подписке нет серверов Hysteria 2 и VLESS, только серверы других видов (${Object.keys(pv.ignored).join(', ')}). HyRoute работает с Hysteria 2, VLESS и AmneziaWG: попросите у VPN-сервиса ссылку на них.`
             : 'По этой ссылке не нашлось ни одного сервера. Проверьте, что скопировали её целиком, или попросите новую.';
         } else {
           const s = await api.AddSubscription({ token: pv.token, name: pv.title || 'Моя подписка', enabled: true, interval: '24h' });
@@ -144,9 +144,9 @@
           link = '';
         }
       } else if (otherProto.test(t)) {
-        error = 'Это ссылка другого вида VPN. HyRoute работает с Hysteria 2 и VLESS: попросите у вашего VPN-сервиса ссылку, которая начинается с hysteria2:// или vless://, или ссылку подписки.';
+        error = 'Это ссылка другого вида VPN. HyRoute работает с Hysteria 2, VLESS и AmneziaWG: попросите у вашего VPN-сервиса ссылку, которая начинается с hysteria2:// или vless://, ключ vpn://, конфиг AmneziaWG или ссылку подписки.';
       } else {
-        error = 'Это не похоже на ссылку. Ссылка сервера начинается с hysteria2://, hy2:// или vless://, ссылка подписки — с https://. Скопируйте её целиком.';
+        error = 'Это не похоже на ссылку. Ссылка сервера начинается с hysteria2://, hy2:// или vless://, ключ Amnezia — с vpn://, конфиг AmneziaWG — со строки [Interface], ссылка подписки — с https://. Скопируйте её целиком.';
       }
       ui.profiles = await api.Profiles();
     } catch (e) {
@@ -402,9 +402,10 @@
       {/if}
     {:else if step === 'server'}
       <h1>Добавьте ваш VPN-сервер</h1>
-      <p class="lead">Вам должны были дать ссылку. Она бывает двух видов, подходит любая:</p>
+      <p class="lead">Вам должны были дать ссылку или конфиг. Подходит любой из этих видов:</p>
       <ul class="kinds">
         <li><b>ссылка на сервер</b> — начинается с <code>hysteria2://</code>, <code>hy2://</code> или <code>vless://</code>;</li>
+        <li><b>ключ или конфиг AmneziaWG</b> — ключ <code>vpn://</code> из приложения Amnezia или текст конфига, который начинается со строки <code>[Interface]</code> (WireGuard тоже подходит);</li>
         <li><b>ссылка подписки</b> — начинается с <code>https://</code>. По ней HyRoute сам получит список серверов и будет его обновлять.</li>
       </ul>
       <p>
@@ -414,7 +415,7 @@
       <textarea
         rows="3"
         class:masked={ui.privacy}
-        placeholder="hysteria2://…, vless://…  или  https://…"
+        placeholder="hysteria2://…, vless://…, vpn://…, [Interface]…  или  https://…"
         bind:value={link}
         onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), addLink())}
       ></textarea>
