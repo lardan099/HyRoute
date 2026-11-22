@@ -128,6 +128,50 @@ UUID — секрет: шифруется DPAPI вместе с `auth` и пар
 `finalmask` в параметр `fm` ссылки VLESS. Неподдерживаемые параметры (`sockopt`, `mux`, другие маски,
 `skip-cert-verify`), уходит в предупреждения, другие протоколы — в «пропущенные».
 
+## AmneziaWG: профиль, процесс, проверка
+
+Профиль с `protocol: "awg"` — сервер AmneziaWG или обычного WireGuard (AmneziaWG без параметров
+маскировки). Пакет `internal/awg`: модель (`awg.Settings` в поле `awg` профиля: ключи в base64, `address`,
+`dns`, `mtu`, `keepalive`, маскировка `jc, jmin, jmax, s1–s4, h1–h4, i1–i5` и параметры AmneziaWG 3
+`headerProtectionKey, contentPadding, randomTrailers, disableCookies` и таймеры; у профиля из общих полей
+только `host` и один порт в `ports`, поля Hysteria и VLESS пусты — `Profile.Validate`), конфиги `.conf`
+в формате amneziawg-tools (ключи без учёта регистра, пустые значения шаблона Amnezia — «не задано»,
+`AllowedIPs`, `PreUp/PostUp`, `ListenPort`, лишние `[Peer]` — с предупреждением) и ключи `vpn://` приложения
+Amnezia (base64url от qCompress: 4 байта длины и zlib; внутри конфиг или JSON приложения, где конфиг лежит в
+`containers[].awg|wireguard.last_config.config`, `$PRIMARY_DNS`/`$SECONDARY_DNS` заменяются на `dns1`/`dns2`).
+Ключи сервисов Amnezia (`api_config`, `auth_data`, `api_key`) и ключи доступа к серверу по SSH
+отклоняются с объяснением. Параметры сверены с amneziawg-go v3.1.20261116 (`device/uapi.go`, `device/obf.go`)
+и `amneziawg-tools` (`src/config.c`). Экспорт (`Profile.URI`) — конфиг `.conf` с `# Name = …`.
+
+Процесс — сам HyRoute: `HyRoute.exe --awg <run\hy-<n>.json>` (на macOS — исполняемый файл службы),
+запускается тем же `startProcess`, что ядра (Job, `CREATE_NO_WINDOW`); разбор флага — первое, что делает
+`main`. Конфиг процесса (`awg.RunConfig`): настройка устройства в формате UAPI amneziawg-go (ключи в hex,
+`replace_peers`, один пир с `allowed_ip=0.0.0.0/0` и `::/0`: что идёт в туннель, решает HyRoute), адреса
+туннеля, DNS (без них — 1.1.1.1 и 1.0.0.1 через туннель), MTU (по умолчанию 1420) и SOCKS5 на
+`127.0.0.1:<свободный>` с случайными логином и паролем. Процесс поднимает `device.Device` на
+`tun/netstack` (gVisor, `conn.NewStdNetBind`) и отдаёт его через `localproxy.Server`: CONNECT — TCP сетевого
+стека (имена — через DNS туннеля), UDP ASSOCIATE — UDP-сокеты стека по семейству адреса. Драйвер,
+адаптер и маршруты Windows не трогаются. Вне Windows процесс завершается, когда завершился его родитель.
+
+Адрес сервера HyRoute разрешает всегда сам (amneziawg-go принимает только IP) и закрепляет, как
+`pinServerIP`; исключение из перехвата — те же `SetServerIPs`. Свои процессы движок узнаёт по имени
+исполняемого файла HyRoute и родителю (`Core.SelfName`, исключение «hysteria»), kill switch пропускает
+их как сам HyRoute. В цепочке («Подключаться через») UDP идёт через мост Hysteria (`startUDPChain`) к
+SOCKS5 UDP первого VPN: endpoint устройства — локальный адрес моста.
+
+Журнал процесса — JSON-строки, как у Hysteria (`ParseLogLine`): `fatal` с `kind` `config` (устройство не
+приняло настройки → `ErrConfig`) или `port` (занят порт SOCKS5 → `ErrPortBusy`), события `listening`,
+`handshake` (первое рукопожатие по `last_handshake_time_sec`), `no-handshake` (12 с без него) и `dns`
+(DNS через туннель не отвечает; без адреса назначения, не чаще раза в минуту). Ошибки amneziawg-go —
+строки `warn`. Подключение проверяется, как у VLESS (`watchVLESS`): рукопожатие ещё не значит, что
+сервер выпускает трафик. Причина неудачи (`ClassifyAWG`): нет рукопожатия (адрес, ключи, маскировка,
+блокировка UDP) → `ErrTimeout`; DNS туннеля молчит; рукопожатие есть, трафика нет. UDP есть всегда;
+`fastOpen` false: SOCKS5 отвечает после соединения через туннель.
+
+Секреты — приватный ключ, общий ключ и ключ защиты заголовков: шифруются DPAPI (`secrets.awgKey`,
+`awgPSK`, `awgHPK` в `profiles.json`), маскируются в журналах в base64 и в hex (`Profile.Secrets`,
+`Settings.HexSecrets`), не попадают в копию без секретов.
+
 ## Несколько серверов одновременно
 
 Серверов работает несколько одновременно, и через каждый идут свои маршруты:
