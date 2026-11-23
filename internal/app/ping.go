@@ -48,7 +48,12 @@ type pingResult struct {
 	ms   int64 // 0: no answer, err says why
 	err  string
 	at   time.Time
-	conn string // connKey of what was measured: a server changed since has no result
+	conn string // connection key of the measured route: a server changed since has no result
+}
+
+type pingTarget struct {
+	profile hysteria.Profile
+	conn    string
 }
 
 // pingRun is a run under way.
@@ -89,10 +94,20 @@ func (c *Controller) PingState() PingState {
 
 // pingLocked fills a summary with the server's last measurement.
 func (c *Controller) pingLocked(p *hysteria.Profile, s *ProfileSummary) {
-	if r, ok := c.pings[p.ID]; ok && r.conn == connKey(*p) {
+	if r, ok := c.pings[p.ID]; ok && r.conn == c.pingConnLocked(*p) {
 		s.PingMs, s.PingErr, s.PingAt = r.ms, r.err, r.at.Unix()
 	}
 	s.Pinging = c.pingRun != nil && c.pingRun.left[p.ID]
+}
+
+func (c *Controller) pingConnLocked(p hysteria.Profile) string {
+	key := profileConnKey(p)
+	if p.Via != "" {
+		if first := c.profiles.Find(p.Via); first != nil {
+			key += "\x00" + profileConnKey(*first)
+		}
+	}
+	return key
 }
 
 // PingServers starts measuring the servers named, all of them when ids is
@@ -108,12 +123,12 @@ func (c *Controller) PingServers(ids []string) PingState {
 		defer c.mu.Unlock()
 		return c.pingStateLocked()
 	}
-	var list []hysteria.Profile
+	var list []pingTarget
 	known := map[string]bool{}
 	for _, p := range c.profiles.List {
 		known[p.ID] = true
 		if len(want) == 0 || want[p.ID] {
-			list = append(list, p)
+			list = append(list, pingTarget{profile: p, conn: c.pingConnLocked(p)})
 		}
 	}
 	if c.pings == nil {
@@ -130,8 +145,8 @@ func (c *Controller) PingServers(ids []string) PingState {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), pingBudget)
 	run := &pingRun{cancel: cancel, done: make(chan struct{}), left: map[string]bool{}, total: len(list)}
-	for _, p := range list {
-		run.left[p.ID] = true
+	for _, target := range list {
+		run.left[target.profile.ID] = true
 	}
 	c.pingRun = run
 	st := c.pingStateLocked()
@@ -173,7 +188,7 @@ func (c *Controller) stopPing() {
 	}
 }
 
-func (c *Controller) runPing(ctx context.Context, run *pingRun, list []hysteria.Profile, rawURL string) {
+func (c *Controller) runPing(ctx context.Context, run *pingRun, list []pingTarget, rawURL string) {
 	defer run.cancel()
 	// The page reloads the servers on every change: results that come
 	// together are reported together.
@@ -200,14 +215,15 @@ func (c *Controller) runPing(ctx context.Context, run *pingRun, list []hysteria.
 	}()
 
 	room := &pingRoom{probe: make(chan struct{}, pingProbes)}
-	jobs := make(chan hysteria.Profile)
+	jobs := make(chan pingTarget)
 	var wg sync.WaitGroup
 	answered := 0
 	for i := 0; i < min(pingWorkers, len(list)); i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for p := range jobs {
+			for target := range jobs {
+				p := target.profile
 				rtt, err := c.pingOne(ctx, p, rawURL, room)
 				c.mu.Lock()
 				delete(run.left, p.ID)
@@ -215,9 +231,9 @@ func (c *Controller) runPing(ctx context.Context, run *pingRun, list []hysteria.
 				case ctx.Err() != nil || errors.Is(err, groups.ErrCanceled):
 					// Stopped: no result, the last one stays.
 				case err != nil:
-					c.pings[p.ID] = pingResult{err: err.Error(), at: time.Now(), conn: connKey(p)}
+					c.pings[p.ID] = pingResult{err: err.Error(), at: time.Now(), conn: target.conn}
 				default:
-					c.pings[p.ID] = pingResult{ms: max(1, rtt.Milliseconds()), at: time.Now(), conn: connKey(p)}
+					c.pings[p.ID] = pingResult{ms: max(1, rtt.Milliseconds()), at: time.Now(), conn: target.conn}
 					answered++
 				}
 				c.mu.Unlock()

@@ -125,6 +125,39 @@ func TestPingServers(t *testing.T) {
 	}
 }
 
+func TestVPNChainPingInvalidatedByRouteChanges(t *testing.T) {
+	r := newLiveRig(t)
+	c := r.c
+	exit, first, _ := servers(t, c)
+	measure := func() {
+		t.Helper()
+		c.PingServers([]string{exit})
+		waitPing(t, c)
+		if p := pingOf(t, c, exit); p.PingMs <= 0 || p.PingErr != "" {
+			t.Fatalf("ping did not complete: %+v", p)
+		}
+	}
+	edit := func(id string, change func(*hysteria.Profile)) {
+		t.Helper()
+		p, err := c.Profile(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		change(&p)
+		if _, err := c.SaveProfile(p); err != nil {
+			t.Fatal(err)
+		}
+		if p := pingOf(t, c, exit); p.PingAt != 0 || p.PingMs != 0 || p.PingErr != "" {
+			t.Fatalf("ping from the previous route survived: %+v", p)
+		}
+	}
+
+	measure()
+	edit(exit, func(p *hysteria.Profile) { p.Via = first })
+	measure()
+	edit(first, func(p *hysteria.Profile) { p.Ports = "8443" })
+}
+
 // The cores connect together, the requests go one server at a time.
 func TestPingOneAtATime(t *testing.T) {
 	r := newLiveRig(t)
