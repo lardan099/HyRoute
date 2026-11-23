@@ -431,14 +431,22 @@ func (c *Controller) SaveProfile(p hysteria.Profile) (ProfileSummary, error) {
 		return ProfileSummary{}, errors.New("балансировщик Xray обновляется из подписки")
 	}
 	if p.Via != "" {
-		ingress := c.profiles.Find(p.Via)
-		if ingress == nil {
-			c.mu.Unlock()
-			return ProfileSummary{}, errors.New("первый VPN цепочки не найден")
-		}
-		if ingress.Via != "" {
-			c.mu.Unlock()
-			return ProfileSummary{}, errors.New("первый VPN цепочки уже подключается через другой VPN")
+		if groups.IsGroupID(p.Via) {
+			g := c.groupLocked(p.Via)
+			if g == nil || len(c.chainGroupMembersLocked(g, p.ID)) == 0 {
+				c.mu.Unlock()
+				return ProfileSummary{}, errors.New("в группе первого VPN нужен хотя бы один сервер с прямым подключением")
+			}
+		} else {
+			ingress := c.profiles.Find(p.Via)
+			if ingress == nil {
+				c.mu.Unlock()
+				return ProfileSummary{}, errors.New("первый VPN цепочки не найден")
+			}
+			if ingress.Via != "" {
+				c.mu.Unlock()
+				return ProfileSummary{}, errors.New("первый VPN цепочки уже подключается через другой VPN")
+			}
 		}
 		if refs := c.chainRefsLocked(p.ID); len(refs) > 0 {
 			c.mu.Unlock()

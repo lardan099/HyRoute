@@ -19,7 +19,7 @@ type Upstream interface {
 	SOCKS() socks5.Client
 }
 
-func (s *Supervisor) waitUpstream(ctx context.Context) (socks5.Client, error) {
+func (s *Supervisor) waitUpstream(ctx context.Context) (Upstream, socks5.Client, error) {
 	deadline := time.NewTimer(12 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -28,18 +28,18 @@ func (s *Supervisor) waitUpstream(ctx context.Context) (socks5.Client, error) {
 		if s.Via != nil {
 			if ep := s.Via(); ep != nil && ep.Available() {
 				if !s.Profile.IsVLESS() && !ep.UDPAvailable() {
-					return socks5.Client{}, errors.New("первый VPN не пропускает UDP, необходимый для " + s.Profile.ProtocolName())
+					return nil, socks5.Client{}, errors.New("первый VPN не пропускает UDP, необходимый для " + s.Profile.ProtocolName())
 				}
 				if cl := ep.SOCKS(); cl.Server != "" {
-					return cl, nil
+					return ep, cl, nil
 				}
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return socks5.Client{}, ctx.Err()
+			return nil, socks5.Client{}, ctx.Err()
 		case <-deadline.C:
-			return socks5.Client{}, errors.New("первый VPN цепочки недоступен")
+			return nil, socks5.Client{}, errors.New("первый VPN цепочки недоступен")
 		case <-ticker.C:
 		}
 	}

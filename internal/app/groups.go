@@ -183,6 +183,17 @@ func (c *Controller) membersLocked(g *groups.Group) []string {
 	return out
 }
 
+// Only directly connected members can be the first VPN of a two-hop chain.
+func (c *Controller) chainGroupMembersLocked(g *groups.Group, exit string) []string {
+	skip := map[string]bool{exit: true}
+	for _, p := range c.profiles.List {
+		if p.Via != "" {
+			skip[p.ID] = true
+		}
+	}
+	return slices.DeleteFunc(c.membersLocked(g), func(id string) bool { return skip[id] })
+}
+
 // groupHasLocked: server id is a member of g (its own or a subscription's).
 func (c *Controller) groupHasLocked(g *groups.Group, id string) bool {
 	if slices.Contains(g.Members, id) {
@@ -255,6 +266,9 @@ func (c *Controller) mainTargetLocked() string {
 // fallback lists, local proxies and the main target.
 func (c *Controller) targetRefsLocked(id string) []string {
 	refs := append(c.explicitRefsLocked(id), c.proxyRefsLocked(id)...)
+	if groups.IsGroupID(id) {
+		refs = append(refs, c.chainRefsLocked(id)...)
+	}
 	if id != "" && c.mainTargetLocked() == id {
 		refs = append(refs, "основной")
 	}
@@ -605,6 +619,9 @@ func (c *Controller) deleteGroupLocked(id string) error {
 	g := c.groupsFile.Find(id)
 	if g == nil {
 		return groups.Errorf("Группа не найдена")
+	}
+	if refs := c.chainRefsLocked(id); len(refs) > 0 {
+		return groups.Errorf("Группа используется как первый VPN: %s", strings.Join(refs, ", "))
 	}
 	if refs := append(c.explicitRefsLocked(id), c.proxyRefsLocked(id)...); len(refs) > 0 {
 		return groups.Errorf("Группа используется: %s. Выберите в них другой сервер или группу", strings.Join(refs, ", "))

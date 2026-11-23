@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/net/dns/dnsmessage"
 
+	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/session"
 	"github.com/lardan099/hyroute/internal/socks5"
@@ -136,10 +137,16 @@ func (c *Controller) CheckProfile(id string) (CheckResult, error) {
 func (c *Controller) acquire(p hysteria.Profile) (*tunnels.Endpoint, func()) {
 	c.mu.Lock()
 	sess := c.sess
-	var ingress hysteria.Profile
+	var ingress []hysteria.Profile
 	if p.Via != "" && p.Via != p.ID {
-		if up := c.profiles.Find(p.Via); up != nil && up.Via == "" {
-			ingress = *up
+		if groups.IsGroupID(p.Via) {
+			if g := c.groupLocked(p.Via); g != nil {
+				for _, id := range c.chosenLocked(g.ID, c.chainGroupMembersLocked(g, p.ID)) {
+					ingress = append(ingress, *c.profiles.Find(id))
+				}
+			}
+		} else if up := c.profiles.Find(p.Via); up != nil && up.Via == "" {
+			ingress = append(ingress, *up)
 		}
 	}
 	if sess == nil && c.checkMgr == nil {
@@ -149,7 +156,7 @@ func (c *Controller) acquire(p hysteria.Profile) (*tunnels.Endpoint, func()) {
 			base.Redactor = c.Redactor
 			f = session.RunnerFactory(base)
 		}
-		c.checkMgr = &tunnels.Manager{New: f, Log: c.Log, LogLine: c.hysteriaLine}
+		c.checkMgr = &tunnels.Manager{New: f, Groups: c.groupsRT, Log: c.Log, LogLine: c.hysteriaLine}
 	}
 	mgr := c.checkMgr
 	c.mu.Unlock()
@@ -159,14 +166,20 @@ func (c *Controller) acquire(p hysteria.Profile) (*tunnels.Endpoint, func()) {
 	} else {
 		acquire = mgr.Acquire
 	}
-	if ingress.ID == "" {
+	if len(ingress) == 0 {
 		return acquire(p)
 	}
-	_, releaseIngress := acquire(ingress)
+	releases := make([]func(), 0, len(ingress))
+	for _, p := range ingress {
+		_, release := acquire(p)
+		releases = append(releases, release)
+	}
 	ep, release := acquire(p)
 	return ep, func() {
 		release()
-		releaseIngress()
+		for _, done := range releases {
+			done()
+		}
 	}
 }
 

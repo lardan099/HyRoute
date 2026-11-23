@@ -5,10 +5,72 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/rules"
 	"github.com/lardan099/hyroute/internal/vless"
 )
+
+func TestVPNChainGroupRunsOnlyEligibleIngress(t *testing.T) {
+	r := newLiveRig(t)
+	c := r.c
+	first, second, exit := servers(t, c)
+	nested := srv("", "Nested", "nested.example")
+	nested.Via = first
+	chained, err := c.SaveProfile(nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid := saveGroup(t, c, "Вход", groups.Failover, exit, chained.ID, first, second)
+	onlyExit := saveGroup(t, c, "Только выход", groups.Failover, exit)
+	p, err := c.Profile(exit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Via = onlyExit
+	if _, err := c.SaveProfile(p); err == nil {
+		t.Fatal("an exit-only group may not be its own ingress")
+	}
+	p.Via = gid
+	if _, err := c.SaveProfile(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeleteGroup(gid); err == nil {
+		t.Fatal("deleted a group used as the first VPN")
+	}
+
+	// The standalone check takes temporary endpoints for the eligible members.
+	ep, release := c.acquire(p)
+	release()
+	if ep == nil || r.temp.Load() != 3 {
+		t.Fatalf("expected two temporary ingress members and the exit, started %d", r.temp.Load())
+	}
+	if status := c.checkMgr.Statuses(); len(status) != 0 {
+		t.Fatalf("temporary endpoints survived the check: %+v", status)
+	}
+
+	if err := c.SetMain(exit); err != nil {
+		t.Fatal(err)
+	}
+	set, err := rules.Compile(rules.Config{DefaultAction: rules.Tunnel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.set = set
+	_, wanted, used := c.routingLocked()
+	c.mu.Unlock()
+	var ids []string
+	for _, w := range wanted {
+		ids = append(ids, w.ID)
+	}
+	slices.Sort(ids)
+	sorted := []string{first, second, exit}
+	slices.Sort(sorted)
+	if !slices.Equal(ids, sorted) || !slices.Equal(used, []string{gid}) {
+		t.Fatalf("wrong chain routing: %v, groups %v", ids, used)
+	}
+}
 
 func TestVPNChainProfile(t *testing.T) {
 	c, _ := newCtl(t)
@@ -119,5 +181,29 @@ func TestVPNChainRestoreRemapsIngress(t *testing.T) {
 	if pl.err != "" || p == nil || p.Via == "" || pl.next.Profiles.Find(p.Via) != nil ||
 		!strings.Contains(texts(pl), "цепочка «Exit»") {
 		t.Fatal("partial restore must keep and report an unavailable ingress", texts(pl))
+	}
+}
+
+func TestVPNChainRestoreRemapsIngressGroup(t *testing.T) {
+	gid := groups.NewID("aaaaaaaa0003")
+	ingress := srv("aaaaaaaa0001", "First", "first.example")
+	exit := srv("aaaaaaaa0002", "Exit", "exit.example")
+	exit.Via = gid
+	other := srv("aaaaaaaa0004", "Other", "other.example")
+	cur := baseState(other)
+	cur.Groups.Groups = []groups.Group{{ID: gid, Name: "Other", Strategy: groups.Failover, Members: []string{other.ID}}}
+	file := payload(true).
+		put("servers", bkServers{List: []hysteria.Profile{ingress, exit}}).
+		put("groups", groups.File{Version: 1, Groups: []groups.Group{
+			{ID: gid, Name: "First VPN", Strategy: groups.Latency, Members: []string{ingress.ID}},
+		}})
+	pl := plan(cur, file.p, map[string]string{"servers": "add", "groups": "add"})
+	if pl.err != "" {
+		t.Fatal(pl.err)
+	}
+	p := pl.next.Profiles.Find(exit.ID)
+	g := pl.next.Groups.Find(p.Via)
+	if p.Via == gid || g == nil || !slices.Equal(g.Members, []string{ingress.ID}) {
+		t.Fatal("restored chain points to the wrong group")
 	}
 }

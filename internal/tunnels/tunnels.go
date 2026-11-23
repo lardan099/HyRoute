@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lardan099/hyroute/internal/groups"
 	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/socks5"
 )
@@ -114,6 +115,8 @@ type Status struct {
 
 type Manager struct {
 	New Factory
+	// Groups selects the first VPN when a profile connects through a group.
+	Groups *groups.Runtime
 	// SetServerIPs receives the union of every endpoint's server IPs (nil
 	// when HyRoute is not routing, e.g. a profile check while disconnected).
 	SetServerIPs func([]netip.Addr) error
@@ -216,23 +219,13 @@ func (m *Manager) newEndpoint(key string, p hysteria.Profile, test bool) *Endpoi
 	if !test {
 		e.onDial = m.OnDial
 	}
+	var tried map[string]bool
+	if groups.IsGroupID(p.Via) {
+		tried = map[string]bool{}
+	}
 	e.r = m.New(p, Hooks{
 		SetServerIPs: func(ips []netip.Addr) error { return m.setIPs(e.ipKey, ips) },
-		Via: func() hysteria.Upstream {
-			m.mu.Lock()
-			defer m.mu.Unlock()
-			if p.Via == "" || p.Via == p.ID {
-				return nil
-			}
-			up := m.eps[p.Via]
-			if up == nil && test {
-				up = m.eps["test:"+p.Via]
-			}
-			if up == nil || up.Profile.Via != "" {
-				return nil
-			}
-			return up
-		},
+		Via:          func() hysteria.Upstream { return m.upstream(p, test, tried) },
 		OnStatus: func(st hysteria.Status) {
 			if m.OnStatus != nil {
 				m.OnStatus(p.ID, st)

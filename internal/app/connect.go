@@ -273,8 +273,7 @@ func (c *Controller) routedLocked() map[string]bool {
 	for _, id := range set.Profiles() {
 		routed[id] = true
 	}
-	c.expandGroupsLocked(routed)
-	c.addChainIngressLocked(routed)
+	c.addChainIngressLocked(routed, c.expandGroupsLocked(routed))
 	return routed
 }
 

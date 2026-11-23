@@ -8,6 +8,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -341,8 +343,7 @@ func (c *Controller) routingLocked() (*rules.Set, []hysteria.Profile, []string) 
 			used[id] = true
 		}
 	}
-	usedGroups := c.expandGroupsLocked(used)
-	c.addChainIngressLocked(used)
+	usedGroups := c.addChainIngressLocked(used, c.expandGroupsLocked(used))
 	var want []hysteria.Profile // in list order
 	for _, p := range c.profiles.List {
 		if used[p.ID] {
@@ -355,14 +356,36 @@ func (c *Controller) routingLocked() (*rules.Set, []hysteria.Profile, []string) 
 	return &set, want, usedGroups
 }
 
-func (c *Controller) addChainIngressLocked(used map[string]bool) {
+func (c *Controller) addChainIngressLocked(used map[string]bool, usedGroups []string) []string {
+	seen := map[string]bool{}
 	for _, p := range c.profiles.List {
-		if p.Via != "" && used[p.ID] {
-			if ingress := c.profiles.Find(p.Via); ingress != nil && ingress.Via == "" {
-				used[ingress.ID] = true
+		if p.Via == "" || !used[p.ID] || seen[p.Via] {
+			continue
+		}
+		seen[p.Via] = true
+		if groups.IsGroupID(p.Via) {
+			g := c.groupLocked(p.Via)
+			if g == nil {
+				continue
 			}
+			all := c.chainGroupMembersLocked(g, "")
+			if slices.Contains(usedGroups, g.ID) {
+				// Reuse the group's running pool when it can carry the chain.
+				if len(all) > 0 && !slices.ContainsFunc(all, func(id string) bool { return used[id] }) {
+					used[c.chosenLocked(g.ID, all)[0]] = true
+				}
+			} else {
+				usedGroups = append(usedGroups, g.ID)
+				for _, id := range c.chosenLocked(g.ID, all) {
+					used[id] = true
+				}
+			}
+		} else if ingress := c.profiles.Find(p.Via); ingress != nil && ingress.Via == "" {
+			used[ingress.ID] = true
 		}
 	}
+	sort.Strings(usedGroups)
+	return usedGroups
 }
 
 // applyRoutingLocked pushes the current rules and profiles to the running

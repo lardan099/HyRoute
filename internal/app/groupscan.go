@@ -107,7 +107,16 @@ func (c *Controller) scanRound(ctx context.Context) {
 		c.mu.Unlock()
 		return
 	}
-	_, _, used := c.routingLocked()
+	set, _, used := c.routingLocked()
+	direct := map[string]bool{}
+	for _, id := range set.Profiles() {
+		direct[id] = true
+	}
+	for _, p := range c.proxies {
+		if p.Enabled {
+			direct[c.proxyProfileLocked(p)] = true
+		}
+	}
 	var todo []hysteria.Profile
 	large := map[string][]string{}
 	now := time.Now()
@@ -117,6 +126,9 @@ func (c *Controller) scanRound(ctx context.Context) {
 			continue
 		}
 		all := c.membersLocked(g)
+		if !direct[gid] {
+			all = c.chainGroupMembersLocked(g, "")
+		}
 		if len(all) <= groups.MaxRunning {
 			continue
 		}

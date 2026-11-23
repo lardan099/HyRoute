@@ -429,6 +429,7 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 	var err error
 	balance := s.Profile.Balance
 	vl, aw := s.Profile.IsVLESS(), s.Profile.IsAWG()
+	var first Upstream
 	var upstream *socks5.Client
 	var relayDone <-chan struct{}
 	var udpRelay string
@@ -436,11 +437,11 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 		if err := s.Profile.Validate(); err != nil {
 			return 0, ErrConfig, err.Error()
 		}
-		cl, err := s.waitUpstream(ctx)
+		selected, cl, err := s.waitUpstream(ctx)
 		if err != nil {
 			return 0, ErrTimeout, err.Error()
 		}
-		upstream = &cl
+		first, upstream = selected, &cl
 		if !vl {
 			port, _ := VLESSPort(s.Profile.Ports)
 			dst, err := socks5.ParseHostPort(net.JoinHostPort(s.Profile.Host, strconv.Itoa(port)))
@@ -791,8 +792,8 @@ wait:
 			restartReason, restartKind = "UDP-соединение через первый VPN закрыто", ErrTimeout
 			proc.Kill()
 		case <-chainTicker:
-			if ep := s.Via(); ep != nil && ep.Available() {
-				cl := ep.SOCKS()
+			if first.Available() && (vl || first.UDPAvailable()) {
+				cl := first.SOCKS()
 				if cl.Server == upstream.Server && cl.Username == upstream.Username && cl.Password == upstream.Password {
 					continue
 				}

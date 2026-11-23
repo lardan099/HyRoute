@@ -240,6 +240,12 @@ func (r *Runtime) SetInterval(every time.Duration) {
 // IsGroup reports a known group (after SetGroups).
 func (r *Runtime) IsGroup(id string) bool { return r.defs.Load().groups[id] != nil }
 
+// HasMember reports whether the current definition includes member.
+func (r *Runtime) HasMember(group, member string) bool {
+	g := r.defs.Load().groups[group]
+	return g != nil && indexOf(g.Members, member) >= 0
+}
+
 // Members lists a group's existing members, nil if it is no group.
 func (r *Runtime) Members(id string) []string {
 	g := r.defs.Load().groups[id]

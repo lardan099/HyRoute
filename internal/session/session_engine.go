@@ -62,7 +62,7 @@ func Start(cfg Config) (_ *Session, err error) {
 
 	prepare(cfg)
 
-	s.mgr = &tunnels.Manager{Log: log, OnStatus: cfg.OnStatus, LogLine: cfg.HysteriaLog, OnDial: cfg.OnDial, OnHealth: cfg.OnHealth}
+	s.mgr = &tunnels.Manager{Log: log, Groups: cfg.Groups, OnStatus: cfg.OnStatus, LogLine: cfg.HysteriaLog, OnDial: cfg.OnDial, OnHealth: cfg.OnHealth}
 	if cfg.Stub {
 		s.stub = &socks5.Server{Username: "stub", Password: "stubpass"}
 		if err := s.stub.Listen("127.0.0.1:0"); err != nil {

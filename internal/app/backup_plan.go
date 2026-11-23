@@ -336,9 +336,9 @@ func planRestore(cur cfgState, p *backup.Payload, ch BackupChoice, env planEnv) 
 
 	x.planServers()
 	x.planSubs()
-	x.remapChains()
 	x.planMain()
 	x.planGroups()
+	x.remapChains()
 	x.planRules()
 	x.planProxies()
 	x.keepReferenced()
@@ -1371,6 +1371,10 @@ func (x *planCtx) remapChains() {
 	unresolved := map[string]string{}
 	remap := func(p *hysteria.Profile) {
 		id := p.Via
+		if groups.IsGroupID(id) {
+			p.Via = x.resolve(id, "цепочка «"+p.Name+"»")
+			return
+		}
 		if mapped := x.tmap[id]; mapped != "" {
 			p.Via = mapped
 			x.dangling = append(x.dangling, danglingRef{"цепочка «" + p.Name + "»", p.Via})

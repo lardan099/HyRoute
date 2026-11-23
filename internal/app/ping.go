@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,7 +105,15 @@ func (c *Controller) pingLocked(p *hysteria.Profile, s *ProfileSummary) {
 func (c *Controller) pingConnLocked(p hysteria.Profile) string {
 	key := profileConnKey(p)
 	if p.Via != "" {
-		if first := c.profiles.Find(p.Via); first != nil {
+		if g := c.groupLocked(p.Via); g != nil {
+			var chain strings.Builder
+			chain.WriteString(key)
+			fmt.Fprintf(&chain, "\x00%s:%t:%d:%d", g.Strategy, g.Revert, g.ToleranceMs, g.SwitchAfterErrors)
+			for _, id := range c.chainGroupMembersLocked(g, p.ID) {
+				chain.WriteString("\x00" + id + "\x00" + profileConnKey(*c.profiles.Find(id)))
+			}
+			return chain.String()
+		} else if first := c.profiles.Find(p.Via); first != nil {
 			key += "\x00" + profileConnKey(*first)
 		}
 	}

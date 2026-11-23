@@ -29,6 +29,10 @@
   });
   const ro = $derived(ui.privacy && !revealed);
   const ingressProfiles = $derived(ui.profiles.filter((server) => server.id !== p.id && !server.via));
+  const ingressGroups = $derived.by(() => {
+    const direct = new Set(ingressProfiles.map((server) => server.id));
+    return ui.groups.filter((group) => group.memberViews.some((member) => direct.has(member.id)));
+  });
   // A press that started in a field and ended on the backdrop is not a
   // click on the backdrop.
   let downOnBackdrop = false;
@@ -103,12 +107,23 @@
   <select id="pe-via" value={p.via ?? ''} onchange={(e) => (p.via = e.currentTarget.value || undefined)}
     title="Первый VPN подключается к серверу этого профиля">
     <option value="">Напрямую</option>
-    {#if p.via && !ingressProfiles.some((server) => server.id === p.via)}
+    {#if p.via && !ingressProfiles.some((server) => server.id === p.via) && !ingressGroups.some((group) => group.id === p.via)}
       <option value={p.via}>Первый VPN недоступен</option>
     {/if}
-    {#each ingressProfiles as server (server.id)}
-      <option value={server.id}>{hide(server.name)} · {hide(server.server)}</option>
-    {/each}
+    {#if ingressGroups.length}
+      <optgroup label="Группы">
+        {#each ingressGroups as group (group.id)}
+          <option value={group.id}>{hide(group.name)}</option>
+        {/each}
+      </optgroup>
+    {/if}
+    {#if ingressProfiles.length}
+      <optgroup label="Серверы">
+        {#each ingressProfiles as server (server.id)}
+          <option value={server.id}>{hide(server.name)} · {hide(server.server)}</option>
+        {/each}
+      </optgroup>
+    {/if}
   </select>
 {/snippet}
 
