@@ -80,7 +80,7 @@ func (s *Supervisor) watchVLESS(ctx context.Context, addr, server string, kick c
 			// it works, and a check of its own would only cost traffic.
 			seen = got
 		} else {
-			err = s.probeVLESS(ctx, c)
+			err = s.probeTunnel(ctx, c)
 			seen = s.received()
 		}
 		if ctx.Err() != nil {
@@ -141,12 +141,12 @@ func (s *Supervisor) received() int64 {
 	return s.Received()
 }
 
-// probeVLESS sends an HTTP request through the tunnel to the first probe
+// probeTunnel sends an HTTP request through the tunnel to the first probe
 // URL and, only when that fails, to the others at once; one answer is
 // enough. Each request is a new connection to the server (its handshake
 // is most of the traffic), so the others are not asked while the first
 // answers.
-func (s *Supervisor) probeVLESS(ctx context.Context, c socks5.Client) error {
+func (s *Supervisor) probeTunnel(ctx context.Context, c socks5.Client) error {
 	urls := s.ProbeURLs
 	if len(urls) == 0 {
 		urls = DefaultProbeURLs

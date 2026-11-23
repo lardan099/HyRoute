@@ -19,6 +19,44 @@ type Upstream interface {
 	SOCKS() socks5.Client
 }
 
+var chainProbeEvery = 30 * time.Second
+
+// watchHysteriaChain checks the exit: the first VPN's SOCKS5 control socket
+// can stay open while the UDP path carrying Hysteria stops passing traffic.
+func (s *Supervisor) watchHysteriaChain(ctx context.Context, kick chan<- restart) {
+	c := s.SOCKS()
+	seen := s.received()
+	wait := chainProbeEvery
+	missed := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		before := s.received()
+		ok := before > seen || s.probeTunnel(ctx, c) == nil
+		if ctx.Err() != nil {
+			return
+		}
+		seen = s.received()
+		if ok || seen > before {
+			missed = false
+			wait = chainProbeEvery
+			continue
+		}
+		if missed {
+			select {
+			case kick <- restart{ErrTimeout, "Цепочка VPN перестала отвечать, переподключение"}:
+			default:
+			}
+			return
+		}
+		missed = true
+		wait = vlessRetryEvery
+	}
+}
+
 func (s *Supervisor) waitUpstream(ctx context.Context) (Upstream, socks5.Client, error) {
 	deadline := time.NewTimer(12 * time.Second)
 	defer deadline.Stop()

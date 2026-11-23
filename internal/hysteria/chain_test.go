@@ -3,9 +3,12 @@ package hysteria
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,6 +77,55 @@ func TestVPNChainHysteriaTLS(t *testing.T) {
 		if !strings.Contains(string(cfg), want) {
 			t.Fatalf("config missing %q", want)
 		}
+	}
+}
+
+func TestVPNChainHysteriaRestartsWhenTrafficHangs(t *testing.T) {
+	fastProbes(t)
+	every := chainProbeEvery
+	chainProbeEvery = 100 * time.Millisecond
+	t.Cleanup(func() { chainProbeEvery = every })
+	var requests atomic.Int32
+	web := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch requests.Add(1) {
+		case 2, 4, 5:
+			<-r.Context().Done()
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer web.Close()
+	first := &socks5.Server{}
+	if err := first.Listen("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	s, ch, _ := newSupervisor(t, "ok", Profile{Host: "127.0.0.1", Ports: "443", Auth: "x", Via: "first"})
+	s.ProbeURLs = []string{web.URL}
+	var upstreams atomic.Int32
+	s.Via = func() Upstream {
+		upstreams.Add(1)
+		return chainTestIngress{socks5.Client{Server: first.Addr()}}
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+	waitState(t, ch, Connected)
+	old := s.SOCKS()
+	failed := waitState(t, ch, Failed)
+	if failed.Kind != ErrTimeout || !strings.Contains(failed.Message, "Цепочка VPN перестала отвечать") {
+		t.Fatalf("unexpected restart: %+v", failed)
+	}
+	if got := requests.Load(); got != 5 {
+		t.Fatalf("expected a restart only after consecutive failures, got %d requests", got)
+	}
+	waitState(t, ch, Connected)
+	if next := s.SOCKS(); next.Username == old.Username || upstreams.Load() != 2 {
+		t.Fatal("the tunnel and its upstream were not reopened")
+	}
+	if err := probeHTTP(t.Context(), s.SOCKS(), web.URL); err != nil {
+		t.Fatalf("traffic after reconnect: %v", err)
 	}
 }
 

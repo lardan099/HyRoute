@@ -79,12 +79,12 @@ type Supervisor struct {
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 	// ReResolveEvery defaults to 5 minutes.
 	ReResolveEvery time.Duration
-	// ProbeURLs are the plain-HTTP addresses a VLESS run checks the
-	// server with (DefaultProbeURLs when empty).
+	// ProbeURLs are the plain-HTTP addresses used for tunnel health checks
+	// (DefaultProbeURLs when empty).
 	ProbeURLs []string
 	// Received: the bytes received through this run's endpoint so far
-	// (nil: unknown). A VLESS run skips its periodic check while answers
-	// keep coming back through it.
+	// (nil: unknown). Periodic probes are skipped while answers keep coming
+	// back through the tunnel.
 	Received func() int64
 
 	mu        sync.Mutex
@@ -734,6 +734,9 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, ErrorKind, str
 						udp := lastUDP
 						evMu.Unlock()
 						setConnected(udp)
+						if upstream != nil {
+							s.watchHysteriaChain(runCtx, kick)
+						}
 					}()
 					continue
 				case ev.Fatal:
@@ -841,8 +844,8 @@ wait:
 	stopProbes()
 	s.available.Store(false)
 	s.mu.Unlock()
-	probes.Wait()
 	<-readDone
+	probes.Wait()
 
 	evMu.Lock()
 	defer evMu.Unlock()

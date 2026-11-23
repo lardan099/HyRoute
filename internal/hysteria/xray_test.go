@@ -390,11 +390,11 @@ func TestProbeFirstURLFirst(t *testing.T) {
 	defer srv.Close()
 	c := socks5.Client{Server: srv.Addr()}
 	s := &Supervisor{ProbeURLs: []string{a.URL + "/", b.URL + "/"}}
-	if err := s.probeVLESS(t.Context(), c); err != nil || first.Load() != 1 || second.Load() != 0 {
+	if err := s.probeTunnel(t.Context(), c); err != nil || first.Load() != 1 || second.Load() != 0 {
 		t.Fatalf("%v first %d second %d", err, first.Load(), second.Load())
 	}
 	a.Close()
-	if err := s.probeVLESS(t.Context(), c); err != nil || second.Load() != 1 {
+	if err := s.probeTunnel(t.Context(), c); err != nil || second.Load() != 1 {
 		t.Fatalf("the others were not asked when the first failed: %v %d", err, second.Load())
 	}
 }
