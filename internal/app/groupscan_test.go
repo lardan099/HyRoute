@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lardan099/hyroute/internal/groups"
+	"github.com/lardan099/hyroute/internal/hysteria"
 	"github.com/lardan099/hyroute/internal/rules"
 )
 
@@ -59,6 +61,69 @@ func TestGroupFollowsSubscription(t *testing.T) {
 	gv, _ = c.groupView(gv.ID, nil)
 	if len(gv.Subs) != 0 || len(gv.Members) != 1 || len(gv.Views) != 1 || c.profiles.Find(gv.Members[0]) == nil {
 		t.Fatalf("%+v", gv)
+	}
+}
+
+func TestGroupExcludesServersFromFollowedSubscriptions(t *testing.T) {
+	c, started := newCtl(t)
+	body := subBody(2, "primary")
+	first := addSub(t, c, &body)
+	const secondURL = "https://backup.example/s"
+	c.Fetch = func(_ context.Context, url string) (FetchResult, error) {
+		if url == secondURL {
+			return FetchResult{Body: []byte(subBody(2, "backup"))}, nil
+		}
+		return FetchResult{Body: []byte(body)}, nil
+	}
+	preview, err := c.PreviewSubscription(secondURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := c.AddSubscription(SubInput{Token: preview.Token, Enabled: true, Interval: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skip := c.Profiles()[0].ID
+	g, err := c.SaveGroup(groups.Group{Name: "Две подписки", Strategy: groups.Latency,
+		Subs: []string{first.ID, second.ID}, Excluded: []string{skip, skip}})
+	if err != nil || len(g.Views) != 3 || !slices.Equal(g.Excluded, []string{skip}) {
+		t.Fatalf("save: views=%v, excluded=%v, err=%v", g.Views, g.Excluded, err)
+	}
+	if err := c.SetMain(g.ID); err != nil {
+		t.Fatal(err)
+	}
+	st := c.Settings()
+	st.DefaultAction = rules.Tunnel
+	if _, err := c.SaveSettings(st); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	defer c.Disconnect()
+	running := (*started)[0].cfg.Profiles
+	if len(running) != 3 || slices.ContainsFunc(running, func(p hysteria.Profile) bool { return p.ID == skip }) {
+		t.Fatal("the group started an excluded server")
+	}
+
+	body = subBody(3, "primary")
+	if _, err := c.UpdateSubscription(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	g, err = c.groupView(g.ID, nil)
+	if err != nil || len(g.Views) != 4 || slices.ContainsFunc(g.Views, func(m MemberView) bool { return m.ID == skip }) {
+		t.Fatalf("refresh lost exclusion or did not include the new server: %v, %v", g.Views, err)
+	}
+	other, err := c.SaveGroup(groups.Group{Name: "Вся подписка", Strategy: groups.Latency, Subs: []string{first.ID}})
+	if err != nil || !slices.ContainsFunc(other.Views, func(m MemberView) bool { return m.ID == skip }) {
+		t.Fatal("exclusion affected another group")
+	}
+	if err := c.DeleteSubscription(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	g, err = c.groupView(g.ID, nil)
+	if err != nil || len(g.Excluded) != 0 || slices.ContainsFunc(g.Views, func(m MemberView) bool { return m.ID == skip }) {
+		t.Fatal("deleted subscription reintroduced an excluded server")
 	}
 }
 

@@ -17,6 +17,7 @@
   let tolerance = $state(group.toleranceMs || 50);
   let error = $state('');
   let saving = $state(false);
+  let subSearch = $state<Record<string, string>>({});
 
   const strategies: { v: Strategy; d: string }[] = [
     { v: 'failover', d: 'Первый работающий сервер списка, остальные — запасные.' },
@@ -42,7 +43,6 @@
     return [...out.entries()].sort(([a], [b]) => (a === '' ? 1 : b === '' ? -1 : 0));
   });
   const subs = $derived(sources.filter(([k]) => k !== ''));
-  const fastOpen = $derived(g.members.map(server).filter((p) => p?.fastOpen) as ProfileSummary[]);
 
   function add(id: string) {
     if (id && !g.members.includes(id)) g.members.push(id);
@@ -55,8 +55,24 @@
     g.members = g.members.filter((m) => server(m)?.source !== source);
   }
   const subName = (id: string) => hide(ui.profiles.find((p) => p.source === 'sub:' + id)?.sourceName ?? 'подписка');
-  const subCount = (id: string) => ui.profiles.filter((p) => p.source === 'sub:' + id).length;
-  const total = $derived(g.members.length + g.subs!.reduce((n, id) => n + subCount(id), 0));
+  const excluded = $derived(new Set(g.excluded));
+  const subMembers = $derived.by(() => {
+    const out = new Map<string, ProfileSummary[]>();
+    const manual = new Set(g.members);
+    for (const id of g.subs ?? []) out.set('sub:' + id, []);
+    for (const p of ui.profiles) {
+      if (!manual.has(p.id)) out.get(p.source)?.push(p);
+    }
+    return out;
+  });
+  const included = $derived([...subMembers.values()].flat().filter((p) => !excluded.has(p.id)));
+  const total = $derived(g.members.length + included.length);
+  const fastOpen = $derived([...g.members.map(server), ...included].filter((p): p is ProfileSummary => p?.fastOpen === true));
+
+  function setIncluded(id: string, included: boolean) {
+    if (included) g.excluded = (g.excluded ?? []).filter((x) => x !== id);
+    else if (!excluded.has(id)) g.excluded = [...(g.excluded ?? []), id];
+  }
 
   function move(i: number, by: -1 | 1) {
     const j = i + by;
@@ -67,7 +83,7 @@
   async function save() {
     error = '';
     saving = true;
-    const out: Group = { id: g.id, name: g.name.trim(), strategy: g.strategy, members: g.members, subs: g.subs ?? [] };
+    const out: Group = { id: g.id, name: g.name.trim(), strategy: g.strategy, members: g.members, subs: g.subs ?? [], excluded: g.excluded };
     if (g.strategy === 'failover' && g.revert) out.revert = true;
     if (g.strategy === 'latency') out.toleranceMs = +tolerance;
     if (errorsOn) out.switchAfterErrors = +errorsN;
@@ -129,8 +145,8 @@
       Если столько новых соединений подряд не открылись через сервер, группа минуту обходит его стороной, потом пробует одно соединение.
       {#if errorsOn && fastOpen.length}
         <div class="warn-t">
-          У серверов с быстрым открытием (fastOpen) — {fastOpen.map((p) => `«${serverLabel(p)}»`).join(', ')} — ошибки соединений не видны, для них это не
-          сработает.
+          У серверов с быстрым открытием (fastOpen) ошибки соединений не видны.
+          {fastOpen.slice(0, 3).map((p) => `«${serverLabel(p)}»`).join(', ')}{fastOpen.length > 3 ? ` и ещё ${fastOpen.length - 3}` : ''}.
         </div>
       {/if}
     </div>
@@ -149,11 +165,31 @@
         </div>
       {/each}
       {#each g.subs ?? [] as id, i (id)}
+        {@const members = subMembers.get('sub:' + id) ?? []}
+        {@const skipped = members.filter((p) => excluded.has(p.id)).length}
         <div class="member sub">
           <span class="n"><Icon name="rss" size={11} /></span>
-          <span class="grow ellipsis">Все серверы подписки «{subName(id)}» — сейчас {subCount(id)}, новые добавятся сами</span>
+          <span class="grow ellipsis">«{subName(id)}» · {members.length - skipped} в группе</span>
           <button class="icon danger" onclick={() => g.subs!.splice(i, 1)} title="Убрать подписку из группы"><Icon name="x" size={15} /></button>
         </div>
+        {#if members.length}
+          <details class="subscription-members">
+            <summary>Серверы подписки{skipped ? ` · исключено ${skipped}` : ''}</summary>
+            {#if members.length > 10}
+              <input type="search" bind:value={subSearch[id]} aria-label="Поиск по серверам подписки" placeholder="Поиск по серверам" />
+            {/if}
+            <div class="subscription-list">
+              {#each members.filter((p) => hide(p.name).toLocaleLowerCase().includes((subSearch[id] ?? '').trim().toLocaleLowerCase())) as p (p.id)}
+                <label class="check">
+                  <input type="checkbox" checked={!excluded.has(p.id)} onchange={(e) => setIncluded(p.id, e.currentTarget.checked)} />
+                  <span class="ellipsis" title={hide(p.name)}>{hide(p.name)}</span>
+                </label>
+              {:else}
+                <span class="muted small">Совпадений нет</span>
+              {/each}
+            </div>
+          </details>
+        {/if}
       {/each}
       {#if g.members.length === 0 && !g.subs?.length}<p class="muted small">Серверов пока нет: добавьте хотя бы один или подписку.</p>{/if}
       <div class="row adds">
@@ -191,6 +227,9 @@
         {/if}
       </div>
     </div>
+    {#if total === 0 && g.subs?.length}
+      <div class="hint">Сейчас в группе нет серверов. Новые серверы подписок добавятся автоматически.</div>
+    {/if}
     <div class="hint">{g.strategy === 'failover' ? 'Порядок важен: сверху — первый.' : 'Порядок нужен только при равенстве.'}</div>
     {#if total > 10}
       <div class="note info small">
@@ -228,6 +267,11 @@
   .member .grow { min-width: 0; }
   .member .badge { flex: 0 1 auto; min-width: 0; max-width: 35%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .member button { flex: none; }
+  .subscription-members { padding: 2px 8px 6px; }
+  .subscription-members summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  .subscription-members input[type='search'] { width: 100%; margin: 6px 0; }
+  .subscription-list { display: grid; gap: 2px; max-height: 220px; overflow: auto; padding: 4px 0; }
+  .subscription-list label { margin: 0; padding: 3px; min-width: 0; }
   .n { min-width: 20px; height: 20px; padding: 0 5px; box-sizing: border-box; border-radius: 10px; display: grid; place-items: center; font-size: 11px; background: var(--accent-soft); color: var(--accent); flex: none; }
   .adds { gap: 8px; flex-wrap: wrap; }
   .adds select { width: auto; max-width: 300px; }

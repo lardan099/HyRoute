@@ -607,6 +607,7 @@ func collectSections(st cfgState, keys []string, secrets bool, app *BackupAppear
 			refs = append(refs, f.Main)
 			for _, g := range f.Groups {
 				refs = append(refs, g.ID)
+				refs = append(refs, g.Excluded...)
 			}
 			err = put(key, f)
 		case "rules":

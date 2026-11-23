@@ -47,6 +47,8 @@ type Group struct {
 	// after Members: the group follows them as they update (new servers
 	// join, removed ones leave).
 	Subs []string `json:"subs,omitempty"`
+	// Excluded lists servers to skip when adding members from Subs.
+	Excluded []string `json:"excluded,omitempty"`
 	// Revert (failover): a member earlier in the list that has been
 	// healthy for RevertAfter takes over again.
 	Revert bool `json:"revert,omitempty"`
@@ -55,6 +57,12 @@ type Group struct {
 	// SwitchAfterErrors: a member whose N new connections in a row failed
 	// is skipped for PenaltyFor (0 = off).
 	SwitchAfterErrors int `json:"switchAfterErrors,omitempty"`
+}
+
+// IncludesSubscriptionServer reports whether the group follows this server's subscription.
+func (g Group) IncludesSubscriptionServer(id, source string) bool {
+	sub, ok := strings.CutPrefix(source, "sub:")
+	return ok && slices.Contains(g.Subs, sub) && !slices.Contains(g.Excluded, id)
 }
 
 // Probe is the latency probe: the URL requested through every running
@@ -287,6 +295,13 @@ func checkGroup(g Group) error {
 		}
 		seen[m] = true
 	}
+	excluded := map[string]bool{}
+	for _, m := range g.Excluded {
+		if m == "" || IsGroupID(m) || excluded[m] {
+			return Errorf("Недопустимое исключение сервера в группе «%s»", g.Name)
+		}
+		excluded[m] = true
+	}
 	if n := g.SwitchAfterErrors; n != 0 && (n < 2 || n > 20) {
 		return Errorf("Число ошибок — от 2 до 20")
 	}
@@ -332,6 +347,7 @@ func (f *File) Prune(server func(id string) bool) (removed int) {
 			}
 		}
 		g.Members = kept
+		g.Excluded = slices.DeleteFunc(g.Excluded, func(m string) bool { return !server(m) })
 	}
 	return removed
 }
@@ -421,6 +437,7 @@ func (f *File) Clone() *File {
 	for i, g := range f.Groups {
 		g.Members = append([]string{}, g.Members...)
 		g.Subs = slices.Clone(g.Subs)
+		g.Excluded = slices.Clone(g.Excluded)
 		out.Groups[i] = g
 	}
 	return out

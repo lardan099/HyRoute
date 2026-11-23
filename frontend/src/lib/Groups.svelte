@@ -64,7 +64,10 @@
   }
 
   function edit(g: GroupView) {
-    editing = { id: g.id, name: g.name, strategy: g.strategy, members: [...g.members], subs: [...(g.subs ?? [])], revert: g.revert, toleranceMs: g.toleranceMs, switchAfterErrors: g.switchAfterErrors };
+    editing = {
+      id: g.id, name: g.name, strategy: g.strategy, members: [...g.members], subs: [...(g.subs ?? [])],
+      excluded: [...(g.excluded ?? [])], revert: g.revert, toleranceMs: g.toleranceMs, switchAfterErrors: g.switchAfterErrors,
+    };
   }
 
   function remove(g: GroupView) {

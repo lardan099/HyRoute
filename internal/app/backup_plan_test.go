@@ -602,6 +602,32 @@ func TestPlanSubsKeptAndRenumbered(t *testing.T) {
 	}
 }
 
+func TestPlanGroupExclusionsFollowRemappedSubscription(t *testing.T) {
+	const subID, excludedID = "cccccccc0001", "aaaaaaaa0001"
+	cur := baseState(srv(excludedID, "Unrelated", "unrelated.example"))
+	cur.Subs = []store.Subscription{{ID: subID, Name: "Other", URL: "https://other.example/s", Interval: "manual"}}
+	follow := bkSub{ID: subID, Name: "Provider", URL: "https://provider.example/s", Interval: "manual",
+		Servers: []hysteria.Profile{srv(excludedID, "Excluded", "excluded.example"), srv("aaaaaaaa0002", "Included", "included.example")}}
+	f := groups.File{Version: 1, Groups: []groups.Group{{ID: groups.NewID("bbbbbbbb0001"), Name: "Combined", Strategy: groups.Latency,
+		Subs: []string{subID}, Excluded: []string{excludedID}}}}
+	file := payload(true).put("subscriptions", []bkSub{follow}).put("groups", f)
+	pl := plan(cur, file.p, map[string]string{"subscriptions": "add", "groups": "add"})
+	if pl.err != "" {
+		t.Fatal(pl.err)
+	}
+	g := pl.next.Groups.Groups[0]
+	restored := pl.next.Subs[1]
+	if restored.ID == subID || !slices.Equal(g.Subs, []string{restored.ID}) ||
+		len(g.Excluded) != 1 || g.Excluded[0] == excludedID {
+		t.Fatalf("group did not follow the new IDs: %+v", g)
+	}
+	p := pl.next.Profiles.Find(g.Excluded[0])
+	if p == nil || p.Host != "excluded.example" || p.Source != "sub:"+restored.ID ||
+		g.IncludesSubscriptionServer(p.ID, p.Source) || strings.Contains(texts(pl), "останется без серверов") {
+		t.Fatal("restore lost the exclusion or treated the group as empty", texts(pl))
+	}
+}
+
 func TestPlanProxies(t *testing.T) {
 	cur := baseState()
 	cur.Proxies = []store.LocalProxy{{ID: "aaaaaaaa0001", Name: "Mine", Port: 20000}}

@@ -157,14 +157,17 @@ func (c *Controller) existingLocked(ids []string) []string {
 
 // membersLocked is a group's servers: its own members that exist, then
 // every server of its subscriptions (Group.Subs) in the server list's
-// order, each once.
+// order, except excluded subscription servers, each once.
 func (c *Controller) membersLocked(g *groups.Group) []string {
 	out := c.existingLocked(g.Members)
 	if len(g.Subs) == 0 {
 		return out
 	}
-	seen := make(map[string]bool, len(out))
+	seen := make(map[string]bool, len(out)+len(g.Excluded))
 	for _, m := range out {
+		seen[m] = true
+	}
+	for _, m := range g.Excluded {
 		seen[m] = true
 	}
 	src := make(map[string]bool, len(g.Subs))
@@ -185,8 +188,8 @@ func (c *Controller) groupHasLocked(g *groups.Group, id string) bool {
 	if slices.Contains(g.Members, id) {
 		return true
 	}
-	if p := c.profiles.Find(id); p != nil && strings.HasPrefix(p.Source, "sub:") {
-		return slices.Contains(g.Subs, strings.TrimPrefix(p.Source, "sub:"))
+	if p := c.profiles.Find(id); p != nil {
+		return g.IncludesSubscriptionServer(id, p.Source)
 	}
 	return false
 }
@@ -206,10 +209,11 @@ func (c *Controller) dropGroupSubLocked(id string, had map[string]bool) {
 		}
 		g.Subs = slices.DeleteFunc(g.Subs, func(s string) bool { return s == id })
 		for _, p := range c.profiles.List {
-			if had[p.ID] && len(g.Members) < groups.MaxMembers && !slices.Contains(g.Members, p.ID) {
+			if had[p.ID] && len(g.Members) < groups.MaxMembers && !slices.Contains(g.Members, p.ID) && !slices.Contains(g.Excluded, p.ID) {
 				g.Members = append(g.Members, p.ID)
 			}
 		}
+		g.Excluded = slices.DeleteFunc(g.Excluded, func(id string) bool { return had[id] })
 	}
 	if err := c.saveGroupsLocked(next); err != nil {
 		c.Log.Warn("deleted subscription not removed from groups.json", "err", err)
@@ -538,6 +542,16 @@ func (c *Controller) SaveGroup(g groups.Group) (GroupView, error) {
 		}
 	}
 	g.Subs = subs
+	clear(seen)
+	var excluded []string
+	for _, id := range g.Excluded {
+		if p := c.profiles.Find(id); !seen[id] && p != nil && strings.HasPrefix(p.Source, "sub:") &&
+			slices.Contains(g.Subs, strings.TrimPrefix(p.Source, "sub:")) {
+			seen[id] = true
+			excluded = append(excluded, id)
+		}
+	}
+	g.Excluded = excluded
 	if err := groups.ValidateEdited(g, func(id string) bool { return c.profiles.Find(id) != nil }); err != nil {
 		c.mu.Unlock()
 		return GroupView{}, err
@@ -715,7 +729,9 @@ func (c *Controller) deleteServerCheckLocked(id string) error {
 // pruneServerLocked drops a deleted server from the groups, only when one
 // holds it (best effort: the runtime ignores dangling members anyway).
 func (c *Controller) pruneServerLocked(id string) {
-	if c.groupsBroken != nil || !slices.ContainsFunc(c.groupsFile.Groups, func(g groups.Group) bool { return slices.Contains(g.Members, id) }) {
+	if c.groupsBroken != nil || !slices.ContainsFunc(c.groupsFile.Groups, func(g groups.Group) bool {
+		return slices.Contains(g.Members, id) || slices.Contains(g.Excluded, id)
+	}) {
 		return
 	}
 	if err := c.saveGroupsLocked(c.groupsFile.Clone()); err != nil {

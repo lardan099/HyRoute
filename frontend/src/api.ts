@@ -1034,6 +1034,7 @@ export interface Group {
   strategy: Strategy;
   members: string[]; // server IDs, ordered
   subs?: string[]; // subscription IDs: every server of each is a member too (after members)
+  excluded?: string[]; // servers omitted from the followed subscriptions
   revert?: boolean; // failover
   toleranceMs?: number; // latency (0/undefined = 50)
   switchAfterErrors?: number; // 0/undefined = off, 2..20

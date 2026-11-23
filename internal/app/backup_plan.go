@@ -286,6 +286,7 @@ type planCtx struct {
 	removed  []removedServer             // current servers the restore drops (kept if still referenced)
 	cands    []removedServer             // add mode: subscription servers of the file not matched, kept only if referenced
 	chainIDs map[string]bool             // restored profiles whose ingress IDs refer to the backup
+	submap   map[string]string           // backup subscription ID → result subscription ID
 	dangling []danglingRef
 	shortN   int
 	used     map[string]bool // IDs taken in the result
@@ -312,7 +313,8 @@ func planRestore(cur cfgState, p *backup.Payload, ch BackupChoice, env planEnv) 
 	d := decodeSections(p)
 	pl := &restorePlan{redact: map[string][]string{}}
 	x := &planCtx{pl: pl, cur: cur, p: p, d: d, ch: map[string]string{}, env: env, tmap: map[string]string{},
-		full: map[string]hysteria.Profile{}, used: map[string]bool{}, rsmap: map[string]string{}, chainIDs: map[string]bool{}}
+		full: map[string]hysteria.Profile{}, used: map[string]bool{}, rsmap: map[string]string{}, chainIDs: map[string]bool{},
+		submap: map[string]string{}}
 	for k, m := range ch.Sections {
 		x.ch[k] = m
 	}
@@ -678,6 +680,7 @@ func (x *planCtx) planSubs() {
 				keptIDs[ns.ID] = true
 			}
 			next.Subs = append(next.Subs, ns)
+			x.submap[b.ID] = ns.ID
 			old := oldServers[src]
 			if !keptIDs[ns.ID] {
 				old = nil
@@ -740,6 +743,7 @@ func (x *planCtx) planSubs() {
 	for _, b := range x.d.subs {
 		if c, ok := curByURL[b.URL]; ok && b.URL != "" {
 			have = append(have, c.Name)
+			x.submap[b.ID] = c.ID
 			src := "sub:" + c.ID
 			var pool []hysteria.Profile
 			for _, s := range next.Profiles.List {
@@ -770,6 +774,7 @@ func (x *planCtx) planSubs() {
 			continue
 		}
 		next.Subs = append(next.Subs, ns)
+		x.submap[b.ID] = ns.ID
 		src := "sub:" + ns.ID
 		for _, s := range b.Servers {
 			s.Source = src
@@ -1040,7 +1045,29 @@ func (x *planCtx) planGroups() {
 			names[strings.ToLower(name)] = true
 		}
 	}
-	f.Remap(func(m string) string { return x.resolveMember(m) }, func(id string) string { return gmap[id] })
+	f.Remap(x.resolveMember, func(id string) string { return gmap[id] })
+	for i := range f.Groups {
+		g := &f.Groups[i]
+		var subs []string
+		for _, id := range g.Subs {
+			if mapped := x.submap[id]; mapped != "" {
+				id = mapped
+			}
+			if !slices.Contains(subs, id) {
+				subs = append(subs, id)
+			}
+		}
+		g.Subs = subs
+		seen := map[string]bool{}
+		var excluded []string
+		for _, id := range g.Excluded {
+			if mapped := x.resolveMember(id); mapped != "" && !groups.IsGroupID(mapped) && !seen[mapped] {
+				excluded = append(excluded, mapped)
+				seen[mapped] = true
+			}
+		}
+		g.Excluded = excluded
+	}
 	if x.replace("groups") {
 		old := next.Groups
 		next.Groups = f
@@ -1580,7 +1607,8 @@ func (x *planCtx) finishGroups() {
 	f.Prune(exists)
 	if x.chosen("groups") || x.replace("servers") || x.replace("subscriptions") {
 		for _, g := range f.Groups {
-			if len(g.Members) > 0 || before[g.ID] == 0 && !x.chosen("groups") {
+			if len(g.Members) > 0 || before[g.ID] == 0 && !x.chosen("groups") ||
+				slices.ContainsFunc(next.Profiles.List, func(p hysteria.Profile) bool { return g.IncludesSubscriptionServer(p.ID, p.Source) }) {
 				continue
 			}
 			if len(refs[g.ID]) > 0 {
